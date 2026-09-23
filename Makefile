@@ -13,25 +13,36 @@ include $(THEOS)/makefiles/common.mk
 
 APPLICATION_NAME := Browser
 
-Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) \
+# woff2 decoder (C++) and the brotli decoder it needs (C); fetched by CI into vendor/
+WOFF2_FILES := vendor/woff2/src/woff2_dec.cc vendor/woff2/src/woff2_common.cc vendor/woff2/src/woff2_out.cc \
+               vendor/woff2/src/table_tags.cc vendor/woff2/src/variable_length.cc
+BROTLI_FILES := $(wildcard vendor/brotli/c/common/*.c) $(wildcard vendor/brotli/c/dec/*.c)
+
+Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm) \
                  vendor/mbedtls_glue.c \
-                 $(wildcard vendor/mbedtls/library/*.c)
+                 $(wildcard vendor/mbedtls/library/*.c) \
+                 $(WOFF2_FILES) $(BROTLI_FILES)
 
 Browser_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security
 
 # Flags for every C-family file (also the vendored mbedTLS sources)
 Browser_CFLAGS := -Isrc -Isrc/Net -Isrc/UI \
                   -Ivendor -Ivendor/mbedtls/include -Ivendor/mbedtls/library \
+                  -Ivendor/woff2/include -Ivendor/brotli/c/include \
                   -Os -fvisibility=hidden \
                   -Wall -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable \
                   -Wno-deprecated-declarations -Wno-unknown-warning-option \
                   -Wno-nullability-completeness -Wno-nullability-completeness-on-arrays -Wno-error
 
+# C++ (woff2) and Objective-C++ (the font converter wrapper)
+Browser_CCFLAGS := -std=c++11 -stdlib=libc++ -fno-exceptions -fno-rtti -Wno-unused-parameter
+Browser_OBJCCFLAGS := -std=c++11 -stdlib=libc++ -fobjc-arc
+
 # Objective-C only: ARC; APIs newer than iOS 6.0 are warnings here and turned into errors for our own
 # sources by the pragma in src/BRCommon.h (vendored code only warns).
 Browser_OBJCFLAGS := -fobjc-arc -Wunguarded-availability
 
-Browser_LDFLAGS := -lz
+Browser_LDFLAGS := -lz -lc++
 
 # Entitlements: dynamic-codesigning switches on the Nitro JIT inside UIWebView on jailbroken devices.
 Browser_CODESIGN_FLAGS := -SResources/entitlements.plist

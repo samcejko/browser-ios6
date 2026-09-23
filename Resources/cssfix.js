@@ -1131,7 +1131,15 @@ var CSSFix = (function () {
                 sub = transformRules(r.rules, ctx, true);
                 out.push({ t: 'at', name: '-webkit-keyframes', prelude: r.prelude, rules: sub, decls: null, raw: null });
             } else if (name === 'font-face') {
-                out.push({ t: 'at', name: name, prelude: r.prelude, rules: null, decls: fixDeclarations(r.decls || [], ctx, false), raw: null });
+                var fd = fixDeclarations(r.decls || [], ctx, false);
+                for (k = 0; k < fd.length; k++) {
+                    if (fd[k].p === 'src') {
+                        // WOFF2 files are converted to TrueType by the network layer, so tell the engine to try them
+                        fd[k].v = fd[k].v.replace(/format\(\s*(["']?)woff2(?:-variations)?\1\s*\)/gi, 'format("truetype")')
+                                         .replace(/\s*tech\([^)]*\)/gi, '');
+                    }
+                }
+                out.push({ t: 'at', name: name, prelude: r.prelude, rules: null, decls: fd, raw: null });
             } else if (name === 'page') {
                 out.push({ t: 'at', name: name, prelude: r.prelude, rules: null, decls: r.decls || [], raw: null });
             } else if (name === 'import') {

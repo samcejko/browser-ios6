@@ -2,6 +2,7 @@
 #import "BRHTTPRequest.h"
 #import "BRAdBlock.h"
 #import "BRCSSRewriter.h"
+#import "BRFontConverter.h"
 #import "BRCommon.h"
 #import "BRSettings.h"
 
@@ -389,6 +390,15 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (declared > (long long)BRMaxRewriteBody) kind = nil;
     }
+    // WOFF2 fonts are decoded to TTF (no JavaScript involved, so this works even without the rewriter)
+    if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"]) {
+        NSString *path = [url.path lowercaseString] ?: @"";
+        if ([ctype hasPrefix:@"font/woff2"] || [ctype hasPrefix:@"application/font-woff2"] || [ctype hasPrefix:@"application/x-font-woff2"] ||
+            [path hasSuffix:@".woff2"] || [url.absoluteString rangeOfString:@".woff2?"].location != NSNotFound) {
+            long long declared = [r.responseHeaders[@"content-length"] longLongValue];
+            if (declared <= 8 * 1024 * 1024) kind = @"font";
+        }
+    }
     if (kind) {
         self.rewriteKind = kind;
         self.rewriteBuffer = [NSMutableData data];
@@ -423,6 +433,23 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSData *buffered = self.rewriteBuffer ?: [NSData data];
     self.rewriteBuffer = nil;
     NSString *kind = self.rewriteKind;
+    if ([kind isEqualToString:@"font"]) {
+        // synchronous, on the worker thread
+        NSData *ttf = [BRFontConverter ttfDataFromWOFF2:buffered];
+        NSMutableDictionary *f = [self.pendingHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSData *out = ttf ?: buffered;
+        if (ttf) BRSetHeaderField(f, @"Content-Type", @"font/ttf");
+        BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
+        NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:self.pendingStatus HTTPVersion:@"HTTP/1.1" headerFields:f];
+        if (self.cacheBody && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:self.cacheMaxAge];
+        self.cacheBody = nil;
+        [self performOnClientThread:^{
+            [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+            if (out.length) [self.client URLProtocol:self didLoadData:out];
+            [self.client URLProtocolDidFinishLoading:self];
+        }];
+        return;
+    }
     NSString *charset = self.rewriteCharset;
     NSInteger status = self.pendingStatus;
     NSDictionary *fields = self.pendingHeaderFields;

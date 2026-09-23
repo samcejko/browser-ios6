@@ -2,6 +2,8 @@
 obj/
 packages/
 vendor/mbedtls/
+vendor/woff2/
+vendor/brotli/
 Resources/Icon*.png
 Resources/Default*.png
 Resources/cacert.pem

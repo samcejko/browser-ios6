@@ -83,6 +83,17 @@ jobs:
           cp vendor/mbedtls_config_ios6.h vendor/mbedtls/include/mbedtls/mbedtls_config.h
           echo "mbedTLS sources: $(ls vendor/mbedtls/library/*.c | wc -l)"
 
+      - name: Fetch woff2 and brotli sources (WOFF2 fonts are converted to TTF on the device)
+        run: |
+          set -e
+          rm -rf vendor/woff2 vendor/brotli
+          mkdir -p vendor/woff2 vendor/brotli
+          curl -sSL https://github.com/google/woff2/archive/refs/tags/v1.0.2.tar.gz | tar -xz -C vendor/woff2 --strip-components=1
+          curl -sSL https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz | tar -xz -C vendor/brotli --strip-components=1
+          # only the decoders are needed
+          ls vendor/woff2/src | head -n 30
+          ls vendor/brotli/c/dec vendor/brotli/c/common
+
       - name: Fetch CA bundle
         run: |
           curl -sSf https://curl.se/ca/cacert.pem -o Resources/cacert.pem
