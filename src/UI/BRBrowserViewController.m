@@ -242,7 +242,8 @@ static const CGFloat BRControlHeight = 30;
     [self updateNavigationState];
 
     NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
-    if (restored && [[restored.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:restored];
+    if (self.skipRestore) { /* the launch URL arrives right after this and takes the tab */ }
+    else if (restored && [[restored.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:restored];
     else [self goHome];
 }
 
@@ -667,6 +668,7 @@ static NSCache *BRFaviconCache(void)
 - (void)loadURL:(NSURL *)url
 {
     if (!url) return;
+    if (self.loading) [self.webView stopLoading];   // a page still loading must not steal the tab with a late redirect
     self.currentURL = url;
     [self updateAddressFieldWithURL:url];
     if (self.currentTab < self.tabs.count) {

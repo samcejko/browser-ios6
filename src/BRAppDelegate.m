@@ -50,6 +50,7 @@
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.browserViewController = [[BRBrowserViewController alloc] init];
+    self.browserViewController.skipRestore = launchOptions[UIApplicationLaunchOptionsURLKey] != nil;
     self.window.rootViewController = self.browserViewController;
     self.window.backgroundColor = [[BRTheme shared] pageBackgroundColor];
     [self.window makeKeyAndVisible];
