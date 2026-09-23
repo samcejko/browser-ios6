@@ -4,5 +4,6 @@
 @interface BRBrowserViewController : UIViewController
 
 - (void)loadURL:(NSURL *)url;
+- (void)goHome;
 
 @end

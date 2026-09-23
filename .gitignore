@@ -5,6 +5,7 @@ vendor/mbedtls/
 Resources/Icon*.png
 Resources/Default*.png
 Resources/cacert.pem
+Resources/adblock.txt
 *.ipa
 *.deb
 .DS_Store

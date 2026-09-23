@@ -5,6 +5,8 @@
 
 + (BOOL)verifyTLS;                       // default YES
 + (void)setVerifyTLS:(BOOL)verify;
++ (BOOL)adBlockEnabled;                  // default YES
++ (void)setAdBlockEnabled:(BOOL)enabled;
 
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page

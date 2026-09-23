@@ -2,6 +2,7 @@
 #import "BRBrowserViewController.h"
 #import "BRURLProtocol.h"
 #import "BRTLSSocket.h"
+#import "BRAdBlock.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -19,6 +20,7 @@
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
     [BRURLProtocol registerProtocol];
     [BRTLSSocket warmUp];
+    [BRAdBlock warmUp];
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.browserViewController = [[BRBrowserViewController alloc] init];
@@ -41,6 +43,10 @@
         while ([target hasPrefix:@"/"]) target = [target substringFromIndex:1];
     }
     if (!target.length) return YES;
+    if ([target isEqualToString:@"home"]) {
+        [self.browserViewController goHome];
+        return YES;
+    }
     if ([target rangeOfString:@"://"].location == NSNotFound) target = [@"https://" stringByAppendingString:target];
     NSURL *targetURL = [NSURL URLWithString:target];
     if (!targetURL) return NO;

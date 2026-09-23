@@ -88,6 +88,13 @@ jobs:
           curl -sSf https://curl.se/ca/cacert.pem -o Resources/cacert.pem
           grep -c "BEGIN CERTIFICATE" Resources/cacert.pem
 
+      - name: Fetch ad block list (Peter Lowe's list, plus the bundled base list)
+        run: |
+          set -e
+          curl -sSfL "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext" -o /tmp/adservers.txt || true
+          grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' /tmp/adservers.txt > Resources/adblock.txt || true
+          echo "ad block domains: $(wc -l < Resources/adblock.txt)"
+
       - name: Generate icons and launch images
         run: python3 tools/gen_assets.py Resources
 

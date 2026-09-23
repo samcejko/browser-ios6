@@ -17,6 +17,18 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
++ (BOOL)adBlockEnabled
+{
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"BRAdBlock"];
+    return v ? [v boolValue] : YES;
+}
+
++ (void)setAdBlockEnabled:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:@"BRAdBlock"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 + (NSURL *)searchURLForQuery:(NSString *)query
 {
     NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(

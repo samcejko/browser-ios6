@@ -11,6 +11,8 @@ the app around it:
   HTTP cache are handled by the app.
 - **JavaScript speed**: the binary is signed with the `dynamic-codesigning` entitlement, which enables
   the Nitro JIT inside UIWebView on jailbroken devices.
+- **Ad and tracker blocking** by host name (Peter Lowe's list fetched at build time plus a bundled
+  base list), which also keeps memory use down on 512 MB devices.
 - Planned: on-device transpiling (ES2020 to ES5) and polyfills, CSS rewriting, WOFF2/WebP conversion.
 
 ## Building (GitHub Actions)

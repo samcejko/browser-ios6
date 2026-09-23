@@ -1,7 +1,15 @@
 #import "BRURLProtocol.h"
 #import "BRHTTPRequest.h"
+#import "BRAdBlock.h"
 #import "BRCommon.h"
 #import "BRSettings.h"
+
+// 1x1 transparent GIF served for blocked image requests
+static const uint8_t BRBlankGIF[] = {
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xFF, 0xFF, 0xFF, 0x21, 0xF9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3B
+};
 
 static NSString * const BRHandledKey = @"BRURLProtocolHandled";
 static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLResponse.userInfo
@@ -171,6 +179,13 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *method = request.HTTPMethod.length ? [request.HTTPMethod uppercaseString] : @"GET";
     BOOL isGET = [method isEqualToString:@"GET"];
     NSURLRequestCachePolicy policy = request.cachePolicy;
+
+    // 0. Ad and tracker blocking (never for the main document)
+    if (request.mainDocumentURL && ![url isEqual:request.mainDocumentURL] && [BRSettings adBlockEnabled] && [BRAdBlock shouldBlockHost:url.host]) {
+        [BRAdBlock noteBlockedRequest];
+        [self serveBlockedResponse];
+        return;
+    }
 
     // 1. Cache
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
@@ -387,6 +402,30 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge) };
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];
+}
+
+// Empty script / stylesheet or a blank image, so the page does not wait or show broken elements.
+- (void)serveBlockedResponse
+{
+    NSString *accept = BRHeader(self.request.allHTTPHeaderFields, @"Accept") ?: @"";
+    NSData *body = [NSData data];
+    NSString *type = @"text/javascript";
+    if ([accept rangeOfString:@"image"].location != NSNotFound) {
+        body = [NSData dataWithBytes:BRBlankGIF length:sizeof(BRBlankGIF)];
+        type = @"image/gif";
+    } else if ([accept rangeOfString:@"text/css"].location != NSNotFound) {
+        type = @"text/css";
+    } else if ([accept rangeOfString:@"text/html"].location != NSNotFound) {
+        type = @"text/html";
+    }
+    NSDictionary *fields = @{ @"Content-Type": type, @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)body.length], @"Cache-Control": @"no-store" };
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:fields];
+    self.done = YES;
+    [self performOnClientThread:^{
+        [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+        if (body.length) [self.client URLProtocol:self didLoadData:body];
+        [self.client URLProtocolDidFinishLoading:self];
+    }];
 }
 
 - (void)failWithError:(NSError *)error
