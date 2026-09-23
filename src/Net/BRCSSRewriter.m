@@ -66,9 +66,13 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
     return r;
 }
 
+static CGFloat g_viewportWidth = 768;
+
 + (void)warmUp
 {
     BRCSSRewriter *r = [self shared];
+    CGRect screen = [UIScreen mainScreen].bounds;
+    g_viewportWidth = MIN(screen.size.width, screen.size.height);   // portrait width: the wider layout of the two is fine
     [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; }];
 }
 
@@ -196,8 +200,9 @@ static NSString *BRPageKey(NSURL *url)
                 if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
             }
             NSString *optionsJSON = @"{}";
-            if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) {
-                NSDictionary *opts = @{ @"polyfillURL": [BRCSSRewriter polyfillURLString], @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"" };
+            {
+                NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth) } mutableCopy];
+                if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

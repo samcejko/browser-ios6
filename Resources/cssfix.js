@@ -1053,7 +1053,7 @@ var CSSFix = (function () {
     }
 
     var SUPPORTED_PROPS = { display: /^(block|inline|inline-block|none|flex|inline-flex|-webkit-box|-webkit-flex|table|table-cell|table-row|list-item|inline-table|-webkit-inline-box)$/i,
-        position: /^(static|relative|absolute|fixed)$/i, transform: 1, '-webkit-transform': 1, transition: 1, animation: 1, filter: 1, '-webkit-filter': 1,
+        position: /^(static|relative|absolute|fixed|sticky|-webkit-sticky)$/i, transform: 1, '-webkit-transform': 1, transition: 1, animation: 1, filter: 1, '-webkit-filter': 1,
         mask: 1, '-webkit-mask': 1, 'clip-path': 1, '-webkit-clip-path': 1, columns: 1, 'column-count': 1, 'box-shadow': 1, 'border-radius': 1, opacity: 1,
         'background-size': 1, 'background-clip': 1, 'box-sizing': 1, 'text-overflow': 1, 'word-break': 1, 'overflow-wrap': 1, 'pointer-events': 1,
         calc: 1, width: /calc|vw|vh|vmin|px|%|em|rem|fit-content|max-content|min-content/i, height: /calc|vw|vh|vmin|px|%|em|rem/i,
@@ -1066,7 +1066,7 @@ var CSSFix = (function () {
         var p = trim(decl.slice(0, colon)).toLowerCase(), v = trim(decl.slice(colon + 1));
         if (p.charAt(0) === '-' && p.charAt(1) === '-') return true;   // custom properties: resolved statically
         if (p.indexOf('grid') >= 0 || p === 'gap' || p === 'row-gap' || p === 'column-gap' && !/column/.test(v) || p === 'aspect-ratio' || p === 'object-fit' ||
-            p === 'position' && /sticky/i.test(v) || p === 'backdrop-filter' || p === '-webkit-backdrop-filter' || p === 'container-type' || p === 'container' ||
+            p === 'backdrop-filter' || p === '-webkit-backdrop-filter' || p === 'container-type' || p === 'container' ||
             p === 'overflow' && /clip/i.test(v) || p === 'display' && /grid|contents|flow-root/i.test(v) || p === 'scroll-snap-type' || p === 'scroll-behavior' ||
             p === 'writing-mode' || p === 'text-wrap' || p === 'anchor-name' || p === 'view-transition-name' || p === 'contain' || p === 'content-visibility' ||
             p === 'accent-color' || p === 'color-scheme' || p === 'field-sizing' || p === 'text-box-trim' || p === 'animation-timeline') return false;
@@ -1118,6 +1118,43 @@ var CSSFix = (function () {
 
     // ------------------------------------------------------------------ rule transformation
 
+    // Number of columns a grid container would have (0 when the rule is not a grid or the count is unclear).
+    function gridColumns(decls, ctx) {
+        var isGrid = false, tracks = null;
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, v = decls[i].v;
+            if (p === 'display' && /^(inline-)?grid$/i.test(trim(v))) isGrid = true;
+            else if (p === 'grid-template-columns') tracks = v;
+            else if (p === 'grid-template' && v.indexOf('/') >= 0) tracks = v.slice(v.lastIndexOf('/') + 1);
+            else if (p === 'grid' && v.indexOf('/') >= 0 && !/auto-flow/i.test(v.slice(0, v.indexOf('/')))) tracks = v.slice(v.lastIndexOf('/') + 1);
+        }
+        if (!isGrid || !tracks) return 0;
+        tracks = resolveVars(tracks, null, ctx);
+        if (tracks === null) return 0;
+        var t = trim(tracks).replace(/\[[^\]]*\]/g, ' ');
+        if (/^(none|auto|subgrid|masonry)$/i.test(t)) return 0;
+        var width = ctx.viewportWidth || 768;
+        var rep = /repeat\(\s*(\d+|auto-fill|auto-fit)\s*,\s*([^)]*(?:\([^)]*\))?[^)]*)\)/i.exec(t);
+        var count = 0;
+        if (rep) {
+            var inner = splitWS(trim(rep[2])).length || 1;
+            if (/^\d+$/.test(rep[1])) count = parseInt(rep[1], 10) * inner;
+            else {
+                var px = /minmax\(\s*([\d.]+)(px|rem|em)/i.exec(rep[2]) || /^([\d.]+)(px|rem|em)/i.exec(trim(rep[2]));
+                if (!px) return 0;
+                var minPx = parseFloat(px[1]) * (px[2] === 'px' ? 1 : 16);
+                count = Math.max(1, Math.floor((width - 32) / Math.max(minPx, 40)));
+            }
+            // tracks before/after the repeat()
+            var rest = t.replace(rep[0], ' ');
+            count += splitWS(trim(rest)).length;
+        } else {
+            count = splitWS(t).length;
+        }
+        if (count < 2) return 0;
+        return Math.min(count, 8);
+    }
+
     function transformRules(rules, ctx, keyframe) {
         var out = [];
         for (var i = 0; i < rules.length; i++) {
@@ -1128,6 +1165,18 @@ var CSSFix = (function () {
                 var decls = fixDeclarations(r.decls, ctx, keyframe);
                 if (!decls.length) continue;
                 out.push({ t: 'q', sel: sels.join(','), decls: decls });
+                if (!keyframe) {
+                    var columns = gridColumns(r.decls, ctx);
+                    if (columns > 1) {
+                        // CSS grid does not exist here: the children float into equal columns instead of piling up
+                        var childSels = [], afterSels = [];
+                        for (var gs = 0; gs < sels.length; gs++) { childSels.push(sels[gs] + ' > *'); afterSels.push(sels[gs] + '::after'); }
+                        var pct = (Math.floor(10000 / columns) / 100) + '%';
+                        out.push({ t: 'q', sel: childSels.join(','), decls: [{ p: 'float', v: 'left', imp: false }, { p: 'width', v: pct, imp: false },
+                                  { p: '-webkit-box-sizing', v: 'border-box', imp: false }, { p: 'box-sizing', v: 'border-box', imp: false }, { p: 'min-width', v: '0', imp: false }] });
+                        out.push({ t: 'q', sel: afterSels.join(','), decls: [{ p: 'content', v: '""', imp: false }, { p: 'display', v: 'block', imp: false }, { p: 'clear', v: 'both', imp: false }] });
+                    }
+                }
                 continue;
             }
             if (r.t !== 'at') continue;
@@ -1324,6 +1373,7 @@ var CSSFix = (function () {
             if (typeof options === 'string') { try { opts = JSON.parse(options); } catch (e) { opts = null; } }
             else opts = options;
         }
+        if (opts && opts.viewportWidth > 0) ctx.viewportWidth = opts.viewportWidth;
         var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
         return JSON.stringify({ out: out, vars: ctx.root });
     }
