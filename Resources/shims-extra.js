@@ -1292,6 +1292,143 @@
     if (window.HTMLMediaElement && !window.HTMLMediaElement.prototype.requestPictureInPicture) { window.HTMLMediaElement.prototype.requestPictureInPicture = rejectWith('NotSupportedError', 'Picture in picture is not available'); if (!('pictureInPictureEnabled' in document)) try { Object.defineProperty(document, 'pictureInPictureEnabled', { get: function () { return false; }, configurable: true }); document.exitPictureInPicture = rejectWith('InvalidStateError', 'not in picture in picture'); } catch (e) {} }
     if (window.MathMLElement === undefined) window.MathMLElement = function MathMLElement() {};
 
+    // ---- Everyday DOM differences that break modern scripts on the old engine
+    // addEventListener(type, fn, {passive, once, capture, signal}): the old engine reads the options object as capture=true
+    var patchEventTarget = function (obj) {
+        if (!obj || !obj.addEventListener || obj.__brListenerOptions) return;
+        var origAdd = obj.addEventListener, origRemove = obj.removeEventListener;
+        obj.addEventListener = function (type, fn, options) {
+            if (!fn) return;
+            if (options && typeof options === 'object') {
+                var capture = !!options.capture, actual = fn;
+                if (options.once) {
+                    var self = this;
+                    actual = fn.__brOnce || (fn.__brOnce = function (ev) { self.removeEventListener(type, fn, capture); return typeof fn === 'function' ? fn.call(this, ev) : fn.handleEvent(ev); });
+                }
+                if (options.signal) {
+                    if (options.signal.aborted) return;
+                    var target = this;
+                    options.signal.addEventListener('abort', function () { target.removeEventListener(type, fn, capture); });
+                }
+                return origAdd.call(this, type, actual, capture);
+            }
+            return origAdd.call(this, type, fn, !!options);
+        };
+        obj.removeEventListener = function (type, fn, options) {
+            var capture = options && typeof options === 'object' ? !!options.capture : !!options;
+            if (fn && fn.__brOnce) origRemove.call(this, type, fn.__brOnce, capture);
+            return origRemove.call(this, type, fn, capture);
+        };
+        obj.__brListenerOptions = true;
+    };
+    var listenerTargets = [Np, window, window.XMLHttpRequest && window.XMLHttpRequest.prototype, window.XMLHttpRequestUpload && window.XMLHttpRequestUpload.prototype,
+                           window.WebSocket && window.WebSocket.prototype, window.EventSource && window.EventSource.prototype, window.FileReader && window.FileReader.prototype,
+                           window.MessagePort && window.MessagePort.prototype, window.Worker && window.Worker.prototype, window.MediaQueryList && window.MediaQueryList.prototype,
+                           window.EventTarget && window.EventTarget.prototype];
+    for (var lt = 0; lt < listenerTargets.length; lt++) patchEventTarget(listenerTargets[lt]);
+    // classList.add('a', 'b') only added the first class
+    if (window.DOMTokenList && window.DOMTokenList.prototype) {
+        var probeList = document.createElement('div');
+        probeList.classList.add('a', 'b');
+        if (!probeList.classList.contains('b')) {
+            var TLp = window.DOMTokenList.prototype, origAddClass = TLp.add, origRemoveClass = TLp.remove;
+            TLp.add = function () { for (var i = 0; i < arguments.length; i++) origAddClass.call(this, arguments[i]); };
+            TLp.remove = function () { for (var i = 0; i < arguments.length; i++) origRemoveClass.call(this, arguments[i]); };
+        }
+    }
+    // getBoundingClientRect().x / .y
+    if (Ep && Ep.getBoundingClientRect) {
+        var probeRect = document.documentElement.getBoundingClientRect();
+        if (probeRect && !('x' in probeRect)) {
+            var origRect = Ep.getBoundingClientRect;
+            Ep.getBoundingClientRect = function () {
+                var r = origRect.apply(this, arguments);
+                return { x: r.left, y: r.top, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height, toJSON: function () { return this; } };
+            };
+            if (window.Range && window.Range.prototype.getBoundingClientRect) {
+                var origRangeRect = window.Range.prototype.getBoundingClientRect;
+                window.Range.prototype.getBoundingClientRect = function () { var r = origRangeRect.apply(this, arguments); return { x: r.left, y: r.top, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+            }
+        }
+    }
+    // ':scope' in selectors
+    var scopeSupported = false;
+    try { document.documentElement.querySelector(':scope'); scopeSupported = true; } catch (e) {}
+    if (!scopeSupported) {
+        var fixScope = function (sel) { return typeof sel === 'string' && sel.indexOf(':scope') >= 0 ? sel.replace(/:scope\b\s*>?/g, function (m) { return m.indexOf('>') >= 0 ? ':scope-child' : ''; }) : sel; };
+        var scopedQuery = function (orig) {
+            return function (sel) {
+                if (typeof sel === 'string' && sel.indexOf(':scope') >= 0) {
+                    var el = this, tmpId = false;
+                    if (el.nodeType === 1) {
+                        if (!el.id) { el.id = 'br-scope-' + Math.random().toString(36).slice(2); tmpId = true; }
+                        var rewritten = sel.replace(/:scope\b/g, '#' + el.id);
+                        try { return orig.call(el.parentNode || document, rewritten); } finally { if (tmpId) el.removeAttribute('id'); }
+                    }
+                    return orig.call(this, sel.replace(/:scope\b\s*/g, ''));
+                }
+                return orig.call(this, sel);
+            };
+        };
+        var queryOwners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
+        for (var qo = 0; qo < queryOwners.length; qo++) {
+            if (!queryOwners[qo]) continue;
+            if (queryOwners[qo].querySelector) queryOwners[qo].querySelector = scopedQuery(queryOwners[qo].querySelector);
+            if (queryOwners[qo].querySelectorAll) queryOwners[qo].querySelectorAll = scopedQuery(queryOwners[qo].querySelectorAll);
+        }
+    }
+    // KeyboardEvent.key from keyCode
+    if (window.KeyboardEvent && window.KeyboardEvent.prototype && !('key' in window.KeyboardEvent.prototype)) {
+        var keyNames = { 8: 'Backspace', 9: 'Tab', 13: 'Enter', 16: 'Shift', 17: 'Control', 18: 'Alt', 20: 'CapsLock', 27: 'Escape', 32: ' ', 33: 'PageUp', 34: 'PageDown', 35: 'End', 36: 'Home', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 45: 'Insert', 46: 'Delete', 91: 'Meta', 93: 'ContextMenu', 186: ';', 187: '=', 188: ',', 189: '-', 190: '.', 191: '/', 192: '`', 219: '[', 220: '\\', 221: ']', 222: "'" };
+        try {
+            Object.defineProperty(window.KeyboardEvent.prototype, 'key', { get: function () {
+                var c = this.keyCode || this.which || 0;
+                if (keyNames[c]) return keyNames[c];
+                if (c >= 112 && c <= 123) return 'F' + (c - 111);
+                if (c >= 48 && c <= 57) return String.fromCharCode(c);
+                if (c >= 65 && c <= 90) return this.shiftKey ? String.fromCharCode(c) : String.fromCharCode(c + 32);
+                if (c >= 96 && c <= 105) return String(c - 96);
+                return this.keyIdentifier && this.keyIdentifier.indexOf('U+') === 0 ? String.fromCharCode(parseInt(this.keyIdentifier.slice(2), 16)) : 'Unidentified';
+            }, configurable: true });
+            Object.defineProperty(window.KeyboardEvent.prototype, 'code', { get: function () { var k = this.key; return k.length === 1 && /[a-z]/i.test(k) ? 'Key' + k.toUpperCase() : k.length === 1 && /[0-9]/.test(k) ? 'Digit' + k : k === ' ' ? 'Space' : k; }, configurable: true });
+        } catch (e) {}
+    }
+    if (window.Event && window.Event.prototype && !window.Event.prototype.composedPath) {
+        window.Event.prototype.composedPath = function () { var path = [], n = this.target; while (n) { path.push(n); n = n.parentNode || (n === document ? window : null); } if (path[path.length - 1] !== window) path.push(window); return path; };
+    }
+    if (Ep && !Ep.insertAdjacentElement) {
+        Ep.insertAdjacentElement = function (position, el) {
+            var p = String(position).toLowerCase();
+            if (p === 'beforebegin') this.parentNode.insertBefore(el, this);
+            else if (p === 'afterbegin') this.insertBefore(el, this.firstChild);
+            else if (p === 'beforeend') this.appendChild(el);
+            else if (p === 'afterend') this.parentNode.insertBefore(el, this.nextSibling);
+            return el;
+        };
+        Ep.insertAdjacentText = function (position, text) { return this.insertAdjacentElement(position, document.createTextNode(text)); };
+    }
+    var collectionProtos = [window.NodeList && window.NodeList.prototype, window.HTMLCollection && window.HTMLCollection.prototype];
+    for (var cp = 0; cp < collectionProtos.length; cp++) {
+        if (!collectionProtos[cp]) continue;
+        if (!collectionProtos[cp].forEach) collectionProtos[cp].forEach = Array.prototype.forEach;
+        if (!collectionProtos[cp].entries) collectionProtos[cp].entries = function () { return Array.prototype.slice.call(this).entries(); };
+        if (!collectionProtos[cp].keys) collectionProtos[cp].keys = function () { return Array.prototype.slice.call(this).keys(); };
+        if (!collectionProtos[cp].values) collectionProtos[cp].values = function () { return Array.prototype.slice.call(this).values(); };
+    }
+    if (!String.prototype.trimStart) { String.prototype.trimStart = String.prototype.trimLeft || function () { return this.replace(/^\s+/, ''); }; String.prototype.trimEnd = String.prototype.trimRight || function () { return this.replace(/\s+$/, ''); }; }
+    if (!Number.parseFloat) Number.parseFloat = parseFloat;
+    if (!Number.parseInt) Number.parseInt = parseInt;
+    if (!String.prototype.replaceAll) {
+        String.prototype.replaceAll = function (search, replacement) {
+            if (search instanceof RegExp) { if (!search.global) throw new TypeError('replaceAll must be called with a global RegExp'); return this.replace(search, replacement); }
+            if (typeof replacement === 'function') { var s = String(this), out = '', idx = 0, pos; search = String(search); while ((pos = s.indexOf(search, idx)) >= 0) { out += s.slice(idx, pos) + replacement(search, pos, s); idx = pos + search.length; if (!search.length) { if (idx >= s.length) break; out += s.charAt(idx); idx++; } } return out + s.slice(idx); }
+            return String(this).split(String(search)).join(String(replacement).replace(/\$/g, '$$$$'));
+        };
+    }
+    if (!('origin' in window.location)) try { Object.defineProperty(window.location, 'origin', { get: function () { return location.protocol + '//' + location.host; } }); } catch (e) {}
+    if (window.history && !('scrollRestoration' in window.history)) try { window.history.scrollRestoration = 'auto'; } catch (e) {}
+    if (!('isSecureContext' in window)) try { window.isSecureContext = location.protocol === 'https:' || location.hostname === 'localhost'; } catch (e) {}
+
     // ---- Language runtime extras
     if (!window.globalThis) try { window.globalThis = window; } catch (e) {}
     if (!window.queueMicrotask) window.queueMicrotask = function (cb) { if (P) P.resolve().then(cb); else setTimeout(cb, 0); };
