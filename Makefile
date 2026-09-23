@@ -17,18 +17,20 @@ APPLICATION_NAME := Browser
 WOFF2_FILES := vendor/woff2/src/woff2_dec.cc vendor/woff2/src/woff2_common.cc vendor/woff2/src/woff2_out.cc \
                vendor/woff2/src/table_tags.cc vendor/woff2/src/variable_length.cc
 BROTLI_FILES := $(wildcard vendor/brotli/c/common/*.c) $(wildcard vendor/brotli/c/dec/*.c)
+# libwebp decoder (encoder dsp files are removed by CI)
+WEBP_FILES := $(wildcard vendor/libwebp/src/dec/*.c) $(wildcard vendor/libwebp/src/dsp/*.c) $(wildcard vendor/libwebp/src/utils/*.c)
 
 Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm) \
                  vendor/mbedtls_glue.c \
                  $(wildcard vendor/mbedtls/library/*.c) \
-                 $(WOFF2_FILES) $(BROTLI_FILES)
+                 $(WOFF2_FILES) $(BROTLI_FILES) $(WEBP_FILES)
 
 Browser_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security
 
 # Flags for every C-family file (also the vendored mbedTLS sources)
 Browser_CFLAGS := -Isrc -Isrc/Net -Isrc/UI -Isrc/Model \
                   -Ivendor -Ivendor/mbedtls/include -Ivendor/mbedtls/library \
-                  -Ivendor/woff2/include -Ivendor/brotli/c/include \
+                  -Ivendor/woff2/include -Ivendor/brotli/c/include -Ivendor/libwebp -Ivendor/libwebp/src \
                   -Os -fvisibility=hidden \
                   -Wall -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable \
                   -Wno-deprecated-declarations -Wno-unknown-warning-option \

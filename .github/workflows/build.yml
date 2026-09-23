@@ -93,6 +93,12 @@ jobs:
           # only the decoders are needed
           ls vendor/woff2/src | head -n 30
           ls vendor/brotli/c/dec vendor/brotli/c/common
+          # libwebp: WebP images are decoded to PNG on the device
+          rm -rf vendor/libwebp && mkdir -p vendor/libwebp
+          curl -sSL https://github.com/webmproject/libwebp/archive/refs/tags/v1.3.2.tar.gz | tar -xz -C vendor/libwebp --strip-components=1
+          # drop encoder-only dsp files (they are large and pull in the encoder)
+          rm -f vendor/libwebp/src/dsp/enc*.c vendor/libwebp/src/dsp/cost*.c vendor/libwebp/src/dsp/ssim*.c vendor/libwebp/src/dsp/lossless_enc*.c
+          ls vendor/libwebp/src/dec vendor/libwebp/src/dsp | head -n 80
 
       - name: Fetch CA bundle
         run: |

@@ -19,7 +19,7 @@
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
     // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
-    static const NSInteger BRCacheFormatVersion = 6;
+    static const NSInteger BRCacheFormatVersion = 7;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
         [cache removeAllCachedResponses];

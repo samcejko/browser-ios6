@@ -16,7 +16,8 @@ the app around it:
 - **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties,
   flexbox (2009 syntax), vendor prefixes, gradients, modern colours, `:is()`/`:where()`, `@supports`,
   `@layer`, logical properties and more, so that 2012 WebKit renders modern stylesheets.
-- **WOFF2 fonts** are converted to TrueType on the device (google/woff2 + brotli).
+- **WOFF2 fonts** are converted to TrueType on the device (google/woff2 + brotli) and **WebP images**
+  are decoded to PNG (libwebp).
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
   shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
   TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship
