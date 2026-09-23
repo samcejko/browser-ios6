@@ -227,13 +227,19 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
 {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     char portStr[16];
     snprintf(portStr, sizeof(portStr), "%d", port);
     struct addrinfo *res = NULL;
+    // IPv4 only first: on networks with a broken IPv6 path the AAAA lookup alone can take many seconds.
+    hints.ai_family = AF_INET;
     int gai = getaddrinfo([host UTF8String], portStr, &hints, &res);
+    if (gai != 0 || !res) {
+        if (res) { freeaddrinfo(res); res = NULL; }
+        hints.ai_family = AF_UNSPEC;
+        gai = getaddrinfo([host UTF8String], portStr, &hints, &res);
+    }
     if (gai != 0 || !res) {
         BRSetError(error, BRErrorDNS, [NSString stringWithFormat:L(@"Could not resolve %@ (%s). Is the device online?"), host, gai_strerror(gai)]);
         return -1;
