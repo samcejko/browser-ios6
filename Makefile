@@ -42,7 +42,7 @@ Browser_OBJCCFLAGS := -std=c++11 -stdlib=libc++ -fobjc-arc
 # sources by the pragma in src/BRCommon.h (vendored code only warns).
 Browser_OBJCFLAGS := -fobjc-arc -Wunguarded-availability
 
-Browser_LDFLAGS := -lz -lc++
+Browser_LDFLAGS := -lz -lc++ -lc++abi
 
 # Entitlements: dynamic-codesigning switches on the Nitro JIT inside UIWebView on jailbroken devices.
 Browser_CODESIGN_FLAGS := -SResources/entitlements.plist
