@@ -817,6 +817,13 @@ var CSSFix = (function () {
                     if (lv === 'sticky') push(out, p, '-webkit-sticky', imp);   // iOS 6.1 knows the prefixed value
                     push(out, p, v, imp);
                     continue;
+                case 'text-rendering':
+                    // optimizeLegibility / geometricPrecision force the slow CoreText shaping path in the old engine
+                    push(out, p, /speed|auto/i.test(lv) ? v : 'optimizeSpeed', imp);
+                    continue;
+                case 'font-feature-settings': case '-webkit-font-feature-settings': case 'font-variant-ligatures': case 'font-kerning':
+                case '-webkit-font-kerning': case 'font-variant-numeric': case 'font-optical-sizing': case 'font-variation-settings':
+                    continue;   // each of these switches on complex text layout for the whole element
                 case 'object-fit': case 'object-position':
                     // object-fit-images (in the polyfill bundle) reads the intent from this font-family hack
                     push(out, p, v, imp);

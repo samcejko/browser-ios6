@@ -37,17 +37,25 @@ static bool BRIsSFNT(const uint8_t *p, size_t len)
 // minute and fails anyway ("FT_Get_MM_Var failed"). Dropping the variation tables leaves a
 // static font at the default instance, which the old engine loads instantly.
 // Returns false when the font is not variable (or cannot be made static, e.g. CFF2 outlines).
-static bool BRStripVariationTables(const std::string &in, std::string &out, int *dropped)
+// Fonts with large OpenType layout tables (Inter's GPOS alone is hundreds of kilobytes) send the
+// iOS 6 text layout through CoreText shaping for every line, which took MDN's home page over a
+// minute. Above this size the layout tables are dropped as well: kerning and ligatures are lost,
+// the page appears in seconds.
+static const size_t BRHeavyLayoutTables = 24 * 1024;
+
+static bool BRStripVariationTables(const std::string &in, std::string &out, int *dropped, bool *droppedLayout)
 {
     const uint8_t *p = (const uint8_t *)in.data();
     size_t len = in.size();
     if (!BRIsSFNT(p, len)) return false;
     uint16_t numTables = rd16(p + 4);
     if (len < 12 + (size_t)numTables * 16) return false;
-    static const char *dropTags[] = { "fvar", "gvar", "avar", "cvar", "HVAR", "VVAR", "MVAR", "STAT", NULL };
+    static const char *variationTags[] = { "fvar", "gvar", "avar", "cvar", "HVAR", "VVAR", "MVAR", "STAT", NULL };
+    static const char *layoutTags[] = { "GSUB", "GPOS", "GDEF", "BASE", "JSTF", "morx", "mort", "kerx", NULL };
     struct Rec { char tag[4]; uint32_t checksum, offset, length; };
-    std::vector<Rec> keep;
+    std::vector<Rec> all;
     bool hasFvar = false, hasCFF2 = false;
+    size_t layoutBytes = 0;
     for (uint16_t i = 0; i < numTables; i++) {
         const uint8_t *r = p + 12 + (size_t)i * 16;
         Rec rec;
@@ -57,14 +65,22 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
         rec.length = rd32(r + 12);
         if (memcmp(rec.tag, "fvar", 4) == 0) hasFvar = true;
         if (memcmp(rec.tag, "CFF2", 4) == 0) hasCFF2 = true;
-        bool drop = false;
-        for (int k = 0; dropTags[k]; k++) if (memcmp(rec.tag, dropTags[k], 4) == 0) drop = true;
-        if (drop) continue;
+        if (memcmp(rec.tag, "GSUB", 4) == 0 || memcmp(rec.tag, "GPOS", 4) == 0) layoutBytes += rec.length;
         if ((size_t)rec.offset + rec.length > len) return false;
-        keep.push_back(rec);
+        all.push_back(rec);
     }
-    if (!hasFvar || hasCFF2) return false;
+    bool dropLayout = layoutBytes > BRHeavyLayoutTables;
+    if (hasCFF2) return false;
+    if (!hasFvar && !dropLayout) return false;
+    std::vector<Rec> keep;
+    for (size_t i = 0; i < all.size(); i++) {
+        bool drop = false;
+        if (hasFvar) for (int k = 0; variationTags[k]; k++) if (memcmp(all[i].tag, variationTags[k], 4) == 0) drop = true;
+        if (dropLayout) for (int k = 0; layoutTags[k]; k++) if (memcmp(all[i].tag, layoutTags[k], 4) == 0) drop = true;
+        if (!drop) keep.push_back(all[i]);
+    }
     *dropped = (int)(numTables - keep.size());
+    *droppedLayout = dropLayout;
     uint16_t n = (uint16_t)keep.size();
     uint16_t entrySelector = 0;
     while ((1u << (entrySelector + 1)) <= n) entrySelector++;
@@ -123,11 +139,12 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
     }
     std::string flat;
     int dropped = 0;
-    bool madeStatic = BRStripVariationTables(out, flat, &dropped);
-    if (madeStatic) out.swap(flat);
+    bool droppedLayout = false;
+    bool trimmed = BRStripVariationTables(out, flat, &dropped, &droppedLayout);
+    if (trimmed) out.swap(flat);
     BRLog(@"WOFF2 -> TTF: %lu -> %lu bytes in %ld ms%@", (unsigned long)data.length, (unsigned long)out.size(),
           (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000),
-          madeStatic ? [NSString stringWithFormat:@" (variable font made static, %d tables dropped)", dropped] : @"");
+          trimmed ? [NSString stringWithFormat:@" (%d tables dropped%@)", dropped, droppedLayout ? @", heavy OpenType layout removed" : @""] : @"");
     return [NSData dataWithBytes:out.data() length:out.size()];
 }
 
@@ -137,8 +154,9 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
     std::string in((const char *)data.bytes, data.length);
     std::string flat;
     int dropped = 0;
-    if (!BRStripVariationTables(in, flat, &dropped)) return nil;
-    BRLog(@"Variable TTF made static: %lu -> %lu bytes, %d tables dropped", (unsigned long)in.size(), (unsigned long)flat.size(), dropped);
+    bool droppedLayout = false;
+    if (!BRStripVariationTables(in, flat, &dropped, &droppedLayout)) return nil;
+    BRLog(@"TTF trimmed: %lu -> %lu bytes, %d tables dropped%@", (unsigned long)in.size(), (unsigned long)flat.size(), dropped, droppedLayout ? @", heavy OpenType layout removed" : @"");
     return [NSData dataWithBytes:flat.data() length:flat.size()];
 }
 
