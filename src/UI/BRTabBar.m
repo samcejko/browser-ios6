@@ -93,6 +93,9 @@ static const CGFloat BRPlusWidth = 34;
             b.titleEdgeInsets = UIEdgeInsetsMake(0, selected ? 22 : 10, 0, 10);
         }
         [b addTarget:self action:@selector(tabTapped:) forControlEvents:UIControlEventTouchUpInside];
+        UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(tabPressed:)];
+        press.minimumPressDuration = 0.5;
+        [b addGestureRecognizer:press];
         [self.scrollView addSubview:b];
         [self.tabButtons addObject:b];
     }
@@ -133,6 +136,15 @@ static const CGFloat BRPlusWidth = 34;
 - (void)tabTapped:(UIButton *)button
 {
     [self.delegate tabBar:self didSelectTabAtIndex:(NSUInteger)button.tag];
+}
+
+- (void)tabPressed:(UILongPressGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    UIView *button = recognizer.view;
+    if ([self.delegate respondsToSelector:@selector(tabBar:didLongPressTabAtIndex:fromRect:)]) {
+        [self.delegate tabBar:self didLongPressTabAtIndex:(NSUInteger)button.tag fromRect:[self convertRect:button.bounds fromView:button]];
+    }
 }
 
 - (void)closeTapped

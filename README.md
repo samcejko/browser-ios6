@@ -46,8 +46,10 @@ the app around it:
   downloads with an "open in" menu, loading progress in the address field, padlock with connection
   details, search engine choice, text size, start page with most visited sites and bookmarks, favicons
   in the tab strip, long press on links (new tab, copy, share, save image, open in Safari), long press
-  on reload (desktop/mobile version, reload without cache), "Add bookmark" in the share sheet.
-- Planned: tab strip on iPhone, private browsing.
+  on reload (desktop/mobile version, reload without cache), "Add bookmark" in the share sheet,
+  private browsing (no history or cache, cookies restored afterwards), search suggestions from
+  DuckDuckGo while typing.
+- Planned: tab strip on iPhone.
 
 ## Building (GitHub Actions)
 

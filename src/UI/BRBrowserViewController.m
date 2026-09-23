@@ -29,6 +29,8 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) UITableView *suggestionsTable;           // history and bookmark matches while typing
 @property (nonatomic, strong) NSArray *suggestions;                    // dictionaries: title, url, kind
 @property (nonatomic, copy) NSString *pendingSuggestionText;           // last text scheduled for a search suggestion request
+@property (nonatomic) NSUInteger pressedTabIndex;                      // tab under the long press menu
+@property (nonatomic, strong) UIRefreshControl *refreshControl;         // pull to refresh on the page
 @property (nonatomic, strong) UIView *findBar;
 @property (nonatomic, strong) UIImageView *findBarBackground;
 @property (nonatomic, strong) UITextField *findField;
@@ -150,6 +152,9 @@ static const CGFloat BRControlHeight = 30;
     self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers
     self.webView.keyboardDisplayRequiresUserAction = NO;      // scripts may focus fields (search boxes, login forms)
     self.webView.mediaPlaybackAllowsAirPlay = YES;
+    self.refreshControl = [[UIRefreshControl alloc] init];
+    [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
+    [self.webView.scrollView addSubview:self.refreshControl];
     [self.view addSubview:self.webView];
 
     // top bar
@@ -600,6 +605,47 @@ static NSCache *BRFaviconCache(void)
     if (BRIsPad()) [self.urlField becomeFirstResponder];
 }
 
+- (void)tabBar:(BRTabBar *)bar didLongPressTabAtIndex:(NSUInteger)index fromRect:(CGRect)rect
+{
+    if (index >= self.tabs.count) return;
+    self.pressedTabIndex = index;
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:[self displayTitleForTab:self.tabs[index]] delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    [sheet addButtonWithTitle:L(@"Close tab")];
+    if (self.tabs.count > 1) [sheet addButtonWithTitle:L(@"Close other tabs")];
+    [sheet addButtonWithTitle:L(@"Duplicate tab")];
+    if (index == self.currentTab) [sheet addButtonWithTitle:L(@"Reload")];
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    sheet.tag = 102;
+    [sheet showFromRect:[self.view convertRect:rect fromView:bar] inView:self.view animated:YES];
+}
+
+- (void)handleTabMenuChoice:(NSString *)choice
+{
+    NSUInteger index = self.pressedTabIndex;
+    if (index >= self.tabs.count) return;
+    if ([choice isEqualToString:L(@"Close tab")]) {
+        [self closeTabAtIndex:index];
+    } else if ([choice isEqualToString:L(@"Close other tabs")]) {
+        BOOL keepingCurrent = (index == self.currentTab);
+        if (!keepingCurrent) [self storeCurrentTabState];
+        NSMutableDictionary *keep = self.tabs[index];
+        [self.tabs removeAllObjects];
+        [self.tabs addObject:keep];
+        self.currentTab = 0;
+        [self updateTabsButton];
+        [self saveTabs];
+        if (!keepingCurrent) [self openTabAtIndex:0];
+    } else if ([choice isEqualToString:L(@"Duplicate tab")]) {
+        if (self.tabs.count >= 12) return;
+        [self storeCurrentTabState];
+        NSDictionary *src = self.tabs[index];
+        [self.tabs insertObject:[@{ @"url": src[@"url"] ?: @"", @"title": src[@"title"] ?: @"" } mutableCopy] atIndex:index + 1];
+        [self openTabAtIndex:index + 1];
+    } else if ([choice isEqualToString:L(@"Reload")]) {
+        [self reload];
+    }
+}
+
 #pragma mark - Actions
 
 - (void)goBack
@@ -643,6 +689,12 @@ static NSCache *BRFaviconCache(void)
 {
     if (self.currentURL) [self loadURL:self.currentURL];
     else [self.webView reload];
+}
+
+- (void)pullToRefresh
+{
+    [self reload];
+    [self.refreshControl performSelector:@selector(endRefreshing) withObject:nil afterDelay:0.8];
 }
 
 - (void)stop
@@ -1372,6 +1424,10 @@ static NSCache *BRFaviconCache(void)
 - (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index
 {
     if (index < 0 || index == sheet.cancelButtonIndex) return;
+    if (sheet.tag == 102) {
+        [self handleTabMenuChoice:[sheet buttonTitleAtIndex:index]];
+        return;
+    }
     if (sheet.tag == 101) {
         NSString *pick = [sheet buttonTitleAtIndex:index];
         if ([pick isEqualToString:L(@"Reload without cache")]) {
