@@ -18,6 +18,7 @@ typedef void (^BRHTTPCompleteBlock)(NSError *error);
 @property (nonatomic) NSTimeInterval connectTimeout;        // seconds, default 20
 @property (nonatomic) NSTimeInterval readTimeout;           // seconds, default 60
 @property (nonatomic) BOOL verifyTLS;                       // default YES
+@property (nonatomic) BOOL highPriority;                    // main documents: never queue behind subresource connections
 
 @property (nonatomic, copy) BRHTTPHeadersBlock onHeaders;   // final status and headers (1xx responses are skipped)
 @property (nonatomic, copy) BRHTTPDataBlock onData;         // decoded body bytes; when nil the body is collected in responseBody

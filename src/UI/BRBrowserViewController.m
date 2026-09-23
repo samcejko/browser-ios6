@@ -3,6 +3,7 @@
 #import "BRSettingsViewController.h"
 #import "BRLibraryViewController.h"
 #import "BRTabsViewController.h"
+#import "BRTabBar.h"
 #import "BRTheme.h"
 #import "BRLibrary.h"
 #import "BRAdBlock.h"
@@ -11,11 +12,13 @@
 #import "BRSettings.h"
 
 static const CGFloat BRBarHeight = 44;
+static const CGFloat BRTabBarHeight = 30;
 static const CGFloat BRControlHeight = 30;
 
-@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate>
+@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate, BRTabBarDelegate>
 @property (nonatomic, strong) UIView *topBar;
 @property (nonatomic, strong) UIImageView *topBarBackground;
+@property (nonatomic, strong) BRTabBar *tabBar;              // iPad only: Safari style tab strip under the address bar
 @property (nonatomic, strong) UIView *bottomBar;             // iPhone only
 @property (nonatomic, strong) UIImageView *bottomBarBackground;
 @property (nonatomic, strong) UIWebView *webView;
@@ -111,12 +114,16 @@ static const CGFloat BRControlHeight = 30;
 
     self.backButton = [self iconButtonWithAction:@selector(goBack)];
     self.forwardButton = [self iconButtonWithAction:@selector(goForward)];
-    self.bookmarksButton = [self textButtonWithTitle:L(@"Bookmarks") action:@selector(showLibrary)];
+    self.bookmarksButton = [self iconButtonWithAction:@selector(showLibrary)];
+    self.bookmarksButton.accessibilityLabel = L(@"Bookmarks");
     self.tabsButton = [self textButtonWithTitle:L(@"Tabs") action:@selector(showTabs)];
     self.settingsButton = [self textButtonWithTitle:L(@"Settings") action:@selector(showSettings)];
 
     if (BRIsPad()) {
-        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.tabsButton, self.settingsButton]) [self.topBar addSubview:v];
+        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.settingsButton]) [self.topBar addSubview:v];
+        self.tabBar = [[BRTabBar alloc] initWithFrame:CGRectMake(0, BRBarHeight, self.view.bounds.size.width, BRTabBarHeight)];
+        self.tabBar.delegate = self;
+        [self.view addSubview:self.tabBar];
     } else {
         self.bottomBar = [[UIView alloc] initWithFrame:CGRectMake(0, self.view.bounds.size.height - BRBarHeight, self.view.bounds.size.width, BRBarHeight)];
         self.bottomBarBackground = [[UIImageView alloc] initWithFrame:self.bottomBar.bounds];
@@ -163,6 +170,8 @@ static const CGFloat BRControlHeight = 30;
         [b setTitleColor:[theme barTextColor] forState:UIControlStateNormal];
         [b setTitleShadowColor:[theme barTextShadowColor] forState:UIControlStateNormal];
     }
+    [self.bookmarksButton setImage:[theme bookmarksImage] forState:UIControlStateNormal];
+    [self.tabBar applyTheme];
     [self updateNavigationState];
     [self updateLoadingControls];
     [[UIApplication sharedApplication] setStatusBarStyle:[theme statusBarStyle] animated:NO];
@@ -183,13 +192,15 @@ static const CGFloat BRControlHeight = 30;
     CGFloat y = (BRBarHeight - BRControlHeight) / 2;
     CGFloat gap = 6, margin = 8;
     self.topBar.frame = CGRectMake(0, 0, width, BRBarHeight);
+    CGFloat tabsHeight = self.tabBar ? BRTabBarHeight : 0;
+    if (self.tabBar) self.tabBar.frame = CGRectMake(0, BRBarHeight, width, BRTabBarHeight);
     CGFloat bottom = self.bottomBar ? BRBarHeight : 0;
     if (self.bottomBar) self.bottomBar.frame = CGRectMake(0, b.size.height - bottom, width, bottom);
-    self.webView.frame = CGRectMake(0, BRBarHeight, width, b.size.height - BRBarHeight - bottom);
+    self.webView.frame = CGRectMake(0, BRBarHeight + tabsHeight, width, b.size.height - BRBarHeight - tabsHeight - bottom);
 
     // text buttons: on narrow screens use a smaller font so that everything fits
-    CGFloat available = width - 2 * margin - 2 * 40 - 4 * gap;
-    NSArray *textButtons = @[self.bookmarksButton, self.tabsButton, self.settingsButton];
+    CGFloat available = width - 2 * margin - 3 * 40 - 5 * gap;
+    NSArray *textButtons = BRIsPad() ? @[self.settingsButton] : @[self.tabsButton, self.settingsButton];
     if (BRIsPad()) available = width * 0.5;
     CGFloat fontSize = 13;
     for (;;) {
@@ -203,29 +214,21 @@ static const CGFloat BRControlHeight = 30;
         fontSize -= 1;
     }
 
+    self.backButton.frame = CGRectMake(margin, y, 40, BRControlHeight);
+    self.forwardButton.frame = CGRectMake(CGRectGetMaxX(self.backButton.frame) + gap, y, 40, BRControlHeight);
+    self.bookmarksButton.frame = CGRectMake(CGRectGetMaxX(self.forwardButton.frame) + gap, y, 40, BRControlHeight);
+    CGFloat x = width - margin;
+    for (UIButton *tb in BRIsPad() ? @[self.settingsButton] : @[self.settingsButton, self.tabsButton]) {
+        CGFloat w = [self widthForTextButton:tb];
+        x -= w;
+        tb.frame = CGRectMake(x, y, w, BRControlHeight);
+        x -= gap;
+    }
     if (BRIsPad()) {
-        self.backButton.frame = CGRectMake(margin, y, 40, BRControlHeight);
-        self.forwardButton.frame = CGRectMake(CGRectGetMaxX(self.backButton.frame) + gap, y, 40, BRControlHeight);
-        CGFloat x = width - margin;
-        for (UIButton *tb in @[self.settingsButton, self.tabsButton, self.bookmarksButton]) {
-            CGFloat w = [self widthForTextButton:tb];
-            x -= w;
-            tb.frame = CGRectMake(x, y, w, BRControlHeight);
-            x -= gap;
-        }
-        CGFloat fieldX = CGRectGetMaxX(self.forwardButton.frame) + gap + 2;
+        CGFloat fieldX = CGRectGetMaxX(self.bookmarksButton.frame) + gap + 2;
         self.urlField.frame = CGRectMake(fieldX, y, x - fieldX, BRControlHeight);
     } else {
         self.urlField.frame = CGRectMake(margin, y, width - 2 * margin, BRControlHeight);
-        self.backButton.frame = CGRectMake(margin, y, 40, BRControlHeight);
-        self.forwardButton.frame = CGRectMake(CGRectGetMaxX(self.backButton.frame) + gap, y, 40, BRControlHeight);
-        CGFloat x = width - margin;
-        for (UIButton *tb in @[self.settingsButton, self.tabsButton, self.bookmarksButton]) {
-            CGFloat w = [self widthForTextButton:tb];
-            x -= w;
-            tb.frame = CGRectMake(x, y, w, BRControlHeight);
-            x -= gap;
-        }
     }
 }
 
@@ -274,9 +277,21 @@ static const CGFloat BRControlHeight = 30;
     [d synchronize];
 }
 
+- (NSString *)displayTitleForTab:(NSDictionary *)tab
+{
+    NSString *title = tab[@"title"];
+    if ([title isKindOfClass:[NSString class]] && title.length) return title;
+    NSURL *url = [NSURL URLWithString:tab[@"url"] ?: @""];
+    if (url.host.length) return url.host;
+    return L(@"New tab");
+}
+
 - (void)updateTabsButton
 {
     [self.tabsButton setTitle:[NSString stringWithFormat:@"%@ %lu", L(@"Tabs"), (unsigned long)self.tabs.count] forState:UIControlStateNormal];
+    NSMutableArray *titles = [NSMutableArray arrayWithCapacity:self.tabs.count];
+    for (NSDictionary *t in self.tabs) [titles addObject:[self displayTitleForTab:t]];
+    [self.tabBar setTitles:titles selectedIndex:self.currentTab];
     [self.view setNeedsLayout];
 }
 
@@ -339,13 +354,7 @@ static const CGFloat BRControlHeight = 30;
     [self presentModal:tabsController];
 }
 
-- (void)tabsViewController:(BRTabsViewController *)controller didSelectTabAtIndex:(NSUInteger)index
-{
-    if (index == self.currentTab) return;
-    [self openTabAtIndex:index];
-}
-
-- (void)tabsViewController:(BRTabsViewController *)controller didCloseTabAtIndex:(NSUInteger)index
+- (void)closeTabAtIndex:(NSUInteger)index
 {
     if (index >= self.tabs.count) return;
     [self.tabs removeObjectAtIndex:index];
@@ -361,14 +370,54 @@ static const CGFloat BRControlHeight = 30;
         [self updateTabsButton];
         [self saveTabs];
     }
+}
+
+- (void)openNewTab
+{
+    if (self.tabs.count >= 12) return;
+    [self storeCurrentTabState];
+    [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
+    [self openTabAtIndex:self.tabs.count - 1];
+}
+
+- (void)tabsViewController:(BRTabsViewController *)controller didSelectTabAtIndex:(NSUInteger)index
+{
+    if (index == self.currentTab) return;
+    [self openTabAtIndex:index];
+}
+
+- (void)tabsViewController:(BRTabsViewController *)controller didCloseTabAtIndex:(NSUInteger)index
+{
+    [self closeTabAtIndex:index];
     controller.currentIndex = self.currentTab;
 }
 
 - (void)tabsViewControllerDidRequestNewTab:(BRTabsViewController *)controller
 {
+    [self openNewTab];
+}
+
+#pragma mark - BRTabBarDelegate (tab strip)
+
+- (void)tabBar:(BRTabBar *)bar didSelectTabAtIndex:(NSUInteger)index
+{
+    if (index == self.currentTab || index >= self.tabs.count) return;
+    [self.urlField resignFirstResponder];
     [self storeCurrentTabState];
-    [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
-    [self openTabAtIndex:self.tabs.count - 1];
+    [self openTabAtIndex:index];
+}
+
+- (void)tabBar:(BRTabBar *)bar didCloseTabAtIndex:(NSUInteger)index
+{
+    [self.urlField resignFirstResponder];
+    [self closeTabAtIndex:index];
+}
+
+- (void)tabBarDidRequestNewTab:(BRTabBar *)bar
+{
+    [self.urlField resignFirstResponder];
+    [self openNewTab];
+    if (BRIsPad()) [self.urlField becomeFirstResponder];
 }
 
 #pragma mark - Actions
@@ -414,6 +463,14 @@ static const CGFloat BRControlHeight = 30;
     if (!url) return;
     self.currentURL = url;
     [self updateAddressFieldWithURL:url];
+    if (self.currentTab < self.tabs.count) {
+        // show the new host in the tab strip right away; the title follows when the page has loaded
+        NSMutableDictionary *tab = self.tabs[self.currentTab];
+        NSString *oldHost = [[NSURL URLWithString:tab[@"url"] ?: @""].host lowercaseString];
+        if (![oldHost isEqualToString:[url.host lowercaseString]]) tab[@"title"] = @"";
+        tab[@"url"] = [BRSettings isHomeURL:url] ? @"" : (url.absoluteString ?: @"");
+        [self updateTabsButton];
+    }
     [self.webView loadRequest:[NSURLRequest requestWithURL:url cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:60]];
 }
 
@@ -593,6 +650,7 @@ static const CGFloat BRControlHeight = 30;
             tab[@"url"] = ([BRSettings isHomeURL:url] || !url) ? @"" : (url.absoluteString ?: @"");
             tab[@"title"] = title;
             [self saveTabs];
+            [self updateTabsButton];
         }
         BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],

@@ -550,14 +550,17 @@ out:
 - (void)run
 {
     // Limit the number of simultaneous connections (TLS handshakes are CPU heavy on this hardware).
-    dispatch_semaphore_t slots = BRConnectionSlots();
-    while (dispatch_semaphore_wait(slots, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC))) != 0) {
-        if (self.isCancelled) {
-            [self finishWithError:BRMakeError(BRErrorCancelled, L(@"Cancelled"))];
-            return;
+    // The main document of a page never waits: it must not sit behind stuck subresource loads.
+    if (!self.highPriority) {
+        dispatch_semaphore_t slots = BRConnectionSlots();
+        while (dispatch_semaphore_wait(slots, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC))) != 0) {
+            if (self.isCancelled) {
+                [self finishWithError:BRMakeError(BRErrorCancelled, L(@"Cancelled"))];
+                return;
+            }
         }
+        self.hasSlot = YES;
     }
-    self.hasSlot = YES;
     if (self.isCancelled) {
         [self finishWithError:BRMakeError(BRErrorCancelled, L(@"Cancelled"))];
         return;

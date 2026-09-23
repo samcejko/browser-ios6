@@ -256,6 +256,9 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     r.verifyTLS = [BRSettings verifyTLS];
     r.connectTimeout = 20;
     r.readTimeout = request.timeoutInterval > 0 ? MAX(20, request.timeoutInterval) : 60;
+    BOOL mainDocument = !request.mainDocumentURL || [url isEqual:request.mainDocumentURL];
+    r.highPriority = mainDocument;
+    if (mainDocument) BRLog(@"%@ %@ (main document)", method, url.absoluteString);
     __weak BRURLProtocol *weakSelf = self;
     r.onHeaders = ^(NSInteger status, NSDictionary *hdrs) { [weakSelf handleHeaders:status]; };
     r.onData = ^(NSData *chunk) { [weakSelf handleData:chunk]; };

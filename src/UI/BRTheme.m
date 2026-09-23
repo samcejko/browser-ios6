@@ -226,6 +226,157 @@ static UIImage *BRBarImage(UIColor *top, UIColor *bottom, UIColor *line, CGFloat
     }];
 }
 
+- (UIImage *)bookmarksImage
+{
+    return [self cachedImage:@"book" builder:^UIImage *{
+        CGSize size = CGSizeMake(26, 22);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+        UIColor *color = [self barTextColor];
+        [color setStroke];
+        [color setFill];
+        // two pages of an open book
+        UIBezierPath *left = [UIBezierPath bezierPath];
+        [left moveToPoint:CGPointMake(13, 5)];
+        [left addCurveToPoint:CGPointMake(2, 3) controlPoint1:CGPointMake(10, 2.5) controlPoint2:CGPointMake(6, 2)];
+        [left addLineToPoint:CGPointMake(2, 17)];
+        [left addCurveToPoint:CGPointMake(13, 19.5) controlPoint1:CGPointMake(6, 16) controlPoint2:CGPointMake(10, 16.5)];
+        [left closePath];
+        UIBezierPath *right = [UIBezierPath bezierPath];
+        [right moveToPoint:CGPointMake(13, 5)];
+        [right addCurveToPoint:CGPointMake(24, 3) controlPoint1:CGPointMake(16, 2.5) controlPoint2:CGPointMake(20, 2)];
+        [right addLineToPoint:CGPointMake(24, 17)];
+        [right addCurveToPoint:CGPointMake(13, 19.5) controlPoint1:CGPointMake(20, 16) controlPoint2:CGPointMake(16, 16.5)];
+        [right closePath];
+        left.lineWidth = 1.8;
+        right.lineWidth = 1.8;
+        left.lineJoinStyle = kCGLineJoinRound;
+        right.lineJoinStyle = kCGLineJoinRound;
+        [left stroke];
+        [right stroke];
+        // text lines
+        UIBezierPath *lines = [UIBezierPath bezierPath];
+        for (int i = 0; i < 3; i++) {
+            CGFloat y = 7.5 + i * 3.2;
+            [lines moveToPoint:CGPointMake(5, y + 0.6)];
+            [lines addLineToPoint:CGPointMake(10.5, y - 0.2)];
+            [lines moveToPoint:CGPointMake(15.5, y - 0.2)];
+            [lines addLineToPoint:CGPointMake(21, y + 0.6)];
+        }
+        lines.lineWidth = 1.0;
+        [[color colorWithAlphaComponent:0.7] setStroke];
+        [lines stroke];
+        // spine
+        UIBezierPath *spine = [UIBezierPath bezierPath];
+        [spine moveToPoint:CGPointMake(13, 5)];
+        [spine addLineToPoint:CGPointMake(13, 19.5)];
+        spine.lineWidth = 1.8;
+        [color setStroke];
+        [spine stroke];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return img;
+    }];
+}
+
+- (UIImage *)plusImage
+{
+    return [self cachedImage:@"plus" builder:^UIImage *{
+        CGSize size = CGSizeMake(18, 18);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        [p moveToPoint:CGPointMake(9, 3)];
+        [p addLineToPoint:CGPointMake(9, 15)];
+        [p moveToPoint:CGPointMake(3, 9)];
+        [p addLineToPoint:CGPointMake(15, 9)];
+        p.lineWidth = 2.5;
+        p.lineCapStyle = kCGLineCapRound;
+        [[self barTextColor] setStroke];
+        [p stroke];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return img;
+    }];
+}
+
+- (UIImage *)closeTabImage
+{
+    return [self cachedImage:@"closetab" builder:^UIImage *{
+        CGSize size = CGSizeMake(14, 14);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        [p moveToPoint:CGPointMake(3.5, 3.5)];
+        [p addLineToPoint:CGPointMake(10.5, 10.5)];
+        [p moveToPoint:CGPointMake(10.5, 3.5)];
+        [p addLineToPoint:CGPointMake(3.5, 10.5)];
+        p.lineWidth = 2.0;
+        p.lineCapStyle = kCGLineCapRound;
+        [[[self tabTextColorSelected:YES] colorWithAlphaComponent:0.75] setStroke];
+        [p stroke];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return img;
+    }];
+}
+
+- (UIImage *)tabBarBackgroundImage
+{
+    return [self cachedImage:@"tabbar" builder:^UIImage *{
+        if (self.dark) return BRBarImage(RGB(44, 44, 48), RGB(30, 30, 34), RGB(10, 10, 12), 30);
+        return BRBarImage(RGB(196, 199, 208), RGB(178, 181, 192), RGB(140, 143, 152), 30);
+    }];
+}
+
+- (UIColor *)tabTextColorSelected:(BOOL)selected
+{
+    if (self.dark) return selected ? RGB(240, 240, 242) : RGB(170, 170, 176);
+    return selected ? RGB(40, 40, 46) : RGB(70, 72, 80);
+}
+
+// A tab: rounded top corners, open at the bottom, filled with a gradient and outlined.
+- (UIImage *)tabImageSelected:(BOOL)selected
+{
+    NSString *key = selected ? @"tab-on" : @"tab-off";
+    return [self cachedImage:key builder:^UIImage *{
+        CGFloat w = 40, h = 30, r = 6;
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(w, h), NO, 0);
+        CGContextRef ctx = UIGraphicsGetCurrentContext();
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        [path moveToPoint:CGPointMake(0.5, h)];
+        [path addLineToPoint:CGPointMake(0.5, r + 0.5)];
+        [path addArcWithCenter:CGPointMake(r + 0.5, r + 0.5) radius:r startAngle:M_PI endAngle:M_PI * 1.5 clockwise:YES];
+        [path addLineToPoint:CGPointMake(w - r - 0.5, 0.5)];
+        [path addArcWithCenter:CGPointMake(w - r - 0.5, r + 0.5) radius:r startAngle:M_PI * 1.5 endAngle:0 clockwise:YES];
+        [path addLineToPoint:CGPointMake(w - 0.5, h)];
+        UIColor *top, *bottom, *stroke;
+        if (self.dark) {
+            top = selected ? RGB(64, 64, 70) : RGB(48, 48, 52);
+            bottom = selected ? RGB(52, 52, 58) : RGB(38, 38, 42);
+            stroke = RGB(14, 14, 16);
+        } else {
+            top = selected ? RGB(252, 252, 253) : RGB(214, 216, 224);
+            bottom = selected ? RGB(240, 240, 244) : RGB(196, 199, 208);
+            stroke = RGB(130, 133, 142);
+        }
+        CGContextSaveGState(ctx);
+        CGContextAddPath(ctx, path.CGPath);
+        CGContextClip(ctx);
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        NSArray *colors = @[ (id)top.CGColor, (id)bottom.CGColor ];
+        CGFloat locs[2] = { 0.0, 1.0 };
+        CGGradientRef grad = CGGradientCreateWithColors(cs, (__bridge CFArrayRef)colors, locs);
+        CGContextDrawLinearGradient(ctx, grad, CGPointMake(0, 0), CGPointMake(0, h), 0);
+        CGGradientRelease(grad);
+        CGColorSpaceRelease(cs);
+        CGContextRestoreGState(ctx);
+        [stroke setStroke];
+        path.lineWidth = 1.0;
+        [path stroke];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return [img resizableImageWithCapInsets:UIEdgeInsetsMake(r + 2, r + 2, 0, r + 2) resizingMode:UIImageResizingModeStretch];
+    }];
+}
+
 #pragma mark - UIKit
 
 - (void)applyToNavigationBar:(UINavigationBar *)bar

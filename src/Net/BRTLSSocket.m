@@ -24,6 +24,8 @@
 #include <poll.h>
 #include <pthread.h>
 #include <string.h>
+#include <strings.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -164,6 +166,445 @@ static void BRLoadCABundle(void)
     BRLog(@"CA bundle loaded: %ld roots (%d unparsable)", (long)n, ret);
 }
 
+#pragma mark - Name resolution
+
+// The system resolver can stall for a minute on some home routers (large CDN answers, odd AAAA
+// handling), and getaddrinfo cannot be interrupted. Lookups therefore run on a helper thread
+// with a deadline; once it passes, the name is asked directly from public resolvers over UDP.
+// Every answer is cached so a slow lookup happens at most once per host.
+
+#define BR_DNS_CACHE_SIZE 64
+#define BR_DNS_MAX_ADDRS 8
+#define BR_DNS_SYSTEM_WAIT_MS 4000        // patience with the system resolver before asking elsewhere
+#define BR_DNS_FALLBACK_TIMEOUT_MS 3000   // per public resolver
+#define BR_DNS_BUDGET_MS 15000            // total time for one lookup
+#define BR_DNS_DEFAULT_TTL 300
+#define BR_CONNECT_ATTEMPT_MS 6000        // per address when there are several
+#define BR_HANDSHAKE_TIMEOUT_MS 15000
+
+typedef struct {
+    char host[256];
+    struct sockaddr_storage addrs[BR_DNS_MAX_ADDRS];
+    int count;
+    time_t expires;
+    int used;
+} BRDNSEntry;
+
+static BRDNSEntry g_dns[BR_DNS_CACHE_SIZE];
+static pthread_mutex_t g_dnsLock = PTHREAD_MUTEX_INITIALIZER;
+
+static int BRDNSCacheGet(const char *host, struct sockaddr_storage *out, int maxOut)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_dnsLock);
+    for (int i = 0; i < BR_DNS_CACHE_SIZE; i++) {
+        BRDNSEntry *e = &g_dns[i];
+        if (!e->used || strcasecmp(e->host, host) != 0) continue;
+        if (time(NULL) > e->expires) {
+            e->used = 0;
+            break;
+        }
+        n = MIN(e->count, maxOut);
+        memcpy(out, e->addrs, sizeof(struct sockaddr_storage) * (size_t)n);
+        break;
+    }
+    pthread_mutex_unlock(&g_dnsLock);
+    return n;
+}
+
+static void BRDNSCachePut(const char *host, const struct sockaddr_storage *addrs, int count, time_t ttl)
+{
+    if (count <= 0 || strlen(host) >= sizeof(g_dns[0].host)) return;
+    pthread_mutex_lock(&g_dnsLock);
+    int slot = -1;
+    for (int i = 0; i < BR_DNS_CACHE_SIZE; i++) {
+        if (g_dns[i].used && strcasecmp(g_dns[i].host, host) == 0) { slot = i; break; }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < BR_DNS_CACHE_SIZE; i++) {
+            if (!g_dns[i].used) { slot = i; break; }
+        }
+    }
+    if (slot < 0) {
+        slot = 0;
+        for (int i = 1; i < BR_DNS_CACHE_SIZE; i++) {
+            if (g_dns[i].expires < g_dns[slot].expires) slot = i;
+        }
+    }
+    BRDNSEntry *e = &g_dns[slot];
+    strlcpy(e->host, host, sizeof(e->host));
+    e->count = MIN(count, BR_DNS_MAX_ADDRS);
+    memcpy(e->addrs, addrs, sizeof(struct sockaddr_storage) * (size_t)e->count);
+    e->expires = time(NULL) + ttl;
+    e->used = 1;
+    pthread_mutex_unlock(&g_dnsLock);
+}
+
+static const char *BRAddressString(const struct sockaddr_storage *sa, char *buf, size_t len)
+{
+    const void *src = NULL;
+    if (sa->ss_family == AF_INET) src = &((const struct sockaddr_in *)sa)->sin_addr;
+    else if (sa->ss_family == AF_INET6) src = &((const struct sockaddr_in6 *)sa)->sin6_addr;
+    if (!src || !inet_ntop(sa->ss_family, src, buf, (socklen_t)len)) strlcpy(buf, "?", len);
+    return buf;
+}
+
+// Copies an addrinfo list into sockaddr_storage slots, IPv4 first: home networks often hand out
+// IPv6 addresses without a working route, and each dead address costs a connect timeout.
+static int BRCopyAddrinfo(struct addrinfo *res, struct sockaddr_storage *out, int maxOut)
+{
+    int n = 0;
+    for (int pass = 0; pass < 2 && n < maxOut; pass++) {
+        for (struct addrinfo *ai = res; ai != NULL && n < maxOut; ai = ai->ai_next) {
+            BOOL v4 = ai->ai_family == AF_INET;
+            if ((pass == 0) != v4) continue;
+            if (ai->ai_addrlen > sizeof(struct sockaddr_storage)) continue;
+            memset(&out[n], 0, sizeof(out[n]));
+            memcpy(&out[n], ai->ai_addr, ai->ai_addrlen);
+            n++;
+        }
+    }
+    return n;
+}
+
+@interface BRDNSJob : NSObject {
+@public
+    struct sockaddr_storage addrs[BR_DNS_MAX_ADDRS];
+    int count;
+    int gai;
+}
+@property (nonatomic, copy) NSString *host;
+@property (nonatomic, strong) dispatch_semaphore_t done;
+@end
+
+@implementation BRDNSJob
+@end
+
+static void BRSystemLookupStart(BRDNSJob *job)
+{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @autoreleasepool {
+            const char *name = [job.host UTF8String] ?: "";
+            struct addrinfo hints;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_protocol = IPPROTO_TCP;
+            hints.ai_family = AF_INET;   // A records only first: the AAAA lookup alone can take seconds
+            struct addrinfo *res = NULL;
+            int gai = getaddrinfo(name, NULL, &hints, &res);
+            if (gai != 0 || !res) {
+                if (res) { freeaddrinfo(res); res = NULL; }
+                hints.ai_family = AF_UNSPEC;
+                gai = getaddrinfo(name, NULL, &hints, &res);
+            }
+            if (gai == 0 && res) {
+                job->count = BRCopyAddrinfo(res, job->addrs, BR_DNS_MAX_ADDRS);
+                if (job->count > 0) BRDNSCachePut(name, job->addrs, job->count, BR_DNS_DEFAULT_TTL);
+            }
+            job->gai = gai;
+            if (res) freeaddrinfo(res);
+            dispatch_semaphore_signal(job.done);
+        }
+    });
+}
+
+// Minimal DNS client: one A query over UDP to `server`. Returns the number of addresses written to
+// `out` (network byte order), 0 for an authoritative "no such name", -1 when the server did not answer.
+static int BRDNSEncodeName(const char *host, uint8_t *out, int maxOut)
+{
+    int o = 0;
+    const char *p = host;
+    while (*p) {
+        const char *dot = strchr(p, '.');
+        size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0 || len > 63 || o + (int)len + 2 >= maxOut) return -1;
+        out[o++] = (uint8_t)len;
+        memcpy(out + o, p, len);
+        o += (int)len;
+        if (!dot) break;
+        p = dot + 1;
+    }
+    out[o++] = 0;
+    return o;
+}
+
+static int BRDNSSkipName(const uint8_t *msg, int len, int off)
+{
+    int hops = 0;
+    for (;;) {
+        if (off >= len) return -1;
+        uint8_t l = msg[off];
+        if (l == 0) return off + 1;
+        if ((l & 0xC0) == 0xC0) return off + 1 < len ? off + 2 : -1;
+        off += 1 + l;
+        if (++hops > 128) return -1;
+    }
+}
+
+static int BRDNSQueryA(const char *server, const char *host, uint32_t *out, int maxOut, uint32_t *ttlOut, int timeoutMs)
+{
+    uint8_t q[512];
+    uint16_t id = (uint16_t)(arc4random() & 0xFFFF);
+    memset(q, 0, 12);
+    q[0] = (uint8_t)(id >> 8);
+    q[1] = (uint8_t)(id & 0xFF);
+    q[2] = 0x01;   // recursion desired
+    q[5] = 1;      // one question
+    int n = BRDNSEncodeName(host, q + 12, (int)sizeof(q) - 12 - 4);
+    if (n < 0) return -1;
+    int qlen = 12 + n;
+    q[qlen++] = 0; q[qlen++] = 1;   // type A
+    q[qlen++] = 0; q[qlen++] = 1;   // class IN
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_len = sizeof(sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(53);
+    inet_pton(AF_INET, server, &sa.sin_addr);
+    int result = -1;
+    if (sendto(fd, q, (size_t)qlen, 0, (struct sockaddr *)&sa, sizeof(sa)) == qlen) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (poll(&pfd, 1, timeoutMs) > 0) {
+            uint8_t r[2048];
+            ssize_t rl = recv(fd, r, sizeof(r), 0);
+            if (rl >= 12 && r[0] == q[0] && r[1] == q[1]) {
+                int rcode = r[3] & 0x0F;
+                int qd = (r[4] << 8) | r[5];
+                int an = (r[6] << 8) | r[7];
+                int off = 12;
+                for (int i = 0; i < qd && off >= 0; i++) {
+                    off = BRDNSSkipName(r, (int)rl, off);
+                    if (off >= 0) off += 4;
+                }
+                int count = 0;
+                uint32_t minTTL = 0;
+                for (int i = 0; i < an && off >= 0; i++) {
+                    off = BRDNSSkipName(r, (int)rl, off);
+                    if (off < 0 || off + 10 > (int)rl) break;
+                    int type = (r[off] << 8) | r[off + 1];
+                    uint32_t ttl = ((uint32_t)r[off + 4] << 24) | ((uint32_t)r[off + 5] << 16) | ((uint32_t)r[off + 6] << 8) | r[off + 7];
+                    int rdlen = (r[off + 8] << 8) | r[off + 9];
+                    off += 10;
+                    if (off + rdlen > (int)rl) break;
+                    if (type == 1 && rdlen == 4 && count < maxOut) {
+                        memcpy(&out[count++], r + off, 4);
+                        if (!minTTL || ttl < minTTL) minTTL = ttl;
+                    }
+                    off += rdlen;
+                }
+                if (ttlOut) *ttlOut = minTTL;
+                result = (rcode == 0 || rcode == 3) ? count : -1;   // NXDOMAIN counts as a real answer
+            }
+        }
+    }
+    close(fd);
+    return result;
+}
+
+static void BRStoreIPv4(struct sockaddr_storage *out, uint32_t ip)
+{
+    struct sockaddr_in *sin = (struct sockaddr_in *)out;
+    memset(out, 0, sizeof(*out));
+    sin->sin_len = sizeof(*sin);
+    sin->sin_family = AF_INET;
+    memcpy(&sin->sin_addr, &ip, 4);
+}
+
+// Waits for the system lookup in short slices so that a cancel is noticed. Returns YES when it finished.
+static BOOL BRWaitForLookup(BRDNSJob *job, int *waitedMs, int untilMs, volatile BOOL *cancelled)
+{
+    while (*waitedMs < untilMs) {
+        if (cancelled && *cancelled) return NO;
+        if (dispatch_semaphore_wait(job.done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC))) == 0) return YES;
+        *waitedMs += 250;
+    }
+    return NO;
+}
+
+// Resolves `host` into up to `maxOut` addresses (IPv4 first, ports unset). Returns the count; 0 with `error` set.
+static int BRResolveHost(NSString *host, struct sockaddr_storage *out, int maxOut, volatile BOOL *cancelled, NSError **error)
+{
+    const char *name = [host UTF8String] ?: "";
+    struct in_addr a4;
+    struct in6_addr a6;
+    NSString *bare = host;
+    if ([bare hasPrefix:@"["] && [bare hasSuffix:@"]"] && bare.length > 2) bare = [bare substringWithRange:NSMakeRange(1, bare.length - 2)];
+    if (inet_pton(AF_INET, name, &a4) == 1) {
+        BRStoreIPv4(&out[0], a4.s_addr);
+        return 1;
+    }
+    if (inet_pton(AF_INET6, [bare UTF8String] ?: "", &a6) == 1) {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&out[0];
+        memset(sin6, 0, sizeof(*sin6));
+        sin6->sin6_len = sizeof(*sin6);
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_addr = a6;
+        return 1;
+    }
+    int n = BRDNSCacheGet(name, out, maxOut);
+    if (n > 0) return n;
+
+    CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    BRDNSJob *job = [[BRDNSJob alloc] init];
+    job.host = host;
+    job.done = dispatch_semaphore_create(0);
+    BRSystemLookupStart(job);
+
+    // 1. the system resolver, briefly
+    int waited = 0;
+    BOOL finished = BRWaitForLookup(job, &waited, BR_DNS_SYSTEM_WAIT_MS, cancelled);
+    if (cancelled && *cancelled) {
+        BRSetError(error, BRErrorCancelled, L(@"Cancelled"));
+        return 0;
+    }
+    if (finished && job->count > 0) {
+        n = MIN(job->count, maxOut);
+        memcpy(out, job->addrs, sizeof(struct sockaddr_storage) * (size_t)n);
+        return n;
+    }
+
+    // 2. public resolvers directly (also when the system resolver reported a failure: routers lie)
+    static const char *servers[] = { "8.8.8.8", "1.1.1.1" };
+    for (int s = 0; s < 2; s++) {
+        if (cancelled && *cancelled) {
+            BRSetError(error, BRErrorCancelled, L(@"Cancelled"));
+            return 0;
+        }
+        uint32_t ips[BR_DNS_MAX_ADDRS];
+        uint32_t ttl = 0;
+        int got = BRDNSQueryA(servers[s], name, ips, BR_DNS_MAX_ADDRS, &ttl, BR_DNS_FALLBACK_TIMEOUT_MS);
+        if (got > 0) {
+            n = MIN(got, maxOut);
+            for (int i = 0; i < n; i++) BRStoreIPv4(&out[i], ips[i]);
+            time_t keep = ttl ? (time_t)MIN(ttl, 3600u) : BR_DNS_DEFAULT_TTL;
+            BRDNSCachePut(name, out, n, MAX(keep, (time_t)30));
+            BRLog(@"DNS: %@ resolved via %s in %ld ms (%d addresses; system resolver %@)", host, servers[s],
+                  (long)((CFAbsoluteTimeGetCurrent() - started) * 1000), n, finished ? @"failed" : @"still busy");
+            return n;
+        }
+        if (got == 0) {
+            BRSetError(error, BRErrorDNS, [NSString stringWithFormat:L(@"Could not resolve %@ (%s). Is the device online?"), host, "no such host"]);
+            return 0;
+        }
+    }
+
+    // 3. maybe the system resolver is merely slow: give it the rest of the budget
+    if (!finished) finished = BRWaitForLookup(job, &waited, BR_DNS_BUDGET_MS, cancelled);
+    if (cancelled && *cancelled) {
+        BRSetError(error, BRErrorCancelled, L(@"Cancelled"));
+        return 0;
+    }
+    if (finished && job->count > 0) {
+        n = MIN(job->count, maxOut);
+        memcpy(out, job->addrs, sizeof(struct sockaddr_storage) * (size_t)n);
+        BRLog(@"DNS: %@ resolved by the system resolver after %ld ms", host, (long)((CFAbsoluteTimeGetCurrent() - started) * 1000));
+        return n;
+    }
+    const char *why = !finished ? "timed out" : (job->gai != 0 ? gai_strerror(job->gai) : "no addresses");
+    BRLog(@"DNS: %@ failed after %ld ms: %s", host, (long)((CFAbsoluteTimeGetCurrent() - started) * 1000), why);
+    BRSetError(error, BRErrorDNS, [NSString stringWithFormat:L(@"Could not resolve %@ (%s). Is the device online?"), host, why]);
+    return 0;
+}
+
+#pragma mark - TCP connect with timeout
+
+static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *cancelled, NSError **error)
+{
+    struct sockaddr_storage addrs[BR_DNS_MAX_ADDRS];
+    int n = BRResolveHost(host, addrs, BR_DNS_MAX_ADDRS, cancelled, error);
+    if (n <= 0) return -1;
+
+    // Several candidates: each one gets a short slice of the budget so that a dead address does
+    // not exhaust WebKit's patience; the poll runs in short steps so that a cancel is noticed.
+    CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + timeoutMs / 1000.0;
+    int fd = -1;
+    int lastErr = 0;
+    char abuf[64];
+    for (int idx = 0; idx < n; idx++) {
+        struct sockaddr_storage sa = addrs[idx];
+        socklen_t salen;
+        if (sa.ss_family == AF_INET) {
+            ((struct sockaddr_in *)&sa)->sin_port = htons((uint16_t)port);
+            salen = sizeof(struct sockaddr_in);
+        } else if (sa.ss_family == AF_INET6) {
+            ((struct sockaddr_in6 *)&sa)->sin6_port = htons((uint16_t)port);
+            salen = sizeof(struct sockaddr_in6);
+        } else {
+            continue;
+        }
+        int remainingMs = (int)((deadline - CFAbsoluteTimeGetCurrent()) * 1000);
+        if (remainingMs <= 0) {
+            lastErr = ETIMEDOUT;
+            break;
+        }
+        int attemptMs = idx < n - 1 ? MIN(remainingMs, BR_CONNECT_ATTEMPT_MS) : remainingMs;
+        fd = socket(sa.ss_family, SOCK_STREAM, IPPROTO_TCP);
+        if (fd < 0) { lastErr = errno; continue; }
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = connect(fd, (struct sockaddr *)&sa, salen);
+        if (rc != 0 && errno != EINPROGRESS) {
+            lastErr = errno;
+            close(fd);
+            fd = -1;
+            continue;
+        }
+        if (rc != 0) {
+            int elapsed = 0, pr = 0;
+            while (elapsed < attemptMs) {
+                if (cancelled && *cancelled) {
+                    close(fd);
+                    BRSetError(error, BRErrorCancelled, L(@"Cancelled"));
+                    return -1;
+                }
+                int slice = MIN(250, attemptMs - elapsed);
+                struct pollfd pfd;
+                pfd.fd = fd;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
+                pr = poll(&pfd, 1, slice);
+                if (pr != 0) break;
+                elapsed += slice;
+            }
+            if (pr <= 0) {
+                lastErr = (pr == 0) ? ETIMEDOUT : errno;
+                BRLog(@"connect %@ [%s]:%d: %s after %d ms", host, BRAddressString(&sa, abuf, sizeof(abuf)), port,
+                      pr == 0 ? "timed out" : strerror(lastErr), attemptMs);
+                close(fd);
+                fd = -1;
+                continue;
+            }
+            int soerr = 0;
+            socklen_t slen = sizeof(soerr);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
+            if (soerr != 0) {
+                lastErr = soerr;
+                BRLog(@"connect %@ [%s]:%d: %s", host, BRAddressString(&sa, abuf, sizeof(abuf)), port, strerror(soerr));
+                close(fd);
+                fd = -1;
+                continue;
+            }
+        }
+        fcntl(fd, F_SETFL, flags);   // back to blocking mode
+        break;
+    }
+    if (fd < 0) {
+        NSString *why = lastErr == ETIMEDOUT ? L(@"connection timed out") : [NSString stringWithUTF8String:strerror(lastErr)];
+        BRSetError(error, lastErr == ETIMEDOUT ? BRErrorTimeout : BRErrorConnect,
+                   [NSString stringWithFormat:L(@"Could not connect to %@: %@"), host, why]);
+    }
+    return fd;
+}
+
 @implementation BRTLSSocket {
     mbedtls_net_context _net;
     mbedtls_ssl_context _ssl;
@@ -221,93 +662,6 @@ static void BRLoadCABundle(void)
     [self close];
 }
 
-#pragma mark - TCP connect with timeout
-
-static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error)
-{
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    char portStr[16];
-    snprintf(portStr, sizeof(portStr), "%d", port);
-    struct addrinfo *res = NULL;
-    // IPv4 only first: on networks with a broken IPv6 path the AAAA lookup alone can take many seconds.
-    hints.ai_family = AF_INET;
-    int gai = getaddrinfo([host UTF8String], portStr, &hints, &res);
-    if (gai != 0 || !res) {
-        if (res) { freeaddrinfo(res); res = NULL; }
-        hints.ai_family = AF_UNSPEC;
-        gai = getaddrinfo([host UTF8String], portStr, &hints, &res);
-    }
-    if (gai != 0 || !res) {
-        BRSetError(error, BRErrorDNS, [NSString stringWithFormat:L(@"Could not resolve %@ (%s). Is the device online?"), host, gai_strerror(gai)]);
-        return -1;
-    }
-    // IPv4 first: home networks often hand out IPv6 addresses without a working route, and every
-    // IPv6 attempt would otherwise eat the whole connect timeout. With several candidates each one
-    // gets a short timeout so that a dead address does not exhaust WebKit's patience.
-    int count = 0;
-    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) count++;
-    struct addrinfo **order = (struct addrinfo **)calloc((size_t)count, sizeof(struct addrinfo *));
-    int n = 0;
-    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) if (ai->ai_family == AF_INET) order[n++] = ai;
-    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) if (ai->ai_family != AF_INET) order[n++] = ai;
-    int perAttemptMs = count > 1 ? MIN(timeoutMs, 6000) : timeoutMs;
-    int fd = -1;
-    int lastErr = 0;
-    for (int idx = 0; idx < n; idx++) {
-        struct addrinfo *ai = order[idx];
-        if (idx == n - 1) perAttemptMs = timeoutMs;   // the last candidate may use the full budget
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) { lastErr = errno; continue; }
-        int one = 1;
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
-        if (rc != 0 && errno != EINPROGRESS) {
-            lastErr = errno;
-            close(fd);
-            fd = -1;
-            continue;
-        }
-        if (rc != 0) {
-            struct pollfd pfd;
-            pfd.fd = fd;
-            pfd.events = POLLOUT;
-            pfd.revents = 0;
-            int pr = poll(&pfd, 1, perAttemptMs);
-            if (pr <= 0) {
-                lastErr = (pr == 0) ? ETIMEDOUT : errno;
-                close(fd);
-                fd = -1;
-                continue;
-            }
-            int soerr = 0;
-            socklen_t slen = sizeof(soerr);
-            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
-            if (soerr != 0) {
-                lastErr = soerr;
-                close(fd);
-                fd = -1;
-                continue;
-            }
-        }
-        fcntl(fd, F_SETFL, flags);   // back to blocking mode
-        break;
-    }
-    free(order);
-    freeaddrinfo(res);
-    if (fd < 0) {
-        NSString *why = lastErr == ETIMEDOUT ? L(@"connection timed out") : [NSString stringWithUTF8String:strerror(lastErr)];
-        BRSetError(error, lastErr == ETIMEDOUT ? BRErrorTimeout : BRErrorConnect,
-                   [NSString stringWithFormat:L(@"Could not connect to %@: %@"), host, why]);
-    }
-    return fd;
-}
-
 #pragma mark - TLS
 
 - (BOOL)connectToHost:(NSString *)host port:(int)port verify:(BOOL)verify
@@ -315,7 +669,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
 {
     _readTimeoutMs = (uint32_t)readMs;
     if (self.plain) {
-        int fd = BRConnectTCP(host, port, connectMs, error);
+        int fd = BRConnectTCP(host, port, connectMs, &_cancelled, error);
         if (fd < 0) return NO;
         @synchronized (self) {
             _net.fd = fd;
@@ -348,7 +702,9 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
         mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_NONE);
     }
     mbedtls_ssl_conf_rng(&_conf, mbedtls_ctr_drbg_random, &_ctr);
-    mbedtls_ssl_conf_read_timeout(&_conf, (uint32_t)readMs);
+    // A server that accepts the TCP connection but never answers the ClientHello must not hold
+    // the load for the whole read timeout; the real read timeout is applied after the handshake.
+    mbedtls_ssl_conf_read_timeout(&_conf, (uint32_t)MIN(readMs, BR_HANDSHAKE_TIMEOUT_MS));
 #if defined(MBEDTLS_SSL_SESSION_TICKETS)
     mbedtls_ssl_conf_session_tickets(&_conf, MBEDTLS_SSL_SESSION_TICKETS_ENABLED);
 #endif
@@ -364,7 +720,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
     BRSessionKey(host, port, _sessionKey, sizeof(_sessionKey));
     BOOL resuming = BRSessionLoad(_sessionKey, &_ssl);
 
-    int fd = BRConnectTCP(host, port, connectMs, error);
+    int fd = BRConnectTCP(host, port, connectMs, &_cancelled, error);
     if (fd < 0) return NO;
     @synchronized (self) {
         _net.fd = fd;
@@ -400,6 +756,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
         return NO;
     }
     _connected = YES;
+    mbedtls_ssl_conf_read_timeout(&_conf, (uint32_t)readMs);
     BRSessionStore(_sessionKey, &_ssl);
     return YES;
 }

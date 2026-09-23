@@ -1,4 +1,5 @@
 #import "BRAppDelegate.h"
+#import <QuartzCore/QuartzCore.h>
 #import "BRBrowserViewController.h"
 #import "BRTheme.h"
 #import "BRURLProtocol.h"
@@ -60,6 +61,18 @@
     if (!target.length) return YES;
     if ([target isEqualToString:@"home"]) {
         [self.browserViewController goHome];
+        return YES;
+    }
+    if ([target isEqualToString:@"snapshot"]) {
+        // browser:snapshot writes the screen to tmp/screen.png (checking the UI over SSH)
+        UIView *view = self.browserViewController.view;
+        UIGraphicsBeginImageContextWithOptions(view.bounds.size, YES, 1.0);
+        [view.layer renderInContext:UIGraphicsGetCurrentContext()];
+        UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"screen.png"];
+        BOOL ok = [UIImagePNGRepresentation(image) writeToFile:path atomically:YES];
+        BRLog(@"Snapshot %@: %@", ok ? @"written to" : @"failed for", path);
         return YES;
     }
     if ([target rangeOfString:@"://"].location == NSNotFound) target = [@"https://" stringByAppendingString:target];

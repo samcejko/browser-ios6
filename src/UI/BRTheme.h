@@ -27,6 +27,12 @@ extern NSString * const BRThemeDidChangeNotification;
 - (UIImage *)arrowImagePointingLeft:(BOOL)left enabled:(BOOL)enabled;
 - (UIImage *)reloadImage;
 - (UIImage *)stopImage;
+- (UIImage *)bookmarksImage;                  // open book, like Safari
+- (UIImage *)plusImage;
+- (UIImage *)closeTabImage;
+- (UIImage *)tabBarBackgroundImage;
+- (UIImage *)tabImageSelected:(BOOL)selected; // stretchable tab shape
+- (UIColor *)tabTextColorSelected:(BOOL)selected;
 
 // Applying to UIKit
 - (void)applyToNavigationBar:(UINavigationBar *)bar;
