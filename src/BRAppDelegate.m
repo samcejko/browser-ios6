@@ -8,6 +8,7 @@
 #import "BRConnectionPool.h"
 #import "BRCSSRewriter.h"
 #import "BRJSEngine.h"
+#import "BRWatchdog.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -38,6 +39,7 @@
 
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
     [BRURLProtocol registerProtocol];
+    [BRWatchdog start];
     [BRTLSSocket warmUp];
     [BRAdBlock warmUp];
     [BRCSSRewriter warmUp];

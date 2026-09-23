@@ -1,0 +1,104 @@
+#import "BRWatchdog.h"
+#import "BRCommon.h"
+
+#include <execinfo.h>
+#include <pthread.h>
+#include <signal.h>
+#include <dlfcn.h>
+#include <string.h>
+
+static const NSTimeInterval BRWatchdogInterval = 2.0;     // how often the main thread is pinged
+static const NSTimeInterval BRWatchdogPatience = 6.0;     // silence before a backtrace is taken
+static const int BRWatchdogMaxFrames = 48;
+
+static pthread_t g_mainThread;
+static void *g_frames[BRWatchdogMaxFrames];
+static volatile int g_frameCount = -1;                    // -1: no capture pending, >= 0: captured
+
+static void BRWatchdogSignalHandler(int sig)
+{
+    // runs on the main thread (async-signal-unsafe calls are avoided here; formatting happens elsewhere)
+    g_frameCount = backtrace(g_frames, BRWatchdogMaxFrames);
+}
+
+@implementation BRWatchdog
+
++ (void)start
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_mainThread = pthread_self();
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = BRWatchdogSignalHandler;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGUSR2, &sa, NULL);
+        NSThread *t = [[NSThread alloc] initWithTarget:self selector:@selector(run) object:nil];
+        t.name = @"com.samcejko.browser.watchdog";
+        [t start];
+    });
+}
+
++ (NSString *)formatFrames:(void **)frames count:(int)count
+{
+    NSMutableString *s = [NSMutableString string];
+    for (int i = 0; i < count; i++) {
+        Dl_info info;
+        const char *image = "?";
+        const char *symbol = NULL;
+        unsigned long offset = 0;
+        if (dladdr(frames[i], &info) && info.dli_fname) {
+            const char *slash = strrchr(info.dli_fname, '/');
+            image = slash ? slash + 1 : info.dli_fname;
+            if (info.dli_sname) {
+                symbol = info.dli_sname;
+                offset = (unsigned long)((char *)frames[i] - (char *)info.dli_saddr);
+            }
+        }
+        if (symbol) [s appendFormat:@"\n  %2d %-22s %s + %lu", i, image, symbol, offset];
+        else [s appendFormat:@"\n  %2d %-22s %p", i, image, frames[i]];
+    }
+    return s;
+}
+
++ (void)run
+{
+    @autoreleasepool {
+        __block CFAbsoluteTime lastPong = CFAbsoluteTimeGetCurrent();
+        BOOL reported = NO;
+        for (;;) {
+            [NSThread sleepForTimeInterval:BRWatchdogInterval];
+            dispatch_async(dispatch_get_main_queue(), ^{ lastPong = CFAbsoluteTimeGetCurrent(); });
+            CFAbsoluteTime silence = CFAbsoluteTimeGetCurrent() - lastPong;
+            if (silence < BRWatchdogPatience) {
+                reported = NO;
+                continue;
+            }
+            if (reported) continue;   // one report per stall (plus a second one 30 s later)
+            reported = YES;
+            g_frameCount = -1;
+            pthread_kill(g_mainThread, SIGUSR2);
+            for (int i = 0; i < 50 && g_frameCount < 0; i++) [NSThread sleepForTimeInterval:0.02];
+            if (g_frameCount < 0) {
+                BRLog(@"Main thread silent for %ld s (no backtrace)", (long)silence);
+                continue;
+            }
+            void *frames[BRWatchdogMaxFrames];
+            int count = g_frameCount;
+            memcpy(frames, g_frames, sizeof(void *) * (size_t)count);
+            BRLog(@"Main thread silent for %ld s, backtrace:%@", (long)silence, [self formatFrames:frames count:count]);
+            // a second sample tells whether it is stuck in one place or grinding through work
+            [NSThread sleepForTimeInterval:3.0];
+            g_frameCount = -1;
+            pthread_kill(g_mainThread, SIGUSR2);
+            for (int i = 0; i < 50 && g_frameCount < 0; i++) [NSThread sleepForTimeInterval:0.02];
+            if (g_frameCount >= 0) {
+                count = g_frameCount;
+                memcpy(frames, g_frames, sizeof(void *) * (size_t)count);
+                BRLog(@"Second sample:%@", [self formatFrames:frames count:count]);
+            }
+        }
+    }
+}
+
+@end
