@@ -1154,6 +1154,7 @@ static const CGFloat BRControlHeight = 30;
         [sheet addButtonWithTitle:L(@"Open in new tab")];
         [sheet addButtonWithTitle:L(@"Copy link")];
         [sheet addButtonWithTitle:L(@"Share link")];
+        [sheet addButtonWithTitle:L(@"Open in Safari")];
     }
     if (img.length) {
         [sheet addButtonWithTitle:L(@"Open image")];
@@ -1190,6 +1191,7 @@ static const CGFloat BRControlHeight = 30;
     else if ([choice isEqualToString:L(@"Open in new tab")] && link) [self openURLInNewTab:link];
     else if ([choice isEqualToString:L(@"Copy link")] && link) { pasteboard.string = href; }
     else if ([choice isEqualToString:L(@"Share link")] && link) [self shareURL:link title:text fromRect:self.shareButton.frame inView:self.shareButton.superview];
+    else if ([choice isEqualToString:L(@"Open in Safari")] && link) [[UIApplication sharedApplication] openURL:link];
     else if ([choice isEqualToString:L(@"Open image")] && image) [self loadURL:image];
     else if ([choice isEqualToString:L(@"Copy image address")] && image) { pasteboard.string = img; }
     else if ([choice isEqualToString:L(@"Save image")] && image) [self saveImageAtURL:image];
@@ -1220,6 +1222,11 @@ static const CGFloat BRControlHeight = 30;
             BRLog(@"New tab requested by the page: %@", target.absoluteString);
             [self openURLInNewTab:target];
         }
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brlog"]) {
+        NSString *spec = url.absoluteString.length > 6 ? [url.absoluteString substringFromIndex:6] : @"";
+        BRLog(@"Page: %@", [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec);
         return NO;
     }
     if ([scheme isEqualToString:@"brshare"]) {

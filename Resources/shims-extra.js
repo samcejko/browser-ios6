@@ -122,6 +122,14 @@
             if (openInNewTab(a.href)) e.preventDefault();
         }
     }, false);
+    // Uncaught errors of the page reach the app's log (brlog: scheme) so that broken sites can be diagnosed over SSH
+    var reportedErrors = 0;
+    window.addEventListener('error', function (e) {
+        if (reportedErrors >= 5) return;
+        reportedErrors++;
+        var src = (e.filename || '').split('/').slice(-1)[0];
+        sendToApp('brlog', 'JS error: ' + (e.message || 'error') + ' @ ' + src + ':' + (e.lineno || 0) + ' page ' + location.hostname);
+    }, false);
     // Web Share goes to the app's share sheet
     if (!navigator.share) {
         navigator.share = function (data) {
@@ -730,6 +738,10 @@
         };
         try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) {}
         if (!window.crypto.subtle) {
+            // the native Crypto instance is sealed; its prototype accepts new properties
+            try { Object.defineProperty(Object.getPrototypeOf(window.crypto), 'subtle', { get: function () { return subtle; }, configurable: true }); } catch (e4) {}
+        }
+        if (!window.crypto.subtle) {
             // the native Crypto object refuses new properties: replace it with a wrapper
             var nativeCrypto = window.crypto;
             var cryptoWrapper = {
@@ -1090,7 +1102,7 @@
         defineElementClass('datalist', 'HTMLDataListElement', function (p) {
             try { Object.defineProperty(p, 'options', { get: function () { return this.getElementsByTagName('option'); }, configurable: true }); } catch (e) {}
         });
-        defineElementClass('menu', 'HTMLMenuElement', function (p) {
+        var defineMenuProps = function (p) {
             try {
                 Object.defineProperty(p, 'type', {
                     get: function () { var t = (this.getAttribute('type') || '').toLowerCase(); return t === 'context' ? 'context' : 'toolbar'; },
@@ -1099,7 +1111,9 @@
                 });
             } catch (e) {}
             attrProp(p, 'label');
-        });
+        };
+        if (window.HTMLMenuElement && window.HTMLMenuElement.prototype && !('type' in document.createElement('menu'))) defineMenuProps(window.HTMLMenuElement.prototype);
+        else defineElementClass('menu', 'HTMLMenuElement', defineMenuProps);
         defineElementClass('track', 'HTMLTrackElement', function (p) {
             attrProp(p, 'kind'); attrProp(p, 'src'); attrProp(p, 'srclang'); attrProp(p, 'label');
             defineBoolAttrProp(p, 'default');

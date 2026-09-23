@@ -30,7 +30,17 @@ the app around it:
   back/forward chevrons, book icon for bookmarks and history, Safari-like tab strip under the address
   bar on iPad (tab list with snapshots on iPhone), settings with a "page version" choice that changes
   the User-Agent (iOS 6, desktop Safari 6, modern iPad).
-- Planned: sticky/object-fit polyfills, favicons in tabs, tab strip on iPhone.
+- **Web platform shims** (`Resources/shims.js`, `shims-extra.js`, ES5 only): pointer events, page
+  visibility, fullscreen, streams, shadow DOM emulated in the light DOM, custom elements (v0 and v1),
+  `<dialog>`, `<picture>`/srcset, `<progress>`/`<meter>`, WebRTC/speech/payment/credential stubs that
+  fail cleanly, SHA-1/SHA-256 for `crypto.subtle.digest`, canvas helpers, a lazily loaded
+  WebSQL-backed IndexedDB, `window.open` and `target="_blank"` into new tabs, `navigator.share`.
+  html5test.com went from 290 to 458 of 555 points with these (the remaining points are ES2015
+  syntax, codecs and other things an old engine cannot fake).
+- **Everyday browser features**: address suggestions from history and bookmarks, find on page,
+  downloads with an "open in" menu, loading progress in the address field, padlock with connection
+  details, search engine choice, text size, start page with most visited sites and bookmarks.
+- Planned: favicons in tabs, tab strip on iPhone, private browsing.
 
 ## Building (GitHub Actions)
 
