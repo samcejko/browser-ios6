@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Browser</title>
+<style>
+body { font-family: Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background: #f2f2f5; color: #333; }
+h1 { font-size: 26px; margin: 10px 0 16px; text-align: center; color: #2b5fb3; }
+form { text-align: center; margin-bottom: 20px; }
+input[type=text] { width: 80%; max-width: 420px; font-size: 17px; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; -webkit-appearance: none; }
+input[type=submit] { font-size: 17px; padding: 8px 14px; margin-top: 8px; border: 0; border-radius: 6px; background: #4a90e2; color: #fff; }
+.links { list-style: none; padding: 0; margin: 0 auto; max-width: 480px; }
+.links li { margin: 0; }
+.links a { display: block; padding: 12px 14px; background: #fff; border: 1px solid #ddd; margin-bottom: -1px; color: #222; text-decoration: none; font-size: 17px; }
+.links li:first-child a { border-radius: 8px 8px 0 0; }
+.links li:last-child a { border-radius: 0 0 8px 8px; }
+.links a span { color: #888; font-size: 13px; display: block; }
+.info { font-size: 13px; color: #777; text-align: center; margin-top: 20px; word-break: break-word; }
+</style>
+</head>
+<body>
+<h1>Browser</h1>
+<form action="https://lite.duckduckgo.com/lite/" method="get">
+  <input type="text" name="q" placeholder="Hledat na DuckDuckGo" autocorrect="off" autocapitalize="off">
+  <input type="submit" value="Hledat">
+</form>
+<ul class="links">
+  <li><a href="https://cs.wikipedia.org/">Wikipedie<span>cs.wikipedia.org</span></a></li>
+  <li><a href="https://lite.duckduckgo.com/lite/">DuckDuckGo Lite<span>lite.duckduckgo.com</span></a></li>
+  <li><a href="https://news.ycombinator.com/">Hacker News<span>news.ycombinator.com</span></a></li>
+  <li><a href="https://old.reddit.com/">Reddit<span>old.reddit.com</span></a></li>
+  <li><a href="https://www.idnes.cz/">iDNES<span>www.idnes.cz</span></a></li>
+  <li><a href="https://www.seznam.cz/">Seznam<span>www.seznam.cz</span></a></li>
+  <li><a href="https://github.com/">GitHub<span>github.com</span></a></li>
+  <li><a href="https://valid-isrgrootx1.letsencrypt.org/">Test: certifikát Let's Encrypt<span>valid-isrgrootx1.letsencrypt.org</span></a></li>
+  <li><a href="https://www.howsmyssl.com/a/check">Test: TLS spojení (JSON)<span>www.howsmyssl.com</span></a></li>
+</ul>
+<p class="info" id="info">JavaScript se měří…</p>
+<script>
+(function () {
+  var t0 = new Date().getTime();
+  var x = 0;
+  for (var i = 0; i < 3000000; i++) { x = (x + i * 7) % 1000003; }
+  var ms = new Date().getTime() - t0;
+  var jit = ms < 250 ? 'JIT je pravděpodobně zapnutý' : 'JIT je pravděpodobně vypnutý';
+  document.getElementById('info').innerHTML = 'JavaScript: 3 miliony iterací za ' + ms + ' ms (' + jit + ')<br>' + navigator.userAgent;
+})();
+</script>
+</body>
+</html>

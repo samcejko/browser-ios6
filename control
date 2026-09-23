@@ -1,0 +1,9 @@
+Package: com.samcejko.browser
+Name: Browser
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: Web browser for iOS 6 with modern TLS (universal)
+Maintainer: samcejko
+Author: samcejko
+Section: Networking
+Depends: firmware (>= 6.0)

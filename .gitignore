@@ -1,0 +1,11 @@
+.theos/
+obj/
+packages/
+vendor/mbedtls/
+Resources/Icon*.png
+Resources/Default*.png
+Resources/cacert.pem
+*.ipa
+*.deb
+.DS_Store
+tools/local.json
