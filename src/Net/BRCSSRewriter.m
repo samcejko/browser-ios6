@@ -176,7 +176,7 @@ static NSString *BRPageKey(NSURL *url)
 }
 
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
-         completion:(BRRewriteCompletion)completion
+          mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion
 {
     if (!completion) return;
     [[BRJSEngine shared] performAsync:^{
@@ -202,7 +202,8 @@ static NSString *BRPageKey(NSURL *url)
             NSString *optionsJSON = @"{}";
             {
                 NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth) } mutableCopy];
-                if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
+                // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
+                if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

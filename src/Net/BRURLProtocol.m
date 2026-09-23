@@ -548,7 +548,8 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     BOOL cacheable = (self.cacheBody != nil);
     NSTimeInterval maxAge = self.cacheMaxAge;
     self.cacheBody = nil;
-    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page completion:^(NSData *out, NSString *outCharset) {
+    BOOL mainFrame = !self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL];
+    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : [kind isEqualToString:@"js"] ? @"text/javascript" : @"text/html");

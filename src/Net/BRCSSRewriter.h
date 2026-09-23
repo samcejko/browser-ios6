@@ -16,7 +16,7 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 // rewriter's queue; `output` is UTF-8 encoded and `charset` is "utf-8". On failure the original data is passed back
 // with the original charset.
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
-         completion:(BRRewriteCompletion)completion;
+          mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion;   // polyfills are injected into main documents only
 
 // The bundle of polyfills injected into every document (assembled once from Resources/js and shims.js).
 + (NSString *)polyfillURLString;
