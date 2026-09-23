@@ -354,9 +354,67 @@ static const CGFloat BRControlHeight = 30;
 {
     [self.tabsButton setTitle:[NSString stringWithFormat:@"%@ %lu", L(@"Tabs"), (unsigned long)self.tabs.count] forState:UIControlStateNormal];
     NSMutableArray *titles = [NSMutableArray arrayWithCapacity:self.tabs.count];
-    for (NSDictionary *t in self.tabs) [titles addObject:[self displayTitleForTab:t]];
-    [self.tabBar setTitles:titles selectedIndex:self.currentTab];
+    NSMutableArray *icons = [NSMutableArray arrayWithCapacity:self.tabs.count];
+    for (NSDictionary *t in self.tabs) {
+        [titles addObject:[self displayTitleForTab:t]];
+        UIImage *icon = [self faviconForURLString:t[@"url"]];
+        [icons addObject:icon ?: [NSNull null]];
+    }
+    [self.tabBar setTitles:titles icons:icons selectedIndex:self.currentTab];
     [self.view setNeedsLayout];
+}
+
+#pragma mark - Favicons
+
+static NSCache *BRFaviconCache(void)
+{
+    static NSCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [[NSCache alloc] init]; cache.countLimit = 64; });
+    return cache;
+}
+
+- (UIImage *)faviconForURLString:(NSString *)urlString
+{
+    NSString *host = [[NSURL URLWithString:[urlString isKindOfClass:[NSString class]] ? urlString : @""].host lowercaseString];
+    if (!host.length) return nil;
+    id cached = [BRFaviconCache() objectForKey:host];
+    return [cached isKindOfClass:[UIImage class]] ? cached : nil;
+}
+
+// Asks the page for its icon link, fetches it through the app's stack and refreshes the tab strip.
+- (void)fetchFaviconForCurrentPage
+{
+    NSURL *pageURL = self.webView.request.URL ?: self.currentURL;
+    NSString *host = [pageURL.host lowercaseString];
+    if (!host.length || ![[pageURL.scheme lowercaseString] hasPrefix:@"http"]) return;
+    if ([BRFaviconCache() objectForKey:host]) return;   // known (an image or a failure marker)
+    NSString *js = @"(function(){var links=document.querySelectorAll('link[rel~=\"icon\"],link[rel=\"shortcut icon\"],link[rel=\"apple-touch-icon\"]');"
+                    "var best='',bestSize=0;for(var i=0;i<links.length;i++){var l=links[i];if(!l.href)continue;var s=parseInt((l.getAttribute('sizes')||'0x0').split('x')[0],10)||16;"
+                    "if(/apple-touch/.test(l.rel))s=Math.min(s||180,64);if(!best||(s>=16&&s<=64&&s>bestSize)){best=l.href;bestSize=s;}}return best;})()";
+    NSString *iconString = [self.webView stringByEvaluatingJavaScriptFromString:js];
+    NSURL *iconURL = iconString.length ? [NSURL URLWithString:iconString] : nil;
+    if (!iconURL) iconURL = [NSURL URLWithString:[NSString stringWithFormat:@"%@://%@/favicon.ico", pageURL.scheme, pageURL.host]];
+    if (!iconURL) return;
+    [BRFaviconCache() setObject:[NSNull null] forKey:host];   // fetch in progress; replaced by the image or left as a marker
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        NSData *data = [NSData dataWithContentsOfURL:iconURL];
+        UIImage *image = data.length ? [UIImage imageWithData:data] : nil;
+        UIImage *small = nil;
+        if (image && image.size.width > 0 && image.size.height > 0) {
+            CGFloat side = 16;
+            UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0);
+            [image drawInRect:CGRectMake(0, 0, side, side)];
+            small = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (small) {
+                [BRFaviconCache() setObject:small forKey:host];
+                [self updateTabsButton];
+            }
+        });
+    });
 }
 
 - (UIImage *)snapshotOfWebView
@@ -1292,6 +1350,7 @@ static const CGFloat BRControlHeight = 30;
             tab[@"title"] = title;
             [self saveTabs];
             [self updateTabsButton];
+            if (BRIsPad()) [self fetchFaviconForCurrentPage];
         }
         BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],

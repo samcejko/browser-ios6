@@ -15,6 +15,7 @@
 @property (nonatomic, weak) id<BRTabBarDelegate> delegate;
 
 - (void)setTitles:(NSArray *)titles selectedIndex:(NSUInteger)index;
+- (void)setTitles:(NSArray *)titles icons:(NSArray *)icons selectedIndex:(NSUInteger)index;   // icons: UIImage or NSNull per tab
 - (void)applyTheme;
 
 @end

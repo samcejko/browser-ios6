@@ -14,6 +14,7 @@ static const CGFloat BRPlusWidth = 34;
 @property (nonatomic, strong) NSMutableArray *tabButtons;
 @property (nonatomic, strong) UIButton *closeButton;
 @property (nonatomic, strong) NSArray *titles;
+@property (nonatomic, strong) NSArray *icons;
 @property (nonatomic) NSUInteger selectedIndex;
 @end
 
@@ -55,7 +56,13 @@ static const CGFloat BRPlusWidth = 34;
 
 - (void)setTitles:(NSArray *)titles selectedIndex:(NSUInteger)index
 {
+    [self setTitles:titles icons:nil selectedIndex:index];
+}
+
+- (void)setTitles:(NSArray *)titles icons:(NSArray *)icons selectedIndex:(NSUInteger)index
+{
     self.titles = titles ?: @[];
+    self.icons = icons;
     self.selectedIndex = index;
     [self rebuild];
 }
@@ -77,7 +84,14 @@ static const CGFloat BRPlusWidth = 34;
         [b setTitleColor:selected ? [theme tabTextColorSelected:YES] : [theme tabTextColorSelected:NO] forState:UIControlStateNormal];
         [b setTitleShadowColor:[theme barTextShadowColor] forState:UIControlStateNormal];
         [b setBackgroundImage:[theme tabImageSelected:selected] forState:UIControlStateNormal];
-        b.titleEdgeInsets = UIEdgeInsetsMake(0, selected ? 22 : 10, 0, 10);
+        UIImage *icon = (i < self.icons.count && [self.icons[i] isKindOfClass:[UIImage class]]) ? self.icons[i] : nil;
+        if (icon) {
+            [b setImage:icon forState:UIControlStateNormal];
+            b.imageEdgeInsets = UIEdgeInsetsMake(0, selected ? 18 : 6, 0, 0);
+            b.titleEdgeInsets = UIEdgeInsetsMake(0, selected ? 22 : 10, 0, 6);
+        } else {
+            b.titleEdgeInsets = UIEdgeInsetsMake(0, selected ? 22 : 10, 0, 10);
+        }
         [b addTarget:self action:@selector(tabTapped:) forControlEvents:UIControlEventTouchUpInside];
         [self.scrollView addSubview:b];
         [self.tabButtons addObject:b];
