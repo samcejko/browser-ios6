@@ -110,6 +110,14 @@ static BOOL BRResolveJSC(void)
     dispatch_async(_queue, block);
 }
 
+// A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.
+static NSString * const BRContextPrelude =
+@"var globalThis = this; var self = this;"
+@"var console = (function () { var c = {}, names = ['log','info','warn','error','debug','trace','dir','dirxml','table','group','groupEnd','groupCollapsed','time','timeEnd','timeLog','count','assert'];"
+@"  for (var i = 0; i < names.length; i++) c[names[i]] = function () {}; return c; })();"
+@"var setTimeout = function () { return 0; }, clearTimeout = function () {}, setInterval = setTimeout, clearInterval = clearTimeout;"
+@"var queueMicrotask = function (f) { try { f(); } catch (e) {} };";
+
 - (BOOL)ensureContext
 {
     if (!_available) return NO;
@@ -119,6 +127,7 @@ static BOOL BRResolveJSC(void)
             BRLog(@"JSGlobalContextCreate failed");
             return NO;
         }
+        [self evaluateScript:BRContextPrelude sourceName:@"prelude.js"];
     }
     return YES;
 }
