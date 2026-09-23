@@ -290,7 +290,15 @@ static const CGFloat BRBarHeight = 44;
         [self updateAddressFieldWithURL:url];
         if ([[url.scheme lowercaseString] hasPrefix:@"http"]) self.currentURL = url;
     }
-    if (self.loadCount == 0) self.httpFallbackURL = nil;
+    if (self.loadCount == 0) {
+        self.httpFallbackURL = nil;
+        NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
+        BRLog(@"Loaded %@ (%@)", url.absoluteString ?: @"?", title.length > 80 ? [title substringToIndex:80] : title);
+        if ([BRSettings isHomeURL:url]) {
+            NSString *info = [webView stringByEvaluatingJavaScriptFromString:@"document.getElementById('info').innerText"];
+            BRLog(@"Home page: %@", info ?: @"");
+        }
+    }
 }
 
 - (void)webView:(UIWebView *)webView didFailLoadWithError:(NSError *)error

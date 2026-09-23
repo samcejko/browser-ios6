@@ -314,6 +314,10 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     }
 
     // Normal response
+    if (!self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL]) {
+        BRLog(@"%@ %@ -> %ld %@ [%@]", self.request.HTTPMethod ?: @"GET", url.absoluteString, (long)status,
+              r.responseHeaders[@"content-type"] ?: @"", r.tlsInfo ?: @"");
+    }
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:[self headerFieldsForWebKit]];
     self.response = response;
     self.cacheMaxAge = -1;
