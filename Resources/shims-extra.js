@@ -745,11 +745,10 @@
             encrypt: cryptoUnsupported, decrypt: cryptoUnsupported, sign: cryptoUnsupported, verify: cryptoUnsupported, generateKey: cryptoUnsupported,
             deriveKey: cryptoUnsupported, deriveBits: cryptoUnsupported, importKey: cryptoUnsupported, exportKey: cryptoUnsupported, wrapKey: cryptoUnsupported, unwrapKey: cryptoUnsupported
         };
-        try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) {}
-        if (!window.crypto.subtle) {
-            // the native Crypto instance is sealed; its prototype accepts new properties
-            try { Object.defineProperty(Object.getPrototypeOf(window.crypto), 'subtle', { get: function () { return subtle; }, configurable: true }); } catch (e4) {}
-        }
+        // Expandos on the Crypto wrapper vanish when the old engine garbage-collects and recreates the wrapper,
+        // so the property lives on the prototype (and the wrapper is pinned below just in case).
+        try { Object.defineProperty(Object.getPrototypeOf(window.crypto), 'subtle', { get: function () { return subtle; }, configurable: true }); } catch (e4) {}
+        if (!window.crypto.subtle) try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) {}
         if (!window.crypto.subtle) {
             // the native Crypto object refuses new properties: replace it with a wrapper
             var nativeCrypto = window.crypto;
@@ -1114,13 +1113,24 @@
         var defineMenuProps = function (p) {
             try {
                 Object.defineProperty(p, 'type', {
-                    get: function () { var t = (this.getAttribute('type') || '').toLowerCase(); return t === 'context' ? 'context' : 'toolbar'; },
+                    get: function () {
+                        var t = (this.getAttribute('type') || '').toLowerCase();
+                        if (t === 'context' || t === 'toolbar') return t;
+                        // a menu without a type inherits "context" from an enclosing context menu
+                        var parent = this.parentNode;
+                        while (parent && parent.nodeType === 1) {
+                            if (parent.tagName === 'MENU') return parent.type;
+                            parent = parent.parentNode;
+                        }
+                        return 'toolbar';
+                    },
                     set: function (v) { this.setAttribute('type', String(v)); },
                     configurable: true
                 });
             } catch (e) {}
             attrProp(p, 'label');
         };
+        defineElementClass('menuitem', 'HTMLMenuItemElement', function (p) { attrProp(p, 'label'); attrProp(p, 'icon'); attrProp(p, 'type'); defineBoolAttrProp(p, 'disabled'); defineBoolAttrProp(p, 'checked'); defineBoolAttrProp(p, 'default'); });
         if (window.HTMLMenuElement && window.HTMLMenuElement.prototype && !('type' in document.createElement('menu'))) defineMenuProps(window.HTMLMenuElement.prototype);
         else defineElementClass('menu', 'HTMLMenuElement', defineMenuProps);
         defineElementClass('track', 'HTMLTrackElement', function (p) {
@@ -1428,6 +1438,9 @@
     if (!('origin' in window.location)) try { Object.defineProperty(window.location, 'origin', { get: function () { return location.protocol + '//' + location.host; } }); } catch (e) {}
     if (window.history && !('scrollRestoration' in window.history)) try { window.history.scrollRestoration = 'auto'; } catch (e) {}
     if (!('isSecureContext' in window)) try { window.isSecureContext = location.protocol === 'https:' || location.hostname === 'localhost'; } catch (e) {}
+
+    // Host object wrappers that carry our added properties must not be collected and recreated without them
+    try { window.__brKeepAlive = [window.navigator, window.crypto, window.screen, window.history, window.performance, window.localStorage, window.sessionStorage, navigator.mediaDevices, navigator.geolocation]; } catch (e) {}
 
     // ---- Language runtime extras
     if (!window.globalThis) try { window.globalThis = window; } catch (e) {}
