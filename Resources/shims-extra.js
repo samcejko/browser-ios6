@@ -911,6 +911,22 @@
             return c;
         };
     }
+    // canvas.getContext('bitmaprenderer'): a thin wrapper over the 2D context
+    if (HCp && !window.ImageBitmapRenderingContext) {
+        var BitmapContext = function ImageBitmapRenderingContext(canvas) { this.canvas = canvas; };
+        BitmapContext.prototype.transferFromImageBitmap = function (bitmap) {
+            var ctx = this.canvas.getContext('2d');
+            if (!ctx) return;
+            ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            if (bitmap) try { ctx.drawImage(bitmap, 0, 0); } catch (e) {}
+        };
+        window.ImageBitmapRenderingContext = BitmapContext;
+        var origGetContext = HCp.getContext;
+        HCp.getContext = function (type) {
+            if (type === 'bitmaprenderer') return this.__brBitmapContext || (this.__brBitmapContext = new BitmapContext(this));
+            return origGetContext.apply(this, arguments);
+        };
+    }
     if (!window.createImageBitmap) {
         window.ImageBitmap = function ImageBitmap() {};
         window.createImageBitmap = function (source, sx, sy, sw, sh) {
