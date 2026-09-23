@@ -29,6 +29,10 @@
 + (NSInteger)textSizePercent;            // 100 = the page's own size
 + (void)setTextSizePercent:(NSInteger)percent;
 
+// Private browsing: no history, no cache writes, cookies restored to the state before it was switched on
++ (BOOL)privateMode;
++ (void)setPrivateMode:(BOOL)enabled;
+
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page
 + (BOOL)isHomeURL:(NSURL *)url;

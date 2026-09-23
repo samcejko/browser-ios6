@@ -627,6 +627,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 - (void)storeResponse:(NSHTTPURLResponse *)response data:(NSData *)data maxAge:(NSTimeInterval)maxAge
 {
     if (!response || !data) return;
+    if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge) };
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];

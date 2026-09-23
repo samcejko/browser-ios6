@@ -135,6 +135,48 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
++ (BOOL)privateMode
+{
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"BRPrivateMode"];
+}
+
++ (void)setPrivateMode:(BOOL)enabled
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (enabled == [self privateMode]) return;
+    NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+    if (enabled) {
+        // remember the cookies of the normal session; they come back when private browsing ends
+        NSMutableArray *snapshot = [NSMutableArray array];
+        for (NSHTTPCookie *c in jar.cookies) {
+            NSMutableDictionary *props = [NSMutableDictionary dictionary];
+            for (NSString *k in c.properties) {
+                id v = c.properties[k];
+                if ([v isKindOfClass:[NSString class]] || [v isKindOfClass:[NSNumber class]]) props[k] = v;
+                else if ([v isKindOfClass:[NSDate class]]) props[k] = @{ @"date": @([v timeIntervalSince1970]) };
+            }
+            [snapshot addObject:props];
+        }
+        [d setObject:snapshot forKey:@"BRPrivateCookieSnapshot"];
+    } else {
+        for (NSHTTPCookie *c in [jar.cookies copy]) [jar deleteCookie:c];
+        for (NSDictionary *props in [d arrayForKey:@"BRPrivateCookieSnapshot"]) {
+            NSMutableDictionary *p = [props mutableCopy];
+            for (NSString *k in props) {
+                id v = props[k];
+                if ([v isKindOfClass:[NSDictionary class]] && v[@"date"]) p[k] = [NSDate dateWithTimeIntervalSince1970:[v[@"date"] doubleValue]];
+            }
+            NSHTTPCookie *c = [NSHTTPCookie cookieWithProperties:p];
+            if (c) [jar setCookie:c];
+        }
+        [d removeObjectForKey:@"BRPrivateCookieSnapshot"];
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    }
+    [d setBool:enabled forKey:@"BRPrivateMode"];
+    [d synchronize];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"BRPrivateModeDidChangeNotification" object:nil];
+}
+
 + (NSURL *)searchURLForQuery:(NSString *)query
 {
     NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(

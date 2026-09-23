@@ -8,6 +8,7 @@
 #import "BRLibrary.h"
 #import "BRDownloader.h"
 #import "BRURLProtocol.h"
+#import "BRHTTPRequest.h"
 #import "BRWatchdog.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
@@ -27,6 +28,7 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) NSDictionary *pressedLink;              // href, text, img of the long-pressed element
 @property (nonatomic, strong) UITableView *suggestionsTable;           // history and bookmark matches while typing
 @property (nonatomic, strong) NSArray *suggestions;                    // dictionaries: title, url, kind
+@property (nonatomic, copy) NSString *pendingSuggestionText;           // last text scheduled for a search suggestion request
 @property (nonatomic, strong) UIView *findBar;
 @property (nonatomic, strong) UIImageView *findBarBackground;
 @property (nonatomic, strong) UITextField *findField;
@@ -235,6 +237,8 @@ static const CGFloat BRControlHeight = 30;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeChanged:) name:BRThemeDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageProgress:) name:BRPageProgressNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(textSizeChanged:) name:@"BRTextSizeDidChangeNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(privateModeChanged:) name:@"BRPrivateModeDidChangeNotification" object:nil];
+    [self privateModeChanged:nil];
     [self updateNavigationState];
 
     NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
@@ -900,6 +904,52 @@ static NSCache *BRFaviconCache(void)
     [self applyTextSize];
 }
 
+- (void)privateModeChanged:(NSNotification *)note
+{
+    BOOL priv = [BRSettings privateMode];
+    self.urlField.placeholder = priv ? L(@"Private browsing: search or enter address") : L(@"Search or enter address");
+    self.urlField.textColor = priv ? [UIColor colorWithRed:0.45 green:0.2 blue:0.6 alpha:1] : [[BRTheme shared] fieldTextColor];
+}
+
+#pragma mark - Search suggestions from the search engine
+
+- (void)fetchSearchSuggestionsForText:(NSString *)text
+{
+    NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (t.length < 2 || [BRSettings privateMode]) return;
+    NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, (__bridge CFStringRef)t, NULL, CFSTR("!*'();:@&=+$,/?%#[]"), kCFStringEncodingUTF8);
+    NSURL *url = [NSURL URLWithString:[@"https://duckduckgo.com/ac/?type=list&q=" stringByAppendingString:q ?: @""]];
+    BRHTTPRequest *r = [[BRHTTPRequest alloc] initWithMethod:@"GET" URL:url];
+    r.verifyTLS = [BRSettings verifyTLS];
+    r.highPriority = YES;
+    r.connectTimeout = 5;
+    r.readTimeout = 5;
+    r.headers = @{ @"Accept": @"application/json" };
+    __weak BRBrowserViewController *weakSelf = self;
+    r.onComplete = ^(NSError *error) {
+        if (error || r.statusCode != 200) return;
+        id json = r.responseBody ? [NSJSONSerialization JSONObjectWithData:r.responseBody options:0 error:NULL] : nil;
+        NSArray *list = [json isKindOfClass:[NSArray class]] && [json count] > 1 && [json[1] isKindOfClass:[NSArray class]] ? json[1] : nil;
+        if (!list.count) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BRBrowserViewController *strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.editingAddress || ![[strongSelf.urlField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] isEqualToString:t]) return;
+            NSMutableArray *rows = [strongSelf.suggestions mutableCopy] ?: [NSMutableArray array];
+            NSUInteger insertAt = rows.count && [rows[0][@"kind"] hasPrefix:@"search"] ? 1 : 0;
+            NSInteger added = 0;
+            for (id s in list) {
+                if (![s isKindOfClass:[NSString class]] || [s isEqualToString:t] || added >= 4) continue;
+                [rows insertObject:@{ @"title": s, @"url": [BRSettings searchURLForQuery:s].absoluteString ?: @"", @"kind": @"search" } atIndex:insertAt + (NSUInteger)added];
+                added++;
+            }
+            if (!added) return;
+            strongSelf.suggestions = rows;
+            [strongSelf.suggestionsTable reloadData];
+        });
+    };
+    [r start];
+}
+
 #pragma mark - Home page
 
 // Hands the start page its data: search engine, bookmarks and the most visited hosts from the history.
@@ -1009,6 +1059,10 @@ static NSCache *BRFaviconCache(void)
     self.suggestionsTable.hidden = NO;
     [self.view setNeedsLayout];
     [self.suggestionsTable reloadData];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(fetchSearchSuggestionsForText:) object:nil];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(fetchSearchSuggestionsForText:) object:self.pendingSuggestionText];
+    self.pendingSuggestionText = text;
+    if (text.length >= 2) [self performSelector:@selector(fetchSearchSuggestionsForText:) withObject:text afterDelay:0.35];
 }
 
 - (void)hideSuggestions

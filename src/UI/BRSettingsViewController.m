@@ -18,6 +18,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowUserAgent = 0,
     BRFeatureRowSearchEngine,
     BRFeatureRowTextSize,
+    BRFeatureRowPrivate,
     BRFeatureRowAdBlock,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
@@ -134,6 +135,10 @@ static const NSInteger BRTagDarkTheme = 100;
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
                 break;
+            case BRFeatureRowPrivate:
+                cell.textLabel.text = L(@"Private browsing");
+                cell.accessoryView = [self switchWithValue:[BRSettings privateMode] tag:BRFeatureRowPrivate];
+                break;
             case BRFeatureRowAdBlock:
                 cell.textLabel.text = L(@"Block ads and trackers");
                 cell.accessoryView = [self switchWithValue:[BRSettings adBlockEnabled] tag:BRFeatureRowAdBlock];
@@ -187,6 +192,7 @@ static const NSInteger BRTagDarkTheme = 100;
             [[BRTheme shared] applyToTableView:self.tableView];
             [self.tableView reloadData];
             return;
+        case BRFeatureRowPrivate: [BRSettings setPrivateMode:sw.on]; return;
         case BRFeatureRowAdBlock: [BRSettings setAdBlockEnabled:sw.on]; break;
         case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; break;
         case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; break;

@@ -137,6 +137,7 @@ static const NSUInteger BRMaxHistoryEntries = 500;
 {
     NSString *s = url.absoluteString;
     if (!s.length || ![[url.scheme lowercaseString] hasPrefix:@"http"]) return;
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRPrivateMode"]) return;   // private browsing keeps no history
     NSDictionary *last = _history.firstObject;
     if ([last[@"url"] isEqualToString:s]) {
         if (title.length && ![last[@"title"] isEqualToString:title]) {
