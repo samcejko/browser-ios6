@@ -16,8 +16,13 @@ the app around it:
 - **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties,
   flexbox (2009 syntax), vendor prefixes, gradients, modern colours, `:is()`/`:where()`, `@supports`,
   `@layer`, logical properties and more, so that 2012 WebKit renders modern stylesheets.
-- **WOFF2 fonts** are converted to TrueType on the device (google/woff2 + brotli) and **WebP images**
-  are decoded to PNG (libwebp).
+- **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
+  **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
+  very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's
+  home page, which now loads in nine seconds.
+- **Layout rescue**: `display: grid` becomes floated equal-width columns, column flex containers become
+  blocks (deeply nested 2009 flexbox layout never finished on some pages), `position: sticky` is
+  prefixed, `text-rendering: optimizeLegibility` and `font-feature-settings` are dropped.
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
   shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
   TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship
@@ -39,8 +44,10 @@ the app around it:
   syntax, codecs and other things an old engine cannot fake).
 - **Everyday browser features**: address suggestions from history and bookmarks, find on page,
   downloads with an "open in" menu, loading progress in the address field, padlock with connection
-  details, search engine choice, text size, start page with most visited sites and bookmarks.
-- Planned: favicons in tabs, tab strip on iPhone, private browsing.
+  details, search engine choice, text size, start page with most visited sites and bookmarks, favicons
+  in the tab strip, long press on links (new tab, copy, share, save image, open in Safari), long press
+  on reload (desktop/mobile version, reload without cache), "Add bookmark" in the share sheet.
+- Planned: tab strip on iPhone, private browsing.
 
 ## Building (GitHub Actions)
 

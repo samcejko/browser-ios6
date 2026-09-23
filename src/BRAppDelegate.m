@@ -36,6 +36,10 @@
     [defaults setBool:YES forKey:@"WebKitWebGLEnabled"];
     [defaults setBool:YES forKey:@"WebKitDeveloperExtras"];
     [defaults setBool:YES forKey:@"WebKitCSSCustomFilterEnabled"];
+    // memory on a 512 MB device: no back/forward page cache, big images decoded through the disk cache
+    [defaults setBool:NO forKey:@"WebKitUsesPageCachePreferenceKey"];
+    [defaults setBool:YES forKey:@"WebKitDiskImageCacheEnabled"];
+    [defaults setInteger:2 * 1024 * 1024 forKey:@"WebKitDiskImageCacheMinimumImageSize"];
 
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
     [BRURLProtocol registerProtocol];
