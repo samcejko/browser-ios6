@@ -6,6 +6,7 @@
 #import "BRConnectionPool.h"
 #import "BRCSSRewriter.h"
 #import "BRJSTranspiler.h"
+#import "BRJSEngine.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -19,7 +20,7 @@
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
     // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
-    static const NSInteger BRCacheFormatVersion = 3;
+    static const NSInteger BRCacheFormatVersion = 4;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
         [cache removeAllCachedResponses];
@@ -71,8 +72,9 @@
 
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application
 {
-    BRLog(@"Memory warning");
+    BRLog(@"Memory warning at %ld MB", (long)BRResidentMemoryMB());
     [[BRConnectionPool shared] drain];
+    [[BRJSEngine shared] resetContext];   // frees Babel (about 75 MB); it is loaded again when needed
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application

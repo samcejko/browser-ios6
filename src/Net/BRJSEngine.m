@@ -71,8 +71,12 @@ static BOOL BRResolveJSC(void)
     return YES;
 }
 
+NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotification";
+
 @implementation BRJSEngine {
-    dispatch_queue_t _queue;
+    NSThread *_thread;
+    NSCondition *_condition;
+    NSMutableArray *_queue;
     JSCtx _ctx;
     BOOL _available;
 }
@@ -89,10 +93,30 @@ static BOOL BRResolveJSC(void)
 {
     self = [super init];
     if (self) {
-        _queue = dispatch_queue_create("com.samcejko.browser.js", DISPATCH_QUEUE_SERIAL);
         _available = BRResolveJSC();
+        _condition = [[NSCondition alloc] init];
+        _queue = [NSMutableArray array];
+        _thread = [[NSThread alloc] initWithTarget:self selector:@selector(threadMain) object:nil];
+        _thread.name = @"com.samcejko.browser.js";
+        _thread.stackSize = 16 * 1024 * 1024;   // Babel's traversal recurses far deeper than the 512 KB default allows
+        [_thread start];
     }
     return self;
+}
+
+- (void)threadMain
+{
+    for (;;) {
+        dispatch_block_t block = nil;
+        [_condition lock];
+        while (!_queue.count) [_condition wait];
+        block = _queue[0];
+        [_queue removeObjectAtIndex:0];
+        [_condition unlock];
+        @autoreleasepool {
+            block();
+        }
+    }
 }
 
 - (BOOL)available
@@ -100,14 +124,39 @@ static BOOL BRResolveJSC(void)
     return _available;
 }
 
-- (void)performSync:(dispatch_block_t)block
-{
-    dispatch_sync(_queue, block);
-}
-
 - (void)performAsync:(dispatch_block_t)block
 {
-    dispatch_async(_queue, block);
+    if (!block) return;
+    [_condition lock];
+    [_queue addObject:[block copy]];
+    [_condition signal];
+    [_condition unlock];
+}
+
+- (void)performSync:(dispatch_block_t)block
+{
+    if (!block) return;
+    if ([NSThread currentThread] == _thread) {
+        block();
+        return;
+    }
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [self performAsync:^{
+        block();
+        dispatch_semaphore_signal(done);
+    }];
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+}
+
+- (void)resetContext
+{
+    [self performAsync:^{
+        if (!_ctx) return;
+        p_JSGlobalContextRelease(_ctx);
+        _ctx = NULL;
+        BRLog(@"JavaScript context released, process uses %ld MB", (long)BRResidentMemoryMB());
+        [[NSNotificationCenter defaultCenter] postNotificationName:BRJSEngineDidResetNotification object:self];
+    }];
 }
 
 // A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.

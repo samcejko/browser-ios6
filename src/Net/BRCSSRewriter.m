@@ -76,8 +76,14 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
     if (self) {
         _pageVars = [NSMutableDictionary dictionary];
         _pageOrder = [NSMutableArray array];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(engineDidReset:) name:BRJSEngineDidResetNotification object:nil];
     }
     return self;
+}
+
+- (void)engineDidReset:(NSNotification *)note
+{
+    _loaded = NO;   // posted on the engine thread
 }
 
 - (BOOL)available
@@ -104,7 +110,7 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
     NSString *probe = [engine callFunction:@"CSSFix.run" arguments:@[@"css", @".a{display:flex}", @"{}"]];
     if (!probe.length) { BRLog(@"cssfix.js self test failed"); _loadFailed = YES; return NO; }
     _loaded = YES;
-    BRLog(@"cssfix.js loaded in %.0f ms", ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+    BRLog(@"cssfix.js loaded in %ld ms", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
     return YES;
 }
 
@@ -207,7 +213,7 @@ static NSString *BRPageKey(NSURL *url)
                 }
             }
             NSData *outData = [out dataUsingEncoding:NSUTF8StringEncoding];
-            BRLog(@"cssfix %@ %.0f ms: %lu -> %lu bytes (%@, %lu vars)", kind, ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000,
+            BRLog(@"cssfix %@ %ld ms: %lu -> %lu bytes (%@, %lu vars)", kind, (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000),
                   (unsigned long)data.length, (unsigned long)outData.length, used ?: @"?", (unsigned long)vars.count);
             if (data.length > 200000) [[BRJSEngine shared] collectGarbage];
             completion(outData ?: data, outData ? @"utf-8" : charset);

@@ -295,9 +295,9 @@ static const CGFloat BRBarHeight = 44;
     if (self.loadCount == 0) {
         self.httpFallbackURL = nil;
         NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
-        BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %.0f MB", url.absoluteString ?: @"?",
+        BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
-              (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, BRResidentMemoryMB());
+              (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB());
         if ([BRSettings isHomeURL:url]) {
             NSString *info = [webView stringByEvaluatingJavaScriptFromString:@"document.getElementById('info').innerText"];
             BRLog(@"Home page: %@", info ?: @"");

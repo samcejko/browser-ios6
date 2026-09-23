@@ -49,7 +49,7 @@ static NSString * const BRTranspilerGlue =
     // a few seconds after launch, so the start page renders first
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[BRJSEngine shared] performAsync:^{
-            BRLog(@"Process uses %.0f MB before loading the transpiler", BRResidentMemoryMB());
+            BRLog(@"Process uses %ld MB before loading the transpiler", (long)BRResidentMemoryMB());
             if ([t ensureLoaded]) [t selfTest];
         }];
     });
@@ -68,8 +68,14 @@ static NSString * const BRTranspilerGlue =
         NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
         _cacheDir = [caches stringByAppendingPathComponent:@"transpiled"];
         [[NSFileManager defaultManager] createDirectoryAtPath:_cacheDir withIntermediateDirectories:YES attributes:nil error:NULL];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(engineDidReset:) name:BRJSEngineDidResetNotification object:nil];
     }
     return self;
+}
+
+- (void)engineDidReset:(NSNotification *)note
+{
+    _loaded = NO;   // posted on the engine thread; Babel is loaded again on demand
 }
 
 - (BOOL)available
@@ -96,9 +102,9 @@ static NSString * const BRTranspilerGlue =
         }
         NSTimeInterval t1 = [NSDate timeIntervalSinceReferenceDate];
         BOOL ok = [engine evaluateScript:script sourceName:[name stringByAppendingString:@".js"]];
-        double ms = ([NSDate timeIntervalSinceReferenceDate] - t1) * 1000;
-        int kb = (int)(script.length / 1024);
-        BRLog(@"%@.js %@ in %.0f ms (%d KB)", name, ok ? @"loaded" : @"FAILED", ms, kb);
+        long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t1) * 1000);
+        long kb = (long)(script.length / 1024);
+        BRLog(@"%@.js %@ in %ld ms (%ld KB)", name, ok ? @"loaded" : @"FAILED", ms, kb);
         if (!ok) {
             _loadFailed = YES;
             return NO;
@@ -108,7 +114,7 @@ static NSString * const BRTranspilerGlue =
     }
     if (![engine evaluateScript:BRTranspilerGlue sourceName:@"transpiler-glue.js"]) { _loadFailed = YES; return NO; }
     _loaded = YES;
-    BRLog(@"Transpiler ready in %.0f ms, process now uses %.0f MB", ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, BRResidentMemoryMB());
+    BRLog(@"Transpiler ready in %ld ms, process now uses %ld MB", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), (long)BRResidentMemoryMB());
     return YES;
 }
 
@@ -118,8 +124,8 @@ static NSString * const BRTranspilerGlue =
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     BOOL changed = NO;
     NSString *out = [self transpileIfNeeded:sample name:@"selftest.js" changed:&changed];
-    BRLog(@"Transpiler self test: %@ in %.0f ms (%d -> %d chars), %.0f MB", changed ? @"transpiled" : @"unchanged",
-          ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, (int)sample.length, (int)out.length, BRResidentMemoryMB());
+    BRLog(@"Transpiler self test: %@ in %ld ms (%ld -> %ld chars), %ld MB", changed ? @"transpiled" : @"unchanged",
+          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), (long)sample.length, (long)out.length, (long)BRResidentMemoryMB());
 }
 
 - (NSString *)transpileIfNeeded:(NSString *)source name:(NSString *)name changed:(BOOL *)changed
@@ -138,12 +144,12 @@ static NSString * const BRTranspilerGlue =
     }
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     NSString *out = [engine callFunction:@"BRTranspile.transpile" arguments:@[source, name ?: @"script.js"]];
-    NSTimeInterval ms = ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000;
+    long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
     if (!out.length) {
-        BRLog(@"Transpile failed for %@ in %.0f ms (%d chars)", name, ms, (int)source.length);
+        BRLog(@"Transpile failed for %@ in %ld ms (%ld chars)", name, ms, (long)source.length);
         return nil;
     }
-    BRLog(@"Transpiled %@ in %.0f ms: %d -> %d chars", name, ms, (int)source.length, (int)out.length);
+    BRLog(@"Transpiled %@ in %ld ms: %ld -> %ld chars", name, ms, (long)source.length, (long)out.length);
     [out writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
     if (source.length > 100000) [engine collectGarbage];
     if (changed) *changed = YES;
