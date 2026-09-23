@@ -381,12 +381,8 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         NSString *accept = [BRHeader(self.request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
         if ([ctype hasPrefix:@"text/css"]) kind = @"css";
         else if ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]) kind = @"html";
-        else if ([ctype hasPrefix:@"text/javascript"] || [ctype hasPrefix:@"application/javascript"] || [ctype hasPrefix:@"application/x-javascript"] ||
-                 [ctype hasPrefix:@"text/ecmascript"] || [ctype hasPrefix:@"application/ecmascript"] || [ctype hasPrefix:@"text/jscript"]) kind = @"js";
-        else if ((!ctype.length || [ctype hasPrefix:@"text/plain"] || [ctype hasPrefix:@"application/octet-stream"]) &&
-                 ([path hasSuffix:@".js"] || [path hasSuffix:@".mjs"])) kind = @"js";
         else if (!ctype.length && [accept hasPrefix:@"text/css"]) kind = @"css";
-        if ([kind isEqualToString:@"js"] && ![BRSettings jsFixEnabled]) kind = nil;
+        (void)path;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (declared > (long long)BRMaxRewriteBody) kind = nil;
     }

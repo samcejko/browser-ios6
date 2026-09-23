@@ -107,7 +107,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
                 cell.accessoryView = [self switchWithValue:[BRSettings cssFixEnabled] tag:BRFeatureRowCSSFix];
                 break;
             case BRFeatureRowJSFix:
-                cell.textLabel.text = L(@"Rewrite modern JavaScript");
+                cell.textLabel.text = L(@"JavaScript polyfills");
                 cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:BRFeatureRowJSFix];
                 break;
             case BRFeatureRowVerifyTLS:

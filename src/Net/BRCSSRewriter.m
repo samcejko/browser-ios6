@@ -1,11 +1,9 @@
 #import "BRCSSRewriter.h"
 #import "BRJSEngine.h"
-#import "BRJSTranspiler.h"
 #import "BRSettings.h"
 #import "BRCommon.h"
 
 static const NSUInteger BRMaxPagesRemembered = 8;
-static const NSUInteger BRMaxTranspileSource = 32 * 1024;   // Babel manages only a few KB per second on this hardware
 static NSString * const BRPolyfillURL = @"https://ios6-browser.invalid/polyfills.js";
 
 static NSStringEncoding BREncodingForCharset(NSString *charset)
@@ -149,7 +147,7 @@ static NSString *BRPageKey(NSURL *url)
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
         NSBundle *b = [NSBundle mainBundle];
-        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"systemjs", @"systemjs-named-register", @"intersection-observer", @"resize-observer", @"shims"]) {
+        for (NSString *name in @[@"core-js-custom", @"fetch", @"intersection-observer", @"resize-observer", @"shims"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
@@ -173,13 +171,8 @@ static NSString *BRPageKey(NSURL *url)
             NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
             NSString *used = nil;
             if ([kind isEqualToString:@"js"]) {
-                if (data.length > BRMaxTranspileSource || ![BRSettings jsFixEnabled] || ![[BRJSTranspiler shared] prepare]) { completion(data, charset); return; }
-                NSString *text = BRDecode(data, charset, &used);
-                if (!text) { completion(data, charset); return; }
-                BOOL changed = NO;
-                NSString *out = [[BRJSTranspiler shared] transpileIfNeeded:text name:pageURL.lastPathComponent changed:&changed];
-                if (!changed || !out.length) { completion(data, charset); return; }
-                completion([out dataUsingEncoding:NSUTF8StringEncoding], @"utf-8");
+                // no transpiling on this hardware (see the build workflow); scripts pass through unchanged
+                completion(data, charset);
                 return;
             }
             if (![self ensureLoaded]) { completion(data, charset); return; }
@@ -195,8 +188,7 @@ static NSString *BRPageKey(NSURL *url)
             }
             NSString *optionsJSON = @"{}";
             if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) {
-                BOOL transpile = [text rangeOfString:@"<script" options:NSCaseInsensitiveSearch].location != NSNotFound && [[BRJSTranspiler shared] prepare];
-                NSDictionary *opts = @{ @"polyfillURL": BRPolyfillURL, @"transpile": @(transpile), @"pageURL": pageURL.absoluteString ?: @"" };
+                NSDictionary *opts = @{ @"polyfillURL": BRPolyfillURL, @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"" };
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

@@ -1226,9 +1226,9 @@ var CSSFix = (function () {
         html = html.replace(re, function (all, open, attrs, body, close) {
             var type = attrValue(attrs, 'type') || '';
             var ltype = trim(type).toLowerCase();
+            if (!opts || !opts.transpile) return all;
             if (ltype === 'importmap') return open.replace(/\btype\s*=\s*("importmap"|'importmap'|importmap)/i, 'type="systemjs-importmap"') + body + close;
             if (!isJavaScriptType(type)) return all;
-            if (!opts || !opts.transpile) return all;
             var src = attrValue(attrs, 'src');
             if (ltype === 'module') {
                 // ES modules are not run by the old engine at all: hand them to SystemJS

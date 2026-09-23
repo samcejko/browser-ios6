@@ -13,7 +13,15 @@ the app around it:
   the Nitro JIT inside UIWebView on jailbroken devices.
 - **Ad and tracker blocking** by host name (Peter Lowe's list fetched at build time plus a bundled
   base list), which also keeps memory use down on 512 MB devices.
-- Planned: on-device transpiling (ES2020 to ES5) and polyfills, CSS rewriting, WOFF2/WebP conversion.
+- **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties,
+  flexbox (2009 syntax), vendor prefixes, gradients, modern colours, `:is()`/`:where()`, `@supports`,
+  `@layer`, logical properties and more, so that 2012 WebKit renders modern stylesheets.
+- **WOFF2 fonts** are converted to TrueType on the device (google/woff2 + brotli).
+- **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
+  shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
+  TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship
+  ES2015+ bundles without an ES5 fallback do not work.
+- Planned: WebP conversion, sticky/object-fit polyfills, tabs, bookmarks and history.
 
 ## Building (GitHub Actions)
 

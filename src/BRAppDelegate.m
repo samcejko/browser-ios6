@@ -5,7 +5,6 @@
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCSSRewriter.h"
-#import "BRJSTranspiler.h"
 #import "BRJSEngine.h"
 #import "BRCommon.h"
 
@@ -20,7 +19,7 @@
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
     // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
-    static const NSInteger BRCacheFormatVersion = 5;
+    static const NSInteger BRCacheFormatVersion = 6;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
         [cache removeAllCachedResponses];
@@ -35,7 +34,6 @@
     [BRTLSSocket warmUp];
     [BRAdBlock warmUp];
     [BRCSSRewriter warmUp];
-    [BRJSTranspiler warmUp];
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.browserViewController = [[BRBrowserViewController alloc] init];
@@ -62,10 +60,6 @@
         [self.browserViewController goHome];
         return YES;
     }
-    if ([target isEqualToString:@"selftest"]) {
-        [BRJSTranspiler runBenchmark];
-        return YES;
-    }
     if ([target rangeOfString:@"://"].location == NSNotFound) target = [@"https://" stringByAppendingString:target];
     NSURL *targetURL = [NSURL URLWithString:target];
     if (!targetURL) return NO;
@@ -78,7 +72,7 @@
 {
     BRLog(@"Memory warning at %ld MB", (long)BRResidentMemoryMB());
     [[BRConnectionPool shared] drain];
-    [[BRJSEngine shared] resetContext];   // frees Babel (about 75 MB); it is loaded again when needed
+    [[BRJSEngine shared] resetContext];   // the CSS rewriter context is recreated on the next use
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application
