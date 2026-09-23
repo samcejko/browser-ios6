@@ -106,11 +106,11 @@ static NSString * const BRSelfTestSample =
             _loadFailed = YES;
             return NO;
         }
-        NSTimeInterval t1 = [NSDate timeIntervalSinceReferenceDate];
+        CFAbsoluteTime t1 = CFAbsoluteTimeGetCurrent();
         BOOL ok = [engine evaluateScript:script sourceName:[name stringByAppendingString:@".js"]];
-        long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t1) * 1000);
+        double seconds = CFAbsoluteTimeGetCurrent() - t1;
         long kb = (long)(script.length / 1024);
-        BRLog(@"%@.js %@ in %ld ms (%ld KB)", name, ok ? @"loaded" : @"FAILED", ms, kb);
+        BRLog(@"%@.js %@ in %.3f s (%ld KB)", name, ok ? @"loaded" : @"FAILED", seconds, kb);
         if (!ok) {
             _loadFailed = YES;
             return NO;
@@ -139,7 +139,7 @@ static NSString * const BRSelfTestSample =
     BRJSTranspiler *t = [self shared];
     [[BRJSEngine shared] performAsync:^{
         NSMutableString *big = [NSMutableString string];
-        for (int i = 0; i < 100; i++) [big appendFormat:@"%@\nvar g%d = f;\n", BRSelfTestSample, i];
+        for (int i = 0; i < 100; i++) [big appendFormat:@"var g%d = (function () { %@ return f; })();\n", i, BRSelfTestSample];
         if ([t ensureLoaded]) {
             NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
             NSString *out = [[BRJSEngine shared] callFunction:@"BRTranspile.transpile" arguments:@[big, @"bench.js"]];
@@ -153,6 +153,12 @@ static NSString * const BRSelfTestSample =
             NSString *path = [[NSBundle mainBundle] pathForResource:@"typescript.min" ofType:@"js" inDirectory:@"js"];
             NSString *script = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
             if (!script.length) { BRLog(@"BENCH TypeScript: typescript.min.js missing"); return; }
+            // core-js first (Map, Set, ...) as for Babel, then diagnostics for TypeScript's Map detection
+            NSString *cjsPath = [[NSBundle mainBundle] pathForResource:@"core-js-custom" ofType:@"js" inDirectory:@"js"];
+            NSString *cjs = cjsPath ? [NSString stringWithContentsOfFile:cjsPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+            if (cjs.length) { [engine evaluateScript:cjs sourceName:@"core-js-custom.js"]; [engine evaluateScript:@"__brRestoreNatives()" sourceName:@"restore-natives.js"]; }
+            NSString *diag = [engine callFunction:@"(function () { try { return [typeof Map, 'entries' in Map.prototype, new Map([[0, 0]]).size, typeof Symbol, typeof Array.prototype[Symbol.iterator], typeof WeakMap, typeof Set].join(' '); } catch (e) { return 'ERR ' + e.message; } })" arguments:@[]];
+            BRLog(@"BENCH TypeScript Map diagnostics: %@", diag ?: @"?");
             NSTimeInterval t1 = [NSDate timeIntervalSinceReferenceDate];
             BOOL ok = [engine evaluateScript:script sourceName:@"typescript.js"];
             [engine evaluateScript:@"__brRestoreNatives()" sourceName:@"restore-natives.js"];
