@@ -9,8 +9,11 @@
 + (void)setAdBlockEnabled:(BOOL)enabled;
 + (BOOL)cssFixEnabled;                   // default YES: rewrite modern CSS for the old engine
 + (void)setCSSFixEnabled:(BOOL)enabled;
-+ (BOOL)jsFixEnabled;                    // default YES: polyfills and transpiling of modern JavaScript
++ (BOOL)jsFixEnabled;                    // default YES: JavaScript polyfills injected into pages
 + (void)setJSFixEnabled:(BOOL)enabled;
++ (BOOL)desktopMode;                     // default NO: send a desktop Safari 6 User-Agent
++ (void)setDesktopMode:(BOOL)enabled;
++ (NSString *)desktopUserAgent;
 
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page

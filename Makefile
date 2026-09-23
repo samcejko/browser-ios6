@@ -26,7 +26,7 @@ Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm
 Browser_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security
 
 # Flags for every C-family file (also the vendored mbedTLS sources)
-Browser_CFLAGS := -Isrc -Isrc/Net -Isrc/UI \
+Browser_CFLAGS := -Isrc -Isrc/Net -Isrc/UI -Isrc/Model \
                   -Ivendor -Ivendor/mbedtls/include -Ivendor/mbedtls/library \
                   -Ivendor/woff2/include -Ivendor/brotli/c/include \
                   -Os -fvisibility=hidden \

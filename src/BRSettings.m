@@ -53,6 +53,23 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
++ (BOOL)desktopMode
+{
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"BRDesktopMode"];
+}
+
++ (void)setDesktopMode:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:@"BRDesktopMode"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
++ (NSString *)desktopUserAgent
+{
+    // Safari 6 on OS X: the same engine generation, so servers send pages the engine can actually render
+    return @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_5) AppleWebKit/536.30.1 (KHTML, like Gecko) Version/6.0.5 Safari/536.30.1";
+}
+
 + (NSURL *)searchURLForQuery:(NSString *)query
 {
     NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(

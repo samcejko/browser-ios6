@@ -16,6 +16,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowAdBlock = 0,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
+    BRFeatureRowDesktop,
     BRFeatureRowVerifyTLS,
     BRFeatureRowCount
 };
@@ -110,6 +111,10 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
                 cell.textLabel.text = L(@"JavaScript polyfills");
                 cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:BRFeatureRowJSFix];
                 break;
+            case BRFeatureRowDesktop:
+                cell.textLabel.text = L(@"Request desktop pages");
+                cell.accessoryView = [self switchWithValue:[BRSettings desktopMode] tag:BRFeatureRowDesktop];
+                break;
             case BRFeatureRowVerifyTLS:
                 cell.textLabel.text = L(@"Verify certificates");
                 cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:BRFeatureRowVerifyTLS];
@@ -148,9 +153,10 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
         case BRFeatureRowAdBlock: [BRSettings setAdBlockEnabled:sw.on]; break;
         case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; break;
         case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; break;
+        case BRFeatureRowDesktop: [BRSettings setDesktopMode:sw.on]; break;
         case BRFeatureRowVerifyTLS: [BRSettings setVerifyTLS:sw.on]; break;
     }
-    if (sw.tag == BRFeatureRowCSSFix || sw.tag == BRFeatureRowJSFix) {
+    if (sw.tag == BRFeatureRowCSSFix || sw.tag == BRFeatureRowJSFix || sw.tag == BRFeatureRowDesktop) {
         // cached bodies were rewritten with the old settings
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
     }

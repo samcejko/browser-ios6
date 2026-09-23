@@ -11,6 +11,10 @@
 "Rewrite modern CSS" = "Přepisovat moderní CSS";
 "JavaScript polyfills" = "Doplňovat JavaScript (polyfilly)";
 "Verify certificates" = "Ověřovat certifikáty";
+"Request desktop pages" = "Vyžadovat desktopové stránky";
+"Bookmarks" = "Záložky";
+"History" = "Historie";
+"Clear" = "Vymazat";
 "Clear cache" = "Vymazat cache";
 "Clear cookies" = "Vymazat cookies";
 "Version" = "Verze";

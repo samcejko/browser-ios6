@@ -1,5 +1,7 @@
 #import "BRBrowserViewController.h"
 #import "BRSettingsViewController.h"
+#import "BRLibraryViewController.h"
+#import "BRLibrary.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -7,7 +9,7 @@
 
 static const CGFloat BRBarHeight = 44;
 
-@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate>
+@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate>
 @property (nonatomic, strong) UINavigationBar *navBar;
 @property (nonatomic, strong) UINavigationItem *navItem;
 @property (nonatomic, strong) UIToolbar *toolbar;          // iPhone only
@@ -20,6 +22,8 @@ static const CGFloat BRBarHeight = 44;
 @property (nonatomic, strong) UIBarButtonItem *stopItem;
 @property (nonatomic, strong) UIBarButtonItem *homeItem;
 @property (nonatomic, strong) UIBarButtonItem *settingsItem;
+@property (nonatomic, strong) UIBarButtonItem *bookmarksItem;
+@property (nonatomic, copy) NSString *currentTitle;
 @property (nonatomic, strong) NSURL *currentURL;           // last main frame URL that was navigated to
 @property (nonatomic, strong) NSURL *httpFallbackURL;      // http:// variant of a typed host, tried when https fails
 @property (nonatomic) BOOL editingAddress;
@@ -64,6 +68,7 @@ static const CGFloat BRBarHeight = 44;
     self.stopItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemStop target:self action:@selector(stop)];
     self.homeItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Home") style:UIBarButtonItemStylePlain target:self action:@selector(goHome)];
     self.settingsItem = [[UIBarButtonItem alloc] initWithTitle:@"⚙" style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
+    self.bookmarksItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemBookmarks target:self action:@selector(showLibrary)];
 
     UIColor *barTint = [UIColor colorWithRed:0.56 green:0.59 blue:0.64 alpha:1];
     self.navBar = [[UINavigationBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, BRBarHeight)];
@@ -73,7 +78,7 @@ static const CGFloat BRBarHeight = 44;
     self.navItem.titleView = self.urlField;
     if (BRIsPad()) {
         self.navItem.leftBarButtonItems = @[self.backItem, self.forwardItem, self.homeItem];
-        self.navItem.rightBarButtonItems = @[self.settingsItem, self.reloadItem];
+        self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, self.reloadItem];
     } else {
         self.navItem.rightBarButtonItem = self.reloadItem;
     }
@@ -87,7 +92,8 @@ static const CGFloat BRBarHeight = 44;
         UIBarButtonItem *flex1 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
         UIBarButtonItem *flex2 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
         UIBarButtonItem *flex3 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.homeItem, flex3, self.settingsItem];
+        UIBarButtonItem *flex4 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.bookmarksItem, flex3, self.homeItem, flex4, self.settingsItem];
         [self.view addSubview:self.toolbar];
     }
 
@@ -192,7 +198,7 @@ static const CGFloat BRBarHeight = 44;
     if (loading) [self.spinner startAnimating];
     else [self.spinner stopAnimating];
     UIBarButtonItem *item = loading ? self.stopItem : self.reloadItem;
-    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.settingsItem, item];
+    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, item];
     else self.navItem.rightBarButtonItem = item;
 }
 
@@ -202,6 +208,25 @@ static const CGFloat BRBarHeight = 44;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
     nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
     [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)showLibrary
+{
+    BRLibraryViewController *library = [[BRLibraryViewController alloc] init];
+    library.delegate = self;
+    NSURL *url = self.webView.request.URL ?: self.currentURL;
+    if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) {
+        library.currentURL = url;
+        library.currentTitle = self.currentTitle;
+    }
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:library];
+    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)libraryViewController:(BRLibraryViewController *)controller didSelectURL:(NSURL *)url
+{
+    [self loadURL:url];
 }
 
 - (void)updateNavigationState
@@ -307,6 +332,8 @@ static const CGFloat BRBarHeight = 44;
     if (self.loadCount == 0) {
         self.httpFallbackURL = nil;
         NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
+        self.currentTitle = title;
+        if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [[BRLibrary shared] recordVisit:url title:title];
         BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
               (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB());
