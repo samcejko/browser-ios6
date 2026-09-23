@@ -159,6 +159,14 @@ jobs:
           curl -sSfL "https://cdn.jsdelivr.net/npm/indexeddbshim@3.10.0/dist/indexeddbshim.min.js" -o Resources/js/indexeddbshim.js
           ls -la Resources/js
 
+      - name: Minify the shims and check every script for iOS 6 (ES5, no block functions in strict mode)
+        run: |
+          set -e
+          npm install --no-save --silent acorn@8 terser@5
+          npx terser Resources/shims.js --compress --mangle --output Resources/js/shims.js
+          npx terser Resources/shims-extra.js --compress --mangle --output Resources/js/shims-extra.js
+          node tools/check-es5.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/js/*.js
+
       - name: Generate icons and launch images
         run: python3 tools/gen_assets.py Resources
 
