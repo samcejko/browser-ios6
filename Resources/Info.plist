@@ -95,5 +95,16 @@
 	</dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.samcejko.browser</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>browser</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

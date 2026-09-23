@@ -28,6 +28,27 @@
     return YES;
 }
 
+// browser:https://example.com  or  browser://open?url=https://example.com  (also handy for `uiopen` over SSH)
+- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url sourceApplication:(NSString *)sourceApplication annotation:(id)annotation
+{
+    NSString *s = url.absoluteString ?: @"";
+    NSString *target = nil;
+    NSRange q = [s rangeOfString:@"url="];
+    if (q.location != NSNotFound) {
+        target = [[s substringFromIndex:q.location + q.length] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+    } else if ([s hasPrefix:@"browser:"]) {
+        target = [s substringFromIndex:@"browser:".length];
+        while ([target hasPrefix:@"/"]) target = [target substringFromIndex:1];
+    }
+    if (!target.length) return YES;
+    if ([target rangeOfString:@"://"].location == NSNotFound) target = [@"https://" stringByAppendingString:target];
+    NSURL *targetURL = [NSURL URLWithString:target];
+    if (!targetURL) return NO;
+    BRLog(@"Opening %@ from %@", targetURL.absoluteString, sourceApplication ?: @"?");
+    [self.browserViewController loadURL:targetURL];
+    return YES;
+}
+
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application
 {
     BRLog(@"Memory warning");

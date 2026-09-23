@@ -37,3 +37,13 @@ Browser_LDFLAGS := -lz
 Browser_CODESIGN_FLAGS := -SResources/entitlements.plist
 
 include $(THEOS)/makefiles/application.mk
+
+# The iOS 9.3 SDK places the NSURL* classes (NSURLCache, NSCachedURLResponse, NSURLProtocol, ...) in
+# CFNetwork, so the linker binds them to an implicit CFNetwork dependency. On iOS 6 those classes live
+# in Foundation and dyld aborts at launch ("Symbol not found ... Expected in CFNetwork"). Pointing the
+# CFNetwork load command at Foundation makes dyld look them up in Foundation (which re-exports CFNetwork
+# on newer systems), then the binary is signed again because the change invalidates the signature.
+BROWSER_STAGED_BIN := $(THEOS_STAGING_DIR)/Applications/Browser.app/Browser
+after-stage::
+	install_name_tool -change /System/Library/Frameworks/CFNetwork.framework/CFNetwork /System/Library/Frameworks/Foundation.framework/Foundation "$(BROWSER_STAGED_BIN)"
+	ldid -SResources/entitlements.plist "$(BROWSER_STAGED_BIN)"
