@@ -698,13 +698,16 @@ var CSSFix = (function () {
     function fixDeclarations(decls, ctx, keyframe) {
         var local = null, i, d;
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
-        var objectFit = null, objectPosition = null, ofiDone = false;
+        var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') { if (!local) local = {}; local[d.p] = d.v; }
             else if ((d.p === 'flex-wrap' || d.p === 'flex-flow') && /wrap/i.test(d.v) && !/nowrap/i.test(d.v)) wrap = true;
             else if (d.p === 'object-fit') objectFit = d.v.toLowerCase();
             else if (d.p === 'object-position') objectPosition = d.v.toLowerCase();
+            // a column flex container is plain block stacking; the 2009 box model lays nested boxes out
+            // repeatedly and deeply nested flex pages (seznam.cz) never finished, so columns stay blocks
+            if ((d.p === 'flex-direction' || d.p === 'flex-flow') && /column/i.test(d.v)) columnFlex = true;
         }
         var out = [];
         for (i = 0; i < decls.length; i++) {
@@ -717,8 +720,8 @@ var CSSFix = (function () {
             var lv = v.toLowerCase();
             switch (p) {
                 case 'display':
-                    if (lv === 'flex') push(out, 'display', wrap ? 'block' : '-webkit-box', imp);
-                    else if (lv === 'inline-flex') push(out, 'display', wrap ? 'inline-block' : '-webkit-inline-box', imp);
+                    if (lv === 'flex') push(out, 'display', (wrap || columnFlex) ? 'block' : '-webkit-box', imp);
+                    else if (lv === 'inline-flex') push(out, 'display', (wrap || columnFlex) ? 'inline-block' : '-webkit-inline-box', imp);
                     else if (lv === 'grid' || lv === 'flow-root' || lv === 'contents') push(out, 'display', 'block', imp);
                     else if (lv === 'inline-grid') push(out, 'display', 'inline-block', imp);
                     else push(out, 'display', v, imp);
