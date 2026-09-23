@@ -11,3 +11,4 @@ Resources/js/
 *.deb
 .DS_Store
 tools/local.json
+tools/babel-test/

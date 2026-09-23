@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>babel test</title>
+<style>body{font-family:monospace;font-size:12px;white-space:pre-wrap}</style>
+<script>
+// the same prelude the app installs into its JavaScriptCore context
+var __brNatives = { JSON: { stringify: JSON.stringify, parse: JSON.parse },
+  String: { replace: String.prototype.replace, split: String.prototype.split, match: String.prototype.match, search: String.prototype.search, trim: String.prototype.trim, indexOf: String.prototype.indexOf, slice: String.prototype.slice, toLowerCase: String.prototype.toLowerCase, charAt: String.prototype.charAt, charCodeAt: String.prototype.charCodeAt },
+  RegExp: { exec: RegExp.prototype.exec, test: RegExp.prototype.test, toString: RegExp.prototype.toString },
+  Array: { sort: Array.prototype.sort, slice: Array.prototype.slice, splice: Array.prototype.splice, concat: Array.prototype.concat, filter: Array.prototype.filter, map: Array.prototype.map, forEach: Array.prototype.forEach, reduce: Array.prototype.reduce, reduceRight: Array.prototype.reduceRight, indexOf: Array.prototype.indexOf, lastIndexOf: Array.prototype.lastIndexOf, join: Array.prototype.join, reverse: Array.prototype.reverse, some: Array.prototype.some, every: Array.prototype.every, push: Array.prototype.push, unshift: Array.prototype.unshift },
+  Number: { toFixed: Number.prototype.toFixed, toPrecision: Number.prototype.toPrecision }, Function: { bind: Function.prototype.bind }, Object: { toString: Object.prototype.toString }, global: { parseInt: parseInt, parseFloat: parseFloat } };
+function __brRestoreNatives() {
+  var n = __brNatives, k;
+  for (k in n.JSON) JSON[k] = n.JSON[k];
+  for (k in n.String) String.prototype[k] = n.String[k];
+  for (k in n.RegExp) RegExp.prototype[k] = n.RegExp[k];
+  for (k in n.Array) Array.prototype[k] = n.Array[k];
+  for (k in n.Number) Number.prototype[k] = n.Number[k];
+  Function.prototype.bind = n.Function.bind; Object.prototype.toString = n.Object.toString;
+  parseInt = n.global.parseInt; parseFloat = n.global.parseFloat;
+}
+</script>
+<script src="babel-test/core-js-custom.js"></script>
+<script>__brRestoreNatives();</script>
+<script src="babel-test/regenerator-runtime.js"></script>
+<script>__brRestoreNatives();</script>
+<script src="babel-test/babel.min.js"></script>
+<script>__brRestoreNatives();</script>
+</head>
+<body>
+<div id="out">running…</div>
+<script>
+var out = [];
+function log(s) { out.push(s); document.getElementById('out').textContent = out.join('\n'); }
+log('Babel: ' + (typeof Babel === 'undefined' ? 'MISSING' : Babel.version));
+var sample = "const f = async (a = 1, ...r) => { const {x, y = 2} = {x: a}; let s = `v${x}`; class K { #p = 1; static m() {} get v() { return this.#p ?? 0; } } for (const i of [1,2]) { await null; } return r?.[0] ?? y; };";
+function tryTransform(name, src, extra) {
+  var t0 = Date.now();
+  try {
+    var opts = { presets: [['env', { targets: { ie: '11' }, modules: 'systemjs', loose: true, exclude: ['transform-typeof-symbol'] }]],
+      sourceType: 'unambiguous', compact: true, comments: false, filename: name, babelrc: false, configFile: false };
+    if (extra) for (var k in extra) opts[k] = extra[k];
+    var code = Babel.transform(src, opts).code;
+    log(name + ': OK in ' + (Date.now() - t0) + ' ms, ' + src.length + ' -> ' + code.length + ' chars\n  ' + code.slice(0, 300));
+  } catch (e) {
+    log(name + ': EXCEPTION after ' + (Date.now() - t0) + ' ms: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 25).join('\n'));
+  }
+}
+tryTransform('selftest.js', sample);
+tryTransform('simple.js', 'const a = (b) => b + 1; export default a;');
+tryTransform('plain.js', 'var x = 1;');
+document.title = 'babel test done';
+</script>
+</body>
+</html>

@@ -20,4 +20,7 @@
 // Loads Babel if needed (engine queue only). YES when the transpiler can be used.
 - (BOOL)prepare;
 
+// Logs throughput numbers for Babel and TypeScript (triggered with the browser:selftest URL).
++ (void)runBenchmark;
+
 @end

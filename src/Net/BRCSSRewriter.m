@@ -5,7 +5,7 @@
 #import "BRCommon.h"
 
 static const NSUInteger BRMaxPagesRemembered = 8;
-static const NSUInteger BRMaxTranspileSource = 1500 * 1024;
+static const NSUInteger BRMaxTranspileSource = 32 * 1024;   // Babel manages only a few KB per second on this hardware
 static NSString * const BRPolyfillURL = @"https://ios6-browser.invalid/polyfills.js";
 
 static NSStringEncoding BREncodingForCharset(NSString *charset)

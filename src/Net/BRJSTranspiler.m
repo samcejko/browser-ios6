@@ -18,16 +18,22 @@ static NSString *BRSHA1(NSString *s)
 static NSString * const BRTranspilerGlue =
 @"var BRTranspile = (function () {"
 @"  function needsTranspile(src) { try { new Function(src); return false; } catch (e) { return e instanceof SyntaxError; } }"
+@"  var moduleSyntax = /^[ \\t]*(import\\s*[\\w{*'\"]|export\\s+)/m;"
 @"  function transpile(src, name, moduleId) {"
-@"    var opts = { presets: [['env', { targets: { ie: '11' }, modules: 'systemjs', loose: true, exclude: ['transform-typeof-symbol'] }]],"
-@"      sourceType: moduleId ? 'module' : 'unambiguous', compact: true, comments: false, filename: name || 'script.js', babelrc: false, configFile: false };"
+@"    var isModule = !!moduleId || moduleSyntax.test(src);"
+@"    var opts = { presets: [['env', { targets: { ie: '11' }, modules: isModule ? 'systemjs' : false, loose: true, exclude: ['transform-typeof-symbol'] }]],"
+@"      sourceType: isModule ? 'module' : 'script', compact: true, comments: false, filename: name || 'script.js', babelrc: false, configFile: false };"
 @"    if (moduleId) { opts.moduleIds = true; opts.moduleId = moduleId; }"
+@"    if (!isModule) src = src.replace(/(^|[^\\w$.])import\\s*\\(/g, '$1System.import(');"
 @"    return Babel.transform(src, opts).code;"
 @"  }"
 @"  return { needsTranspile: needsTranspile, transpile: transpile,"
 @"    run: function (src, name) { if (!needsTranspile(src)) return ''; return transpile(src, name); },"
 @"    transpileModule: function (src, moduleId) { return transpile(src, moduleId, moduleId); } };"
 @"})();";
+
+static NSString * const BRSelfTestSample =
+@"const f = async (a = 1, ...r) => { const {x, y = 2} = {x: a}; let s = `v${x}`; class K { #p = 1; static m() {} get v() { return this.#p ?? 0; } } for (const i of [1,2]) { await null; } return r?.[0] ?? y; };";
 
 @implementation BRJSTranspiler {
     BOOL _loaded;
@@ -120,12 +126,50 @@ static NSString * const BRTranspilerGlue =
 
 - (void)selfTest
 {
-    NSString *sample = @"const f = async (a = 1, ...r) => { const {x, y = 2} = {x: a}; let s = `v${x}`; class K { #p = 1; static m() {} get v() { return this.#p ?? 0; } } for (const i of [1,2]) { await null; } return r?.[0] ?? y; };";
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     BOOL changed = NO;
-    NSString *out = [self transpileIfNeeded:sample name:@"selftest.js" changed:&changed];
+    NSString *out = [self transpileIfNeeded:BRSelfTestSample name:@"selftest.js" changed:&changed];
     BRLog(@"Transpiler self test: %@ in %ld ms (%ld -> %ld chars), %ld MB", changed ? @"transpiled" : @"unchanged",
-          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), (long)sample.length, (long)out.length, (long)BRResidentMemoryMB());
+          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), (long)BRSelfTestSample.length, (long)out.length, (long)BRResidentMemoryMB());
+}
+
+// Throughput measurement on a synthetic 20 KB source (100 copies of the sample), Babel and TypeScript.
++ (void)runBenchmark
+{
+    BRJSTranspiler *t = [self shared];
+    [[BRJSEngine shared] performAsync:^{
+        NSMutableString *big = [NSMutableString string];
+        for (int i = 0; i < 100; i++) [big appendFormat:@"%@\nvar g%d = f;\n", BRSelfTestSample, i];
+        if ([t ensureLoaded]) {
+            NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+            NSString *out = [[BRJSEngine shared] callFunction:@"BRTranspile.transpile" arguments:@[big, @"bench.js"]];
+            BRLog(@"BENCH Babel: %ld chars in %ld ms -> %ld chars, %ld MB", (long)big.length,
+                  (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), (long)out.length, (long)BRResidentMemoryMB());
+        }
+        // TypeScript in a fresh context (Babel released first)
+        BRJSEngine *engine = [BRJSEngine shared];
+        [engine resetContext];
+        [engine performAsync:^{
+            NSString *path = [[NSBundle mainBundle] pathForResource:@"typescript.min" ofType:@"js" inDirectory:@"js"];
+            NSString *script = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
+            if (!script.length) { BRLog(@"BENCH TypeScript: typescript.min.js missing"); return; }
+            NSTimeInterval t1 = [NSDate timeIntervalSinceReferenceDate];
+            BOOL ok = [engine evaluateScript:script sourceName:@"typescript.js"];
+            [engine evaluateScript:@"__brRestoreNatives()" sourceName:@"restore-natives.js"];
+            BRLog(@"BENCH TypeScript %@ in %ld ms (%ld KB), %ld MB", ok ? @"loaded" : @"FAILED",
+                  (long)(([NSDate timeIntervalSinceReferenceDate] - t1) * 1000), (long)(script.length / 1024), (long)BRResidentMemoryMB());
+            if (!ok) return;
+            [engine evaluateScript:@"var BRTS = function (src) { return ts.transpileModule(src, { compilerOptions: { target: ts.ScriptTarget.ES5, module: ts.ModuleKind.System, downlevelIteration: false, importHelpers: false, noEmitHelpers: false }, reportDiagnostics: false }).outputText; };" sourceName:@"ts-glue.js"];
+            NSTimeInterval t2 = [NSDate timeIntervalSinceReferenceDate];
+            NSString *small = [engine callFunction:@"BRTS" arguments:@[BRSelfTestSample]];
+            BRLog(@"BENCH TypeScript small: %ld -> %ld chars in %ld ms", (long)BRSelfTestSample.length, (long)small.length, (long)(([NSDate timeIntervalSinceReferenceDate] - t2) * 1000));
+            NSTimeInterval t3 = [NSDate timeIntervalSinceReferenceDate];
+            NSString *out = [engine callFunction:@"BRTS" arguments:@[big]];
+            BRLog(@"BENCH TypeScript: %ld chars in %ld ms -> %ld chars, %ld MB", (long)big.length,
+                  (long)(([NSDate timeIntervalSinceReferenceDate] - t3) * 1000), (long)out.length, (long)BRResidentMemoryMB());
+            [engine resetContext];
+        }];
+    }];
 }
 
 - (NSString *)transpileIfNeeded:(NSString *)source name:(NSString *)name changed:(BOOL *)changed

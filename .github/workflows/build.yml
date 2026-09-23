@@ -113,8 +113,7 @@ jobs:
                       'es.array.filter', 'es.array.map', 'es.array.reverse', 'es.array.index-of', 'es.array.last-index-of', 'es.array.join',
                       'es.array.for-each', 'es.array.reduce', 'es.array.reduce-right', 'es.array.some', 'es.array.every', 'es.array.push',
                       'es.array.unshift', 'es.parse-int', 'es.parse-float', 'es.number.to-fixed', 'es.number.to-precision', 'es.number.constructor',
-                      'es.date', 'es.function', 'es.string.trim', 'es.string.trim-start', 'es.string.trim-end', 'es.object.to-string',
-                      'es.array.iterator'],
+                      'es.date', 'es.function', 'es.string.trim', 'es.string.trim-start', 'es.string.trim-end', 'es.object.to-string'],
             summary: { console: { size: true, modules: false } },
             format: 'bundle',
             filename: 'core-js-custom.js'
@@ -140,8 +139,12 @@ jobs:
           { "presets": [["@babel/preset-env", { "targets": { "ie": "11" }, "modules": false, "exclude": ["transform-typeof-symbol"] }]], "compact": true, "comments": false, "sourceType": "script" }
           EOF
           NODE_OPTIONS=--max-old-space-size=6144 npx babel babel.orig.js --config-file ./babel.config.json --out-file "$GITHUB_WORKSPACE/Resources/js/babel.min.js"
+          # TypeScript's transpiler as a candidate (its own code is ES5); minified to keep the bundle small
+          curl -sSfL "https://cdn.jsdelivr.net/npm/typescript@4.9.5/lib/typescript.js" -o /tmp/babel/typescript.js
+          npm install terser@5.39.0 --no-audit --no-fund --silent
+          NODE_OPTIONS=--max-old-space-size=6144 npx terser /tmp/babel/typescript.js --compress --mangle --output "$GITHUB_WORKSPACE/Resources/js/typescript.min.js"
           cd "$GITHUB_WORKSPACE"
-          ls -la Resources/js/babel.min.js
+          ls -la Resources/js/babel.min.js Resources/js/typescript.min.js
           # regular expression flags that survived (should be none besides g, i, m)
           grep -oE '/[gimsuyd]{1,4}[^a-zA-Z0-9_$]' Resources/js/babel.min.js | grep -E 'u|s|y|d' | sort | uniq -c | sort -rn | head -n 10 || true
           curl -sSfL "https://cdn.jsdelivr.net/npm/regenerator-runtime@0.14.1/runtime.js" -o Resources/js/regenerator-runtime.js

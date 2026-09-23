@@ -23,6 +23,8 @@ static JSVal (*p_JSValueMakeString)(JSCtx ctx, JSStr string);
 static JSVal (*p_JSValueMakeUndefined)(JSCtx ctx);
 static JSObj (*p_JSContextGetGlobalObject)(JSCtx ctx);
 static void (*p_JSObjectSetProperty)(JSCtx ctx, JSObj object, JSStr propertyName, JSVal value, unsigned attributes, JSVal *exception);
+static JSVal (*p_JSObjectGetProperty)(JSCtx ctx, JSObj object, JSStr propertyName, JSVal *exception);
+static JSObj (*p_JSValueToObject)(JSCtx ctx, JSVal value, JSVal *exception);
 static void (*p_JSGarbageCollect)(JSCtx ctx);
 
 static void *BRLookup(void *handle, const char *name)
@@ -65,6 +67,8 @@ static BOOL BRResolveJSC(void)
     RESOLVE(JSValueMakeUndefined);
     RESOLVE(JSContextGetGlobalObject);
     RESOLVE(JSObjectSetProperty);
+    RESOLVE(JSObjectGetProperty);
+    RESOLVE(JSValueToObject);
     RESOLVE(JSGarbageCollect);
 #undef RESOLVE
     resolved = YES;
@@ -232,7 +236,17 @@ static NSString * const BRContextPrelude =
 - (void)logException:(JSVal)exception context:(NSString *)what
 {
     NSString *text = [self stringFromValue:exception] ?: @"?";
-    BRLog(@"JavaScript exception in %@: %@", what, text.length > 300 ? [text substringToIndex:300] : text);
+    NSString *stack = nil;
+    JSVal exc2 = NULL;
+    JSObj obj = p_JSValueToObject(_ctx, exception, &exc2);
+    if (obj) {
+        JSStr name = p_JSStringCreateWithCFString(CFSTR("stack"));
+        JSVal v = p_JSObjectGetProperty(_ctx, obj, name, &exc2);
+        p_JSStringRelease(name);
+        if (v && !p_JSValueIsUndefined(_ctx, v)) stack = [self stringFromValue:v];
+    }
+    if (stack.length > 1200) stack = [stack substringToIndex:1200];
+    BRLog(@"JavaScript exception in %@: %@%@%@", what, text.length > 300 ? [text substringToIndex:300] : text, stack.length ? @"\n" : @"", stack ?: @"");
 }
 
 - (BOOL)evaluateScript:(NSString *)script sourceName:(NSString *)name

@@ -1185,7 +1185,7 @@ var CSSFix = (function () {
     }
 
     function transpileInline(code, moduleId) {
-        if (typeof BRTranspile === 'undefined' || !code || !/[^\s]/.test(code)) return null;
+        if (typeof BRTranspile === 'undefined' || !code || !/[^\s]/.test(code) || code.length > 32768) return null;
         var key = hashString(code) + (moduleId ? '|' + moduleId : '');
         if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
         var out = null;

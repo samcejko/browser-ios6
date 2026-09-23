@@ -62,6 +62,10 @@
         [self.browserViewController goHome];
         return YES;
     }
+    if ([target isEqualToString:@"selftest"]) {
+        [BRJSTranspiler runBenchmark];
+        return YES;
+    }
     if ([target rangeOfString:@"://"].location == NSNotFound) target = [@"https://" stringByAppendingString:target];
     NSURL *targetURL = [NSURL URLWithString:target];
     if (!targetURL) return NO;
