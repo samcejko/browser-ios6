@@ -53,7 +53,7 @@ function Invoke-GH {
 function Test-Ignored([string]$rel) {
     $r = $rel -replace '\\', '/'
     if ($r -like '.theos/*' -or $r -like 'obj/*' -or $r -like 'packages/*' -or $r -like 'vendor/mbedtls/*' -or $r -like '.git/*') { return $true }
-    if ($r -like 'Resources/Icon*.png' -or $r -like 'Resources/Default*.png' -or $r -eq 'Resources/cacert.pem' -or $r -eq 'Resources/adblock.txt') { return $true }
+    if ($r -like 'Resources/Icon*.png' -or $r -like 'Resources/Default*.png' -or $r -eq 'Resources/cacert.pem' -or $r -eq 'Resources/adblock.txt' -or $r -like 'Resources/js/*') { return $true }
     if ($r -like '*.ipa' -or $r -like '*.deb' -or $r -like '*.DS_Store' -or $r -eq 'tools/local.json' -or $r -like '*.log') { return $true }
     return $false
 }

@@ -95,6 +95,19 @@ jobs:
           grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' /tmp/adservers.txt > Resources/adblock.txt || true
           echo "ad block domains: $(wc -l < Resources/adblock.txt)"
 
+      - name: Fetch JavaScript tooling (Babel standalone, core-js, polyfills)
+        run: |
+          set -e
+          mkdir -p Resources/js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.10/babel.min.js" -o Resources/js/babel.min.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js" -o Resources/js/core-js.min.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/regenerator-runtime@0.14.1/runtime.js" -o Resources/js/regenerator-runtime.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/whatwg-fetch@3.6.20/dist/fetch.umd.js" -o Resources/js/fetch.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/url-polyfill@1.1.12/url-polyfill.min.js" -o Resources/js/url-polyfill.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/intersection-observer@0.12.2/intersection-observer.js" -o Resources/js/intersection-observer.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/resize-observer-polyfill@1.5.1/dist/ResizeObserver.js" -o Resources/js/resize-observer.js
+          ls -la Resources/js
+
       - name: Generate icons and launch images
         run: python3 tools/gen_assets.py Resources
 

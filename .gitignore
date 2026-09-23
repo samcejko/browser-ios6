@@ -6,6 +6,7 @@ Resources/Icon*.png
 Resources/Default*.png
 Resources/cacert.pem
 Resources/adblock.txt
+Resources/js/
 *.ipa
 *.deb
 .DS_Store

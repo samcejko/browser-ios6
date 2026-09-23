@@ -5,6 +5,7 @@
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCSSRewriter.h"
+#import "BRJSTranspiler.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -17,6 +18,15 @@
     // Our own HTTP cache (filled explicitly by BRURLProtocol) and a permissive cookie jar, like a browser.
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
+    // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
+    static const NSInteger BRCacheFormatVersion = 2;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
+        [cache removeAllCachedResponses];
+        [defaults setInteger:BRCacheFormatVersion forKey:@"BRCacheFormatVersion"];
+        [defaults synchronize];
+        BRLog(@"HTTP cache cleared (format version %ld)", (long)BRCacheFormatVersion);
+    }
     [[NSHTTPCookieStorage sharedHTTPCookieStorage] setCookieAcceptPolicy:NSHTTPCookieAcceptPolicyAlways];
 
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
@@ -24,6 +34,7 @@
     [BRTLSSocket warmUp];
     [BRAdBlock warmUp];
     [BRCSSRewriter warmUp];
+    [BRJSTranspiler warmUp];
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.browserViewController = [[BRBrowserViewController alloc] init];
