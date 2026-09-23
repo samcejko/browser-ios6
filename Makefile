@@ -21,7 +21,7 @@ BROTLI_FILES := $(wildcard vendor/brotli/c/common/*.c) $(wildcard vendor/brotli/
 WEBP_FILES := $(wildcard vendor/libwebp/src/dec/*.c) $(wildcard vendor/libwebp/src/dsp/*.c) $(wildcard vendor/libwebp/src/utils/*.c)
 
 Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm) \
-                 vendor/mbedtls_glue.c \
+                 vendor/mbedtls_glue.c vendor/cxx_glue.cc \
                  $(wildcard vendor/mbedtls/library/*.c) \
                  $(WOFF2_FILES) $(BROTLI_FILES) $(WEBP_FILES)
 
@@ -38,7 +38,7 @@ Browser_CFLAGS := -Isrc -Isrc/Net -Isrc/UI -Isrc/Model \
 
 # C++ (woff2) and Objective-C++ (the font converter wrapper)
 Browser_CCFLAGS := -std=c++11 -stdlib=libc++ -fno-exceptions -fno-rtti -Wno-unused-parameter
-Browser_OBJCCFLAGS := -std=c++11 -stdlib=libc++ -fobjc-arc
+Browser_OBJCCFLAGS := -std=c++11 -stdlib=libc++ -fobjc-arc -fno-exceptions -fno-rtti
 
 # Objective-C only: ARC; APIs newer than iOS 6.0 are warnings here and turned into errors for our own
 # sources by the pragma in src/BRCommon.h (vendored code only warns).
