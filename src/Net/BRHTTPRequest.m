@@ -1,5 +1,6 @@
 #import "BRHTTPRequest.h"
 #import "BRTLSSocket.h"
+#import "BRConnectionPool.h"
 #import "BRCommon.h"
 
 #include <zlib.h>
@@ -14,8 +15,15 @@ typedef NS_ENUM(NSInteger, BRChunkState) {
     BRChunkStateDone,
 };
 
+typedef NS_ENUM(NSInteger, BRExchangeResult) {
+    BRExchangeDone = 0,      // response fully received
+    BRExchangeRetry,         // reused connection turned out to be dead before any response byte arrived
+    BRExchangeFailed,
+};
+
 static const NSUInteger BRInflateBufferSize = 32768;
 static const long BRMaxConcurrentConnections = 10;
+static const uint32_t BRReusedConnectionHeaderTimeoutMs = 10000;   // stale keep-alive connections must fail fast
 
 static dispatch_semaphore_t BRConnectionSlots(void)
 {
@@ -47,6 +55,10 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 @property (nonatomic) long long chunkRemaining;
 @property (nonatomic) BOOL hasSlot;
 @property (nonatomic) BOOL bodyError;
+@property (nonatomic) BOOL http11;
+@property (nonatomic) BOOL connectionClose;         // server asked to close after this response
+@property (nonatomic) BOOL noBody;                  // HEAD, 204, 304
+@property (nonatomic) BOOL keepAlive;               // decided once the response is complete
 @end
 
 @implementation BRHTTPRequest {
@@ -132,6 +144,11 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     return [self isSecure] ? 443 : 80;
 }
 
+- (NSString *)poolKey
+{
+    return [NSString stringWithFormat:@"%@://%@:%d", [self isSecure] ? @"https" : @"http", [self.url.host lowercaseString] ?: @"", [self port]];
+}
+
 // Path and query exactly as written in the URL (percent-encoded), without the fragment.
 - (NSString *)requestTarget
 {
@@ -158,7 +175,8 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     for (NSString *key in self.headers) {
         NSString *lk = [key lowercaseString];
         if ([lk isEqualToString:@"host"] || [lk isEqualToString:@"content-length"] || [lk isEqualToString:@"connection"] ||
-            [lk isEqualToString:@"accept-encoding"] || [lk isEqualToString:@"transfer-encoding"] || [lk isEqualToString:@"expect"]) continue;
+            [lk isEqualToString:@"accept-encoding"] || [lk isEqualToString:@"transfer-encoding"] || [lk isEqualToString:@"expect"] ||
+            [lk isEqualToString:@"keep-alive"]) continue;
         NSString *value = [[self.headers[key] description] stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
         value = [value stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
         [given addObject:lk];
@@ -168,7 +186,7 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     if (![given containsObject:@"accept"]) [s appendString:@"Accept: */*\r\n"];
     if (![given containsObject:@"accept-language"]) [s appendFormat:@"Accept-Language: %@\r\n", [BRHTTPRequest acceptLanguage]];
     [s appendString:@"Accept-Encoding: gzip, deflate\r\n"];
-    [s appendString:@"Connection: close\r\n"];
+    [s appendString:@"Connection: keep-alive\r\n"];
     if (self.body || [self.method isEqualToString:@"POST"] || [self.method isEqualToString:@"PUT"] || [self.method isEqualToString:@"PATCH"]) {
         [s appendFormat:@"Content-Length: %lu\r\n", (unsigned long)self.body.length];
     }
@@ -217,10 +235,14 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 
 - (BOOL)setupInflate
 {
+    if (_zinit) {
+        inflateEnd(&_zstream);
+        _zinit = NO;
+    }
     memset(&_zstream, 0, sizeof(_zstream));
     if (inflateInit2(&_zstream, 15 + 32) != Z_OK) return NO;   // auto-detects gzip and zlib headers
     _zinit = YES;
-    _zout = (uint8_t *)malloc(BRInflateBufferSize);
+    if (!_zout) _zout = (uint8_t *)malloc(BRInflateBufferSize);
     if (!_zout) return NO;
     _zactive = YES;
     return YES;
@@ -260,11 +282,20 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 - (BOOL)consumeBody:(NSMutableData *)buffer
 {
     if (!self.chunked) {
+        if (self.contentLength >= 0) {
+            long long remaining = self.contentLength - self.bodyReceived;
+            NSUInteger take = (NSUInteger)MIN((long long)buffer.length, MAX(remaining, 0));
+            if (take) {
+                if (![self deliverBodyBytes:buffer.bytes length:take]) { self.bodyError = YES; return YES; }
+                [buffer replaceBytesInRange:NSMakeRange(0, take) withBytes:NULL length:0];
+            }
+            return self.bodyReceived >= self.contentLength;
+        }
         if (buffer.length) {
             if (![self deliverBodyBytes:buffer.bytes length:buffer.length]) { self.bodyError = YES; return YES; }
             buffer.length = 0;
         }
-        return self.contentLength >= 0 && self.bodyReceived >= self.contentLength;
+        return NO;   // ends with the connection
     }
     // Chunked transfer encoding state machine.
     for (;;) {
@@ -347,6 +378,7 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     }
     if (status < 200) return 2;   // 100 Continue, 103 Early Hints: the real headers follow
 
+    self.http11 = [statusLine hasPrefix:@"HTTP/1.1"];
     NSMutableArray *pairs = [NSMutableArray array];
     NSMutableDictionary *headers = [NSMutableDictionary dictionary];
     NSMutableArray *cookies = [NSMutableArray array];
@@ -370,18 +402,146 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     self.responseHeaders = headers;
     self.responseHeaderPairs = pairs;
     self.setCookieHeaders = cookies;
+    NSString *connection = [headers[@"connection"] lowercaseString] ?: @"";
+    self.connectionClose = [connection rangeOfString:@"close"].location != NSNotFound || (!self.http11 && [connection rangeOfString:@"keep-alive"].location == NSNotFound);
     NSString *te = [headers[@"transfer-encoding"] lowercaseString];
     self.chunked = te && [te rangeOfString:@"chunked"].location != NSNotFound;
     NSString *cl = headers[@"content-length"];
     self.contentLength = (cl && !self.chunked) ? [cl longLongValue] : -1;
+    self.noBody = [self.method isEqualToString:@"HEAD"] || status == 204 || status == 304;
     NSString *ce = [[headers[@"content-encoding"] lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    if ([ce isEqualToString:@"gzip"] || [ce isEqualToString:@"x-gzip"] || [ce isEqualToString:@"deflate"]) {
+    if (!self.noBody && ([ce isEqualToString:@"gzip"] || [ce isEqualToString:@"x-gzip"] || [ce isEqualToString:@"deflate"])) {
         if ([self setupInflate]) self.decodedContentEncoding = YES;
     }
     return 1;
 }
 
+- (void)resetResponseState
+{
+    self.statusCode = 0;
+    self.responseHeaders = nil;
+    self.responseHeaderPairs = nil;
+    self.setCookieHeaders = nil;
+    self.chunked = NO;
+    self.contentLength = -1;
+    self.bodyReceived = 0;
+    self.chunkState = BRChunkStateSize;
+    self.chunkRemaining = 0;
+    self.bodyError = NO;
+    self.http11 = NO;
+    self.connectionClose = NO;
+    self.noBody = NO;
+    self.decodedContentEncoding = NO;
+    if (_zinit) { inflateEnd(&_zstream); _zinit = NO; }
+    _zactive = NO;
+}
+
 #pragma mark - Worker
+
+- (BRTLSSocket *)connectWithError:(NSError **)error
+{
+    BRTLSSocket *socket = [[BRTLSSocket alloc] init];
+    socket.plain = ![self isSecure];
+    if (![socket connectToHost:self.url.host port:[self port] verify:self.verifyTLS
+              connectTimeoutMs:(int)(self.connectTimeout * 1000) readTimeoutMs:(int)(self.readTimeout * 1000) error:error]) {
+        if (error && !*error) *error = BRMakeError(BRErrorConnect, L(@"Connection failed."));
+        return nil;
+    }
+    return socket;
+}
+
+// Sends the request and reads the whole response on `socket`.
+- (BRExchangeResult)exchangeOnSocket:(BRTLSSocket *)socket reused:(BOOL)reused error:(NSError **)error
+{
+    BOOL responseSeen = NO;   // any byte of a response arrived
+    self.tlsInfo = [NSString stringWithFormat:@"%@ %@", socket.tlsVersion ?: @"", socket.cipherSuite ?: @""];
+    NSError *err = nil;
+    if (![socket writeData:[self serializedRequest] error:&err]) {
+        if (reused && !self.isCancelled) return BRExchangeRetry;
+        if (error) *error = err ?: BRMakeError(BRErrorConnectionLost, L(@"Sending the request failed."));
+        return BRExchangeFailed;
+    }
+    if (reused) [socket setReadTimeoutMs:MIN(BRReusedConnectionHeaderTimeoutMs, (uint32_t)(self.readTimeout * 1000))];
+
+    NSMutableData *buffer = [NSMutableData data];
+    BOOL headersDone = NO;
+    BOOL bodyDone = NO;
+    const NSUInteger chunkSize = 16384;
+    uint8_t *tmp = (uint8_t *)malloc(chunkSize);
+    if (!tmp) {
+        if (error) *error = BRMakeError(BRErrorNetwork, @"Out of memory");
+        return BRExchangeFailed;
+    }
+    BRExchangeResult result = BRExchangeFailed;
+    while (!bodyDone) {
+        NSError *readError = nil;
+        NSInteger n = [socket readIntoBuffer:tmp maxLength:chunkSize error:&readError];
+        if (n < 0) {
+            if (reused && !responseSeen && !self.isCancelled) { result = BRExchangeRetry; goto out; }
+            if (error) *error = readError ?: BRMakeError(BRErrorConnectionLost, L(@"Connection lost."));
+            goto out;
+        }
+        if (n == 0) {
+            // EOF
+            if (!headersDone) {
+                if (reused && !responseSeen && !self.isCancelled) { result = BRExchangeRetry; goto out; }
+                if (error) *error = BRMakeError(BRErrorBadResponse, L(@"The server closed the connection without responding."));
+                goto out;
+            }
+            // The body ends with the connection (also for incomplete chunked / content-length bodies).
+            [self consumeBody:buffer];
+            if (self.chunked || self.contentLength >= 0) {
+                BRLog(@"HTTP body ended early (chunked=%d, received=%lld) for %@", self.chunked, self.bodyReceived, self.url);
+            }
+            self.connectionClose = YES;
+            bodyDone = YES;
+            break;
+        }
+        responseSeen = YES;
+        [buffer appendBytes:tmp length:(NSUInteger)n];
+        if (!headersDone) {
+            NSError *hErr = nil;
+            int rc = 0;
+            while (!headersDone) {
+                rc = [self parseHeadersFromBuffer:buffer error:&hErr];
+                if (rc < 0) {
+                    if (error) *error = hErr ?: BRMakeError(BRErrorBadResponse, L(@"The server sent an invalid response."));
+                    goto out;
+                }
+                if (rc == 0) break;          // need more bytes
+                if (rc == 2) continue;       // interim response, parse the next block
+                headersDone = YES;
+            }
+            if (!headersDone) continue;
+            if (reused) [socket setReadTimeoutMs:(uint32_t)(self.readTimeout * 1000)];
+            NSInteger status = self.statusCode;
+            BRHTTPHeadersBlock hb = self.onHeaders;
+            self.onHeaders = nil;
+            if (hb) hb(status, self.responseHeaders);
+            if (self.isCancelled) {
+                if (error) *error = BRMakeError(BRErrorCancelled, L(@"Cancelled"));
+                goto out;
+            }
+            if (self.noBody) {
+                bodyDone = YES;
+                break;
+            }
+        }
+        if ([self consumeBody:buffer]) bodyDone = YES;
+        if (self.bodyError) {
+            if (error) *error = BRMakeError(BRErrorBadResponse, L(@"Content decoding failed."));
+            goto out;
+        }
+    }
+    // Decide whether the connection can carry another request.
+    BOOL framed = self.noBody || (self.chunked && self.chunkState == BRChunkStateDone) ||
+                  (!self.chunked && self.contentLength >= 0 && self.bodyReceived >= self.contentLength);
+    self.keepAlive = framed && !self.connectionClose && !self.isCancelled && !self.bodyError && buffer.length == 0 && socket.isConnected;
+    result = BRExchangeDone;
+out:
+    free(tmp);
+    return result;
+}
 
 - (void)run
 {
@@ -399,91 +559,57 @@ static dispatch_semaphore_t BRConnectionSlots(void)
         return;
     }
 
-    self.socket = [[BRTLSSocket alloc] init];
-    self.socket.plain = ![self isSecure];
+    NSString *key = [self poolKey];
+    BRConnectionPool *pool = [BRConnectionPool shared];
+    BRTLSSocket *socket = [pool checkoutSocketForKey:key];
+    BOOL reused = (socket != nil);
     NSError *error = nil;
-    if (![self.socket connectToHost:self.url.host port:[self port] verify:self.verifyTLS
-                   connectTimeoutMs:(int)(self.connectTimeout * 1000) readTimeoutMs:(int)(self.readTimeout * 1000) error:&error]) {
-        [self finishWithError:error ?: BRMakeError(BRErrorConnect, L(@"Connection failed."))];
-        return;
+    if (!socket) {
+        socket = [self connectWithError:&error];
+        if (!socket) {
+            [self finishWithError:error];
+            return;
+        }
     }
-    self.tlsInfo = [NSString stringWithFormat:@"%@ %@", self.socket.tlsVersion ?: @"", self.socket.cipherSuite ?: @""];
-    if (![self.socket writeData:[self serializedRequest] error:&error]) {
-        [self finishWithError:error ?: BRMakeError(BRErrorConnectionLost, L(@"Sending the request failed."))];
+    self.socket = socket;
+    if (self.isCancelled) {
+        [self finishWithError:BRMakeError(BRErrorCancelled, L(@"Cancelled"))];
         return;
     }
 
-    NSMutableData *buffer = [NSMutableData data];
-    BOOL headersDone = NO;
-    BOOL bodyDone = NO;
-    const NSUInteger chunkSize = 16384;
-    uint8_t *tmp = (uint8_t *)malloc(chunkSize);
-    if (!tmp) {
-        [self finishWithError:BRMakeError(BRErrorNetwork, @"Out of memory")];
-        return;
-    }
-    while (!bodyDone) {
-        NSError *readError = nil;
-        NSInteger n = [self.socket readIntoBuffer:tmp maxLength:chunkSize error:&readError];
-        if (n < 0) {
-            free(tmp);
-            [self finishWithError:readError ?: BRMakeError(BRErrorConnectionLost, L(@"Connection lost."))];
-            return;
-        }
-        if (n == 0) {
-            // EOF
-            if (!headersDone) {
-                free(tmp);
-                [self finishWithError:BRMakeError(BRErrorBadResponse, L(@"The server closed the connection without responding."))];
+    BOOL retried = NO;
+    for (;;) {
+        NSError *err = nil;
+        BRExchangeResult result = [self exchangeOnSocket:socket reused:reused error:&err];
+        if (result == BRExchangeRetry && !retried) {
+            retried = YES;
+            reused = NO;
+            [socket close];
+            [self resetResponseState];
+            socket = [self connectWithError:&err];
+            if (!socket) {
+                self.socket = nil;
+                [self finishWithError:err];
                 return;
             }
-            // The body ends with the connection (also for incomplete chunked / content-length bodies).
-            [self consumeBody:buffer];
-            if (self.chunked || self.contentLength >= 0) {
-                BRLog(@"HTTP body ended early (chunked=%d, received=%lld) for %@", self.chunked, self.bodyReceived, self.url);
-            }
-            bodyDone = YES;
-            break;
-        }
-        [buffer appendBytes:tmp length:(NSUInteger)n];
-        if (!headersDone) {
-            NSError *hErr = nil;
-            int rc = 0;
-            while (!headersDone) {
-                rc = [self parseHeadersFromBuffer:buffer error:&hErr];
-                if (rc < 0) {
-                    free(tmp);
-                    [self finishWithError:hErr ?: BRMakeError(BRErrorBadResponse, L(@"The server sent an invalid response."))];
-                    return;
-                }
-                if (rc == 0) break;          // need more bytes
-                if (rc == 2) continue;       // interim response, parse the next block
-                headersDone = YES;
-            }
-            if (!headersDone) continue;
-            NSInteger status = self.statusCode;
-            BRHTTPHeadersBlock hb = self.onHeaders;
-            self.onHeaders = nil;
-            if (hb) hb(status, self.responseHeaders);
+            self.socket = socket;
             if (self.isCancelled) {
-                free(tmp);
                 [self finishWithError:BRMakeError(BRErrorCancelled, L(@"Cancelled"))];
                 return;
             }
-            if ([self.method isEqualToString:@"HEAD"] || status == 204 || status == 304) {
-                bodyDone = YES;
-                break;
+            continue;
+        }
+        if (result == BRExchangeDone) {
+            if (self.keepAlive) {
+                self.socket = nil;   // finishWithError must not close it
+                [pool checkinSocket:socket forKey:key];
             }
+            [self finishWithError:nil];
+        } else {
+            [self finishWithError:err ?: BRMakeError(BRErrorConnectionLost, L(@"Connection lost."))];
         }
-        if ([self consumeBody:buffer]) bodyDone = YES;
-        if (self.bodyError) {
-            free(tmp);
-            [self finishWithError:BRMakeError(BRErrorBadResponse, L(@"Content decoding failed."))];
-            return;
-        }
+        return;
     }
-    free(tmp);
-    [self finishWithError:nil];
 }
 
 @end

@@ -444,6 +444,31 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
     }
 }
 
+- (BOOL)isConnected
+{
+    return _connected && !_cancelled;
+}
+
+- (BOOL)isLikelyAlive
+{
+    int fd;
+    @synchronized (self) {
+        fd = _net.fd;
+    }
+    if (fd < 0 || !_connected || _cancelled) return NO;
+    char c;
+    ssize_t n = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (n == 0) return NO;                                       // orderly close by the peer
+    if (n < 0) return errno == EAGAIN || errno == EWOULDBLOCK;   // nothing pending: open and idle
+    return NO;   // unexpected bytes on an idle connection (e.g. a TLS close_notify): do not reuse
+}
+
+- (void)setReadTimeoutMs:(uint32_t)ms
+{
+    _readTimeoutMs = ms;
+    if (!self.plain && _initialized) mbedtls_ssl_conf_read_timeout(&_conf, ms);
+}
+
 - (void)cancel
 {
     _cancelled = YES;

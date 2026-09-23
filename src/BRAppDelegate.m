@@ -3,6 +3,7 @@
 #import "BRURLProtocol.h"
 #import "BRTLSSocket.h"
 #import "BRAdBlock.h"
+#import "BRConnectionPool.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -58,6 +59,12 @@
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application
 {
     BRLog(@"Memory warning");
+    [[BRConnectionPool shared] drain];
+}
+
+- (void)applicationDidEnterBackground:(UIApplication *)application
+{
+    [[BRConnectionPool shared] drain];
 }
 
 @end

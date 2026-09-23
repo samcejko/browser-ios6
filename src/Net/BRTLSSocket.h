@@ -19,6 +19,11 @@
 - (void)cancel;
 - (void)close;
 
+// Keep-alive support
+@property (nonatomic, readonly) BOOL isConnected;
+- (BOOL)isLikelyAlive;                       // idle socket still open and nothing pending from the peer
+- (void)setReadTimeoutMs:(uint32_t)ms;       // applies to subsequent reads
+
 @property (nonatomic, readonly) NSString *cipherSuite;
 @property (nonatomic, readonly) NSString *tlsVersion;
 
