@@ -15,7 +15,12 @@ static const CGFloat BRBarHeight = 44;
 static const CGFloat BRTabBarHeight = 30;
 static const CGFloat BRControlHeight = 30;
 
-@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate, BRTabBarDelegate>
+@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate, BRTabBarDelegate,
+                                        UIGestureRecognizerDelegate, UIActionSheetDelegate>
+@property (nonatomic, strong) UIButton *shareButton;
+@property (nonatomic, strong) UILongPressGestureRecognizer *linkPress;
+@property (nonatomic, strong) UIPopoverController *sharePopover;      // iPad
+@property (nonatomic, strong) NSDictionary *pressedLink;              // href, text, img of the long-pressed element
 @property (nonatomic, strong) UIView *topBar;
 @property (nonatomic, strong) UIImageView *topBarBackground;
 @property (nonatomic, strong) BRTabBar *tabBar;              // iPad only: Safari style tab strip under the address bar
@@ -74,6 +79,9 @@ static const CGFloat BRControlHeight = 30;
     self.webView.delegate = self;
     self.webView.scalesPageToFit = YES;
     self.webView.dataDetectorTypes = UIDataDetectorTypeNone;
+    self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers
+    self.webView.keyboardDisplayRequiresUserAction = NO;      // scripts may focus fields (search boxes, login forms)
+    self.webView.mediaPlaybackAllowsAirPlay = YES;
     [self.view addSubview:self.webView];
 
     // top bar
@@ -116,11 +124,19 @@ static const CGFloat BRControlHeight = 30;
     self.forwardButton = [self iconButtonWithAction:@selector(goForward)];
     self.bookmarksButton = [self iconButtonWithAction:@selector(showLibrary)];
     self.bookmarksButton.accessibilityLabel = L(@"Bookmarks");
+    self.shareButton = [self iconButtonWithAction:@selector(shareCurrentPage)];
+    self.shareButton.accessibilityLabel = L(@"Share");
     self.tabsButton = [self textButtonWithTitle:L(@"Tabs") action:@selector(showTabs)];
     self.settingsButton = [self textButtonWithTitle:L(@"Settings") action:@selector(showSettings)];
 
+    // long press on a link or image: our own menu (the page's touch callout is switched off by shims-extra.js)
+    self.linkPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
+    self.linkPress.minimumPressDuration = 0.6;
+    self.linkPress.delegate = self;
+    [self.webView addGestureRecognizer:self.linkPress];
+
     if (BRIsPad()) {
-        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.settingsButton]) [self.topBar addSubview:v];
+        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.shareButton, self.settingsButton]) [self.topBar addSubview:v];
         self.tabBar = [[BRTabBar alloc] initWithFrame:CGRectMake(0, BRBarHeight, self.view.bounds.size.width, BRTabBarHeight)];
         self.tabBar.delegate = self;
         [self.view addSubview:self.tabBar];
@@ -129,7 +145,7 @@ static const CGFloat BRControlHeight = 30;
         self.bottomBarBackground = [[UIImageView alloc] initWithFrame:self.bottomBar.bounds];
         self.bottomBarBackground.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.bottomBar addSubview:self.bottomBarBackground];
-        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.tabsButton, self.settingsButton]) [self.bottomBar addSubview:v];
+        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.shareButton, self.tabsButton, self.settingsButton]) [self.bottomBar addSubview:v];
         [self.view addSubview:self.bottomBar];
     }
 
@@ -164,13 +180,14 @@ static const CGFloat BRControlHeight = 30;
     self.urlField.textColor = [theme fieldTextColor];
     self.urlField.keyboardAppearance = theme.isDark ? UIKeyboardAppearanceAlert : UIKeyboardAppearanceDefault;
     self.spinner.activityIndicatorViewStyle = theme.isDark ? UIActivityIndicatorViewStyleWhite : UIActivityIndicatorViewStyleGray;
-    for (UIButton *b in @[self.bookmarksButton, self.tabsButton, self.settingsButton]) {
+    for (UIButton *b in @[self.bookmarksButton, self.shareButton, self.tabsButton, self.settingsButton]) {
         [b setBackgroundImage:[theme buttonImageHighlighted:NO] forState:UIControlStateNormal];
         [b setBackgroundImage:[theme buttonImageHighlighted:YES] forState:UIControlStateHighlighted];
         [b setTitleColor:[theme barTextColor] forState:UIControlStateNormal];
         [b setTitleShadowColor:[theme barTextShadowColor] forState:UIControlStateNormal];
     }
     [self.bookmarksButton setImage:[theme bookmarksImage] forState:UIControlStateNormal];
+    [self.shareButton setImage:[theme shareImage] forState:UIControlStateNormal];
     [self.tabBar applyTheme];
     [self updateNavigationState];
     [self updateLoadingControls];
@@ -199,7 +216,7 @@ static const CGFloat BRControlHeight = 30;
     self.webView.frame = CGRectMake(0, BRBarHeight + tabsHeight, width, b.size.height - BRBarHeight - tabsHeight - bottom);
 
     // text buttons: on narrow screens use a smaller font so that everything fits
-    CGFloat available = width - 2 * margin - 3 * 40 - 5 * gap;
+    CGFloat available = width - 2 * margin - 4 * 40 - 6 * gap;
     NSArray *textButtons = BRIsPad() ? @[self.settingsButton] : @[self.tabsButton, self.settingsButton];
     if (BRIsPad()) available = width * 0.5;
     CGFloat fontSize = 13;
@@ -217,6 +234,7 @@ static const CGFloat BRControlHeight = 30;
     self.backButton.frame = CGRectMake(margin, y, 40, BRControlHeight);
     self.forwardButton.frame = CGRectMake(CGRectGetMaxX(self.backButton.frame) + gap, y, 40, BRControlHeight);
     self.bookmarksButton.frame = CGRectMake(CGRectGetMaxX(self.forwardButton.frame) + gap, y, 40, BRControlHeight);
+    self.shareButton.frame = CGRectMake(CGRectGetMaxX(self.bookmarksButton.frame) + gap, y, 40, BRControlHeight);
     CGFloat x = width - margin;
     for (UIButton *tb in BRIsPad() ? @[self.settingsButton] : @[self.settingsButton, self.tabsButton]) {
         CGFloat w = [self widthForTextButton:tb];
@@ -225,7 +243,7 @@ static const CGFloat BRControlHeight = 30;
         x -= gap;
     }
     if (BRIsPad()) {
-        CGFloat fieldX = CGRectGetMaxX(self.bookmarksButton.frame) + gap + 2;
+        CGFloat fieldX = CGRectGetMaxX(self.shareButton.frame) + gap + 2;
         self.urlField.frame = CGRectMake(fieldX, y, x - fieldX, BRControlHeight);
     } else {
         self.urlField.frame = CGRectMake(margin, y, width - 2 * margin, BRControlHeight);
@@ -451,6 +469,12 @@ static const CGFloat BRControlHeight = 30;
     [self setLoading:NO];
 }
 
+- (NSString *)evaluateJavaScript:(NSString *)code
+{
+    if (!code.length) return @"";
+    return [self.webView stringByEvaluatingJavaScriptFromString:code] ?: @"";
+}
+
 - (void)goHome
 {
     NSURL *home = [BRSettings homeURL];
@@ -605,10 +629,154 @@ static const CGFloat BRControlHeight = 30;
 
 #pragma mark - UIWebViewDelegate
 
+#pragma mark - Sharing and link menu
+
+- (void)shareItems:(NSArray *)items fromRect:(CGRect)rect inView:(UIView *)view
+{
+    if (!items.count) return;
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+    if (BRIsPad()) {
+        [self.sharePopover dismissPopoverAnimated:NO];
+        self.sharePopover = [[UIPopoverController alloc] initWithContentViewController:activity];
+        [self.sharePopover presentPopoverFromRect:rect inView:view ?: self.view permittedArrowDirections:UIPopoverArrowDirectionAny animated:YES];
+    } else {
+        [self presentViewController:activity animated:YES completion:nil];
+    }
+}
+
+- (void)shareURL:(NSURL *)url title:(NSString *)title fromRect:(CGRect)rect inView:(UIView *)view
+{
+    if (!url) return;
+    NSMutableArray *items = [NSMutableArray array];
+    if (title.length) [items addObject:title];
+    [items addObject:url];
+    [self shareItems:items fromRect:rect inView:view];
+}
+
+- (void)shareCurrentPage
+{
+    NSURL *url = self.webView.request.URL ?: self.currentURL;
+    if (!url || ![[url.scheme lowercaseString] hasPrefix:@"http"]) return;
+    [self shareURL:url title:self.currentTitle fromRect:self.shareButton.frame inView:self.shareButton.superview];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other
+{
+    return YES;
+}
+
+- (void)handleLongPress:(UILongPressGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    CGPoint p = [recognizer locationInView:self.webView];
+    CGFloat scale = self.webView.scrollView.zoomScale;
+    if (scale <= 0) scale = 1;
+    NSString *js = [NSString stringWithFormat:
+        @"(function(x,y){var el=document.elementFromPoint(x,y);var a=el,img=null;"
+         "while(a&&a.nodeType===1){if(!img&&a.tagName==='IMG')img=a;if(a.tagName==='A'&&a.href)break;a=a.parentNode;}"
+         "if(!(a&&a.nodeType===1&&a.tagName==='A'))a=null;"
+         "return JSON.stringify({href:a?a.href:'',text:a?(a.textContent||'').replace(/\\s+/g,' ').replace(/^ | $/g,'').slice(0,80):'',img:img?(img.currentSrc||img.src||''):''});})(%ld,%ld)",
+        (long)(p.x / scale), (long)(p.y / scale)];
+    NSString *json = [self.webView stringByEvaluatingJavaScriptFromString:js];
+    NSDictionary *info = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+    if (![info isKindOfClass:[NSDictionary class]]) return;
+    NSString *href = [info[@"href"] isKindOfClass:[NSString class]] ? info[@"href"] : @"";
+    NSString *img = [info[@"img"] isKindOfClass:[NSString class]] ? info[@"img"] : @"";
+    if (![href hasPrefix:@"http"]) href = @"";
+    if (![img hasPrefix:@"http"] && ![img hasPrefix:@"data:"]) img = @"";
+    if (!href.length && !img.length) return;
+    self.pressedLink = @{ @"href": href, @"img": img, @"text": [info[@"text"] isKindOfClass:[NSString class]] ? info[@"text"] : @"" };
+    NSString *title = href.length ? href : img;
+    if (title.length > 120) title = [[title substringToIndex:117] stringByAppendingString:@"..."];
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    if (href.length) {
+        [sheet addButtonWithTitle:L(@"Open")];
+        [sheet addButtonWithTitle:L(@"Open in new tab")];
+        [sheet addButtonWithTitle:L(@"Copy link")];
+        [sheet addButtonWithTitle:L(@"Share link")];
+    }
+    if (img.length) {
+        [sheet addButtonWithTitle:L(@"Open image")];
+        [sheet addButtonWithTitle:L(@"Copy image address")];
+        [sheet addButtonWithTitle:L(@"Save image")];
+    }
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    sheet.tag = 100;
+    if (BRIsPad()) [sheet showFromRect:CGRectMake(p.x, p.y, 1, 1) inView:self.webView animated:YES];
+    else [sheet showInView:self.view];
+}
+
+- (void)saveImageAtURL:(NSURL *)url
+{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSData *data = [NSData dataWithContentsOfURL:url];   // goes through BRURLProtocol (WebP is converted there)
+        UIImage *image = data.length ? [UIImage imageWithData:data] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (image) UIImageWriteToSavedPhotosAlbum(image, nil, NULL, NULL);
+            else BRLog(@"Save image failed: %@ (%lu bytes)", url.absoluteString, (unsigned long)data.length);
+        });
+    });
+}
+
+- (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index
+{
+    if (sheet.tag != 100 || index < 0 || index == sheet.cancelButtonIndex) return;
+    NSString *choice = [sheet buttonTitleAtIndex:index];
+    NSString *href = self.pressedLink[@"href"], *img = self.pressedLink[@"img"], *text = self.pressedLink[@"text"];
+    NSURL *link = href.length ? [NSURL URLWithString:href] : nil;
+    NSURL *image = img.length ? [NSURL URLWithString:img] : nil;
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    if ([choice isEqualToString:L(@"Open")] && link) [self loadURL:link];
+    else if ([choice isEqualToString:L(@"Open in new tab")] && link) [self openURLInNewTab:link];
+    else if ([choice isEqualToString:L(@"Copy link")] && link) { pasteboard.string = href; }
+    else if ([choice isEqualToString:L(@"Share link")] && link) [self shareURL:link title:text fromRect:self.shareButton.frame inView:self.shareButton.superview];
+    else if ([choice isEqualToString:L(@"Open image")] && image) [self loadURL:image];
+    else if ([choice isEqualToString:L(@"Copy image address")] && image) { pasteboard.string = img; }
+    else if ([choice isEqualToString:L(@"Save image")] && image) [self saveImageAtURL:image];
+    self.pressedLink = nil;
+}
+
+// window.open() and target="_blank" links arrive from shims-extra.js as brtab:<percent-encoded URL>
+- (void)openURLInNewTab:(NSURL *)url
+{
+    if (!url) return;
+    if (self.tabs.count >= 12) {
+        [self loadURL:url];
+        return;
+    }
+    [self storeCurrentTabState];
+    [self.tabs addObject:[@{ @"url": url.absoluteString ?: @"", @"title": @"" } mutableCopy]];
+    [self openTabAtIndex:self.tabs.count - 1];
+}
+
 - (BOOL)webView:(UIWebView *)webView shouldStartLoadWithRequest:(NSURLRequest *)request navigationType:(UIWebViewNavigationType)navigationType
 {
     NSURL *url = request.URL;
     NSString *scheme = [url.scheme lowercaseString];
+    if ([scheme isEqualToString:@"brtab"]) {
+        NSString *spec = url.absoluteString.length > 6 ? [url.absoluteString substringFromIndex:6] : @"";
+        NSURL *target = [NSURL URLWithString:[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @""];
+        if (target && [[target.scheme lowercaseString] hasPrefix:@"http"]) {
+            BRLog(@"New tab requested by the page: %@", target.absoluteString);
+            [self openURLInNewTab:target];
+        }
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brshare"]) {
+        // navigator.share() from shims-extra.js: brshare:<percent-encoded JSON {title, text, url}>
+        NSString *spec = url.absoluteString.length > 8 ? [url.absoluteString substringFromIndex:8] : @"";
+        NSData *data = [[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *info = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        if ([info isKindOfClass:[NSDictionary class]]) {
+            NSString *urlString = [info[@"url"] isKindOfClass:[NSString class]] ? info[@"url"] : @"";
+            NSString *text = [info[@"text"] isKindOfClass:[NSString class]] && [info[@"text"] length] ? info[@"text"] : ([info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : @"");
+            NSURL *shared = urlString.length ? [NSURL URLWithString:urlString] : nil;
+            CGRect rect = CGRectMake(self.webView.bounds.size.width / 2, 40, 1, 1);
+            if (shared) [self shareURL:shared title:text fromRect:rect inView:self.webView];
+            else if (text.length) [self shareItems:@[text] fromRect:rect inView:self.webView];
+        }
+        return NO;
+    }
     BOOL handled = [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"file"] ||
                    [scheme isEqualToString:@"about"] || [scheme isEqualToString:@"data"] || [scheme isEqualToString:@"applewebdata"];
     if (handled) {

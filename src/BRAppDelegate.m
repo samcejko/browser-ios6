@@ -30,6 +30,11 @@
         BRLog(@"HTTP cache cleared (format version %ld)", (long)BRCacheFormatVersion);
     }
     [[NSHTTPCookieStorage sharedHTTPCookieStorage] setCookieAcceptPolicy:NSHTTPCookieAcceptPolicyAlways];
+    // WebKit reads its feature switches from the app's defaults: WebGL exists in the iOS 6 engine
+    // but is switched off for third party apps.
+    [defaults setBool:YES forKey:@"WebKitWebGLEnabled"];
+    [defaults setBool:YES forKey:@"WebKitDeveloperExtras"];
+    [defaults setBool:YES forKey:@"WebKitCSSCustomFilterEnabled"];
 
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
     [BRURLProtocol registerProtocol];
@@ -61,6 +66,24 @@
     if (!target.length) return YES;
     if ([target isEqualToString:@"home"]) {
         [self.browserViewController goHome];
+        return YES;
+    }
+    if ([target hasPrefix:@"eval?"] || [target hasPrefix:@"eval/?"]) {
+        // browser:eval?js=<percent-encoded JavaScript> evaluates in the current page and logs the result
+        NSRange js = [target rangeOfString:@"js="];
+        NSString *code = js.location == NSNotFound ? @"" : [[target substringFromIndex:js.location + js.length] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+        NSString *result = [self.browserViewController evaluateJavaScript:code];
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"];
+        [result ?: @"" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"eval (%lu chars): %@", (unsigned long)result.length, result.length > 600 ? [result substringToIndex:600] : result);
+        return YES;
+    }
+    if ([target isEqualToString:@"dump"]) {
+        // browser:dump writes the current DOM to tmp/dump.html
+        NSString *html = [self.browserViewController evaluateJavaScript:@"document.documentElement.outerHTML"];
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dump.html"];
+        BOOL ok = [html ?: @"" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"DOM dump %@: %@ (%lu chars)", ok ? @"written to" : @"failed for", path, (unsigned long)html.length);
         return YES;
     }
     if ([target isEqualToString:@"snapshot"]) {

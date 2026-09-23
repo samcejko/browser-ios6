@@ -147,7 +147,8 @@ static NSString *BRPageKey(NSURL *url)
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
         NSBundle *b = [NSBundle mainBundle];
-        for (NSString *name in @[@"core-js-custom", @"fetch", @"intersection-observer", @"resize-observer", @"shims"]) {
+        for (NSString *name in @[@"core-js-custom", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill", @"dialog-polyfill",
+                                 @"object-fit-images", @"shims", @"shims-extra"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;

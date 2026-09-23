@@ -5,6 +5,7 @@
 
 - (void)loadURL:(NSURL *)url;
 - (void)goHome;
+- (NSString *)evaluateJavaScript:(NSString *)code;   // in the current page (debugging over SSH)
 - (void)applyTheme;
 
 @end

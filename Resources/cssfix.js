@@ -698,10 +698,13 @@ var CSSFix = (function () {
     function fixDeclarations(decls, ctx, keyframe) {
         var local = null, i, d;
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
+        var objectFit = null, objectPosition = null, ofiDone = false;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') { if (!local) local = {}; local[d.p] = d.v; }
             else if ((d.p === 'flex-wrap' || d.p === 'flex-flow') && /wrap/i.test(d.v) && !/nowrap/i.test(d.v)) wrap = true;
+            else if (d.p === 'object-fit') objectFit = d.v.toLowerCase();
+            else if (d.p === 'object-position') objectPosition = d.v.toLowerCase();
         }
         var out = [];
         for (i = 0; i < decls.length; i++) {
@@ -811,7 +814,17 @@ var CSSFix = (function () {
                     push(out, p, v, imp);
                     continue;
                 case 'position':
+                    if (lv === 'sticky') push(out, p, '-webkit-sticky', imp);   // iOS 6.1 knows the prefixed value
                     push(out, p, v, imp);
+                    continue;
+                case 'object-fit': case 'object-position':
+                    // object-fit-images (in the polyfill bundle) reads the intent from this font-family hack
+                    push(out, p, v, imp);
+                    if (!ofiDone) {
+                        ofiDone = true;
+                        push(out, 'font-family', '"' + (objectFit ? 'object-fit: ' + objectFit : '') + (objectFit && objectPosition ? '; ' : '') +
+                             (objectPosition ? 'object-position: ' + objectPosition : '') + '"', imp);
+                    }
                     continue;
                 case 'font':
                     push(out, p, v.replace(/\b(system-ui|-apple-system)\b/g, 'Helvetica Neue'), imp);

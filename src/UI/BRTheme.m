@@ -278,6 +278,39 @@ static UIImage *BRBarImage(UIColor *top, UIColor *bottom, UIColor *line, CGFloat
     }];
 }
 
+- (UIImage *)shareImage
+{
+    return [self cachedImage:@"share" builder:^UIImage *{
+        CGSize size = CGSizeMake(24, 24);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+        UIColor *color = [self barTextColor];
+        UIBezierPath *tray = [UIBezierPath bezierPath];   // open box
+        [tray moveToPoint:CGPointMake(8, 10)];
+        [tray addLineToPoint:CGPointMake(5, 10)];
+        [tray addLineToPoint:CGPointMake(5, 21)];
+        [tray addLineToPoint:CGPointMake(19, 21)];
+        [tray addLineToPoint:CGPointMake(19, 10)];
+        [tray addLineToPoint:CGPointMake(16, 10)];
+        tray.lineWidth = 1.8;
+        tray.lineJoinStyle = kCGLineJoinRound;
+        [color setStroke];
+        [tray stroke];
+        UIBezierPath *arrow = [UIBezierPath bezierPath];
+        [arrow moveToPoint:CGPointMake(12, 15)];
+        [arrow addLineToPoint:CGPointMake(12, 3)];
+        [arrow moveToPoint:CGPointMake(8, 7)];
+        [arrow addLineToPoint:CGPointMake(12, 3)];
+        [arrow addLineToPoint:CGPointMake(16, 7)];
+        arrow.lineWidth = 1.8;
+        arrow.lineCapStyle = kCGLineCapRound;
+        arrow.lineJoinStyle = kCGLineJoinRound;
+        [arrow stroke];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return img;
+    }];
+}
+
 - (UIImage *)plusImage
 {
     return [self cachedImage:@"plus" builder:^UIImage *{

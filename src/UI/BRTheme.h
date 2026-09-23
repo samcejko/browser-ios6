@@ -28,6 +28,7 @@ extern NSString * const BRThemeDidChangeNotification;
 - (UIImage *)reloadImage;
 - (UIImage *)stopImage;
 - (UIImage *)bookmarksImage;                  // open book, like Safari
+- (UIImage *)shareImage;                      // tray with an arrow
 - (UIImage *)plusImage;
 - (UIImage *)closeTabImage;
 - (UIImage *)tabBarBackgroundImage;

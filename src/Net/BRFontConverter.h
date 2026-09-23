@@ -6,5 +6,6 @@
 
 + (BOOL)looksLikeWOFF2:(NSData *)data;
 + (NSData *)ttfDataFromWOFF2:(NSData *)data;    // nil when the data is not WOFF2 or cannot be decoded
++ (NSData *)staticFontDataFromSFNT:(NSData *)data;   // variable TTF/OTF with the variation tables dropped; nil when not variable
 
 @end

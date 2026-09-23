@@ -1,0 +1,1044 @@
+/* shims-extra.js - larger browser API emulations for the iOS 6 WebKit, loaded after shims.js:
+ * new-tab handling for window.open / target=_blank, pointer events, page visibility, fullscreen,
+ * streams, shadow DOM emulated in the light DOM, custom element upgrades, <dialog> registration,
+ * WebRTC / speech / payment / credential stubs that fail cleanly, crypto.subtle digests, canvas
+ * helpers, responsive image properties. ES5 only. */
+(function (window, document) {
+    'use strict';
+    var Ep = window.Element && window.Element.prototype;
+    var Np = window.Node && window.Node.prototype;
+    var P = window.Promise;
+    function noop() {}
+    function resolved(v) { return P ? P.resolve(v) : null; }
+    function domException(name, message) {
+        var e = new Error(message || name);
+        e.name = name;
+        e.code = name === 'NotSupportedError' ? 9 : name === 'AbortError' ? 20 : name === 'NotFoundError' ? 8 : 0;
+        return e;
+    }
+    function rejectWith(name, message) { return function () { return P ? P.reject(domException(name, message)) : null; }; }
+    function fire(target, type, detail) {
+        try {
+            var e = document.createEvent('Event');
+            e.initEvent(type, true, false);
+            if (detail) for (var k in detail) e[k] = detail[k];
+            target.dispatchEvent(e);
+        } catch (e2) {}
+    }
+    function defineAttrProp(proto, name, attr) {
+        if (!proto || name in proto) return;
+        try {
+            Object.defineProperty(proto, name, {
+                get: function () { return this.getAttribute(attr || name) || ''; },
+                set: function (v) { this.setAttribute(attr || name, v); },
+                configurable: true
+            });
+        } catch (e) {}
+    }
+    function defineBoolAttrProp(proto, name) {
+        if (!proto || name in proto) return;
+        try {
+            Object.defineProperty(proto, name, {
+                get: function () { return this.hasAttribute(name) && this.getAttribute(name) !== 'false'; },
+                set: function (v) { if (v) this.setAttribute(name, 'true'); else this.removeAttribute(name); },
+                configurable: true
+            });
+        } catch (e) {}
+    }
+    function addStyle(css) {
+        var s = document.createElement('style');
+        s.textContent = css;
+        (document.head || document.documentElement).appendChild(s);
+    }
+    function onReady(fn) {
+        if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(fn, 0);
+        else document.addEventListener('DOMContentLoaded', fn, false);
+    }
+    // One observer for everything that reacts to new DOM nodes
+    var addedCallbacks = [], settledCallbacks = [], settleTimer = null;
+    function observeAdded(fn) { addedCallbacks.push(fn); }
+    function onSettled(fn) { settledCallbacks.push(fn); }
+    if (window.MutationObserver) {
+        var mo = new MutationObserver(function (records) {
+            for (var r = 0; r < records.length; r++) {
+                var added = records[r].addedNodes;
+                for (var i = 0; i < added.length; i++) {
+                    if (added[i].nodeType !== 1) continue;
+                    for (var c = 0; c < addedCallbacks.length; c++) try { addedCallbacks[c](added[i]); } catch (e) {}
+                }
+                var removed = records[r].removedNodes;
+                for (var j = 0; j < removed.length; j++) if (removed[j].nodeType === 1 && removed[j].__brUpgraded) disconnectTree(removed[j]);
+            }
+            if (settledCallbacks.length && !settleTimer) settleTimer = setTimeout(function () { settleTimer = null; for (var s = 0; s < settledCallbacks.length; s++) try { settledCallbacks[s](); } catch (e) {} }, 150);
+        });
+        var startObserving = function () { try { mo.observe(document.documentElement || document, { childList: true, subtree: true }); } catch (e) {} };
+        if (document.documentElement) startObserving(); else document.addEventListener('DOMContentLoaded', startObserving, false);
+    }
+
+    // ---- New tabs: window.open and target=_blank links go to the app (brtab: scheme handled natively)
+    function sendToApp(scheme, payload) {
+        try {
+            var f = document.createElement('iframe');
+            f.style.display = 'none';
+            f.src = scheme + ':' + encodeURIComponent(payload);
+            (document.body || document.documentElement).appendChild(f);
+            setTimeout(function () { if (f.parentNode) f.parentNode.removeChild(f); }, 100);
+            return true;
+        } catch (e) { return false; }
+    }
+    function absoluteURL(url) {
+        try { var a = document.createElement('a'); a.href = String(url); return a.href; } catch (e) { return String(url); }
+    }
+    function openInNewTab(url) {
+        url = absoluteURL(url);
+        if (!/^https?:/i.test(url)) return false;
+        return sendToApp('brtab', url);
+    }
+    function frameExists(name) { try { return !!window.frames[name]; } catch (e) { return false; } }
+    window.open = function (url, name, features) {
+        if (name === '_self' || name === '_top' || name === '_parent') { if (url) window.location.href = url; return window; }
+        if (name && frameExists(name)) { try { window.frames[name].location.href = url; } catch (e) {} return window.frames[name]; }
+        if (!url || url === 'about:blank' || String(url).charAt(0) === '#') url = '';
+        var fake = { closed: false, focus: noop, blur: noop, postMessage: noop, opener: window, name: name || '', addEventListener: noop, removeEventListener: noop,
+                     document: { write: noop, writeln: noop, close: noop, open: noop, body: null, title: '' } };
+        fake.close = function () { fake.closed = true; };
+        var loc = { assign: function (v) { loc.href = v; }, replace: function (v) { loc.href = v; }, toString: function () { return loc.__h || ''; } };
+        try {
+            Object.defineProperty(loc, 'href', { get: function () { return loc.__h || ''; }, set: function (v) { loc.__h = String(v); openInNewTab(v); } });
+            Object.defineProperty(fake, 'location', { get: function () { return loc; }, set: function (v) { loc.href = String(v); } });
+        } catch (e) { fake.location = loc; }
+        if (url) openInNewTab(url);
+        return fake;
+    };
+    document.addEventListener('click', function (e) {
+        if (e.defaultPrevented || e.button > 0 || e.metaKey || e.ctrlKey) return;
+        var a = e.target;
+        while (a && a.nodeType === 1 && a.tagName !== 'A' && a.tagName !== 'AREA') a = a.parentNode;
+        if (!a || a.nodeType !== 1) return;
+        var target = (a.getAttribute('target') || '').toLowerCase();
+        var href = a.getAttribute('href');
+        if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return;
+        if (target === '_blank' || (target && target !== '_self' && target !== '_top' && target !== '_parent' && !frameExists(target))) {
+            if (openInNewTab(a.href)) e.preventDefault();
+        }
+    }, false);
+    // Web Share goes to the app's share sheet
+    if (!navigator.share) {
+        navigator.share = function (data) {
+            data = data || {};
+            var ok = sendToApp('brshare', JSON.stringify({ title: data.title || '', text: data.text || '', url: data.url ? absoluteURL(data.url) : '' }));
+            return ok ? resolved() : rejectWith('AbortError', 'share failed')();
+        };
+        navigator.canShare = function (data) { return !!(data && (data.url || data.text || data.title)); };
+    }
+
+    // ---- Pointer events: touches and mouse events are mirrored as pointer events
+    if (!window.PointerEvent) {
+        var nextPointerId = 2, activeTouches = {}, activeTouchCount = 0, lastTouchTime = 0;
+        function makePointerEvent(type, src, touch, pointerType, id, isPrimary) {
+            var e = document.createEvent('MouseEvents');
+            var bubbles = type !== 'pointerenter' && type !== 'pointerleave';
+            var cancelable = type !== 'pointercancel' && type !== 'pointerenter' && type !== 'pointerleave';
+            e.initMouseEvent(type, bubbles, cancelable, window, 0,
+                touch ? touch.screenX : (src.screenX || 0), touch ? touch.screenY : (src.screenY || 0),
+                touch ? touch.clientX : (src.clientX || 0), touch ? touch.clientY : (src.clientY || 0),
+                !!src.ctrlKey, !!src.altKey, !!src.shiftKey, !!src.metaKey, src.button || 0, src.relatedTarget || null);
+            e.pointerId = id;
+            e.pointerType = pointerType;
+            e.isPrimary = isPrimary;
+            e.width = e.height = pointerType === 'touch' ? 20 : 1;
+            e.pressure = (type === 'pointerdown' || (type === 'pointermove' && (pointerType === 'touch' || src.buttons))) ? 0.5 : 0;
+            e.tangentialPressure = 0;
+            e.tiltX = e.tiltY = e.twist = 0;
+            e.buttons = (type === 'pointerup' || type === 'pointercancel') ? 0 : (src.buttons !== undefined ? src.buttons : (type === 'pointermove' && pointerType === 'mouse' ? 0 : 1));
+            e.getCoalescedEvents = function () { return [e]; };
+            e.getPredictedEvents = function () { return []; };
+            return e;
+        }
+        function touchHandler(type) {
+            return function (ev) {
+                lastTouchTime = Date.now();
+                var touches = ev.changedTouches;
+                for (var i = 0; i < touches.length; i++) {
+                    var t = touches[i], key = 't' + t.identifier;
+                    if (!activeTouches[key]) { activeTouches[key] = { id: nextPointerId++, primary: activeTouchCount === 0 }; activeTouchCount++; }
+                    var info = activeTouches[key];
+                    var target = t.target && t.target.nodeType === 1 ? t.target : (t.target && t.target.parentNode) || ev.target;
+                    var pe = makePointerEvent(type, ev, t, 'touch', info.id, info.primary);
+                    try { target.dispatchEvent(pe); } catch (e) {}
+                    if (pe.defaultPrevented && ev.cancelable) ev.preventDefault();
+                    if (type === 'pointerup' || type === 'pointercancel') { delete activeTouches[key]; activeTouchCount = Math.max(0, activeTouchCount - 1); }
+                }
+            };
+        }
+        document.addEventListener('touchstart', touchHandler('pointerdown'), true);
+        document.addEventListener('touchmove', touchHandler('pointermove'), true);
+        document.addEventListener('touchend', touchHandler('pointerup'), true);
+        document.addEventListener('touchcancel', touchHandler('pointercancel'), true);
+        var mouseMap = { mousedown: 'pointerdown', mousemove: 'pointermove', mouseup: 'pointerup', mouseover: 'pointerover', mouseout: 'pointerout' };
+        for (var mname in mouseMap) (function (mtype, ptype) {
+            document.addEventListener(mtype, function (ev) {
+                if (Date.now() - lastTouchTime < 1500) return;   // mouse events synthesized from a tap
+                var pe = makePointerEvent(ptype, ev, null, 'mouse', 1, true);
+                try { ev.target.dispatchEvent(pe); } catch (e) {}
+                if (pe.defaultPrevented && ev.cancelable) ev.preventDefault();
+            }, true);
+        })(mname, mouseMap[mname]);
+        window.PointerEvent = function PointerEvent(type, init) {
+            init = init || {};
+            return makePointerEvent(type, init, null, init.pointerType || 'mouse', init.pointerId || 1, init.isPrimary !== false);
+        };
+        if (Ep) {
+            Ep.setPointerCapture = noop;
+            Ep.releasePointerCapture = noop;
+            Ep.hasPointerCapture = function () { return false; };
+        }
+        if (!('maxTouchPoints' in navigator)) try { navigator.maxTouchPoints = 'ontouchstart' in window ? 5 : 0; } catch (e) {}
+        var pointerNames = ['pointerdown', 'pointerup', 'pointermove', 'pointerover', 'pointerout', 'pointerenter', 'pointerleave', 'pointercancel', 'gotpointercapture', 'lostpointercapture'];
+        function defineHandlerProps(obj) {
+            if (!obj || ('onpointerdown' in obj)) return;
+            for (var i = 0; i < pointerNames.length; i++) (function (type) {
+                try {
+                    Object.defineProperty(obj, 'on' + type, {
+                        get: function () { return this['__on' + type] || null; },
+                        set: function (fn) {
+                            var old = this['__on' + type];
+                            if (old) this.removeEventListener(type, old, false);
+                            this['__on' + type] = typeof fn === 'function' ? fn : null;
+                            if (fn) this.addEventListener(type, fn, false);
+                        },
+                        configurable: true
+                    });
+                } catch (e) {}
+            })(pointerNames[i]);
+        }
+        defineHandlerProps(window);
+        defineHandlerProps(document);
+        defineHandlerProps(Ep);
+    }
+    // the app shows its own menu on a long press over links and images
+    try { document.documentElement.style.webkitTouchCallout = 'none'; } catch (e) {}
+
+    // ---- Page visibility
+    if (!('hidden' in document) && !('webkitHidden' in document)) {
+        var pageHidden = false;
+        try {
+            Object.defineProperty(document, 'hidden', { get: function () { return pageHidden; }, configurable: true });
+            Object.defineProperty(document, 'visibilityState', { get: function () { return pageHidden ? 'hidden' : 'visible'; }, configurable: true });
+            Object.defineProperty(document, 'webkitHidden', { get: function () { return pageHidden; }, configurable: true });
+            Object.defineProperty(document, 'webkitVisibilityState', { get: function () { return pageHidden ? 'hidden' : 'visible'; }, configurable: true });
+        } catch (e) {}
+        document.onvisibilitychange = null;
+        window.addEventListener('pagehide', function () { pageHidden = true; fire(document, 'visibilitychange'); }, false);
+        window.addEventListener('pageshow', function () { pageHidden = false; fire(document, 'visibilitychange'); }, false);
+    }
+
+    // ---- Fullscreen: videos use the native player, other elements are pinned to the viewport
+    if (!('fullscreenEnabled' in document) && !('webkitFullscreenEnabled' in document)) {
+        var fsElement = null;
+        try {
+            Object.defineProperty(document, 'fullscreenEnabled', { get: function () { return true; }, configurable: true });
+            Object.defineProperty(document, 'webkitFullscreenEnabled', { get: function () { return true; }, configurable: true });
+            Object.defineProperty(document, 'fullscreenElement', { get: function () { return fsElement; }, configurable: true });
+            Object.defineProperty(document, 'webkitFullscreenElement', { get: function () { return fsElement; }, configurable: true });
+            Object.defineProperty(document, 'webkitCurrentFullScreenElement', { get: function () { return fsElement; }, configurable: true });
+            Object.defineProperty(document, 'fullscreen', { get: function () { return !!fsElement; }, configurable: true });
+            Object.defineProperty(document, 'webkitIsFullScreen', { get: function () { return !!fsElement; }, configurable: true });
+        } catch (e) {}
+        document.onfullscreenchange = null;
+        document.onfullscreenerror = null;
+        function leaveFullscreen() {
+            var el = fsElement;
+            fsElement = null;
+            if (!el) return resolved();
+            if (el.tagName === 'VIDEO' && el.webkitExitFullscreen) { try { el.webkitExitFullscreen(); } catch (e) {} }
+            else {
+                el.style.cssText = el.__brFsStyle || '';
+                if (el.__brFsScroll !== undefined) try { window.scrollTo(0, el.__brFsScroll); } catch (e2) {}
+                el.__brFsStyle = undefined;
+            }
+            fire(document, 'fullscreenchange');
+            fire(document, 'webkitfullscreenchange');
+            fire(el, 'fullscreenchange');
+            return resolved();
+        }
+        document.exitFullscreen = document.webkitExitFullscreen = document.webkitCancelFullScreen = leaveFullscreen;
+        if (Ep) Ep.requestFullscreen = Ep.webkitRequestFullscreen = Ep.webkitRequestFullScreen = function () {
+            var el = this;
+            if (fsElement && fsElement !== el) leaveFullscreen();
+            fsElement = el;
+            if (el.tagName === 'VIDEO' && el.webkitEnterFullscreen) {
+                try { el.webkitEnterFullscreen(); } catch (e) {}
+                el.addEventListener('webkitendfullscreen', function onEnd() { el.removeEventListener('webkitendfullscreen', onEnd, false); if (fsElement === el) leaveFullscreen(); }, false);
+            } else {
+                el.__brFsStyle = el.style.cssText;
+                el.__brFsScroll = window.pageYOffset;
+                el.style.cssText += ';position:fixed !important;top:0 !important;left:0 !important;width:100% !important;height:100% !important;max-width:none !important;max-height:none !important;margin:0 !important;z-index:2147483647 !important;background:#000';
+                try { window.scrollTo(0, 0); } catch (e3) {}
+            }
+            fire(document, 'fullscreenchange');
+            fire(document, 'webkitfullscreenchange');
+            fire(el, 'fullscreenchange');
+            return resolved();
+        };
+        document.addEventListener('keydown', function (e) { if (e.keyCode === 27 && fsElement) leaveFullscreen(); }, false);
+    }
+
+    // ---- Gamepad, pointer lock, VR
+    if (!navigator.getGamepads) navigator.getGamepads = navigator.webkitGetGamepads = function () { return []; };
+    if (!window.Gamepad) window.Gamepad = function Gamepad() {};
+    if (!window.GamepadEvent) window.GamepadEvent = function GamepadEvent() {};
+    if (Ep && !Ep.requestPointerLock) {
+        Ep.requestPointerLock = Ep.webkitRequestPointerLock = function () { setTimeout(function () { fire(document, 'pointerlockerror'); }, 0); };
+        document.exitPointerLock = document.webkitExitPointerLock = noop;
+        try { Object.defineProperty(document, 'pointerLockElement', { get: function () { return null; }, configurable: true }); } catch (e) {}
+    }
+    if (!navigator.getVRDisplays) navigator.getVRDisplays = function () { return resolved([]); };
+    if (!navigator.xr) navigator.xr = { isSessionSupported: function () { return resolved(false); }, requestSession: rejectWith('NotSupportedError', 'WebXR is not available'), addEventListener: noop, removeEventListener: noop };
+
+    // ---- Web components: shadow roots live in the light DOM, custom elements are upgraded by prototype swap
+    if (Ep && !Ep.attachShadow) {
+        window.ShadowRoot = window.ShadowRoot || function ShadowRoot() {};
+        window.HTMLSlotElement = window.HTMLSlotElement || function HTMLSlotElement() {};
+        Ep.attachShadow = function (init) {
+            if (this.shadowRoot) return this.shadowRoot;
+            var host = this;
+            var inline = /^(span|a|b|i|em|strong|label|button|small|code)$/i.test(host.tagName);
+            var root = document.createElement(inline ? 'span' : 'div');
+            root.setAttribute('data-shadow-root', '');
+            root.host = host;
+            root.mode = (init && init.mode) || 'open';
+            root.delegatesFocus = !!(init && init.delegatesFocus);
+            root.adoptedStyleSheets = [];
+            root.getElementById = function (id) { return root.querySelector('[id="' + String(id).replace(/"/g, '\\"') + '"]'); };
+            root.elementFromPoint = function (x, y) { return document.elementFromPoint(x, y); };
+            root.elementsFromPoint = function (x, y) { var el = document.elementFromPoint(x, y); return el ? [el] : []; };
+            root.getSelection = function () { return document.getSelection(); };
+            try { Object.defineProperty(root, 'activeElement', { get: function () { return document.activeElement; } }); } catch (e) {}
+            host.appendChild(root);
+            try { Object.defineProperty(host, 'shadowRoot', { value: root, configurable: true, writable: true }); } catch (e2) { host.shadowRoot = root; }
+            return root;
+        };
+        addStyle('[data-shadow-root]{display:inherit}');
+    }
+    if (Np && !Np.getRootNode) Np.getRootNode = function () { var n = this; while (n.parentNode) n = n.parentNode; return n; };
+    if (Np && !('isConnected' in Np)) try { Object.defineProperty(Np, 'isConnected', { get: function () { return document.documentElement.contains(this); } }); } catch (e) {}
+    if (window.HTMLLinkElement && !('import' in document.createElement('link'))) {
+        try { Object.defineProperty(window.HTMLLinkElement.prototype, 'import', { get: function () { return null; }, configurable: true }); } catch (e) {}
+    }
+
+    var registry = {}, waiters = {};
+    function disconnectTree(root) {
+        var list = [root].concat(Array.prototype.slice.call(root.querySelectorAll ? root.querySelectorAll('*') : []));
+        for (var i = 0; i < list.length; i++) if (list[i].__brUpgraded && list[i].disconnectedCallback) try { list[i].disconnectedCallback(); } catch (e) {}
+    }
+    function upgradeElement(el) {
+        var name = el.tagName ? el.tagName.toLowerCase() : '';
+        var isAttr = el.getAttribute && el.getAttribute('is');
+        var ctor = registry[name] || (isAttr && registry[isAttr.toLowerCase()]);
+        if (!ctor || el.__brUpgraded) return;
+        el.__brUpgraded = true;
+        try { if (Object.setPrototypeOf) Object.setPrototypeOf(el, ctor.prototype); else el.__proto__ = ctor.prototype; } catch (e) {}
+        try { ctor.call(el); } catch (e2) {}   // ES5 constructors initialise fields; classes cannot be called and are skipped
+        try {
+            var observed = ctor.observedAttributes || [];
+            for (var i = 0; i < observed.length; i++) if (el.hasAttribute(observed[i]) && el.attributeChangedCallback) el.attributeChangedCallback(observed[i], null, el.getAttribute(observed[i]), null);
+        } catch (e3) {}
+        try { if (el.connectedCallback && document.documentElement.contains(el)) el.connectedCallback(); } catch (e4) {}
+    }
+    function upgradeTree(root) {
+        if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) return;
+        if (root.nodeType === 1) upgradeElement(root);
+        var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+        for (var i = 0; i < all.length; i++) {
+            var t = all[i].tagName.toLowerCase();
+            if (t.indexOf('-') >= 0 || all[i].hasAttribute('is')) upgradeElement(all[i]);
+        }
+    }
+    if (!window.customElements || window.customElements.__brStub) {
+        var registryAPI = {
+            __brStub: false,
+            define: function (name, ctor) {
+                name = String(name).toLowerCase();
+                if (registry[name]) throw domException('NotSupportedError', 'custom element already defined: ' + name);
+                registry[name] = ctor;
+                upgradeTree(document);
+                if (waiters[name]) { var w = waiters[name]; delete waiters[name]; for (var i = 0; i < w.length; i++) w[i](ctor); }
+            },
+            get: function (name) { return registry[String(name).toLowerCase()]; },
+            getName: function (ctor) { for (var k in registry) if (registry[k] === ctor) return k; return null; },
+            whenDefined: function (name) {
+                name = String(name).toLowerCase();
+                if (registry[name]) return resolved(registry[name]);
+                if (!P) return null;
+                return new P(function (res) { (waiters[name] = waiters[name] || []).push(res); });
+            },
+            upgrade: function (root) { upgradeTree(root); }
+        };
+        try { window.customElements = registryAPI; } catch (e) { try { Object.defineProperty(window, 'customElements', { value: registryAPI, configurable: true }); } catch (e2) {} }
+        observeAdded(function (el) { if (Object.keys(registry).length) upgradeTree(el); });
+        window.CustomElementRegistry = function CustomElementRegistry() {};
+        // ES5 subclasses call HTMLElement.call(this): make the base constructor callable
+        (function () {
+            var NativeHTMLElement = window.HTMLElement;
+            if (!NativeHTMLElement) return;
+            var callable = false;
+            try { NativeHTMLElement.call(document.createElement('div')); callable = true; } catch (e) {}
+            if (callable) return;
+            var Wrapped = function HTMLElement() { return this; };
+            Wrapped.prototype = NativeHTMLElement.prototype;
+            try { Object.defineProperty(Wrapped, 'name', { value: 'HTMLElement' }); } catch (e2) {}
+            window.HTMLElement = Wrapped;
+        })();
+    }
+
+    // ---- <dialog> (dialog-polyfill in the bundle, registered automatically)
+    if (window.dialogPolyfill && !('showModal' in document.createElement('dialog'))) {
+        var dp = window.dialogPolyfill;
+        addStyle('dialog{position:absolute;left:0;right:0;width:-webkit-fit-content;width:fit-content;height:-webkit-fit-content;height:fit-content;margin:auto;border:solid;padding:1em;background:white;color:black;display:block}' +
+                 'dialog:not([open]){display:none}dialog+.backdrop{position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,0.1)}' +
+                 '._dialog_overlay{position:fixed;top:0;right:0;bottom:0;left:0}dialog.fixed{position:fixed;top:50%;-webkit-transform:translate(0,-50%);transform:translate(0,-50%)}');
+        function registerDialogs(root) {
+            if (root.nodeType === 1 && root.tagName === 'DIALOG') try { dp.registerDialog(root); } catch (e) {}
+            var list = root.querySelectorAll ? root.querySelectorAll('dialog') : [];
+            for (var i = 0; i < list.length; i++) try { dp.registerDialog(list[i]); } catch (e2) {}
+        }
+        var origCreateElement = document.createElement;
+        document.createElement = function (name) {
+            var el = origCreateElement.apply(document, arguments);
+            if (String(name).toLowerCase() === 'dialog') try { dp.registerDialog(el); } catch (e) {}
+            return el;
+        };
+        onReady(function () { registerDialogs(document); });
+        observeAdded(registerDialogs);
+        if (!window.HTMLDialogElement) window.HTMLDialogElement = function HTMLDialogElement() {};
+    }
+
+    // ---- Responsive images: picturefill does the work, the DOM properties make feature checks pass
+    var IMGp = window.HTMLImageElement && window.HTMLImageElement.prototype;
+    if (!window.HTMLPictureElement) window.HTMLPictureElement = function HTMLPictureElement() {};
+    if (IMGp) {
+        defineAttrProp(IMGp, 'srcset');
+        defineAttrProp(IMGp, 'sizes');
+        defineAttrProp(IMGp, 'loading');
+        defineAttrProp(IMGp, 'decoding');
+        if (!('currentSrc' in IMGp)) try { Object.defineProperty(IMGp, 'currentSrc', { get: function () { return this.src; }, configurable: true }); } catch (e) {}
+        if (!IMGp.decode) IMGp.decode = function () {
+            var img = this;
+            if (!P) return null;
+            return new P(function (res, rej) {
+                if (img.complete) return res();
+                img.addEventListener('load', function () { res(); }, false);
+                img.addEventListener('error', function () { rej(domException('EncodingError', 'The image could not be decoded')); }, false);
+            });
+        };
+    }
+    if (window.HTMLSourceElement) { defineAttrProp(window.HTMLSourceElement.prototype, 'srcset'); defineAttrProp(window.HTMLSourceElement.prototype, 'sizes'); }
+    function runResponsiveImages() {
+        try { if (window.picturefill) window.picturefill(); } catch (e) {}
+        try { if (window.objectFitImages) window.objectFitImages(null, { watchMQ: false }); } catch (e2) {}
+    }
+    onReady(runResponsiveImages);
+    onSettled(runResponsiveImages);
+
+    // ---- Streams (single-process, promise based; fetch responses expose a body stream over the buffered bytes)
+    if (!window.ReadableStream && P) {
+        function ReadableStream(source) {
+            var self = this;
+            self.locked = false;
+            self.__queue = [];
+            self.__closed = false;
+            self.__error = null;
+            self.__waiters = [];
+            self.__source = source || {};
+            self.__controller = {
+                desiredSize: 1,
+                enqueue: function (chunk) { if (self.__closed) throw new TypeError('The stream is closed'); self.__queue.push(chunk); self.__flush(); },
+                close: function () { self.__closed = true; self.__flush(); },
+                error: function (e) { self.__error = e || new Error('stream error'); self.__closed = true; self.__flush(); }
+            };
+            try {
+                if (self.__source.start) { var r = self.__source.start(self.__controller); if (r && r.then) r.then(null, self.__controller.error); }
+            } catch (e) { self.__controller.error(e); }
+        }
+        ReadableStream.prototype.__flush = function () {
+            while (this.__waiters.length && (this.__queue.length || this.__closed)) {
+                var w = this.__waiters.shift();
+                if (this.__queue.length) w.resolve({ value: this.__queue.shift(), done: false });
+                else if (this.__error) w.reject(this.__error);
+                else w.resolve({ value: undefined, done: true });
+            }
+        };
+        ReadableStream.prototype.__pull = function () {
+            var self = this;
+            if (self.__closed || !self.__source.pull || self.__pulling) return;
+            self.__pulling = true;
+            try {
+                var r = self.__source.pull(self.__controller);
+                if (r && r.then) r.then(function () { self.__pulling = false; if (self.__waiters.length) self.__pull(); }, function (e) { self.__pulling = false; self.__controller.error(e); });
+                else { self.__pulling = false; if (self.__waiters.length && !self.__queue.length) setTimeout(function () { self.__pull(); }, 0); }
+            } catch (e) { self.__pulling = false; self.__controller.error(e); }
+        };
+        ReadableStream.prototype.getReader = function () {
+            var self = this;
+            if (self.locked) throw new TypeError('The stream is locked');
+            self.locked = true;
+            return {
+                read: function () {
+                    return new P(function (resolve, reject) {
+                        self.__waiters.push({ resolve: resolve, reject: reject });
+                        self.__flush();
+                        if (self.__waiters.length) self.__pull();
+                    });
+                },
+                cancel: function (reason) { self.locked = false; return self.cancel(reason); },
+                releaseLock: function () { self.locked = false; },
+                closed: new P(function (resolve) { self.__onClosed = resolve; })
+            };
+        };
+        ReadableStream.prototype.cancel = function (reason) {
+            this.__closed = true;
+            this.__queue = [];
+            try { if (this.__source.cancel) this.__source.cancel(reason); } catch (e) {}
+            this.__flush();
+            if (this.__onClosed) this.__onClosed();
+            return resolved();
+        };
+        ReadableStream.prototype.tee = function () { return [this, this]; };
+        ReadableStream.prototype.pipeTo = function (dest) {
+            var reader = this.getReader(), writer = dest.getWriter();
+            function step() { return reader.read().then(function (r) { if (r.done) return writer.close(); return P.resolve(writer.write(r.value)).then(step); }); }
+            return step();
+        };
+        ReadableStream.prototype.pipeThrough = function (pair) { this.pipeTo(pair.writable); return pair.readable; };
+        window.ReadableStream = ReadableStream;
+        window.ReadableStreamDefaultReader = function ReadableStreamDefaultReader() {};
+        function WritableStream(sink) {
+            this.locked = false;
+            this.__sink = sink || {};
+            try { if (this.__sink.start) this.__sink.start({ error: noop }); } catch (e) {}
+        }
+        WritableStream.prototype.getWriter = function () {
+            var self = this;
+            self.locked = true;
+            return {
+                write: function (chunk) { try { var r = self.__sink.write && self.__sink.write(chunk, { error: noop }); return r && r.then ? r : resolved(); } catch (e) { return P.reject(e); } },
+                close: function () { try { var r = self.__sink.close && self.__sink.close(); return r && r.then ? r : resolved(); } catch (e) { return P.reject(e); } },
+                abort: function (reason) { try { if (self.__sink.abort) self.__sink.abort(reason); } catch (e) {} return resolved(); },
+                releaseLock: function () { self.locked = false; },
+                ready: resolved(), closed: resolved(), desiredSize: 1
+            };
+        };
+        WritableStream.prototype.abort = function () { return resolved(); };
+        WritableStream.prototype.close = function () { return resolved(); };
+        window.WritableStream = WritableStream;
+        window.WritableStreamDefaultWriter = function WritableStreamDefaultWriter() {};
+        function TransformStream(transformer) {
+            transformer = transformer || {};
+            var readableController = null;
+            this.readable = new ReadableStream({ start: function (c) { readableController = c; } });
+            var tc = { enqueue: function (chunk) { readableController.enqueue(chunk); }, error: function (e) { readableController.error(e); }, terminate: function () { readableController.close(); }, desiredSize: 1 };
+            this.writable = new WritableStream({
+                write: function (chunk) { if (transformer.transform) return transformer.transform(chunk, tc); tc.enqueue(chunk); },
+                close: function () { var r = transformer.flush ? transformer.flush(tc) : null; return P.resolve(r).then(function () { readableController.close(); }); },
+                abort: function (reason) { readableController.error(reason); }
+            });
+        }
+        window.TransformStream = TransformStream;
+        window.ByteLengthQueuingStrategy = function ByteLengthQueuingStrategy(o) { this.highWaterMark = o && o.highWaterMark; this.size = function (c) { return c.byteLength; }; };
+        window.CountQueuingStrategy = function CountQueuingStrategy(o) { this.highWaterMark = o && o.highWaterMark; this.size = function () { return 1; }; };
+        window.TextDecoderStream = function TextDecoderStream(label) {
+            var dec = new TextDecoder(label);
+            var t = new TransformStream({ transform: function (chunk, c) { c.enqueue(dec.decode(chunk)); } });
+            this.readable = t.readable; this.writable = t.writable; this.encoding = dec.encoding;
+        };
+        window.TextEncoderStream = function TextEncoderStream() {
+            var enc = new TextEncoder();
+            var t = new TransformStream({ transform: function (chunk, c) { c.enqueue(enc.encode(String(chunk))); } });
+            this.readable = t.readable; this.writable = t.writable; this.encoding = 'utf-8';
+        };
+        if (window.Response && window.Response.prototype && !('body' in window.Response.prototype)) {
+            try {
+                Object.defineProperty(window.Response.prototype, 'body', { get: function () {
+                    var self = this;
+                    if (self.__brBody) return self.__brBody;
+                    if (!self.arrayBuffer) return null;
+                    self.__brBody = new ReadableStream({ start: function (c) {
+                        var p;
+                        try { p = self.arrayBuffer(); } catch (e) { c.error(e); return; }
+                        p.then(function (buf) { c.enqueue(new Uint8Array(buf)); c.close(); }, function (e) { c.error(e); });
+                    } });
+                    return self.__brBody;
+                }, configurable: true });
+            } catch (e) {}
+        }
+    }
+
+    // ---- WebRTC, media capture and recording: present, but every attempt fails cleanly
+    if (!window.RTCPeerConnection && !window.webkitRTCPeerConnection) {
+        var rtcUnsupported = rejectWith('NotSupportedError', 'WebRTC is not available on this device');
+        function RTCPeerConnection(config) {
+            this.localDescription = null; this.remoteDescription = null; this.currentLocalDescription = null; this.currentRemoteDescription = null;
+            this.signalingState = 'stable'; this.iceConnectionState = 'new'; this.iceGatheringState = 'new'; this.connectionState = 'new';
+            this.canTrickleIceCandidates = null; this.sctp = null; this.__config = config || {};
+            this.__l = {};
+        }
+        RTCPeerConnection.prototype = {
+            createOffer: rtcUnsupported, createAnswer: rtcUnsupported, setLocalDescription: rtcUnsupported, setRemoteDescription: rtcUnsupported, addIceCandidate: rtcUnsupported,
+            createDataChannel: function (label) { return { label: label, readyState: 'closed', bufferedAmount: 0, ordered: true, binaryType: 'blob', send: function () { throw domException('InvalidStateError', 'RTCDataChannel is closed'); }, close: noop, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } }; },
+            addTrack: function (track) { return { track: track, replaceTrack: rtcUnsupported, getParameters: function () { return {}; }, setParameters: rtcUnsupported, getStats: function () { return resolved(new Map()); } }; },
+            removeTrack: noop, addTransceiver: function () { return {}; }, getSenders: function () { return []; }, getReceivers: function () { return []; }, getTransceivers: function () { return []; },
+            addStream: noop, removeStream: noop, getLocalStreams: function () { return []; }, getRemoteStreams: function () { return []; },
+            getStats: function () { return resolved(new Map()); }, getConfiguration: function () { return this.__config; }, setConfiguration: noop, restartIce: noop, close: noop,
+            addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); }, removeEventListener: function (t, f) { var l = this.__l[t] || []; var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); }, dispatchEvent: function () { return true; }
+        };
+        RTCPeerConnection.generateCertificate = rtcUnsupported;
+        window.RTCPeerConnection = window.webkitRTCPeerConnection = window.mozRTCPeerConnection = RTCPeerConnection;
+        window.RTCSessionDescription = function RTCSessionDescription(init) { this.type = init && init.type; this.sdp = (init && init.sdp) || ''; this.toJSON = function () { return { type: this.type, sdp: this.sdp }; }; };
+        window.RTCIceCandidate = function RTCIceCandidate(init) { init = init || {}; this.candidate = init.candidate || ''; this.sdpMid = init.sdpMid || null; this.sdpMLineIndex = init.sdpMLineIndex === undefined ? null : init.sdpMLineIndex; this.toJSON = function () { return { candidate: this.candidate, sdpMid: this.sdpMid, sdpMLineIndex: this.sdpMLineIndex }; }; };
+        var rtcNames = ['RTCDataChannel', 'RTCIceGatherer', 'RTCIceTransport', 'RTCDtlsTransport', 'RTCRtpSender', 'RTCRtpReceiver', 'RTCRtpTransceiver', 'RTCSctpTransport', 'RTCCertificate', 'RTCPeerConnectionIceEvent', 'RTCDataChannelEvent', 'RTCTrackEvent', 'RTCStatsReport', 'RTCError'];
+        for (var rn = 0; rn < rtcNames.length; rn++) if (!window[rtcNames[rn]]) window[rtcNames[rn]] = (function (n) { var f = function () {}; try { Object.defineProperty(f, 'name', { value: n }); } catch (e) {} return f; })(rtcNames[rn]);
+        window.RTCIceGatherer.prototype.getLocalCandidates = function () { return []; };
+    }
+    if (!window.MediaStream) {
+        window.MediaStream = window.webkitMediaStream = function MediaStream() { this.id = 'ms-' + Math.random().toString(36).slice(2); this.active = false; };
+        window.MediaStream.prototype = { getTracks: function () { return []; }, getAudioTracks: function () { return []; }, getVideoTracks: function () { return []; }, getTrackById: function () { return null; }, addTrack: noop, removeTrack: noop, clone: function () { return new window.MediaStream(); }, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } };
+        window.MediaStreamTrack = function MediaStreamTrack() { this.readyState = 'ended'; this.enabled = false; this.muted = true; this.kind = ''; this.label = ''; this.id = ''; };
+        window.MediaStreamTrack.prototype = { stop: noop, clone: function () { return new window.MediaStreamTrack(); }, getSettings: function () { return {}; }, getConstraints: function () { return {}; }, getCapabilities: function () { return {}; }, applyConstraints: function () { return resolved(); }, addEventListener: noop, removeEventListener: noop };
+    }
+    if (!window.MediaRecorder) {
+        window.MediaRecorder = function MediaRecorder() { throw domException('NotSupportedError', 'MediaRecorder is not available on this device'); };
+        window.MediaRecorder.isTypeSupported = function () { return false; };
+    }
+    if (navigator.mediaDevices) {
+        if (!navigator.mediaDevices.getDisplayMedia) navigator.mediaDevices.getDisplayMedia = rejectWith('NotAllowedError', 'Screen capture is not available');
+        if (!navigator.mediaDevices.getSupportedConstraints) navigator.mediaDevices.getSupportedConstraints = function () { return {}; };
+        if (!navigator.mediaDevices.addEventListener) { navigator.mediaDevices.addEventListener = noop; navigator.mediaDevices.removeEventListener = noop; }
+    }
+    if (!navigator.getUserMedia) {
+        navigator.getUserMedia = navigator.webkitGetUserMedia = function (constraints, ok, err) { setTimeout(function () { if (err) err(domException('NotAllowedError', 'Camera and microphone are not available')); }, 0); };
+    }
+    if (!window.ImageCapture) window.ImageCapture = function ImageCapture() { throw domException('NotSupportedError', 'ImageCapture is not available'); };
+
+    // ---- Speech
+    if (!window.speechSynthesis) {
+        window.speechSynthesis = { speak: function (u) { setTimeout(function () { if (u && u.onerror) u.onerror({ error: 'synthesis-unavailable', utterance: u }); }, 0); }, cancel: noop, pause: noop, resume: noop, getVoices: function () { return []; },
+                                   speaking: false, pending: false, paused: false, onvoiceschanged: null, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } };
+        window.SpeechSynthesisUtterance = function SpeechSynthesisUtterance(text) { this.text = text || ''; this.lang = ''; this.voice = null; this.volume = 1; this.rate = 1; this.pitch = 1; this.onstart = this.onend = this.onerror = this.onpause = this.onresume = this.onmark = this.onboundary = null; this.addEventListener = noop; this.removeEventListener = noop; };
+        window.SpeechSynthesisVoice = function SpeechSynthesisVoice() {};
+        window.SpeechSynthesisEvent = function SpeechSynthesisEvent() {};
+    }
+    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
+        var SpeechRecognition = function SpeechRecognition() { this.continuous = false; this.interimResults = false; this.lang = ''; this.maxAlternatives = 1; this.onresult = this.onerror = this.onend = this.onstart = this.onnomatch = null; };
+        SpeechRecognition.prototype.start = function () {
+            var self = this;
+            setTimeout(function () { if (self.onstart) self.onstart({}); if (self.onerror) self.onerror({ error: 'not-allowed', message: 'Speech recognition is not available' }); if (self.onend) self.onend({}); }, 0);
+        };
+        SpeechRecognition.prototype.stop = SpeechRecognition.prototype.abort = noop;
+        SpeechRecognition.prototype.addEventListener = function (t, f) { this['on' + t] = f; };
+        SpeechRecognition.prototype.removeEventListener = function (t) { this['on' + t] = null; };
+        window.SpeechRecognition = window.webkitSpeechRecognition = SpeechRecognition;
+        window.SpeechGrammarList = window.webkitSpeechGrammarList = function SpeechGrammarList() { this.length = 0; this.addFromString = noop; this.addFromURI = noop; };
+        window.SpeechRecognitionEvent = window.webkitSpeechRecognitionEvent = function SpeechRecognitionEvent() {};
+    }
+
+    // ---- crypto.subtle: real SHA-1 / SHA-256 digests, everything else unavailable
+    function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+    function rotl(x, n) { return (x << n) | (x >>> (32 - n)); }
+    function padMessage(bytes) {
+        var l = bytes.length, padLen = ((l + 9 + 63) >> 6) << 6, msg = new Uint8Array(padLen);
+        msg.set(bytes);
+        msg[l] = 0x80;
+        var bits = l * 8, hi = Math.floor(bits / 4294967296), lo = bits >>> 0;
+        msg[padLen - 8] = (hi >>> 24) & 255; msg[padLen - 7] = (hi >>> 16) & 255; msg[padLen - 6] = (hi >>> 8) & 255; msg[padLen - 5] = hi & 255;
+        msg[padLen - 4] = (lo >>> 24) & 255; msg[padLen - 3] = (lo >>> 16) & 255; msg[padLen - 2] = (lo >>> 8) & 255; msg[padLen - 1] = lo & 255;
+        return msg;
+    }
+    function readWords(msg, off, w, n) { for (var i = 0; i < n; i++) w[i] = (msg[off + i * 4] << 24) | (msg[off + i * 4 + 1] << 16) | (msg[off + i * 4 + 2] << 8) | msg[off + i * 4 + 3]; }
+    function wordsToBytes(H) { var out = new Uint8Array(H.length * 4); for (var i = 0; i < H.length; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 255; out[i * 4 + 2] = (H[i] >>> 8) & 255; out[i * 4 + 3] = H[i] & 255; } return out; }
+    var K256 = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+                0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+                0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+                0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+    function sha256(bytes) {
+        var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+        var msg = padMessage(bytes), w = new Array(64), i;
+        for (var off = 0; off < msg.length; off += 64) {
+            readWords(msg, off, w, 16);
+            for (i = 16; i < 64; i++) {
+                var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3), s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+                w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+            }
+            var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+            for (i = 0; i < 64; i++) {
+                var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25), ch = (e & f) ^ (~e & g), t1 = (h + S1 + ch + K256[i] + w[i]) | 0;
+                var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22), maj = (a & b) ^ (a & c) ^ (b & c), t2 = (S0 + maj) | 0;
+                h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+            }
+            H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+            H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+        }
+        return wordsToBytes(H);
+    }
+    function sha1(bytes) {
+        var H = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        var msg = padMessage(bytes), w = new Array(80), i;
+        for (var off = 0; off < msg.length; off += 64) {
+            readWords(msg, off, w, 16);
+            for (i = 16; i < 80; i++) w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+            var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4];
+            for (i = 0; i < 80; i++) {
+                var f, k;
+                if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+                else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+                else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+                else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+                var t = (rotl(a, 5) + f + e + k + w[i]) | 0;
+                e = d; d = c; c = rotl(b, 30); b = a; a = t;
+            }
+            H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0; H[4] = (H[4] + e) | 0;
+        }
+        return wordsToBytes(H);
+    }
+    function toBytes(data) {
+        if (data instanceof ArrayBuffer) return new Uint8Array(data);
+        if (data && data.buffer instanceof ArrayBuffer) return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength);
+        if (typeof data === 'string') return new TextEncoder().encode(data);
+        return new Uint8Array(0);
+    }
+    if (window.crypto && !window.crypto.subtle && !window.crypto.webkitSubtle) {
+        var cryptoUnsupported = rejectWith('NotSupportedError', 'This operation is not available in this browser');
+        var subtle = {
+            digest: function (algorithm, data) {
+                if (!P) return null;
+                var name = String(typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || '').toUpperCase().replace('-', '');
+                try {
+                    var bytes = toBytes(data);
+                    if (name === 'SHA256') return P.resolve(sha256(bytes).buffer);
+                    if (name === 'SHA1') return P.resolve(sha1(bytes).buffer);
+                } catch (e) { return P.reject(e); }
+                return cryptoUnsupported();
+            },
+            encrypt: cryptoUnsupported, decrypt: cryptoUnsupported, sign: cryptoUnsupported, verify: cryptoUnsupported, generateKey: cryptoUnsupported,
+            deriveKey: cryptoUnsupported, deriveBits: cryptoUnsupported, importKey: cryptoUnsupported, exportKey: cryptoUnsupported, wrapKey: cryptoUnsupported, unwrapKey: cryptoUnsupported
+        };
+        try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) { window.crypto.subtle = subtle; }
+        window.SubtleCrypto = function SubtleCrypto() {};
+        window.CryptoKey = function CryptoKey() {};
+    }
+
+    // ---- Credentials, authentication, payments
+    if (!navigator.credentials) {
+        var credUnsupported = rejectWith('NotSupportedError', 'Credential management is not available');
+        navigator.credentials = { get: credUnsupported, create: credUnsupported, store: credUnsupported, preventSilentAccess: function () { return resolved(); } };
+        window.Credential = function Credential() {};
+        window.PasswordCredential = function PasswordCredential(init) { init = init || {}; this.type = 'password'; this.id = init.id || ''; this.password = init.password || ''; this.name = init.name || ''; this.iconURL = init.iconURL || ''; };
+        window.FederatedCredential = function FederatedCredential(init) { init = init || {}; this.type = 'federated'; this.id = init.id || ''; this.provider = init.provider || ''; this.name = init.name || ''; };
+        window.CredentialsContainer = function CredentialsContainer() {};
+    }
+    if (!window.PublicKeyCredential) {
+        window.PublicKeyCredential = function PublicKeyCredential() {};
+        window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function () { return resolved(false); };
+        window.PublicKeyCredential.isConditionalMediationAvailable = function () { return resolved(false); };
+        window.AuthenticatorResponse = function AuthenticatorResponse() {};
+    }
+    if (!window.PaymentRequest) {
+        window.PaymentRequest = function PaymentRequest(methods, details) {
+            this.id = (details && details.id) || 'pr-' + Math.random().toString(36).slice(2);
+            this.shippingAddress = null; this.shippingOption = null; this.shippingType = null;
+            this.onshippingaddresschange = this.onshippingoptionchange = this.onpaymentmethodchange = null;
+        };
+        window.PaymentRequest.prototype = {
+            canMakePayment: function () { return resolved(false); },
+            hasEnrolledInstrument: function () { return resolved(false); },
+            show: rejectWith('NotSupportedError', 'Web Payments are not available in this browser'),
+            abort: function () { return resolved(); },
+            addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; }
+        };
+        window.PaymentResponse = function PaymentResponse() {};
+        window.PaymentAddress = function PaymentAddress() {};
+    }
+
+    // ---- Media: Web Audio alias, DRM, tracks, subtitles
+    if (!window.AudioContext && window.webkitAudioContext) {
+        window.AudioContext = window.webkitAudioContext;
+        if (!window.OfflineAudioContext && window.webkitOfflineAudioContext) window.OfflineAudioContext = window.webkitOfflineAudioContext;
+    }
+    if (window.AudioContext && !window.AudioContext.prototype.createGain && window.AudioContext.prototype.createGainNode) {
+        var ACp = window.AudioContext.prototype;
+        ACp.createGain = ACp.createGainNode;
+        ACp.createDelay = ACp.createDelayNode;
+        ACp.createScriptProcessor = ACp.createJavaScriptNode;
+    }
+    if (window.AudioContext && window.AudioContext.prototype && !window.AudioContext.prototype.resume) {
+        window.AudioContext.prototype.resume = function () { return resolved(); };
+        window.AudioContext.prototype.suspend = function () { return resolved(); };
+        window.AudioContext.prototype.close = function () { return resolved(); };
+    }
+    if (!navigator.requestMediaKeySystemAccess) navigator.requestMediaKeySystemAccess = rejectWith('NotSupportedError', 'Encrypted media is not available');
+    if (!window.MediaKeys) { window.MediaKeys = function MediaKeys() {}; window.MediaKeySystemAccess = function MediaKeySystemAccess() {}; }
+    var MEp = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+    if (MEp) {
+        function trackList() { return { length: 0, getTrackById: function () { return null; }, addEventListener: noop, removeEventListener: noop, onchange: null, onaddtrack: null, onremovetrack: null }; }
+        if (!('audioTracks' in MEp)) try { Object.defineProperty(MEp, 'audioTracks', { get: function () { return this.__brAudioTracks || (this.__brAudioTracks = trackList()); }, configurable: true }); } catch (e) {}
+        if (!('videoTracks' in MEp)) try { Object.defineProperty(MEp, 'videoTracks', { get: function () { return this.__brVideoTracks || (this.__brVideoTracks = trackList()); }, configurable: true }); } catch (e2) {}
+        if (!MEp.setSinkId) MEp.setSinkId = rejectWith('NotSupportedError', 'Audio output selection is not available');
+        if (!MEp.captureStream) MEp.captureStream = MEp.mozCaptureStream = function () { return new window.MediaStream(); };
+        if (!('playsInline' in MEp)) defineBoolAttrProp(MEp, 'playsInline');
+        if (!MEp.setMediaKeys) MEp.setMediaKeys = rejectWith('NotSupportedError', 'Encrypted media is not available');
+        // play() returns a promise in modern browsers; many players rely on that
+        var origPlay = MEp.play;
+        if (origPlay) {
+            try {
+                var probe = document.createElement('audio');
+                if (!(probe.play() && typeof probe.play().then === 'function')) {
+                    MEp.play = function () { var r; try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; } return (r && r.then) ? r : resolved(); };
+                }
+            } catch (e3) {}
+        }
+    }
+    if (!window.HTMLTrackElement) window.HTMLTrackElement = function HTMLTrackElement() {};
+    if (!window.TextTrack) { window.TextTrack = function TextTrack() {}; window.TextTrackCue = window.VTTCue = function VTTCue(start, end, text) { this.startTime = start; this.endTime = end; this.text = text; }; }
+    if (!window.MediaSession && !navigator.mediaSession) navigator.mediaSession = { metadata: null, playbackState: 'none', setActionHandler: noop, setPositionState: noop };
+    if (!window.MediaMetadata) window.MediaMetadata = function MediaMetadata(init) { init = init || {}; this.title = init.title || ''; this.artist = init.artist || ''; this.album = init.album || ''; this.artwork = init.artwork || []; };
+    if (!window.Audio) window.Audio = function Audio(src) { var a = document.createElement('audio'); if (src) a.src = src; return a; };
+
+    // ---- Canvas helpers
+    var C2D = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+    if (C2D) {
+        if (!C2D.ellipse) C2D.ellipse = function (x, y, rx, ry, rotation, start, end, ccw) {
+            this.save();
+            this.translate(x, y);
+            this.rotate(rotation || 0);
+            this.scale(rx, ry);
+            this.arc(0, 0, 1, start, end, !!ccw);
+            this.restore();
+        };
+        if (!C2D.setLineDash) {
+            if ('webkitLineDash' in C2D) {
+                C2D.setLineDash = function (segments) { this.webkitLineDash = segments; };
+                C2D.getLineDash = function () { return this.webkitLineDash || []; };
+                try { Object.defineProperty(C2D, 'lineDashOffset', { get: function () { return this.webkitLineDashOffset; }, set: function (v) { this.webkitLineDashOffset = v; }, configurable: true }); } catch (e) {}
+            } else {
+                C2D.setLineDash = noop;
+                C2D.getLineDash = function () { return []; };
+            }
+        }
+        if (!C2D.drawFocusIfNeeded) C2D.drawFocusIfNeeded = noop;
+        if (!C2D.isPointInStroke) C2D.isPointInStroke = function () { return false; };
+        if (!C2D.addHitRegion) { C2D.addHitRegion = noop; C2D.removeHitRegion = noop; C2D.clearHitRegions = noop; }
+        if (!C2D.resetTransform) C2D.resetTransform = function () { this.setTransform(1, 0, 0, 1, 0, 0); };
+        if (!('imageSmoothingEnabled' in C2D) && ('webkitImageSmoothingEnabled' in C2D)) {
+            try { Object.defineProperty(C2D, 'imageSmoothingEnabled', { get: function () { return this.webkitImageSmoothingEnabled; }, set: function (v) { this.webkitImageSmoothingEnabled = v; }, configurable: true }); } catch (e) {}
+        }
+        if (!('filter' in C2D)) try { Object.defineProperty(C2D, 'filter', { get: function () { return this.__brFilter || 'none'; }, set: function (v) { this.__brFilter = v; }, configurable: true }); } catch (e2) {}
+        if (!window.Path2D) {
+            var Path2D = function Path2D(init) {
+                this.__ops = [];
+                if (init instanceof Path2D) this.__ops = init.__ops.slice();
+            };
+            var pathMethods = ['moveTo', 'lineTo', 'bezierCurveTo', 'quadraticCurveTo', 'arc', 'arcTo', 'ellipse', 'rect', 'closePath'];
+            for (var pm = 0; pm < pathMethods.length; pm++) (function (m) { Path2D.prototype[m] = function () { this.__ops.push([m, Array.prototype.slice.call(arguments)]); }; })(pathMethods[pm]);
+            Path2D.prototype.addPath = function (p) { if (p && p.__ops) this.__ops = this.__ops.concat(p.__ops); };
+            Path2D.prototype.__replay = function (ctx) { ctx.beginPath(); for (var i = 0; i < this.__ops.length; i++) ctx[this.__ops[i][0]].apply(ctx, this.__ops[i][1]); };
+            var wrapPathOp = function (name) {
+                var orig = C2D[name];
+                if (!orig) return;
+                C2D[name] = function (a, b, c, d) {
+                    if (a instanceof Path2D) { a.__replay(this); return name === 'isPointInPath' ? orig.call(this, b, c, d) : orig.call(this, b); }
+                    return orig.apply(this, arguments);
+                };
+            };
+            wrapPathOp('fill'); wrapPathOp('stroke'); wrapPathOp('clip'); wrapPathOp('isPointInPath');
+            window.Path2D = Path2D;
+        }
+    }
+    var HCp = window.HTMLCanvasElement && window.HTMLCanvasElement.prototype;
+    if (HCp && !HCp.toBlob) HCp.toBlob = function (callback, type, quality) {
+        var canvas = this;
+        setTimeout(function () {
+            var dataURL = canvas.toDataURL(type, quality);
+            var parts = dataURL.split(','), mime = /data:([^;]+)/.exec(parts[0]), bin = atob(parts[1]), arr = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            callback(new Blob([arr], { type: mime ? mime[1] : 'image/png' }));
+        }, 0);
+    };
+    if (HCp && !HCp.captureStream) HCp.captureStream = function () { return new window.MediaStream(); };
+    if (HCp && !HCp.transferControlToOffscreen) HCp.transferControlToOffscreen = function () { return this; };
+    if (!window.OffscreenCanvas) {
+        window.OffscreenCanvas = function OffscreenCanvas(width, height) {
+            var c = document.createElement('canvas');
+            c.width = width; c.height = height;
+            c.convertToBlob = function (opts) { return new P(function (res) { c.toBlob(res, opts && opts.type, opts && opts.quality); }); };
+            c.transferToImageBitmap = function () { return c; };
+            return c;
+        };
+    }
+    if (!window.createImageBitmap) {
+        window.ImageBitmap = function ImageBitmap() {};
+        window.createImageBitmap = function (source, sx, sy, sw, sh) {
+            if (!P) return null;
+            return new P(function (resolve, reject) {
+                function finish(img) {
+                    if (typeof sx === 'number' && typeof sw === 'number') {
+                        var c = document.createElement('canvas');
+                        c.width = sw; c.height = sh;
+                        c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+                        img = c;
+                    }
+                    img.close = noop;
+                    resolve(img);
+                }
+                if (source instanceof Blob) {
+                    var url = URL.createObjectURL(source), img = new Image();
+                    img.onload = function () { URL.revokeObjectURL(url); finish(img); };
+                    img.onerror = function () { URL.revokeObjectURL(url); reject(domException('InvalidStateError', 'The image could not be decoded')); };
+                    img.src = url;
+                } else if (window.ImageData && source instanceof ImageData) {
+                    var c = document.createElement('canvas');
+                    c.width = source.width; c.height = source.height;
+                    c.getContext('2d').putImageData(source, 0, 0);
+                    finish(c);
+                } else if (source && (source.tagName === 'IMG' || source.tagName === 'CANVAS' || source.tagName === 'VIDEO')) {
+                    if (source.tagName === 'IMG' && !source.complete) { source.addEventListener('load', function () { finish(source); }, false); source.addEventListener('error', function () { reject(domException('InvalidStateError', 'The image could not be decoded')); }, false); }
+                    else finish(source);
+                } else {
+                    reject(domException('InvalidStateError', 'Unsupported image source'));
+                }
+            });
+        };
+    }
+
+    // ---- Workers, storage, files
+    if (!window.SharedWorker) window.SharedWorker = function SharedWorker() { throw domException('NotSupportedError', 'SharedWorker is not available'); };
+    if (!window.Worklet) window.Worklet = function Worklet() {};
+    if (!window.requestFileSystem && !window.webkitRequestFileSystem) {
+        window.requestFileSystem = window.webkitRequestFileSystem = function (type, size, ok, err) { setTimeout(function () { if (err) err(domException('SecurityError', 'The file system is not available')); }, 0); };
+        window.resolveLocalFileSystemURL = window.webkitResolveLocalFileSystemURL = function (url, ok, err) { setTimeout(function () { if (err) err(domException('NotFoundError', 'not found')); }, 0); };
+        window.TEMPORARY = 0; window.PERSISTENT = 1;
+    }
+    if (navigator.storage && !navigator.storage.persist) { navigator.storage.persist = function () { return resolved(false); }; navigator.storage.persisted = function () { return resolved(false); }; navigator.storage.getDirectory = rejectWith('NotSupportedError', 'no origin private file system'); }
+    if (!navigator.locks) navigator.locks = { request: function (name, opts, cb) { if (typeof opts === 'function') cb = opts; var lock = { name: name, mode: 'exclusive' }; return P ? P.resolve().then(function () { return cb(lock); }) : cb(lock); }, query: function () { return resolved({ held: [], pending: [] }); } };
+    if (!window.PushManager) { window.PushManager = function PushManager() {}; window.PushManager.supportedContentEncodings = []; window.PushSubscription = function PushSubscription() {}; }
+    if (!navigator.registerProtocolHandler) navigator.registerProtocolHandler = noop;
+    if (!navigator.registerContentHandler) navigator.registerContentHandler = noop;
+    if (!navigator.unregisterProtocolHandler) navigator.unregisterProtocolHandler = noop;
+    if (!navigator.setAppBadge) { navigator.setAppBadge = function () { return resolved(); }; navigator.clearAppBadge = function () { return resolved(); }; }
+    if (!navigator.wakeLock) navigator.wakeLock = { request: rejectWith('NotAllowedError', 'Wake lock is not available') };
+    if (!navigator.vibrate) navigator.vibrate = function () { return false; };
+    if (!navigator.getBattery) navigator.getBattery = function () { return resolved({ charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1, addEventListener: noop, removeEventListener: noop, onchargingchange: null, onlevelchange: null }); };
+    if (!navigator.permissions) navigator.permissions = { query: function (desc) { var name = desc && desc.name; var state = (name === 'geolocation') ? 'prompt' : 'denied'; return resolved({ state: state, status: state, name: name, onchange: null, addEventListener: noop, removeEventListener: noop }); } };
+    if (!navigator.userAgentData) navigator.userAgentData = { brands: [{ brand: 'Safari', version: '6' }], mobile: true, platform: 'iOS', getHighEntropyValues: function () { return resolved({ platform: 'iOS', platformVersion: '6.1', architecture: 'arm', model: '', uaFullVersion: '6.0' }); }, toJSON: function () { return { brands: this.brands, mobile: true, platform: 'iOS' }; } };
+    if (!navigator.hardwareConcurrency) try { navigator.hardwareConcurrency = 2; } catch (e) {}
+    if (!('deviceMemory' in navigator)) try { navigator.deviceMemory = 0.5; } catch (e) {}
+    if (!navigator.scheduling) navigator.scheduling = { isInputPending: function () { return false; } };
+    if (!window.scheduler) window.scheduler = { postTask: function (cb, opts) { var delay = opts && opts.delay || 0; return new P(function (res, rej) { setTimeout(function () { try { res(cb()); } catch (e) { rej(e); } }, delay); }); }, yield: function () { return new P(function (res) { setTimeout(res, 0); }); } };
+    if (!navigator.cookieEnabled) try { navigator.cookieEnabled = true; } catch (e) {}
+    if (!window.cookieStore) window.cookieStore = {
+        get: function (name) { var m = document.cookie.match(new RegExp('(?:^|; )' + String(typeof name === 'object' ? name.name : name).replace(/([.*+?^${}()|[\]\\])/g, '\\$1') + '=([^;]*)')); return resolved(m ? { name: typeof name === 'object' ? name.name : name, value: decodeURIComponent(m[1]) } : null); },
+        getAll: function () { var out = [], parts = document.cookie ? document.cookie.split('; ') : []; for (var i = 0; i < parts.length; i++) { var eq = parts[i].indexOf('='); out.push({ name: parts[i].slice(0, eq), value: decodeURIComponent(parts[i].slice(eq + 1)) }); } return resolved(out); },
+        set: function (name, value) { var o = typeof name === 'object' ? name : { name: name, value: value }; var s = o.name + '=' + encodeURIComponent(o.value) + '; path=' + (o.path || '/'); if (o.expires) s += '; expires=' + new Date(o.expires).toUTCString(); if (o.domain) s += '; domain=' + o.domain; document.cookie = s; return resolved(); },
+        'delete': function (name) { var n = typeof name === 'object' ? name.name : name; document.cookie = n + '=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'; return resolved(); },
+        addEventListener: noop, removeEventListener: noop
+    };
+
+    // ---- Editing, interaction, security attributes
+    defineBoolAttrProp(Ep, 'spellcheck');
+    defineBoolAttrProp(Ep, 'inert');
+    defineAttrProp(Ep, 'enterKeyHint', 'enterkeyhint');
+    defineAttrProp(Ep, 'inputMode', 'inputmode');
+    defineAttrProp(Ep, 'autocapitalize');
+    if (window.HTMLScriptElement) { defineAttrProp(window.HTMLScriptElement.prototype, 'integrity'); defineAttrProp(window.HTMLScriptElement.prototype, 'referrerPolicy', 'referrerpolicy'); }
+    if (window.HTMLLinkElement) { defineAttrProp(window.HTMLLinkElement.prototype, 'integrity'); defineAttrProp(window.HTMLLinkElement.prototype, 'as'); defineAttrProp(window.HTMLLinkElement.prototype, 'referrerPolicy', 'referrerpolicy'); }
+    if (window.HTMLIFrameElement) { defineAttrProp(window.HTMLIFrameElement.prototype, 'allow'); defineAttrProp(window.HTMLIFrameElement.prototype, 'loading'); defineAttrProp(window.HTMLIFrameElement.prototype, 'referrerPolicy', 'referrerpolicy'); }
+    if (window.HTMLAnchorElement) { defineAttrProp(window.HTMLAnchorElement.prototype, 'download'); defineAttrProp(window.HTMLAnchorElement.prototype, 'referrerPolicy', 'referrerpolicy'); }
+    if (!window.ClipboardEvent) window.ClipboardEvent = function ClipboardEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.clipboardData = (init && init.clipboardData) || null; return e; };
+    if (!window.DataTransfer) {
+        window.DataTransfer = function DataTransfer() { this.__data = {}; this.dropEffect = 'none'; this.effectAllowed = 'none'; this.files = []; this.items = []; this.types = []; };
+        window.DataTransfer.prototype = {
+            setData: function (type, value) { this.__data[type] = String(value); if (this.types.indexOf(type) < 0) this.types.push(type); },
+            getData: function (type) { return this.__data[type] || ''; },
+            clearData: function (type) { if (type) { delete this.__data[type]; } else { this.__data = {}; this.types = []; } },
+            setDragImage: noop
+        };
+    }
+    if (!window.DragEvent) window.DragEvent = function DragEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.dataTransfer = (init && init.dataTransfer) || new window.DataTransfer(); return e; };
+    if (!window.InputEvent) window.InputEvent = function InputEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.data = (init && init.data) || null; e.inputType = (init && init.inputType) || ''; e.isComposing = false; return e; };
+    if (!window.FocusEvent) window.FocusEvent = function FocusEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.relatedTarget = (init && init.relatedTarget) || null; return e; };
+    if (!window.SecurityPolicyViolationEvent) window.SecurityPolicyViolationEvent = function SecurityPolicyViolationEvent() {};
+    if (!window.ResizeObserverEntry) window.ResizeObserverEntry = function ResizeObserverEntry() {};
+    if (!window.Sanitizer) window.Sanitizer = function Sanitizer() { this.sanitize = function (frag) { return frag; }; this.sanitizeFor = function (el, html) { var e = document.createElement(el); e.innerHTML = html; return e; }; };
+    if (Ep && !Ep.setHTML) Ep.setHTML = function (html) { this.innerHTML = html; };
+    if (!window.trustedTypes) window.trustedTypes = { createPolicy: function (name, rules) { rules = rules || {}; return { name: name, createHTML: function (s) { return rules.createHTML ? rules.createHTML(s) : s; }, createScript: function (s) { return rules.createScript ? rules.createScript(s) : s; }, createScriptURL: function (s) { return rules.createScriptURL ? rules.createScriptURL(s) : s; } }; }, isHTML: function () { return false; }, isScript: function () { return false; }, isScriptURL: function () { return false; }, emptyHTML: '', emptyScript: '', getAttributeType: function () { return null; }, getPropertyType: function () { return null; }, defaultPolicy: null };
+
+    // ---- Language runtime extras
+    if (!window.globalThis) try { window.globalThis = window; } catch (e) {}
+    if (!window.queueMicrotask) window.queueMicrotask = function (cb) { if (P) P.resolve().then(cb); else setTimeout(cb, 0); };
+    if (!window.WeakRef) { window.WeakRef = function WeakRef(target) { this.__t = target; }; window.WeakRef.prototype.deref = function () { return this.__t; }; }
+    if (!window.FinalizationRegistry) { window.FinalizationRegistry = function FinalizationRegistry() {}; window.FinalizationRegistry.prototype.register = noop; window.FinalizationRegistry.prototype.unregister = noop; }
+    if (!window.Atomics) window.Atomics = { add: function (a, i, v) { var o = a[i]; a[i] = o + v; return o; }, load: function (a, i) { return a[i]; }, store: function (a, i, v) { a[i] = v; return v; }, wait: function () { return 'not-equal'; }, notify: function () { return 0; }, isLockFree: function () { return true; } };
+    if (!window.SharedArrayBuffer) window.SharedArrayBuffer = window.ArrayBuffer;
+    if (!window.DOMMatrix) {
+        window.DOMMatrix = window.WebKitCSSMatrix || function DOMMatrix() { this.a = 1; this.b = 0; this.c = 0; this.d = 1; this.e = 0; this.f = 0; this.is2D = true; this.isIdentity = true; };
+        window.DOMMatrixReadOnly = window.DOMMatrix;
+    }
+    if (!window.DOMPoint) { window.DOMPoint = function DOMPoint(x, y, z, w) { this.x = x || 0; this.y = y || 0; this.z = z || 0; this.w = w === undefined ? 1 : w; }; window.DOMPointReadOnly = window.DOMPoint; }
+    if (!window.DOMRect) { window.DOMRect = function DOMRect(x, y, w, h) { this.x = x || 0; this.y = y || 0; this.width = w || 0; this.height = h || 0; this.top = this.y; this.left = this.x; this.right = this.x + this.width; this.bottom = this.y + this.height; }; window.DOMRectReadOnly = window.DOMRect; }
+    if (!window.DOMQuad) window.DOMQuad = function DOMQuad() {};
+    if (window.Notification && !window.Notification.prototype.close) { window.Notification.prototype.close = noop; window.Notification.prototype.addEventListener = noop; window.Notification.prototype.removeEventListener = noop; window.Notification.maxActions = 0; }
+    if (!window.ErrorEvent) window.ErrorEvent = function ErrorEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, true); init = init || {}; e.message = init.message || ''; e.filename = init.filename || ''; e.lineno = init.lineno || 0; e.colno = init.colno || 0; e.error = init.error; return e; };
+    if (!window.PromiseRejectionEvent) window.PromiseRejectionEvent = function PromiseRejectionEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, true); e.promise = init && init.promise; e.reason = init && init.reason; return e; };
+    if (!window.PageTransitionEvent) window.PageTransitionEvent = function PageTransitionEvent() {};
+    if (!window.BeforeUnloadEvent) window.BeforeUnloadEvent = function BeforeUnloadEvent() {};
+    if (!window.PopStateEvent) window.PopStateEvent = function PopStateEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, false); e.state = init && init.state; return e; };
+    if (!window.HashChangeEvent) window.HashChangeEvent = function HashChangeEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, false); e.oldURL = init && init.oldURL; e.newURL = init && init.newURL; return e; };
+    if (!window.TransitionEvent && window.WebKitTransitionEvent) window.TransitionEvent = window.WebKitTransitionEvent;
+    if (!window.AnimationEvent && window.WebKitAnimationEvent) window.AnimationEvent = window.WebKitAnimationEvent;
+    if (!window.Animation) { window.Animation = function Animation() {}; window.KeyframeEffect = function KeyframeEffect() {}; window.DocumentTimeline = function DocumentTimeline() { this.currentTime = 0; }; document.timeline = document.timeline || new window.DocumentTimeline(); document.getAnimations = document.getAnimations || function () { return []; }; }
+    if (!window.CSSUnitValue) window.CSSUnitValue = function CSSUnitValue(value, unit) { this.value = value; this.unit = unit; this.toString = function () { return value + (unit === 'number' ? '' : unit === 'percent' ? '%' : unit); }; };
+    if (!window.CSS.px) { window.CSS.px = function (v) { return new window.CSSUnitValue(v, 'px'); }; window.CSS.percent = function (v) { return new window.CSSUnitValue(v, 'percent'); }; window.CSS.number = function (v) { return new window.CSSUnitValue(v, 'number'); }; window.CSS.em = function (v) { return new window.CSSUnitValue(v, 'em'); }; window.CSS.vw = function (v) { return new window.CSSUnitValue(v, 'vw'); }; window.CSS.vh = function (v) { return new window.CSSUnitValue(v, 'vh'); }; }
+    if (!window.CSS.paintWorklet) window.CSS.paintWorklet = { addModule: function () { return resolved(); } };
+    if (!window.CSS.highlights) { window.CSS.highlights = { set: noop, get: function () { return undefined; }, has: function () { return false; }, 'delete': function () { return false; }, clear: noop, size: 0 }; window.Highlight = function Highlight() {}; }
+    if (!window.CSS.number) window.CSS.number = function (v) { return { value: v, unit: 'number' }; };
+    if (window.CSSStyleSheet && window.CSSStyleSheet.prototype.insertRule && !window.CSSStyleSheet.prototype.__brWrapped) {
+        // the old engine requires the index argument; modern code omits it (append)
+        window.CSSStyleSheet.prototype.__brWrapped = true;
+        var origInsert = window.CSSStyleSheet.prototype.insertRule;
+        window.CSSStyleSheet.prototype.insertRule = function (rule, index) { return origInsert.call(this, rule, index === undefined ? (this.cssRules ? this.cssRules.length : 0) : index); };
+        if (!window.CSSStyleSheet.prototype.deleteRule && window.CSSStyleSheet.prototype.removeRule) window.CSSStyleSheet.prototype.deleteRule = window.CSSStyleSheet.prototype.removeRule;
+    }
+    if (!window.CSSLayerBlockRule) { window.CSSLayerBlockRule = function CSSLayerBlockRule() {}; window.CSSContainerRule = function CSSContainerRule() {}; window.CSSSupportsRule = window.CSSSupportsRule || function CSSSupportsRule() {}; }
+    if (!document.fonts) {
+        document.fonts = { ready: resolved({ status: 'loaded' }), status: 'loaded', check: function () { return true; }, load: function () { return resolved([]); }, add: noop, 'delete': noop, clear: noop, has: function () { return false; }, forEach: noop, addEventListener: noop, removeEventListener: noop, onloadingdone: null, size: 0 };
+        window.FontFace = function FontFace(family, source, descriptors) {
+            this.family = family; this.status = 'unloaded'; this.__source = source; this.__desc = descriptors || {};
+            var self = this;
+            this.loaded = new P(function (res) { self.__resolve = res; });
+        };
+        window.FontFace.prototype.load = function () {
+            // register through @font-face so the engine can actually use the font
+            var self = this, src = typeof self.__source === 'string' ? self.__source : '';
+            if (src) {
+                var css = '@font-face{font-family:"' + self.family + '";src:' + src;
+                if (self.__desc.weight) css += ';font-weight:' + self.__desc.weight;
+                if (self.__desc.style) css += ';font-style:' + self.__desc.style;
+                addStyle(css + '}');
+            }
+            self.status = 'loaded';
+            if (self.__resolve) self.__resolve(self);
+            return resolved(self);
+        };
+        window.FontFaceSet = function FontFaceSet() {};
+    }
+    if (!window.ScreenOrientation) window.ScreenOrientation = function ScreenOrientation() {};
+    if (window.screen && window.screen.orientation && !window.screen.orientation.lock) { window.screen.orientation.lock = rejectWith('NotSupportedError', 'Orientation lock is not available'); window.screen.orientation.unlock = noop; }
+    if (!window.CloseEvent) window.CloseEvent = function CloseEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, false); init = init || {}; e.wasClean = !!init.wasClean; e.code = init.code || 0; e.reason = init.reason || ''; return e; };
+    if (!window.MessageChannel) {
+        window.MessagePort = function MessagePort() { this.onmessage = null; this.__peer = null; this.__l = []; };
+        window.MessagePort.prototype = {
+            postMessage: function (data) { var peer = this.__peer; if (!peer) return; setTimeout(function () { var ev = { type: 'message', data: data, ports: [], target: peer }; if (peer.onmessage) peer.onmessage(ev); for (var i = 0; i < peer.__l.length; i++) peer.__l[i](ev); }, 0); },
+            start: noop, close: noop, addEventListener: function (t, f) { if (t === 'message') this.__l.push(f); }, removeEventListener: function (t, f) { var i = this.__l.indexOf(f); if (i >= 0) this.__l.splice(i, 1); }
+        };
+        window.MessageChannel = function MessageChannel() { this.port1 = new window.MessagePort(); this.port2 = new window.MessagePort(); this.port1.__peer = this.port2; this.port2.__peer = this.port1; };
+    }
+})(window, document);

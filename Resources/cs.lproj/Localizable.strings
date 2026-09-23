@@ -59,3 +59,12 @@
 "Unexpected response: %@" = "Neočekávaná odpověď: %@";
 "The server closed the connection without responding." = "Server ukončil spojení bez odpovědi.";
 "Content decoding failed." = "Dekódování obsahu selhalo.";
+
+"Share" = "Sdílet";
+"Open" = "Otevřít";
+"Open in new tab" = "Otevřít v novém panelu";
+"Copy link" = "Kopírovat odkaz";
+"Share link" = "Sdílet odkaz";
+"Open image" = "Otevřít obrázek";
+"Copy image address" = "Kopírovat adresu obrázku";
+"Save image" = "Uložit obrázek";

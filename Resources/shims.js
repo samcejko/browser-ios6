@@ -247,6 +247,7 @@
     if (!window.customElements) {
         var registry = {};
         window.customElements = {
+            __brStub: true,   // replaced by the upgrading registry in shims-extra.js
             define: function (name, ctor) { registry[name] = ctor; },
             get: function (name) { return registry[name]; },
             whenDefined: function () { return window.Promise ? window.Promise.resolve() : null; },
@@ -276,7 +277,6 @@
 
     if (!window.structuredClone) window.structuredClone = function (v) { return v === undefined ? v : JSON.parse(JSON.stringify(v)); };
     if (!window.reportError) window.reportError = function (e) { if (con.error) con.error(e); };
-    if (!window.HTMLDialogElement) window.HTMLDialogElement = function () {};
     if (!window.ResizeObserver) window.ResizeObserver = function () {}; // provided by the polyfill before this file normally
     if (!window.IdleDeadline) window.IdleDeadline = function () {};
     if (!window.Notification) { window.Notification = function () {}; window.Notification.permission = 'denied'; window.Notification.requestPermission = function () { return window.Promise ? window.Promise.resolve('denied') : null; }; }

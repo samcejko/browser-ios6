@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>shims smoke test</title>
+<script>
+window.__errors = [];
+window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>shims smoke test</h1>
+<pre id="out"></pre>
+<a id="blank" href="https://example.com/blank" target="_blank">blank link</a>
+<script>
+(function () {
+    var checks = {
+        'errors': window.__errors.length ? window.__errors.join(' | ') : 'none',
+        'PointerEvent': typeof window.PointerEvent,
+        'customElements.define': typeof window.customElements.define,
+        'ReadableStream': typeof window.ReadableStream,
+        'crypto.subtle': !!(window.crypto && window.crypto.subtle),
+        'RTCPeerConnection': typeof window.RTCPeerConnection,
+        'PaymentRequest': typeof window.PaymentRequest,
+        'Path2D': typeof window.Path2D,
+        'createImageBitmap': typeof window.createImageBitmap,
+        'window.open type': typeof window.open,
+        'navigator.share': typeof navigator.share,
+        'document.fullscreenEnabled': document.fullscreenEnabled,
+        'cookieStore': typeof window.cookieStore
+    };
+    var out = [];
+    for (var k in checks) out.push(k + ': ' + checks[k]);
+    // stream round trip
+    try {
+        var rs = new ReadableStream({ start: function (c) { c.enqueue('a'); c.enqueue('b'); c.close(); } });
+        var reader = rs.getReader(), got = [];
+        (function step() {
+            reader.read().then(function (r) {
+                if (r.done) { out.push('stream: ' + got.join('')); document.getElementById('out').textContent = out.join('\n'); return; }
+                got.push(r.value); step();
+            });
+        })();
+    } catch (e) { out.push('stream error: ' + e.message); }
+    document.getElementById('out').textContent = out.join('\n');
+})();
+</script>
+</body>
+</html>

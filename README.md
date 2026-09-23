@@ -22,7 +22,15 @@ the app around it:
   shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
   TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship
   ES2015+ bundles without an ES5 fallback do not work.
-- Planned: WebP conversion, sticky/object-fit polyfills, tabs, bookmarks and history.
+- **Robust connections** on home networks: IPv4 addresses are tried first, the system resolver gets
+  a few seconds before the name is asked directly from public DNS servers, answers are cached, every
+  address has a short connect budget and the TLS handshake has its own timeout. Main documents never
+  queue behind subresource connections.
+- **Browser UI** in the iOS 6 look (light and dark theme, drawn artwork): address bar with reload/stop,
+  back/forward chevrons, book icon for bookmarks and history, Safari-like tab strip under the address
+  bar on iPad (tab list with snapshots on iPhone), settings with a "page version" choice that changes
+  the User-Agent (iOS 6, desktop Safari 6, modern iPad).
+- Planned: sticky/object-fit polyfills, favicons in tabs, tab strip on iPhone.
 
 ## Building (GitHub Actions)
 
@@ -47,8 +55,17 @@ Local helpers (Windows PowerShell, no git required; settings in `tools/local.jso
 
 ## Project layout
 
-- `src/Net` - mbedTLS socket, HTTP/1.1 client, `NSURLProtocol` bridge with cache and cookies
-- `src/UI` - browser view controller (address bar, navigation, error pages)
-- `Resources` - Info.plist, entitlements, start page, localizations
-- `vendor` - mbedTLS config and platform glue (mbedTLS itself is fetched at build time)
-- `tools` - asset generator and PowerShell helpers
+- `src/Net` - mbedTLS socket with resolver fallback, HTTP/1.1 client and connection pool,
+  `NSURLProtocol` bridge with cache, cookies, ad blocking and body rewriting, CSS rewriter host,
+  JavaScriptCore engine wrapper, WOFF2 and WebP converters
+- `src/UI` - browser view controller, tab strip, theme (drawn artwork), settings, bookmarks/history,
+  tab list
+- `src/Model` - bookmarks and history store
+- `Resources` - Info.plist, entitlements, start page, `cssfix.js`, `shims.js`, localizations
+- `vendor` - mbedTLS config and platform glue (mbedTLS, woff2, brotli and libwebp are fetched at
+  build time)
+- `tools` - asset generator, PowerShell helpers, local test pages for the CSS rewriter
+
+Debugging over SSH: `uiopen browser:https://example.com` opens a page, `uiopen browser:snapshot`
+writes the current screen to the app's `tmp/screen.png`, and `/var/log/syslog` carries the app's log
+lines (`[Browser]`: main documents, DNS fallbacks, connect timeouts, load times, memory).

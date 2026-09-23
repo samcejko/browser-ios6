@@ -151,6 +151,9 @@ jobs:
           curl -sSfL "https://cdn.jsdelivr.net/npm/whatwg-fetch@3.6.20/dist/fetch.umd.js" -o Resources/js/fetch.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/intersection-observer@0.12.2/intersection-observer.js" -o Resources/js/intersection-observer.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/resize-observer-polyfill@1.5.1/dist/ResizeObserver.js" -o Resources/js/resize-observer.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/picturefill@3.0.3/dist/picturefill.min.js" -o Resources/js/picturefill.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/dialog-polyfill@0.5.6/dist/dialog-polyfill.js" -o Resources/js/dialog-polyfill.js
+          curl -sSfL "https://cdn.jsdelivr.net/npm/object-fit-images@3.2.4/dist/ofi.min.js" -o Resources/js/object-fit-images.js
           ls -la Resources/js
 
       - name: Generate icons and launch images
