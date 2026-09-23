@@ -468,6 +468,10 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
             [path hasSuffix:@".woff2"] || [url.absoluteString rangeOfString:@".woff2?"].location != NSNotFound) {
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
             if (declared <= 8 * 1024 * 1024) kind = @"font";
+        } else if ([ctype hasPrefix:@"font/woff"] || [ctype hasPrefix:@"application/font-woff"] || [ctype hasPrefix:@"application/x-font-woff"] ||
+                   [path hasSuffix:@".woff"] || [url.absoluteString rangeOfString:@".woff?"].location != NSNotFound) {
+            long long declared = [r.responseHeaders[@"content-length"] longLongValue];
+            if (declared <= 8 * 1024 * 1024) kind = @"woff";
         } else if ([ctype hasPrefix:@"font/ttf"] || [ctype hasPrefix:@"font/otf"] || [ctype hasPrefix:@"font/sfnt"] ||
                    [ctype hasPrefix:@"application/x-font-ttf"] || [ctype hasPrefix:@"application/x-font-opentype"] ||
                    [ctype hasPrefix:@"application/font-sfnt"] || [ctype hasPrefix:@"application/vnd.ms-opentype"] ||
@@ -514,15 +518,17 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSData *buffered = self.rewriteBuffer ?: [NSData data];
     self.rewriteBuffer = nil;
     NSString *kind = self.rewriteKind;
-    if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"sfnt"] || [kind isEqualToString:@"webp"]) {
+    if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"] || [kind isEqualToString:@"webp"]) {
         // synchronous, on the worker thread
         BOOL isFont = [kind isEqualToString:@"font"];
+        BOOL isWOFF = [kind isEqualToString:@"woff"];
         BOOL isSFNT = [kind isEqualToString:@"sfnt"];
         NSData *converted = isFont ? [BRFontConverter ttfDataFromWOFF2:buffered] :
+                            isWOFF ? [BRFontConverter ttfDataFromWOFF:buffered] :
                             isSFNT ? [BRFontConverter staticFontDataFromSFNT:buffered] : [BRImageConverter pngDataFromWebP:buffered];
         NSMutableDictionary *f = [self.pendingHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSData *out = converted ?: buffered;
-        if (converted && !isSFNT) BRSetHeaderField(f, @"Content-Type", isFont ? @"font/ttf" : @"image/png");
+        if (converted && !isSFNT) BRSetHeaderField(f, @"Content-Type", (isFont || isWOFF) ? @"font/ttf" : @"image/png");
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:self.pendingStatus HTTPVersion:@"HTTP/1.1" headerFields:f];
         if (self.cacheBody && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:self.cacheMaxAge];

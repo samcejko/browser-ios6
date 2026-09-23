@@ -2,6 +2,7 @@
 #import "BRCommon.h"
 
 #include <woff2/decode.h>
+#include <zlib.h>
 #include <string>
 #include <vector>
 #include <string.h>
@@ -116,7 +117,88 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
     return true;
 }
 
+// WOFF 1.0: an sfnt with zlib-compressed tables. The engine can load WOFF itself, but going through
+// the converter lets the heavy layout tables be dropped like for every other font.
+static bool BRDecodeWOFF1(const uint8_t *p, size_t len, std::string &out)
+{
+    if (len < 44 || memcmp(p, "wOFF", 4) != 0) return false;
+    uint32_t flavor = rd32(p + 4);
+    uint16_t numTables = rd16(p + 12);
+    if (numTables == 0 || len < 44 + (size_t)numTables * 20) return false;
+    struct Entry { char tag[4]; uint32_t offset, compLength, origLength, checksum; };
+    std::vector<Entry> entries;
+    for (uint16_t i = 0; i < numTables; i++) {
+        const uint8_t *e = p + 44 + (size_t)i * 20;
+        Entry en;
+        memcpy(en.tag, e, 4);
+        en.offset = rd32(e + 4);
+        en.compLength = rd32(e + 8);
+        en.origLength = rd32(e + 12);
+        en.checksum = rd32(e + 16);
+        if ((size_t)en.offset + en.compLength > len || en.origLength > (64u << 20)) return false;
+        entries.push_back(en);
+    }
+    uint16_t entrySelector = 0;
+    while ((1u << (entrySelector + 1)) <= numTables) entrySelector++;
+    uint16_t searchRange = (uint16_t)((1u << entrySelector) * 16);
+    uint16_t rangeShift = (uint16_t)(numTables * 16 - searchRange);
+    out.assign(12 + (size_t)numTables * 16, '\0');
+    uint8_t *h = (uint8_t *)&out[0];
+    wr32(h, flavor);
+    wr16(h + 4, numTables);
+    wr16(h + 6, searchRange);
+    wr16(h + 8, entrySelector);
+    wr16(h + 10, rangeShift);
+    for (uint16_t i = 0; i < numTables; i++) {
+        const Entry &en = entries[i];
+        while (out.size() % 4) out.push_back('\0');
+        uint32_t newOffset = (uint32_t)out.size();
+        if (en.compLength < en.origLength) {
+            std::string table(en.origLength, '\0');
+            uLongf destLen = en.origLength;
+            if (uncompress((Bytef *)&table[0], &destLen, p + en.offset, en.compLength) != Z_OK || destLen != en.origLength) return false;
+            out.append(table);
+        } else {
+            out.append((const char *)p + en.offset, en.origLength);
+        }
+        uint8_t *r = (uint8_t *)&out[0] + 12 + (size_t)i * 16;
+        memcpy(r, en.tag, 4);
+        wr32(r + 4, en.checksum);
+        wr32(r + 8, newOffset);
+        wr32(r + 12, en.origLength);
+    }
+    while (out.size() % 4) out.push_back('\0');
+    return true;
+}
+
 @implementation BRFontConverter
+
++ (BOOL)looksLikeWOFF:(NSData *)data
+{
+    if (data.length < 4) return NO;
+    const uint8_t *b = (const uint8_t *)data.bytes;
+    return b[0] == 'w' && b[1] == 'O' && b[2] == 'F' && b[3] == 'F';
+}
+
++ (NSData *)ttfDataFromWOFF:(NSData *)data
+{
+    if (![self looksLikeWOFF:data]) return nil;
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    std::string out;
+    if (!BRDecodeWOFF1((const uint8_t *)data.bytes, data.length, out)) {
+        BRLog(@"WOFF decode failed (%lu bytes)", (unsigned long)data.length);
+        return nil;
+    }
+    std::string flat;
+    int dropped = 0;
+    bool droppedLayout = false;
+    bool trimmed = BRStripVariationTables(out, flat, &dropped, &droppedLayout);
+    if (trimmed) out.swap(flat);
+    BRLog(@"WOFF -> TTF: %lu -> %lu bytes in %ld ms%@", (unsigned long)data.length, (unsigned long)out.size(),
+          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000),
+          trimmed ? [NSString stringWithFormat:@" (%d tables dropped%@)", dropped, droppedLayout ? @", heavy OpenType layout removed" : @""] : @"");
+    return [NSData dataWithBytes:out.data() length:out.size()];
+}
 
 + (BOOL)looksLikeWOFF2:(NSData *)data
 {
