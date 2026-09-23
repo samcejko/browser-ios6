@@ -99,6 +99,27 @@
         BRLog(@"evalfile %@: %@", path.lastPathComponent, result);
         return YES;
     }
+    if ([target hasPrefix:@"set?"]) {
+        // browser:set?key=BRJSFixEnabled&value=0&type=bool  (debugging switches over SSH)
+        NSMutableDictionary *q = [NSMutableDictionary dictionary];
+        for (NSString *pair in [[target substringFromIndex:4] componentsSeparatedByString:@"&"]) {
+            NSRange eq = [pair rangeOfString:@"="];
+            if (eq.location == NSNotFound) continue;
+            q[[pair substringToIndex:eq.location]] = [[pair substringFromIndex:eq.location + 1] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @"";
+        }
+        NSString *key = q[@"key"], *value = q[@"value"] ?: @"", *type = q[@"type"] ?: @"string";
+        if (key.length) {
+            NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+            if ([type isEqualToString:@"bool"]) [d setBool:[value boolValue] forKey:key];
+            else if ([type isEqualToString:@"int"]) [d setInteger:[value integerValue] forKey:key];
+            else if ([type isEqualToString:@"remove"]) [d removeObjectForKey:key];
+            else [d setObject:value forKey:key];
+            [d synchronize];
+            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+            BRLog(@"Setting %@ = %@ (%@)", key, value, type);
+        }
+        return YES;
+    }
     if ([target isEqualToString:@"dump"]) {
         // browser:dump writes the current DOM to tmp/dump.html
         NSString *html = [self.browserViewController evaluateJavaScript:@"document.documentElement.outerHTML"];

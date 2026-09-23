@@ -766,6 +766,48 @@ static const CGFloat BRControlHeight = 30;
     [self applyTextSize];
 }
 
+#pragma mark - Home page
+
+// Hands the start page its data: search engine, bookmarks and the most visited hosts from the history.
+- (void)populateHomePage
+{
+    BRLibrary *lib = [BRLibrary shared];
+    NSMutableDictionary *byHost = [NSMutableDictionary dictionary];
+    for (NSDictionary *e in lib.history) {
+        NSURL *u = [NSURL URLWithString:[e[@"url"] isKindOfClass:[NSString class]] ? e[@"url"] : @""];
+        NSString *host = [u.host lowercaseString];
+        if (!host.length) continue;
+        if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+        NSMutableDictionary *entry = byHost[host];
+        if (!entry) {
+            NSString *scheme = [u.scheme lowercaseString] ?: @"https";
+            entry = [@{ @"url": [NSString stringWithFormat:@"%@://%@/", scheme, u.host], @"title": [e[@"title"] isKindOfClass:[NSString class]] && [e[@"title"] length] ? e[@"title"] : host,
+                        @"count": @0 } mutableCopy];
+            // the newest visit of the host's front page gives the nicest title
+            if ([u.path length] <= 1 && [e[@"title"] length]) entry[@"title"] = e[@"title"];
+            byHost[host] = entry;
+        }
+        entry[@"count"] = @([entry[@"count"] integerValue] + 1);
+    }
+    NSArray *top = [byHost.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"count"] compare:a[@"count"]]; }];
+    if (top.count > 8) top = [top subarrayWithRange:NSMakeRange(0, 8)];
+    NSMutableArray *bookmarks = [NSMutableArray array];
+    for (NSDictionary *b in lib.bookmarks) {
+        if (bookmarks.count >= 12) break;
+        [bookmarks addObject:@{ @"url": b[@"url"] ?: @"", @"title": b[@"title"] ?: @"" }];
+    }
+    NSURL *searchURL = [BRSettings searchURLForQuery:@""];
+    NSString *action = searchURL.absoluteString ?: @"";
+    NSRange q = [action rangeOfString:@"?"];
+    if (q.location != NSNotFound) action = [action substringToIndex:q.location];
+    NSDictionary *data = @{ @"dark": @([BRTheme shared].isDark), @"searchAction": action, @"searchName": [BRSettings searchEngineTitle:[BRSettings searchEngine]],
+                            @"top": top, @"bookmarks": bookmarks };
+    NSData *json = [NSJSONSerialization dataWithJSONObject:data options:0 error:NULL];
+    if (!json) return;
+    NSString *js = [NSString stringWithFormat:@"window.brSetHome && window.brSetHome(%@)", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]];
+    [self.webView stringByEvaluatingJavaScriptFromString:js];
+}
+
 #pragma mark - Address suggestions
 
 - (NSArray *)suggestionsForText:(NSString *)text
@@ -1246,6 +1288,7 @@ static const CGFloat BRControlHeight = 30;
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
               (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB());
         if ([BRSettings isHomeURL:url]) {
+            [self populateHomePage];
             NSString *info = [webView stringByEvaluatingJavaScriptFromString:@"document.getElementById('info').innerText"];
             BRLog(@"Home page: %@", info ?: @"");
         }

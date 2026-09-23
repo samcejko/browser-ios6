@@ -706,6 +706,12 @@
         if (typeof data === 'string') return new TextEncoder().encode(data);
         return new Uint8Array(0);
     }
+    // Blob URLs: core-js replaces URL and the old engine only has webkitURL.createObjectURL
+    if (window.URL && !window.URL.createObjectURL && window.webkitURL && window.webkitURL.createObjectURL) {
+        var nativeURLObject = window.webkitURL;
+        window.URL.createObjectURL = function (blob) { return nativeURLObject.createObjectURL(blob); };
+        window.URL.revokeObjectURL = function (url) { return nativeURLObject.revokeObjectURL(url); };
+    }
     if (window.crypto && !window.crypto.subtle && !window.crypto.webkitSubtle) {
         var cryptoUnsupported = rejectWith('NotSupportedError', 'This operation is not available in this browser');
         var subtle = {
@@ -722,9 +728,20 @@
             encrypt: cryptoUnsupported, decrypt: cryptoUnsupported, sign: cryptoUnsupported, verify: cryptoUnsupported, generateKey: cryptoUnsupported,
             deriveKey: cryptoUnsupported, deriveBits: cryptoUnsupported, importKey: cryptoUnsupported, exportKey: cryptoUnsupported, wrapKey: cryptoUnsupported, unwrapKey: cryptoUnsupported
         };
-        try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) { window.crypto.subtle = subtle; }
+        try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) {}
+        if (!window.crypto.subtle) {
+            // the native Crypto object refuses new properties: replace it with a wrapper
+            var nativeCrypto = window.crypto;
+            var cryptoWrapper = {
+                subtle: subtle,
+                getRandomValues: function (arr) { if (nativeCrypto.getRandomValues) return nativeCrypto.getRandomValues(arr); for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; },
+                randomUUID: nativeCrypto.randomUUID ? function () { return nativeCrypto.randomUUID(); } : function () { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
+            };
+            try { Object.defineProperty(window, 'crypto', { value: cryptoWrapper, configurable: true, writable: true }); } catch (e2) { try { window.crypto = cryptoWrapper; } catch (e3) {} }
+        }
         window.SubtleCrypto = function SubtleCrypto() {};
         window.CryptoKey = function CryptoKey() {};
+        window.Crypto = window.Crypto || function Crypto() {};
     }
 
     // ---- Credentials, authentication, payments
@@ -909,6 +926,39 @@
         };
     }
 
+    // ---- IndexedDB: the WebSQL-backed shim (150 KB) is fetched on first use only
+    if (!window.indexedDB && window.openDatabase) {
+        var idbLoaded = false, idbLoading = false;
+        var idbNames = ['indexedDB', 'IDBKeyRange', 'IDBFactory', 'IDBDatabase', 'IDBObjectStore', 'IDBIndex', 'IDBTransaction', 'IDBRequest', 'IDBOpenDBRequest', 'IDBCursor', 'IDBCursorWithValue', 'IDBVersionChangeEvent'];
+        var loadIndexedDB = function () {
+            if (idbLoaded || idbLoading) return;
+            idbLoading = true;
+            for (var i = 0; i < idbNames.length; i++) try { delete window[idbNames[i]]; } catch (e) {}
+            try {
+                var tag = document.querySelector('script[src*="ios6-browser.invalid/polyfills"]');
+                var url = tag ? tag.src.replace(/polyfills(-[0-9a-f]+)?\.js.*$/, 'indexeddbshim$1.js') : 'https://ios6-browser.invalid/indexeddbshim.js';
+                var x = new XMLHttpRequest();
+                x.open('GET', url, false);
+                x.send(null);
+                if (x.status === 200 && x.responseText) {
+                    (0, eval)(x.responseText);
+                    if (window.shimIndexedDB && window.shimIndexedDB.__useShim) window.shimIndexedDB.__useShim();
+                }
+            } catch (e2) { if (window.console && console.error) console.error('IndexedDB shim failed: ' + e2.message); }
+            idbLoaded = true;
+            idbLoading = false;
+        };
+        for (var idbn = 0; idbn < idbNames.length; idbn++) (function (name) {
+            try {
+                Object.defineProperty(window, name, {
+                    configurable: true, enumerable: true,
+                    get: function () { loadIndexedDB(); return window[name]; },
+                    set: function (v) { try { delete window[name]; } catch (e) {} window[name] = v; }
+                });
+            } catch (e3) {}
+        })(idbNames[idbn]);
+    }
+
     // ---- Workers, storage, files
     if (!window.SharedWorker) window.SharedWorker = function SharedWorker() { throw domException('NotSupportedError', 'SharedWorker is not available'); };
     if (!window.Worklet) window.Worklet = function Worklet() {};
@@ -970,6 +1020,183 @@
     if (!window.Sanitizer) window.Sanitizer = function Sanitizer() { this.sanitize = function (frag) { return frag; }; this.sanitizeFor = function (el, html) { var e = document.createElement(el); e.innerHTML = html; return e; }; };
     if (Ep && !Ep.setHTML) Ep.setHTML = function (html) { this.innerHTML = html; };
     if (!window.trustedTypes) window.trustedTypes = { createPolicy: function (name, rules) { rules = rules || {}; return { name: name, createHTML: function (s) { return rules.createHTML ? rules.createHTML(s) : s; }, createScript: function (s) { return rules.createScript ? rules.createScript(s) : s; }, createScriptURL: function (s) { return rules.createScriptURL ? rules.createScriptURL(s) : s; } }; }, isHTML: function () { return false; }, isScript: function () { return false; }, isScriptURL: function () { return false; }, emptyHTML: '', emptyScript: '', getAttributeType: function () { return null; }, getPropertyType: function () { return null; }, defaultPolicy: null };
+
+    // ---- Elements the old parser does not know get real constructors, prototypes and behaviour
+    var HEp = window.HTMLElement && window.HTMLElement.prototype;
+    var protoSwapWorks = false;
+    try {
+        var probeEl = document.createElement('x-probe');
+        var probeProto = Object.create(Object.getPrototypeOf(probeEl));
+        probeProto.__brProbe = 1;
+        probeEl.__proto__ = probeProto;
+        protoSwapWorks = probeEl.__brProbe === 1;
+    } catch (e) {}
+    if (HEp && protoSwapWorks) {
+        var upgrades = {};   // tag -> prototype
+        var createElementBefore = document.createElement;
+        var defineElementClass = function (tag, className, define) {
+            // only elements this engine does not know get a synthetic class
+            try { if (!window.HTMLUnknownElement || !(createElementBefore.call(document, tag) instanceof window.HTMLUnknownElement)) return; } catch (e0) { return; }
+            var proto = Object.create(HEp);
+            if (className) {
+                var Ctor = function () { throw new TypeError('Illegal constructor'); };
+                try { Object.defineProperty(Ctor, 'name', { value: className }); } catch (e) {}
+                Ctor.prototype = proto;
+                proto.constructor = Ctor;
+                if (!window[className] || typeof window[className] === 'function' && !window[className].prototype.__brReal) window[className] = Ctor;
+                proto.__brReal = true;
+            }
+            if (define) define(proto);
+            upgrades[tag] = proto;
+        };
+        var attrProp = function (proto, name, attr) { defineAttrProp(proto, name, attr || name.toLowerCase()); };
+        var numProp = function (proto, name, fallback, after) {
+            try {
+                Object.defineProperty(proto, name, {
+                    get: function () { var v = parseFloat(this.getAttribute(name)); return isNaN(v) ? (typeof fallback === 'function' ? fallback.call(this) : fallback) : v; },
+                    set: function (v) { this.setAttribute(name, String(v)); if (after) after.call(this); },
+                    configurable: true
+                });
+            } catch (e) {}
+        };
+        var paintBar = function (el) {
+            var value = parseFloat(el.getAttribute('value')), min = parseFloat(el.getAttribute('min')), max = parseFloat(el.getAttribute('max'));
+            if (isNaN(min)) min = 0;
+            if (isNaN(max)) max = 1;
+            if (max <= min) max = min + 1;
+            if (isNaN(value)) { el.style.backgroundImage = 'none'; return; }
+            var pct = Math.max(0, Math.min(100, (value - min) / (max - min) * 100));
+            var color = el.tagName === 'METER' ? (pct < 34 ? '#e2493b' : pct < 67 ? '#e7b416' : '#2dc937') : '#4a90e2';
+            el.style.backgroundImage = '-webkit-linear-gradient(left, ' + color + ' ' + pct + '%, transparent ' + pct + '%)';
+        };
+        addStyle('main{display:block}picture{display:inline}' +
+                 'progress,meter{display:inline-block;width:10em;height:1em;vertical-align:-0.2em;background-color:#e6e6e6;border:1px solid #bbb;border-radius:3px;overflow:hidden;-webkit-box-sizing:border-box;box-sizing:border-box;background-repeat:no-repeat}' +
+                 'datalist{display:none}time,data{display:inline}menu{display:block;list-style:none;margin:0;padding:0}');
+        defineElementClass('main', null, null);
+        defineElementClass('time', 'HTMLTimeElement', function (p) { attrProp(p, 'dateTime', 'datetime'); });
+        defineElementClass('data', 'HTMLDataElement', function (p) { attrProp(p, 'value'); });
+        defineElementClass('picture', 'HTMLPictureElement', null);
+        defineElementClass('progress', 'HTMLProgressElement', function (p) {
+            numProp(p, 'value', NaN, function () { paintBar(this); });
+            numProp(p, 'max', 1, function () { paintBar(this); });
+            try { Object.defineProperty(p, 'position', { get: function () { var v = this.value; return isNaN(v) ? -1 : Math.max(0, Math.min(1, v / (this.max || 1))); }, configurable: true }); } catch (e) {}
+            try { Object.defineProperty(p, 'labels', { get: function () { return []; }, configurable: true }); } catch (e2) {}
+        });
+        defineElementClass('meter', 'HTMLMeterElement', function (p) {
+            var names = ['value', 'min', 'max', 'low', 'high', 'optimum'];
+            for (var i = 0; i < names.length; i++) numProp(p, names[i], names[i] === 'max' ? 1 : 0, function () { paintBar(this); });
+            try { Object.defineProperty(p, 'labels', { get: function () { return []; }, configurable: true }); } catch (e) {}
+        });
+        defineElementClass('datalist', 'HTMLDataListElement', function (p) {
+            try { Object.defineProperty(p, 'options', { get: function () { return this.getElementsByTagName('option'); }, configurable: true }); } catch (e) {}
+        });
+        defineElementClass('menu', 'HTMLMenuElement', function (p) {
+            try {
+                Object.defineProperty(p, 'type', {
+                    get: function () { var t = (this.getAttribute('type') || '').toLowerCase(); return t === 'context' ? 'context' : 'toolbar'; },
+                    set: function (v) { this.setAttribute('type', String(v)); },
+                    configurable: true
+                });
+            } catch (e) {}
+            attrProp(p, 'label');
+        });
+        defineElementClass('track', 'HTMLTrackElement', function (p) {
+            attrProp(p, 'kind'); attrProp(p, 'src'); attrProp(p, 'srclang'); attrProp(p, 'label');
+            defineBoolAttrProp(p, 'default');
+            try { Object.defineProperty(p, 'track', { get: function () { return this.__brTrack || (this.__brTrack = { kind: this.kind || 'subtitles', label: this.label, language: this.srclang, mode: 'disabled', cues: null, activeCues: null, addCue: noop, removeCue: noop, addEventListener: noop, removeEventListener: noop }); }, configurable: true }); } catch (e) {}
+            try { Object.defineProperty(p, 'readyState', { get: function () { return 0; }, configurable: true }); } catch (e2) {}
+        });
+        if (window.dialogPolyfill) defineElementClass('dialog', 'HTMLDialogElement', null);
+        var upgradeKnownElement = function (el) {
+            var proto = upgrades[el.tagName ? el.tagName.toLowerCase() : ''];
+            if (!proto || Object.getPrototypeOf(el) === proto) return;
+            try { el.__proto__ = proto; } catch (e) {}
+            if (el.tagName === 'PROGRESS' || el.tagName === 'METER') paintBar(el);
+        };
+        var upgradeKnownTree = function (root) {
+            if (root.nodeType === 1) upgradeKnownElement(root);
+            if (!root.querySelectorAll) return;
+            var list = root.querySelectorAll(Object.keys(upgrades).join(','));
+            for (var i = 0; i < list.length; i++) upgradeKnownElement(list[i]);
+        };
+        if (Object.keys(upgrades).length) {
+            document.createElement = function (name) {
+                var el = createElementBefore.apply(document, arguments);
+                if (typeof name === 'string' && upgrades[name.toLowerCase()]) upgradeKnownElement(el);
+                return el;
+            };
+            onReady(function () { upgradeKnownTree(document); });
+            observeAdded(upgradeKnownTree);
+        }
+        if (window.MutationObserver) {
+            var barObserver = new MutationObserver(function (records) {
+                for (var r = 0; r < records.length; r++) { var t = records[r].target; if (t && (t.tagName === 'PROGRESS' || t.tagName === 'METER')) paintBar(t); }
+            });
+            onReady(function () { try { barObserver.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ['value', 'max', 'min'] }); } catch (e) {} });
+        }
+        // <input list="..."> and <fieldset>.elements
+        if (window.HTMLInputElement) {
+            var IPp = window.HTMLInputElement.prototype;
+            if (!('list' in IPp)) try { Object.defineProperty(IPp, 'list', { get: function () { var id = this.getAttribute('list'); return id ? document.getElementById(id) : null; }, configurable: true }); } catch (e) {}
+            defineBoolAttrProp(IPp, 'webkitdirectory');
+            defineBoolAttrProp(IPp, 'directory');
+            if (!window.Directory) window.Directory = function Directory() { this.name = ''; this.path = ''; };
+        }
+        if (window.HTMLFieldSetElement && !('elements' in window.HTMLFieldSetElement.prototype)) {
+            try { Object.defineProperty(window.HTMLFieldSetElement.prototype, 'elements', { get: function () { return this.querySelectorAll('input,select,textarea,button,fieldset,object,output'); }, configurable: true }); } catch (e) {}
+        }
+    }
+    // custom elements v0 on top of the v1 shim
+    if (!document.registerElement) {
+        document.registerElement = function (name, options) {
+            options = options || {};
+            var proto = options.prototype || HEp;
+            var Ctor = function () { return document.createElement(name); };
+            Ctor.prototype = proto;
+            var wrapped = function () {};
+            wrapped.prototype = proto;
+            wrapped.observedAttributes = [];
+            var v0 = function () {
+                var el = this;
+                try { if (proto.createdCallback) proto.createdCallback.call(el); } catch (e) {}
+                try { if (proto.attachedCallback) proto.attachedCallback.call(el); } catch (e2) {}
+            };
+            v0.prototype = proto;
+            try { window.customElements.define(name, v0); } catch (e3) {}
+            return Ctor;
+        };
+    }
+    // drag and drop handler properties (touch devices have no native drag events)
+    var dragNames = ['drag', 'dragstart', 'dragenter', 'dragover', 'dragleave', 'dragend', 'drop'];
+    var defineDragHandlers = function (obj) {
+        if (!obj || ('ondragstart' in obj)) return;
+        for (var i = 0; i < dragNames.length; i++) (function (type) {
+            try {
+                Object.defineProperty(obj, 'on' + type, {
+                    get: function () { return this['__on' + type] || null; },
+                    set: function (fn) { var old = this['__on' + type]; if (old) this.removeEventListener(type, old, false); this['__on' + type] = typeof fn === 'function' ? fn : null; if (fn) this.addEventListener(type, fn, false); },
+                    configurable: true
+                });
+            } catch (e) {}
+        })(dragNames[i]);
+    };
+    defineDragHandlers(window); defineDragHandlers(document); defineDragHandlers(Ep);
+    defineBoolAttrProp(Ep, 'draggable');
+    defineAttrProp(Ep, 'dropzone');
+    if (!window.WriteableStream && window.WritableStream) window.WriteableStream = window.WritableStream;   // feature checks with the old spelling
+    if (!window.webauthn) window.webauthn = { getAssertion: rejectWith('NotSupportedError', 'Web Authentication is not available'), makeCredential: rejectWith('NotSupportedError', 'Web Authentication is not available') };
+    if (!window.AuthenticatorAttestationResponse) { window.AuthenticatorAttestationResponse = function AuthenticatorAttestationResponse() {}; window.AuthenticatorAssertionResponse = function AuthenticatorAssertionResponse() {}; }
+    if (window.speechSynthesis && window.speechSynthesis.__brStub !== false && !window.speechSynthesis.getVoices().length) {
+        var fakeVoice = { voiceURI: 'default', name: 'Default', lang: (navigator.language || 'en-US'), localService: true, 'default': true };
+        window.speechSynthesis.getVoices = function () { return [fakeVoice]; };
+    }
+    // script execution events (fired after the script has run, which is when the old engine tells us)
+    observeAdded(function (el) {
+        if (el.tagName === 'SCRIPT' && el.src && !el.__brExecEvents) {
+            el.__brExecEvents = true;
+            el.addEventListener('load', function () { fire(el, 'beforescriptexecute'); fire(el, 'afterscriptexecute'); }, false);
+        }
+    });
 
     // ---- Language runtime extras
     if (!window.globalThis) try { window.globalThis = window; } catch (e) {}

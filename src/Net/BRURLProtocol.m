@@ -630,7 +630,12 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *path = self.request.URL.path ?: @"";
     NSData *body = nil;
     NSString *type = @"text/javascript; charset=utf-8";
-    if ([path hasPrefix:@"/polyfills"] && [path hasSuffix:@".js"]) body = [BRCSSRewriter polyfillBundle];
+    if ([path hasPrefix:@"/polyfills"] && [path hasSuffix:@".js"]) {
+        body = [BRCSSRewriter polyfillBundle];
+    } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
+        NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
+        body = file ? [NSData dataWithContentsOfFile:file] : nil;
+    }
     self.done = YES;
     if (!body) {
         [self failWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist

@@ -5,36 +5,49 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Browser</title>
 <style>
-body { font-family: Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background: #f2f2f5; color: #333; }
-h1 { font-size: 26px; margin: 10px 0 16px; text-align: center; color: #2b5fb3; }
-form { text-align: center; margin-bottom: 20px; }
-input[type=text] { width: 80%; max-width: 420px; font-size: 17px; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; -webkit-appearance: none; }
-input[type=submit] { font-size: 17px; padding: 8px 14px; margin-top: 8px; border: 0; border-radius: 6px; background: #4a90e2; color: #fff; }
-.links { list-style: none; padding: 0; margin: 0 auto; max-width: 480px; }
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 16px; background: #f2f2f5; color: #333; }
+body.dark { background: #1c1c1e; color: #eee; }
+h1 { font-size: 24px; margin: 8px 0 14px; text-align: center; color: #2b5fb3; }
+body.dark h1 { color: #8ab4f8; }
+form { text-align: center; margin-bottom: 18px; }
+input[type=text] { width: 80%; max-width: 480px; font-size: 17px; padding: 9px 12px; border: 1px solid #bbb; border-radius: 8px; -webkit-appearance: none; background: #fff; color: #222; }
+body.dark input[type=text] { background: #2c2c2e; border-color: #555; color: #eee; }
+input[type=submit] { font-size: 17px; padding: 9px 16px; margin-top: 8px; border: 0; border-radius: 8px; background: #4a90e2; color: #fff; }
+h2 { font-size: 15px; color: #888; margin: 18px 4px 8px; font-weight: normal; text-transform: uppercase; letter-spacing: 0.5px; }
+.tiles { overflow: hidden; margin: 0 -5px; }
+.tiles a { float: left; width: 25%; -webkit-box-sizing: border-box; box-sizing: border-box; padding: 5px; text-decoration: none; color: inherit; }
+@media (max-width: 500px) { .tiles a { width: 50%; } }
+.tiles .tile { display: block; background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 12px 10px 10px; height: 44px; overflow: hidden; -webkit-box-shadow: 0 1px 1px rgba(0,0,0,0.04); }
+body.dark .tiles .tile { background: #2c2c2e; border-color: #444; }
+.tile .letter { float: left; width: 36px; height: 36px; line-height: 36px; margin-right: 10px; border-radius: 8px; background: #4a90e2; color: #fff; font-size: 20px; text-align: center; font-weight: bold; }
+.tile .title { display: block; font-size: 15px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.tile .host { display: block; font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+.links { list-style: none; padding: 0; margin: 0 auto; max-width: 560px; }
 .links li { margin: 0; }
 .links a { display: block; padding: 12px 14px; background: #fff; border: 1px solid #ddd; margin-bottom: -1px; color: #222; text-decoration: none; font-size: 17px; }
+body.dark .links a { background: #2c2c2e; border-color: #444; color: #eee; }
 .links li:first-child a { border-radius: 8px 8px 0 0; }
 .links li:last-child a { border-radius: 0 0 8px 8px; }
 .links a span { color: #888; font-size: 13px; display: block; }
-.info { font-size: 13px; color: #777; text-align: center; margin-top: 20px; word-break: break-word; }
+.info { font-size: 12px; color: #999; text-align: center; margin-top: 22px; word-break: break-word; }
+.empty { color: #999; font-size: 14px; margin: 0 6px; }
 </style>
 </head>
 <body>
 <h1>Browser</h1>
-<form action="https://lite.duckduckgo.com/lite/" method="get">
-  <input type="text" name="q" placeholder="Hledat na DuckDuckGo" autocorrect="off" autocapitalize="off">
+<form id="search" action="https://lite.duckduckgo.com/lite/" method="get">
+  <input type="text" name="q" id="q" placeholder="Hledat na DuckDuckGo" autocorrect="off" autocapitalize="off">
   <input type="submit" value="Hledat">
 </form>
+<h2>Často navštěvované</h2>
+<div class="tiles" id="top"><p class="empty">Zatím žádné navštívené stránky.</p></div>
+<h2>Záložky</h2>
+<div class="tiles" id="bookmarks"></div>
+<h2>Testy</h2>
 <ul class="links">
-  <li><a href="https://cs.wikipedia.org/">Wikipedie<span>cs.wikipedia.org</span></a></li>
-  <li><a href="https://lite.duckduckgo.com/lite/">DuckDuckGo Lite<span>lite.duckduckgo.com</span></a></li>
-  <li><a href="https://news.ycombinator.com/">Hacker News<span>news.ycombinator.com</span></a></li>
-  <li><a href="https://old.reddit.com/">Reddit<span>old.reddit.com</span></a></li>
-  <li><a href="https://www.idnes.cz/">iDNES<span>www.idnes.cz</span></a></li>
-  <li><a href="https://www.seznam.cz/">Seznam<span>www.seznam.cz</span></a></li>
-  <li><a href="https://github.com/">GitHub<span>github.com</span></a></li>
-  <li><a href="https://valid-isrgrootx1.letsencrypt.org/">Test: certifikát Let's Encrypt<span>valid-isrgrootx1.letsencrypt.org</span></a></li>
-  <li><a href="https://www.howsmyssl.com/a/check">Test: TLS spojení (JSON)<span>www.howsmyssl.com</span></a></li>
+  <li><a href="https://html5test.com/">HTML5 test<span>html5test.com</span></a></li>
+  <li><a href="https://valid-isrgrootx1.letsencrypt.org/">Certifikát Let's Encrypt<span>valid-isrgrootx1.letsencrypt.org</span></a></li>
+  <li><a href="https://www.howsmyssl.com/a/check">TLS spojení (JSON)<span>www.howsmyssl.com</span></a></li>
 </ul>
 <p class="info" id="info">JavaScript se měří…</p>
 <script>
@@ -47,6 +60,26 @@ input[type=submit] { font-size: 17px; padding: 8px 14px; margin-top: 8px; border
   var jit = ms < 700 ? 'JIT je zapnutý' : 'JIT je vypnutý';
   document.getElementById('info').innerHTML = 'JavaScript: 3 miliony iterací za ' + ms + ' ms (' + jit + ')<br>' + navigator.userAgent;
 })();
+// Filled in by the app: search engine, bookmarks and the most visited sites.
+window.brSetHome = function (data) {
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+  function host(u) { var m = /^[a-z]+:\/\/([^\/?#]+)/i.exec(u); return m ? m[1].replace(/^www\./, '') : u; }
+  function tiles(list) {
+    var h = '';
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i], title = e.title || host(e.url), letter = (host(e.url).charAt(0) || '?').toUpperCase();
+      h += '<a href="' + esc(e.url) + '"><span class="tile"><span class="letter">' + esc(letter) + '</span><span class="title">' + esc(title) + '</span><span class="host">' + esc(host(e.url)) + '</span></span></a>';
+    }
+    return h;
+  }
+  if (data.dark) document.body.className = 'dark';
+  if (data.searchAction) {
+    document.getElementById('search').action = data.searchAction;
+    document.getElementById('q').placeholder = 'Hledat na ' + (data.searchName || 'webu');
+  }
+  if (data.top && data.top.length) document.getElementById('top').innerHTML = tiles(data.top);
+  document.getElementById('bookmarks').innerHTML = data.bookmarks && data.bookmarks.length ? tiles(data.bookmarks) : '<p class="empty">Žádné záložky.</p>';
+};
 </script>
 </body>
 </html>
