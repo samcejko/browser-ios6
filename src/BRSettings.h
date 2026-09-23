@@ -7,6 +7,8 @@
 + (void)setVerifyTLS:(BOOL)verify;
 + (BOOL)adBlockEnabled;                  // default YES
 + (void)setAdBlockEnabled:(BOOL)enabled;
++ (BOOL)cssFixEnabled;                   // default YES: rewrite modern CSS for the old engine
++ (void)setCSSFixEnabled:(BOOL)enabled;
 
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page

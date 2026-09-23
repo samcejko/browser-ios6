@@ -4,6 +4,7 @@
 #import "BRTLSSocket.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
+#import "BRCSSRewriter.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -22,6 +23,7 @@
     [BRURLProtocol registerProtocol];
     [BRTLSSocket warmUp];
     [BRAdBlock warmUp];
+    [BRCSSRewriter warmUp];
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.browserViewController = [[BRBrowserViewController alloc] init];

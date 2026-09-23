@@ -29,6 +29,18 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
++ (BOOL)cssFixEnabled
+{
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"BRCSSFix"];
+    return v ? [v boolValue] : YES;
+}
+
++ (void)setCSSFixEnabled:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:@"BRCSSFix"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 + (NSURL *)searchURLForQuery:(NSString *)query
 {
     NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(

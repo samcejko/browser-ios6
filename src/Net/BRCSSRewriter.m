@@ -1,0 +1,170 @@
+#import "BRCSSRewriter.h"
+#import "BRJSEngine.h"
+#import "BRCommon.h"
+
+static const NSUInteger BRMaxPagesRemembered = 8;
+
+static NSStringEncoding BREncodingForCharset(NSString *charset)
+{
+    if (!charset.length) return 0;
+    CFStringEncoding cf = CFStringConvertIANACharSetNameToEncoding((__bridge CFStringRef)charset);
+    if (cf == kCFStringEncodingInvalidId) return 0;
+    return CFStringConvertEncodingToNSStringEncoding(cf);
+}
+
+// charset declared inside the document itself (<meta charset>, <meta http-equiv>, @charset)
+static NSString *BRSniffCharset(NSData *data, NSString *kind)
+{
+    NSUInteger len = MIN(data.length, (NSUInteger)4096);
+    NSString *head = [[NSString alloc] initWithBytes:data.bytes length:len encoding:NSISOLatin1StringEncoding];
+    if (!head) return nil;
+    NSRegularExpression *re;
+    if ([kind isEqualToString:@"css"]) {
+        re = [NSRegularExpression regularExpressionWithPattern:@"^@charset\\s+\"([A-Za-z0-9_-]+)\"" options:0 error:NULL];
+    } else {
+        re = [NSRegularExpression regularExpressionWithPattern:@"charset\\s*=\\s*[\"']?\\s*([A-Za-z0-9_-]+)" options:NSRegularExpressionCaseInsensitive error:NULL];
+    }
+    NSTextCheckingResult *m = [re firstMatchInString:head options:0 range:NSMakeRange(0, head.length)];
+    if (!m || m.numberOfRanges < 2) return nil;
+    return [head substringWithRange:[m rangeAtIndex:1]];
+}
+
+static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharset)
+{
+    NSString *s = nil;
+    NSStringEncoding enc = BREncodingForCharset(charset);
+    if (enc) {
+        s = [[NSString alloc] initWithData:data encoding:enc];
+        if (s) { *usedCharset = charset; return s; }
+    }
+    s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (s) { *usedCharset = @"utf-8"; return s; }
+    s = [[NSString alloc] initWithData:data encoding:NSWindowsCP1252StringEncoding];
+    if (s) { *usedCharset = @"windows-1252"; return s; }
+    *usedCharset = @"iso-8859-1";
+    return [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+}
+
+@implementation BRCSSRewriter {
+    BOOL _loaded;
+    BOOL _loadFailed;
+    NSMutableDictionary *_pageVars;     // page key -> NSMutableDictionary of --name: value
+    NSMutableArray *_pageOrder;
+}
+
++ (instancetype)shared
+{
+    static BRCSSRewriter *r;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ r = [[BRCSSRewriter alloc] init]; });
+    return r;
+}
+
++ (void)warmUp
+{
+    BRCSSRewriter *r = [self shared];
+    [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; }];
+}
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        _pageVars = [NSMutableDictionary dictionary];
+        _pageOrder = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (BOOL)available
+{
+    return [BRJSEngine shared].available && !_loadFailed;
+}
+
+// engine queue only
+- (BOOL)ensureLoaded
+{
+    if (_loaded) return YES;
+    if (_loadFailed) return NO;
+    BRJSEngine *engine = [BRJSEngine shared];
+    if (!engine.available) { _loadFailed = YES; return NO; }
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"cssfix" ofType:@"js"];
+    NSString *script = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
+    if (!script.length) {
+        BRLog(@"cssfix.js is missing from the bundle");
+        _loadFailed = YES;
+        return NO;
+    }
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    if (![engine evaluateScript:script sourceName:@"cssfix.js"]) { _loadFailed = YES; return NO; }
+    NSString *probe = [engine callFunction:@"CSSFix.run" arguments:@[@"css", @".a{display:flex}", @"{}"]];
+    if (!probe.length) { BRLog(@"cssfix.js self test failed"); _loadFailed = YES; return NO; }
+    _loaded = YES;
+    BRLog(@"cssfix.js loaded in %.0f ms", ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+    return YES;
+}
+
+static NSString *BRPageKey(NSURL *url)
+{
+    NSString *s = url.absoluteString ?: @"";
+    NSRange hash = [s rangeOfString:@"#"];
+    return hash.location == NSNotFound ? s : [s substringToIndex:hash.location];
+}
+
+// engine queue only
+- (NSMutableDictionary *)varsForPage:(NSString *)key create:(BOOL)create
+{
+    NSMutableDictionary *vars = _pageVars[key];
+    if (!vars && create) {
+        vars = [NSMutableDictionary dictionary];
+        _pageVars[key] = vars;
+        [_pageOrder addObject:key];
+        while (_pageOrder.count > BRMaxPagesRemembered) {
+            [_pageVars removeObjectForKey:_pageOrder[0]];
+            [_pageOrder removeObjectAtIndex:0];
+        }
+    }
+    return vars;
+}
+
+- (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
+         completion:(BRRewriteCompletion)completion
+{
+    if (!completion) return;
+    [[BRJSEngine shared] performAsync:^{
+        @autoreleasepool {
+            if (![self ensureLoaded]) { completion(data, charset); return; }
+            NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+            NSString *used = nil;
+            NSString *declared = charset.length ? charset : BRSniffCharset(data, kind);
+            NSString *text = BRDecode(data, declared, &used);
+            if (!text) { completion(data, charset); return; }
+            NSString *pageKey = BRPageKey(pageURL);
+            NSMutableDictionary *vars = [self varsForPage:pageKey create:YES];
+            NSString *varsJSON = @"{}";
+            if (vars.count) {
+                NSData *j = [NSJSONSerialization dataWithJSONObject:vars options:0 error:NULL];
+                if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
+            }
+            NSString *result = [[BRJSEngine shared] callFunction:@"CSSFix.run" arguments:@[kind, text, varsJSON]];
+            if (!result.length) { completion(data, charset); return; }
+            NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[result dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+            NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;
+            if (![out isKindOfClass:[NSString class]]) { completion(data, charset); return; }
+            NSDictionary *newVars = parsed[@"vars"];
+            if ([newVars isKindOfClass:[NSDictionary class]] && newVars.count) {
+                for (NSString *name in newVars) {
+                    id value = newVars[name];
+                    if ([value isKindOfClass:[NSString class]]) vars[name] = value;
+                }
+            }
+            NSData *outData = [out dataUsingEncoding:NSUTF8StringEncoding];
+            BRLog(@"cssfix %@ %lu -> %lu bytes in %.0f ms (%@, %lu vars)", kind, (unsigned long)data.length, (unsigned long)outData.length,
+                  ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, used ?: @"?", (unsigned long)vars.count);
+            if (data.length > 200000) [[BRJSEngine shared] collectGarbage];
+            completion(outData ?: data, outData ? @"utf-8" : charset);
+        }
+    }];
+}
+
+@end

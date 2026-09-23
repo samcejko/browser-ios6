@@ -1,8 +1,21 @@
 #import "BRURLProtocol.h"
 #import "BRHTTPRequest.h"
 #import "BRAdBlock.h"
+#import "BRCSSRewriter.h"
 #import "BRCommon.h"
 #import "BRSettings.h"
+
+static const NSUInteger BRMaxRewriteBody = 4 * 1024 * 1024;
+
+static void BRSetHeaderField(NSMutableDictionary *fields, NSString *name, NSString *value)
+{
+    NSMutableArray *remove = [NSMutableArray array];
+    for (NSString *k in fields) {
+        if ([k caseInsensitiveCompare:name] == NSOrderedSame) [remove addObject:k];
+    }
+    [fields removeObjectsForKeys:remove];
+    if (value) fields[name] = value;
+}
 
 // 1x1 transparent GIF served for blocked image requests
 static const uint8_t BRBlankGIF[] = {
@@ -125,6 +138,12 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, strong) NSMutableData *cacheBody;
 @property (nonatomic) NSTimeInterval cacheMaxAge;
 @property (nonatomic, strong) NSHTTPURLResponse *response;
+// CSS/HTML rewriting: the body is buffered and the response is sent once the rewritten data is ready
+@property (nonatomic, copy) NSString *rewriteKind;
+@property (nonatomic, strong) NSMutableData *rewriteBuffer;
+@property (nonatomic, copy) NSString *rewriteCharset;
+@property (nonatomic, strong) NSDictionary *pendingHeaderFields;
+@property (nonatomic) NSInteger pendingStatus;
 @end
 
 @implementation BRURLProtocol
@@ -346,14 +365,88 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
             self.cacheBody = [NSMutableData data];
         }
     }
+
+    // Stylesheets and documents are rewritten for the old engine before WebKit sees them.
+    NSString *ctype = [r.responseHeaders[@"content-type"] lowercaseString] ?: @"";
+    NSString *kind = nil;
+    if (status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
+        if ([ctype hasPrefix:@"text/css"]) kind = @"css";
+        else if ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]) kind = @"html";
+        else if (!ctype.length) {
+            NSString *accept = [BRHeader(self.request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
+            if ([accept hasPrefix:@"text/css"]) kind = @"css";
+        }
+        long long declared = [r.responseHeaders[@"content-length"] longLongValue];
+        if (declared > (long long)BRMaxRewriteBody) kind = nil;
+    }
+    if (kind) {
+        self.rewriteKind = kind;
+        self.rewriteBuffer = [NSMutableData data];
+        self.pendingStatus = status;
+        self.pendingHeaderFields = response.allHeaderFields;
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"charset\\s*=\\s*\"?([A-Za-z0-9_-]+)" options:0 error:NULL];
+        NSTextCheckingResult *m = [re firstMatchInString:ctype options:0 range:NSMakeRange(0, ctype.length)];
+        self.rewriteCharset = (m && m.numberOfRanges > 1) ? [ctype substringWithRange:[m rangeAtIndex:1]] : nil;
+        return;   // didReceiveResponse follows once the rewritten body is ready
+    }
     [self performOnClientThread:^{
         [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    }];
+}
+
+// The body grew beyond the rewrite limit: send what we have unchanged and stream the rest.
+- (void)abandonRewrite
+{
+    NSData *buffered = self.rewriteBuffer;
+    self.rewriteBuffer = nil;
+    self.rewriteKind = nil;
+    NSHTTPURLResponse *response = self.response;
+    if (self.cacheBody) [self.cacheBody appendData:buffered];
+    [self performOnClientThread:^{
+        [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+        if (buffered.length) [self.client URLProtocol:self didLoadData:buffered];
+    }];
+}
+
+- (void)finishRewrite
+{
+    NSData *buffered = self.rewriteBuffer ?: [NSData data];
+    self.rewriteBuffer = nil;
+    NSString *kind = self.rewriteKind;
+    NSString *charset = self.rewriteCharset;
+    NSInteger status = self.pendingStatus;
+    NSDictionary *fields = self.pendingHeaderFields;
+    NSURL *url = self.request.URL;
+    NSURL *page = self.request.mainDocumentURL ?: url;
+    BOOL cacheable = (self.cacheBody != nil);
+    NSTimeInterval maxAge = self.cacheMaxAge;
+    self.cacheBody = nil;
+    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page completion:^(NSData *out, NSString *outCharset) {
+        if (self.stopped) return;
+        NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : @"text/html");
+        NSRange semi = [ctype rangeOfString:@";"];
+        NSString *mediaType = semi.location == NSNotFound ? ctype : [ctype substringToIndex:semi.location];
+        BRSetHeaderField(f, @"Content-Type", [NSString stringWithFormat:@"%@; charset=%@", [mediaType stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]], outCharset ?: @"utf-8"]);
+        BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
+        NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
+        if (cacheable && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
+        [self performOnClientThread:^{
+            [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+            if (out.length) [self.client URLProtocol:self didLoadData:out];
+            [self.client URLProtocolDidFinishLoading:self];
+        }];
     }];
 }
 
 - (void)handleData:(NSData *)chunk
 {
     if (self.stopped || self.done) return;
+    if (self.rewriteBuffer) {
+        [self.rewriteBuffer appendData:chunk];
+        if (self.rewriteBuffer.length > BRMaxRewriteBody) [self abandonRewrite];
+        return;
+    }
     if (self.cacheBody) {
         if (self.cacheBody.length + chunk.length > BRMaxCacheableBody) self.cacheBody = nil;
         else [self.cacheBody appendData:chunk];
@@ -373,6 +466,10 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         [self performOnClientThread:^{
             [self.client URLProtocol:self didFailWithError:urlError];
         }];
+        return;
+    }
+    if (self.rewriteBuffer) {
+        [self finishRewrite];
         return;
     }
     if (self.cacheBody && self.response) [self storeResponse:self.response data:self.cacheBody maxAge:self.cacheMaxAge];

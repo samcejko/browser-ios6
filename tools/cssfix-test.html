@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cssfix test</title>
+<script src="../Resources/cssfix.js"></script>
+<style>body{font-family:monospace;white-space:pre-wrap;font-size:12px} .fail{color:#b00} .ok{color:#080} h2{font-size:14px}</style>
+</head>
+<body>
+<h2 id="summary">running…</h2>
+<div id="out"></div>
+<script>
+var cases = [
+  ['vars root', ':root{--c:#f00;--pad:4px 8px}.a{color:var(--c);padding:var(--pad);margin:var(--nope,2px)}', '.a{color:#f00;padding:4px 8px;margin:2px}'],
+  ['vars local', '.b{--x:10px;width:var(--x);height:var(--y)}', '.b{width:10px}'],
+  ['vars nested fallback', '.c{color:var(--a,var(--b,blue))}', '.c{color:blue}'],
+  ['flex row', '.f{display:flex;justify-content:space-between;align-items:center;flex-direction:row}', '.f{display:-webkit-box;-webkit-box-pack:justify;justify-content:space-between;-webkit-box-align:center;align-items:center;-webkit-box-orient:horizontal;-webkit-box-direction:normal;flex-direction:row}'],
+  ['flex wrap', '.g{display:flex;flex-wrap:wrap}', '.g{display:block;-webkit-box-lines:multiple;flex-wrap:wrap}'],
+  ['flex child', '.h{flex:1 1 0%;order:2}', '.h{-webkit-box-flex:1;flex:1 1 0%;-webkit-box-ordinal-group:3;order:2}'],
+  ['flex basis', '.i{flex:0 0 200px}', '.i{-webkit-box-flex:0;width:200px;flex:0 0 200px}'],
+  ['prefix transform', '.j{transform:translateX(10px);transition:transform .3s ease,opacity .2s}', '.j{-webkit-transform:translateX(10px);transform:translateX(10px);-webkit-transition:-webkit-transform .3s ease,opacity .2s;transition:transform .3s ease,opacity .2s}'],
+  ['calc', '.k{width:calc(100% - 20px)}', '.k{width:-webkit-calc(100% - 20px)}'],
+  ['gradient to right', '.l{background:linear-gradient(to right,#fff,#000)}', '.l{background:-webkit-linear-gradient(left, #fff, #000)}'],
+  ['gradient angle', '.m{background:linear-gradient(180deg,red 0%,blue 100%)}', '.m{background:-webkit-linear-gradient(270deg, red 0%, blue 100%)}'],
+  ['gradient double stop', '.n{background-image:linear-gradient(red 0% 50%,blue)}', '.n{background-image:-webkit-linear-gradient(red 0%, red 50%, blue)}'],
+  ['rgb space', '.o{color:rgb(0 0 0 / 50%);background:rgb(10 20 30)}', '.o{color:rgba(0,0,0,0.5);background:rgb(10,20,30)}'],
+  ['hex alpha', '.p{color:#ff000080;border-color:#0f08}', '.p{color:rgba(255,0,0,0.502);border-color:rgba(0,255,0,0.533)}'],
+  ['oklch', '.q{color:oklch(62.8% 0.2577 29.23)}', '.q{color:rgb(255,0,0)}'],
+  ['clamp min max', '.r{font-size:clamp(1rem,2vw,2rem);width:min(100%,600px);margin:max(1rem,5vw)}', '.r{font-size:2vw;width:600px;margin:1rem}'],
+  ['logical', '.s{margin-inline:auto;padding-block:1px 2px;inset:0;inline-size:50%}', '.s{margin-left:auto;margin-right:auto;padding-top:1px;padding-bottom:2px;top:0;right:0;bottom:0;left:0;width:50%}'],
+  ['selectors is', ':is(.a,.b) .c{x:1}', ':-webkit-any(.a,.b) .c{x:1}'],
+  ['selectors is complex', 'div:is(.a .b,.c){x:1}', '.a div.b,div.c{x:1}'],
+  ['selectors not list', '.a:not(.b,.c){x:1}', '.a:not(.b):not(.c){x:1}'],
+  ['selectors drop has', '.a:has(.b),.c{x:1}', '.c{x:1}'],
+  ['selectors focus-visible placeholder', 'a:focus-visible,input::placeholder{x:1}', 'a:focus,input::-webkit-input-placeholder{x:1}'],
+  ['supports grid dropped', '@supports (display:grid){.a{x:1}}.b{y:2}', '.b{y:2}'],
+  ['supports not grid unwrapped', '@supports not (display:grid){.a{x:1}}', '.a{x:1}'],
+  ['supports flex', '@supports (display:flex) and (--v:1){.a{x:1}}', '.a{x:1}'],
+  ['layer unwrap', '@layer base;@layer base{.a{x:1}}', '.a{x:1}'],
+  ['container dropped', '@container (min-width:1px){.a{x:1}}', ''],
+  ['media range', '@media (width >= 600px) and (hover:hover){.a{x:1}}', '@media (min-width: 600px) and (max-width: 0px){.a{x:1}}'],
+  ['media resolution', '@media (min-resolution:2dppx){.a{x:1}}', '@media (-webkit-min-device-pixel-ratio: 2){.a{x:1}}'],
+  ['keyframes', '@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}', '@-webkit-keyframes spin{from{-webkit-transform:rotate(0);transform:rotate(0)}\nto{-webkit-transform:rotate(360deg);transform:rotate(360deg)}}'],
+  ['nesting skipped', '.a{color:red;.b{color:blue}}', '.a{color:red}'],
+  ['comments strings', '.a{content:"/* not a comment */";/* real */color:red}', '.a{content:"/* not a comment */";color:red}'],
+  ['env', '.a{padding-top:env(safe-area-inset-top,20px);padding-bottom:env(safe-area-inset-bottom)}', '.a{padding-top:20px;padding-bottom:0px}'],
+  ['sizing keywords', '.a{width:fit-content;height:max-content}', '.a{width:-webkit-fit-content;height:-webkit-max-content}'],
+  ['unset', '.a{color:unset;margin:unset}', '.a{color:inherit;margin:initial}'],
+  ['individual transforms', '.a{translate:10px 20px;rotate:45deg}', '.a{-webkit-transform:translate(10px, 20px) rotate(45deg);transform:translate(10px, 20px) rotate(45deg)}'],
+  ['display grid to block', '.a{display:grid;gap:8px}', '.a{display:block;gap:8px}'],
+  ['color-mix', '.a{color:color-mix(in srgb,red 50%,blue)}', '.a{color:rgb(128,0,128)}'],
+  ['important', '.a{color:var(--c,red)!important}', '.a{color:red !important}'],
+  ['url untouched', '.a{background:url("data:image/svg+xml,%3Csvg xmlns=(x)%3E") no-repeat}', '.a{background:url("data:image/svg+xml,%3Csvg xmlns=(x)%3E") no-repeat}'],
+  ['font-face', '@font-face{font-family:X;src:url(a.woff2) format("woff2"),url(a.woff) format("woff")}', '@font-face{font-family:X;src:url(a.woff2) format("woff2"),url(a.woff) format("woff")}'],
+  ['import layer', '@import url(a.css) layer(base) supports(display:grid);', '@import url(a.css);'],
+  ['html style block', '<html><style>:root{--m:2px}</style><div style="margin:var(--m);display:flex">x</div></html>', '<html><style>.__{}</style><div style="margin:2px;display:-webkit-box">x</div></html>']
+];
+var outEl = document.getElementById('out'), pass = 0, fail = 0;
+function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
+for (var i = 0; i < cases.length; i++) {
+  var c = cases[i], got, ok;
+  try {
+    if (c[0] === 'html style block') {
+      var r = JSON.parse(CSSFix.run('html', c[1], null)).out;
+      got = r.replace(/<style>[^<]*<\/style>/, '<style>.__{}</style>');
+    } else {
+      got = JSON.parse(CSSFix.run('css', c[1], null)).out;
+    }
+    ok = norm(got) === norm(c[2]);
+  } catch (e) { got = 'EXCEPTION: ' + e.message + '\n' + (e.stack || ''); ok = false; }
+  if (ok) pass++; else fail++;
+  var d = document.createElement('div');
+  d.className = ok ? 'ok' : 'fail';
+  d.textContent = (ok ? 'OK   ' : 'FAIL ') + c[0] + (ok ? '' : '\n   in:  ' + c[1] + '\n   got: ' + got + '\n   exp: ' + c[2]);
+  outEl.appendChild(d);
+}
+document.getElementById('summary').textContent = 'cssfix: ' + pass + ' passed, ' + fail + ' failed';
+document.title = 'cssfix ' + pass + '/' + (pass + fail);
+</script>
+</body>
+</html>
