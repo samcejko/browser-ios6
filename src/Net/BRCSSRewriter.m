@@ -143,7 +143,7 @@ static NSString *BRPageKey(NSURL *url)
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
         NSBundle *b = [NSBundle mainBundle];
-        for (NSString *name in @[@"core-js.min", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"shims"]) {
+        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"shims"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
@@ -205,8 +205,8 @@ static NSString *BRPageKey(NSURL *url)
                 }
             }
             NSData *outData = [out dataUsingEncoding:NSUTF8StringEncoding];
-            BRLog(@"cssfix %@ %lu -> %lu bytes in %.0f ms (%@, %lu vars)", kind, (unsigned long)data.length, (unsigned long)outData.length,
-                  ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, used ?: @"?", (unsigned long)vars.count);
+            BRLog(@"cssfix %@ %.0f ms: %lu -> %lu bytes (%@, %lu vars)", kind, ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000,
+                  (unsigned long)data.length, (unsigned long)outData.length, used ?: @"?", (unsigned long)vars.count);
             if (data.length > 200000) [[BRJSEngine shared] collectGarbage];
             completion(outData ?: data, outData ? @"utf-8" : charset);
         }

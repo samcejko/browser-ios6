@@ -83,7 +83,7 @@ static NSString * const BRTranspilerGlue =
     BRJSEngine *engine = [BRJSEngine shared];
     if (!engine.available) { _loadFailed = YES; return NO; }
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
-    for (NSString *name in @[@"core-js.min", @"regenerator-runtime", @"babel.min"]) {
+    for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"babel.min"]) {
         NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"js" inDirectory:@"js"];
         if (!path) path = [[NSBundle mainBundle] pathForResource:name ofType:@"js"];
         NSString *script = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
@@ -93,11 +93,16 @@ static NSString * const BRTranspilerGlue =
             return NO;
         }
         NSTimeInterval t1 = [NSDate timeIntervalSinceReferenceDate];
-        if (![engine evaluateScript:script sourceName:[name stringByAppendingString:@".js"]]) {
+        BOOL ok = [engine evaluateScript:script sourceName:[name stringByAppendingString:@".js"]];
+        double ms = ([NSDate timeIntervalSinceReferenceDate] - t1) * 1000;
+        int kb = (int)(script.length / 1024);
+        BRLog(@"%@.js %@ in %.0f ms (%d KB)", name, ok ? @"loaded" : @"FAILED", ms, kb);
+        if (!ok) {
             _loadFailed = YES;
             return NO;
         }
-        BRLog(@"%@.js loaded (%lu KB) in %.0f ms", name, (unsigned long)(script.length / 1024), ([NSDate timeIntervalSinceReferenceDate] - t1) * 1000);
+        // a polyfill library must never leave slow JavaScript versions of native functions behind
+        [engine evaluateScript:@"__brRestoreNatives()" sourceName:@"restore-natives.js"];
     }
     if (![engine evaluateScript:BRTranspilerGlue sourceName:@"transpiler-glue.js"]) { _loadFailed = YES; return NO; }
     _loaded = YES;
@@ -111,8 +116,8 @@ static NSString * const BRTranspilerGlue =
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     BOOL changed = NO;
     NSString *out = [self transpileIfNeeded:sample name:@"selftest.js" changed:&changed];
-    BRLog(@"Transpiler self test: %@ in %.0f ms, %lu -> %lu chars", changed ? @"transpiled" : @"unchanged",
-          ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, (unsigned long)sample.length, (unsigned long)out.length);
+    BRLog(@"Transpiler self test: %@ in %.0f ms (%d -> %d chars), %.0f MB", changed ? @"transpiled" : @"unchanged",
+          ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, (int)sample.length, (int)out.length, BRResidentMemoryMB());
 }
 
 - (NSString *)transpileIfNeeded:(NSString *)source name:(NSString *)name changed:(BOOL *)changed
@@ -133,10 +138,10 @@ static NSString * const BRTranspilerGlue =
     NSString *out = [engine callFunction:@"BRTranspile.transpile" arguments:@[source, name ?: @"script.js"]];
     NSTimeInterval ms = ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000;
     if (!out.length) {
-        BRLog(@"Transpile failed for %@ (%lu chars, %.0f ms)", name, (unsigned long)source.length, ms);
+        BRLog(@"Transpile failed for %@ in %.0f ms (%d chars)", name, ms, (int)source.length);
         return nil;
     }
-    BRLog(@"Transpiled %@: %lu -> %lu chars in %.0f ms", name, (unsigned long)source.length, (unsigned long)out.length, ms);
+    BRLog(@"Transpiled %@ in %.0f ms: %d -> %d chars", name, ms, (int)source.length, (int)out.length);
     [out writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
     if (source.length > 100000) [engine collectGarbage];
     if (changed) *changed = YES;

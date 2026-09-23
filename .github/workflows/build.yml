@@ -95,12 +95,41 @@ jobs:
           grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' /tmp/adservers.txt > Resources/adblock.txt || true
           echo "ad block domains: $(wc -l < Resources/adblock.txt)"
 
-      - name: Fetch JavaScript tooling (Babel standalone, core-js, polyfills)
+      - name: Build a trimmed core-js (additive polyfills only, no replacements of native RegExp/String/Array/JSON)
+        run: |
+          set -e
+          mkdir -p Resources/js /tmp/cjs
+          cd /tmp/cjs
+          npm init -y >/dev/null 2>&1
+          npm install core-js-builder@3.41.0 --no-audit --no-fund --silent
+          cat > build.js <<'EOF'
+          const fs = require('fs');
+          const builder = require('core-js-builder');
+          builder({
+            modules: ['es', 'web.url', 'web.url-search-params', 'web.url.to-json', 'web.dom-collections.for-each', 'web.dom-collections.iterator',
+                      'web.structured-clone', 'web.queue-microtask', 'web.dom-exception', 'web.timers', 'web.immediate', 'web.self', 'web.atob', 'web.btoa'],
+            exclude: ['es.regexp', 'es.string.replace', 'es.string.split', 'es.string.match', 'es.string.search', 'es.string.match-all',
+                      'es.json.stringify', 'es.json.to-string-tag', 'es.array.sort', 'es.array.splice', 'es.array.slice', 'es.array.concat',
+                      'es.array.filter', 'es.array.map', 'es.array.reverse', 'es.array.index-of', 'es.array.last-index-of', 'es.array.join',
+                      'es.array.for-each', 'es.array.reduce', 'es.array.reduce-right', 'es.array.some', 'es.array.every', 'es.array.push',
+                      'es.array.unshift', 'es.parse-int', 'es.parse-float', 'es.number.to-fixed', 'es.number.to-precision', 'es.number.constructor',
+                      'es.date', 'es.function', 'es.string.trim', 'es.string.trim-start', 'es.string.trim-end', 'es.object.to-string',
+                      'es.array.iterator'],
+            summary: { console: { size: true, modules: false } },
+            format: 'bundle',
+            filename: 'core-js-custom.js'
+          }).then(() => { console.log('core-js custom bundle built'); }).catch(e => { console.error(e); process.exit(1); });
+          EOF
+          node build.js
+          cp core-js-custom.js "$GITHUB_WORKSPACE/Resources/js/core-js-custom.js"
+          cd "$GITHUB_WORKSPACE"
+          ls -la Resources/js/core-js-custom.js
+
+      - name: Fetch JavaScript tooling (Babel standalone, polyfills)
         run: |
           set -e
           mkdir -p Resources/js
           curl -sSfL "https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.10/babel.min.js" -o Resources/js/babel.min.js
-          curl -sSfL "https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js" -o Resources/js/core-js.min.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/regenerator-runtime@0.14.1/runtime.js" -o Resources/js/regenerator-runtime.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/whatwg-fetch@3.6.20/dist/fetch.umd.js" -o Resources/js/fetch.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/intersection-observer@0.12.2/intersection-observer.js" -o Resources/js/intersection-observer.js

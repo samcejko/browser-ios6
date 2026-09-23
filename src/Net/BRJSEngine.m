@@ -116,7 +116,28 @@ static NSString * const BRContextPrelude =
 @"var console = (function () { var c = {}, names = ['log','info','warn','error','debug','trace','dir','dirxml','table','group','groupEnd','groupCollapsed','time','timeEnd','timeLog','count','assert'];"
 @"  for (var i = 0; i < names.length; i++) c[names[i]] = function () {}; return c; })();"
 @"var setTimeout = function () { return 0; }, clearTimeout = function () {}, setInterval = setTimeout, clearInterval = clearTimeout;"
-@"var queueMicrotask = function (f) { try { f(); } catch (e) {} };";
+@"var queueMicrotask = function (f) { try { f(); } catch (e) {} };"
+// natives that polyfill libraries like to replace with slow JavaScript versions; restored after each library load
+@"var __brNatives = { JSON: { stringify: JSON.stringify, parse: JSON.parse },"
+@"  String: { replace: String.prototype.replace, split: String.prototype.split, match: String.prototype.match, search: String.prototype.search,"
+@"            trim: String.prototype.trim, indexOf: String.prototype.indexOf, slice: String.prototype.slice, toLowerCase: String.prototype.toLowerCase, charAt: String.prototype.charAt, charCodeAt: String.prototype.charCodeAt },"
+@"  RegExp: { exec: RegExp.prototype.exec, test: RegExp.prototype.test, toString: RegExp.prototype.toString },"
+@"  Array: { sort: Array.prototype.sort, slice: Array.prototype.slice, splice: Array.prototype.splice, concat: Array.prototype.concat, filter: Array.prototype.filter,"
+@"           map: Array.prototype.map, forEach: Array.prototype.forEach, reduce: Array.prototype.reduce, reduceRight: Array.prototype.reduceRight, indexOf: Array.prototype.indexOf,"
+@"           lastIndexOf: Array.prototype.lastIndexOf, join: Array.prototype.join, reverse: Array.prototype.reverse, some: Array.prototype.some, every: Array.prototype.every,"
+@"           push: Array.prototype.push, unshift: Array.prototype.unshift },"
+@"  Number: { toFixed: Number.prototype.toFixed, toPrecision: Number.prototype.toPrecision }, Function: { bind: Function.prototype.bind },"
+@"  Object: { toString: Object.prototype.toString }, global: { parseInt: parseInt, parseFloat: parseFloat } };"
+@"function __brRestoreNatives() {"
+@"  var n = __brNatives, k;"
+@"  for (k in n.JSON) JSON[k] = n.JSON[k];"
+@"  for (k in n.String) String.prototype[k] = n.String[k];"
+@"  for (k in n.RegExp) RegExp.prototype[k] = n.RegExp[k];"
+@"  for (k in n.Array) Array.prototype[k] = n.Array[k];"
+@"  for (k in n.Number) Number.prototype[k] = n.Number[k];"
+@"  Function.prototype.bind = n.Function.bind; Object.prototype.toString = n.Object.toString;"
+@"  parseInt = n.global.parseInt; parseFloat = n.global.parseFloat;"
+@"}";
 
 - (BOOL)ensureContext
 {
