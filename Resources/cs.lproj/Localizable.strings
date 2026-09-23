@@ -2,6 +2,24 @@
 
 "Search or enter address" = "Hledat nebo zadat adresu";
 "Home" = "Domů";
+"Settings" = "Nastavení";
+"Compatibility" = "Kompatibilita";
+"Data" = "Data";
+"About" = "O aplikaci";
+"CSS and JavaScript rewriting makes modern pages work on the iOS 6 engine. Turn them off if a page behaves strangely." = "Přepis CSS a JavaScriptu umožňuje zobrazit moderní stránky na enginu iOS 6. Pokud se stránka chová divně, zkuste je vypnout.";
+"Block ads and trackers" = "Blokovat reklamy a sledování";
+"Rewrite modern CSS" = "Přepisovat moderní CSS";
+"Rewrite modern JavaScript" = "Přepisovat moderní JavaScript";
+"Verify certificates" = "Ověřovat certifikáty";
+"Clear cache" = "Vymazat cache";
+"Clear cookies" = "Vymazat cookies";
+"Version" = "Verze";
+"Memory" = "Paměť";
+"Blocked requests" = "Blokované požadavky";
+"Connections reused" = "Znovu použitá spojení";
+"Cache cleared." = "Cache byla vymazána.";
+"Cookies cleared." = "Cookies byly vymazány.";
+"OK" = "OK";
 "Page could not be loaded" = "Stránku se nepodařilo načíst";
 "Try again" = "Zkusit znovu";
 "Open via http://" = "Otevřít přes http://";

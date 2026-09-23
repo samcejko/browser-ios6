@@ -1,4 +1,5 @@
 #import "BRBrowserViewController.h"
+#import "BRSettingsViewController.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -18,6 +19,7 @@ static const CGFloat BRBarHeight = 44;
 @property (nonatomic, strong) UIBarButtonItem *reloadItem;
 @property (nonatomic, strong) UIBarButtonItem *stopItem;
 @property (nonatomic, strong) UIBarButtonItem *homeItem;
+@property (nonatomic, strong) UIBarButtonItem *settingsItem;
 @property (nonatomic, strong) NSURL *currentURL;           // last main frame URL that was navigated to
 @property (nonatomic, strong) NSURL *httpFallbackURL;      // http:// variant of a typed host, tried when https fails
 @property (nonatomic) BOOL editingAddress;
@@ -61,6 +63,7 @@ static const CGFloat BRBarHeight = 44;
     self.reloadItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(reload)];
     self.stopItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemStop target:self action:@selector(stop)];
     self.homeItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Home") style:UIBarButtonItemStylePlain target:self action:@selector(goHome)];
+    self.settingsItem = [[UIBarButtonItem alloc] initWithTitle:@"⚙" style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
 
     UIColor *barTint = [UIColor colorWithRed:0.56 green:0.59 blue:0.64 alpha:1];
     self.navBar = [[UINavigationBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, BRBarHeight)];
@@ -69,8 +72,8 @@ static const CGFloat BRBarHeight = 44;
     self.navItem = [[UINavigationItem alloc] initWithTitle:@""];
     self.navItem.titleView = self.urlField;
     if (BRIsPad()) {
-        self.navItem.leftBarButtonItems = @[self.backItem, self.forwardItem];
-        self.navItem.rightBarButtonItems = @[self.homeItem, self.reloadItem];
+        self.navItem.leftBarButtonItems = @[self.backItem, self.forwardItem, self.homeItem];
+        self.navItem.rightBarButtonItems = @[self.settingsItem, self.reloadItem];
     } else {
         self.navItem.rightBarButtonItem = self.reloadItem;
     }
@@ -83,7 +86,8 @@ static const CGFloat BRBarHeight = 44;
         self.toolbar.tintColor = barTint;
         UIBarButtonItem *flex1 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
         UIBarButtonItem *flex2 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.homeItem];
+        UIBarButtonItem *flex3 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.homeItem, flex3, self.settingsItem];
         [self.view addSubview:self.toolbar];
     }
 
@@ -188,8 +192,16 @@ static const CGFloat BRBarHeight = 44;
     if (loading) [self.spinner startAnimating];
     else [self.spinner stopAnimating];
     UIBarButtonItem *item = loading ? self.stopItem : self.reloadItem;
-    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.homeItem, item];
+    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.settingsItem, item];
     else self.navItem.rightBarButtonItem = item;
+}
+
+- (void)showSettings
+{
+    BRSettingsViewController *settings = [[BRSettingsViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
+    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)updateNavigationState
