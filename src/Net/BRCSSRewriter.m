@@ -1,8 +1,12 @@
 #import "BRCSSRewriter.h"
 #import "BRJSEngine.h"
+#import "BRJSTranspiler.h"
+#import "BRSettings.h"
 #import "BRCommon.h"
 
 static const NSUInteger BRMaxPagesRemembered = 8;
+static const NSUInteger BRMaxTranspileSource = 1500 * 1024;
+static NSString * const BRPolyfillURL = @"https://ios6-browser.invalid/polyfills.js";
 
 static NSStringEncoding BREncodingForCharset(NSString *charset)
 {
@@ -127,15 +131,52 @@ static NSString *BRPageKey(NSURL *url)
     return vars;
 }
 
++ (NSString *)polyfillURLString
+{
+    return BRPolyfillURL;
+}
+
++ (NSData *)polyfillBundle
+{
+    static NSData *bundle;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableData *d = [NSMutableData data];
+        NSBundle *b = [NSBundle mainBundle];
+        for (NSString *name in @[@"core-js.min", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"shims"]) {
+            NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
+            if (!path) path = [b pathForResource:name ofType:@"js"];
+            NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
+            if (!part.length) { BRLog(@"polyfill %@.js missing", name); continue; }
+            [d appendData:[[NSString stringWithFormat:@"\n;/* %@ */\n", name] dataUsingEncoding:NSUTF8StringEncoding]];
+            [d appendData:part];
+            [d appendData:[@"\n;\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        }
+        bundle = d;
+        BRLog(@"Polyfill bundle assembled: %lu KB", (unsigned long)(d.length / 1024));
+    });
+    return bundle;
+}
+
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
          completion:(BRRewriteCompletion)completion
 {
     if (!completion) return;
     [[BRJSEngine shared] performAsync:^{
         @autoreleasepool {
-            if (![self ensureLoaded]) { completion(data, charset); return; }
             NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
             NSString *used = nil;
+            if ([kind isEqualToString:@"js"]) {
+                if (data.length > BRMaxTranspileSource || ![BRSettings jsFixEnabled] || ![[BRJSTranspiler shared] prepare]) { completion(data, charset); return; }
+                NSString *text = BRDecode(data, charset, &used);
+                if (!text) { completion(data, charset); return; }
+                BOOL changed = NO;
+                NSString *out = [[BRJSTranspiler shared] transpileIfNeeded:text name:pageURL.lastPathComponent changed:&changed];
+                if (!changed || !out.length) { completion(data, charset); return; }
+                completion([out dataUsingEncoding:NSUTF8StringEncoding], @"utf-8");
+                return;
+            }
+            if (![self ensureLoaded]) { completion(data, charset); return; }
             NSString *declared = charset.length ? charset : BRSniffCharset(data, kind);
             NSString *text = BRDecode(data, declared, &used);
             if (!text) { completion(data, charset); return; }
@@ -146,7 +187,12 @@ static NSString *BRPageKey(NSURL *url)
                 NSData *j = [NSJSONSerialization dataWithJSONObject:vars options:0 error:NULL];
                 if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
             }
-            NSString *result = [[BRJSEngine shared] callFunction:@"CSSFix.run" arguments:@[kind, text, varsJSON]];
+            NSString *optionsJSON = @"{}";
+            if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) {
+                BOOL transpile = [text rangeOfString:@"<script" options:NSCaseInsensitiveSearch].location != NSNotFound && [[BRJSTranspiler shared] prepare];
+                optionsJSON = [NSString stringWithFormat:@"{\"polyfillURL\":\"%@\",\"transpile\":%@}", BRPolyfillURL, transpile ? @"true" : @"false"];
+            }
+            NSString *result = [[BRJSEngine shared] callFunction:@"CSSFix.run" arguments:@[kind, text, varsJSON, optionsJSON]];
             if (!result.length) { completion(data, charset); return; }
             NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[result dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
             NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;

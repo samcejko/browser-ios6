@@ -44,9 +44,19 @@ static NSString * const BRTranspilerGlue =
 + (void)warmUp
 {
     BRJSTranspiler *t = [self shared];
-    [[BRJSEngine shared] performAsync:^{
-        if ([t ensureLoaded]) [t selfTest];
-    }];
+    // a few seconds after launch, so the start page renders first
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[BRJSEngine shared] performAsync:^{
+            BRLog(@"Process uses %.0f MB before loading the transpiler", BRResidentMemoryMB());
+            if ([t ensureLoaded]) [t selfTest];
+        }];
+    });
+}
+
+// engine queue only: YES when Babel is ready (loads it on demand)
+- (BOOL)prepare
+{
+    return [self ensureLoaded];
 }
 
 - (instancetype)init
@@ -91,7 +101,7 @@ static NSString * const BRTranspilerGlue =
     }
     if (![engine evaluateScript:BRTranspilerGlue sourceName:@"transpiler-glue.js"]) { _loadFailed = YES; return NO; }
     _loaded = YES;
-    BRLog(@"Transpiler ready in %.0f ms", ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+    BRLog(@"Transpiler ready in %.0f ms, process now uses %.0f MB", ([NSDate timeIntervalSinceReferenceDate] - t0) * 1000, BRResidentMemoryMB());
     return YES;
 }
 

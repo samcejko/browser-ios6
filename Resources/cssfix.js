@@ -1167,7 +1167,66 @@ var CSSFix = (function () {
         return serializeDecls(fixDeclarations(decls, ctx, false));
     }
 
-    function fixHTML(html, ctx) {
+    // ------------------------------------------------------------------ scripts inside HTML
+
+    var scriptCache = {}, scriptCacheSize = 0;   // hash -> transpiled inline script
+
+    function hashString(s) {
+        var h = 2166136261, i = 0, n = s.length;
+        for (; i < n; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; }
+        return h.toString(36) + ':' + n;
+    }
+
+    function isJavaScriptType(type) {
+        if (!type) return true;
+        type = trim(type).toLowerCase();
+        return type === '' || type === 'text/javascript' || type === 'application/javascript' || type === 'text/ecmascript' ||
+               type === 'application/ecmascript' || type === 'text/jscript' || type === 'application/x-javascript' || type === 'module';
+    }
+
+    function transpileInline(code, isModule) {
+        if (typeof BRTranspile === 'undefined' || !code || !/[^\s]/.test(code)) return null;
+        var key = hashString(code);
+        if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
+        var out = null;
+        try { out = BRTranspile.run(code, isModule ? 'inline-module.js' : 'inline.js'); } catch (e) { out = null; }
+        if (out === '') out = null;   // already ES5
+        if (scriptCacheSize > 2000000) { scriptCache = {}; scriptCacheSize = 0; }
+        scriptCache[key] = out;
+        scriptCacheSize += (out || '').length;
+        return out;
+    }
+
+    function fixScripts(html, opts) {
+        var re = /(<script\b([^>]*)>)([\s\S]*?)(<\/script\s*>)/gi;
+        return html.replace(re, function (all, open, attrs, body, close) {
+            var typeM = /\btype\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+            var type = typeM ? (typeM[2] !== undefined ? typeM[2] : typeM[3] !== undefined ? typeM[3] : typeM[4]) : '';
+            if (!isJavaScriptType(type)) return all;
+            var isModule = trim(type).toLowerCase() === 'module';
+            if (isModule) return all;                                    // modules: handled later (SystemJS)
+            if (/\bsrc\s*=/i.test(attrs)) return all;                    // external scripts are transpiled by the network layer
+            if (!opts || !opts.transpile) return all;
+            var fixed = transpileInline(body, false);
+            if (fixed === null) return all;
+            return open + fixed + close;
+        });
+    }
+
+    function injectPolyfills(html, url) {
+        if (!url || html.indexOf(url) >= 0) return html;
+        if (!/<html|<head|<body/i.test(html)) return html;               // fragments
+        var tag = '<script src="' + url + '"></script>';
+        var m = /<head\b[^>]*>/i.exec(html);
+        if (m) return html.slice(0, m.index + m[0].length) + tag + html.slice(m.index + m[0].length);
+        m = /<html\b[^>]*>/i.exec(html);
+        if (m) return html.slice(0, m.index + m[0].length) + tag + html.slice(m.index + m[0].length);
+        m = /<(script|link|style|body)\b/i.exec(html);
+        if (m) return html.slice(0, m.index) + tag + html.slice(m.index);
+        return tag + html;
+    }
+
+    function fixHTML(html, ctx, opts) {
         var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi;
         // 1. collect variables from every <style> block first (they usually hold the theme)
         var m;
@@ -1190,12 +1249,20 @@ var CSSFix = (function () {
             fixed = fixed.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
             return prefix + '"' + fixed + '"';
         });
+        // 4. scripts: inline ones transpiled, polyfill bundle injected first thing in <head>
+        html = fixScripts(html, opts);
+        if (opts && opts.polyfillURL) html = injectPolyfills(html, opts.polyfillURL);
         return html;
     }
 
-    function run(kind, text, pageVars) {
+    function run(kind, text, pageVars, options) {
         var ctx = makeContext(pageVars);
-        var out = kind === 'html' ? fixHTML(text, ctx) : fixCSS(text, ctx);
+        var opts = null;
+        if (options) {
+            if (typeof options === 'string') { try { opts = JSON.parse(options); } catch (e) { opts = null; } }
+            else opts = options;
+        }
+        var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
         return JSON.stringify({ out: out, vars: ctx.root });
     }
 

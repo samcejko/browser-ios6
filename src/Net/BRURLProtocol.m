@@ -199,7 +199,13 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     BOOL isGET = [method isEqualToString:@"GET"];
     NSURLRequestCachePolicy policy = request.cachePolicy;
 
-    // 0. Ad and tracker blocking (never for the main document)
+    // 0a. Our own resources (polyfill bundle) live on a reserved host name that never resolves
+    if ([[url.host lowercaseString] isEqualToString:@"ios6-browser.invalid"]) {
+        [self serveInternalResource];
+        return;
+    }
+
+    // 0b. Ad and tracker blocking (never for the main document)
     if (request.mainDocumentURL && ![url isEqual:request.mainDocumentURL] && [BRSettings adBlockEnabled] && [BRAdBlock shouldBlockHost:url.host]) {
         [BRAdBlock noteBlockedRequest];
         [self serveBlockedResponse];
@@ -370,12 +376,16 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *ctype = [r.responseHeaders[@"content-type"] lowercaseString] ?: @"";
     NSString *kind = nil;
     if (status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
+        NSString *path = [url.path lowercaseString] ?: @"";
+        NSString *accept = [BRHeader(self.request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
         if ([ctype hasPrefix:@"text/css"]) kind = @"css";
         else if ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]) kind = @"html";
-        else if (!ctype.length) {
-            NSString *accept = [BRHeader(self.request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
-            if ([accept hasPrefix:@"text/css"]) kind = @"css";
-        }
+        else if ([ctype hasPrefix:@"text/javascript"] || [ctype hasPrefix:@"application/javascript"] || [ctype hasPrefix:@"application/x-javascript"] ||
+                 [ctype hasPrefix:@"text/ecmascript"] || [ctype hasPrefix:@"application/ecmascript"] || [ctype hasPrefix:@"text/jscript"]) kind = @"js";
+        else if ((!ctype.length || [ctype hasPrefix:@"text/plain"] || [ctype hasPrefix:@"application/octet-stream"]) &&
+                 ([path hasSuffix:@".js"] || [path hasSuffix:@".mjs"])) kind = @"js";
+        else if (!ctype.length && [accept hasPrefix:@"text/css"]) kind = @"css";
+        if ([kind isEqualToString:@"js"] && ![BRSettings jsFixEnabled]) kind = nil;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (declared > (long long)BRMaxRewriteBody) kind = nil;
     }
@@ -424,10 +434,12 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page completion:^(NSData *out, NSString *outCharset) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
-        NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : @"text/html");
+        NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : [kind isEqualToString:@"js"] ? @"text/javascript" : @"text/html");
         NSRange semi = [ctype rangeOfString:@";"];
         NSString *mediaType = semi.location == NSNotFound ? ctype : [ctype substringToIndex:semi.location];
-        BRSetHeaderField(f, @"Content-Type", [NSString stringWithFormat:@"%@; charset=%@", [mediaType stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]], outCharset ?: @"utf-8"]);
+        if (outCharset.length) {
+            BRSetHeaderField(f, @"Content-Type", [NSString stringWithFormat:@"%@; charset=%@", [mediaType stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]], outCharset]);
+        }
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
         if (cacheable && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
@@ -499,6 +511,28 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge) };
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];
+}
+
+- (void)serveInternalResource
+{
+    NSString *path = self.request.URL.path ?: @"";
+    NSData *body = nil;
+    NSString *type = @"text/javascript; charset=utf-8";
+    if ([path isEqualToString:@"/polyfills.js"]) body = [BRCSSRewriter polyfillBundle];
+    self.done = YES;
+    if (!body) {
+        [self failWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist
+                                            userInfo:@{ NSURLErrorFailingURLStringErrorKey: self.request.URL.absoluteString ?: @"" }]];
+        return;
+    }
+    NSDictionary *fields = @{ @"Content-Type": type, @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)body.length],
+                              @"Cache-Control": @"max-age=31536000", @"Access-Control-Allow-Origin": @"*" };
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:fields];
+    [self performOnClientThread:^{
+        [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowedInMemoryOnly];
+        [self.client URLProtocol:self didLoadData:body];
+        [self.client URLProtocolDidFinishLoading:self];
+    }];
 }
 
 // Empty script / stylesheet or a blank image, so the page does not wait or show broken elements.

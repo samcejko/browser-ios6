@@ -9,6 +9,8 @@
 + (void)setAdBlockEnabled:(BOOL)enabled;
 + (BOOL)cssFixEnabled;                   // default YES: rewrite modern CSS for the old engine
 + (void)setCSSFixEnabled:(BOOL)enabled;
++ (BOOL)jsFixEnabled;                    // default YES: polyfills and transpiling of modern JavaScript
++ (void)setJSFixEnabled:(BOOL)enabled;
 
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page

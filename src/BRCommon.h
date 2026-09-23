@@ -31,3 +31,6 @@ NSError *BRURLErrorFromError(NSError *error, NSURL *url);
 
 // Escapes &, <, >, " and ' for inclusion in HTML.
 NSString *BRHTMLEscape(NSString *string);
+
+// Resident memory of this process in megabytes (for logging).
+double BRResidentMemoryMB(void);

@@ -17,4 +17,7 @@
 // Self test used for logging on startup: transpiles a small ES2020 snippet and reports the time.
 - (void)selfTest;
 
+// Loads Babel if needed (engine queue only). YES when the transpiler can be used.
+- (BOOL)prepare;
+
 @end
