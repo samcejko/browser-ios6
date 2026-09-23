@@ -1,6 +1,8 @@
 #import "BRBrowserViewController.h"
+#import <QuartzCore/QuartzCore.h>
 #import "BRSettingsViewController.h"
 #import "BRLibraryViewController.h"
+#import "BRTabsViewController.h"
 #import "BRLibrary.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
@@ -9,7 +11,7 @@
 
 static const CGFloat BRBarHeight = 44;
 
-@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate>
+@interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate>
 @property (nonatomic, strong) UINavigationBar *navBar;
 @property (nonatomic, strong) UINavigationItem *navItem;
 @property (nonatomic, strong) UIToolbar *toolbar;          // iPhone only
@@ -23,6 +25,9 @@ static const CGFloat BRBarHeight = 44;
 @property (nonatomic, strong) UIBarButtonItem *homeItem;
 @property (nonatomic, strong) UIBarButtonItem *settingsItem;
 @property (nonatomic, strong) UIBarButtonItem *bookmarksItem;
+@property (nonatomic, strong) UIBarButtonItem *tabsItem;
+@property (nonatomic, strong) NSMutableArray *tabs;        // dictionaries: url, title, snapshot
+@property (nonatomic) NSUInteger currentTab;
 @property (nonatomic, copy) NSString *currentTitle;
 @property (nonatomic, strong) NSURL *currentURL;           // last main frame URL that was navigated to
 @property (nonatomic, strong) NSURL *httpFallbackURL;      // http:// variant of a typed host, tried when https fails
@@ -69,6 +74,8 @@ static const CGFloat BRBarHeight = 44;
     self.homeItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Home") style:UIBarButtonItemStylePlain target:self action:@selector(goHome)];
     self.settingsItem = [[UIBarButtonItem alloc] initWithTitle:@"⚙" style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
     self.bookmarksItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemBookmarks target:self action:@selector(showLibrary)];
+    self.tabsItem = [[UIBarButtonItem alloc] initWithTitle:@"1" style:UIBarButtonItemStyleBordered target:self action:@selector(showTabs)];
+    [self loadTabs];
 
     UIColor *barTint = [UIColor colorWithRed:0.56 green:0.59 blue:0.64 alpha:1];
     self.navBar = [[UINavigationBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, BRBarHeight)];
@@ -78,7 +85,7 @@ static const CGFloat BRBarHeight = 44;
     self.navItem.titleView = self.urlField;
     if (BRIsPad()) {
         self.navItem.leftBarButtonItems = @[self.backItem, self.forwardItem, self.homeItem];
-        self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, self.reloadItem];
+        self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, self.tabsItem, self.reloadItem];
     } else {
         self.navItem.rightBarButtonItem = self.reloadItem;
     }
@@ -93,12 +100,133 @@ static const CGFloat BRBarHeight = 44;
         UIBarButtonItem *flex2 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
         UIBarButtonItem *flex3 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
         UIBarButtonItem *flex4 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.bookmarksItem, flex3, self.homeItem, flex4, self.settingsItem];
+        UIBarButtonItem *flex5 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.bookmarksItem, flex3, self.tabsItem, flex4, self.homeItem, flex5, self.settingsItem];
         [self.view addSubview:self.toolbar];
     }
 
     [self updateNavigationState];
-    [self goHome];
+    NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
+    if (restored && [[restored.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:restored];
+    else [self goHome];
+}
+
+#pragma mark - Tabs
+
+- (void)loadTabs
+{
+    self.tabs = [NSMutableArray array];
+    NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:@"BRTabs"];
+    for (id t in saved) {
+        if ([t isKindOfClass:[NSDictionary class]] && [t[@"url"] isKindOfClass:[NSString class]]) {
+            [self.tabs addObject:[@{ @"url": t[@"url"], @"title": [t[@"title"] isKindOfClass:[NSString class]] ? t[@"title"] : @"" } mutableCopy]];
+        }
+        if (self.tabs.count >= 12) break;
+    }
+    if (!self.tabs.count) [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
+    NSInteger current = [[NSUserDefaults standardUserDefaults] integerForKey:@"BRCurrentTab"];
+    self.currentTab = (current >= 0 && (NSUInteger)current < self.tabs.count) ? (NSUInteger)current : 0;
+    [self updateTabsButton];
+}
+
+- (void)saveTabs
+{
+    NSMutableArray *plain = [NSMutableArray array];
+    for (NSDictionary *t in self.tabs) [plain addObject:@{ @"url": t[@"url"] ?: @"", @"title": t[@"title"] ?: @"" }];
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setObject:plain forKey:@"BRTabs"];
+    [d setInteger:(NSInteger)self.currentTab forKey:@"BRCurrentTab"];
+    [d synchronize];
+}
+
+- (void)updateTabsButton
+{
+    self.tabsItem.title = [NSString stringWithFormat:@"%lu", (unsigned long)self.tabs.count];
+}
+
+- (UIImage *)snapshotOfWebView
+{
+    CGSize size = self.webView.bounds.size;
+    if (size.width < 1 || size.height < 1) return nil;
+    CGFloat scale = 120.0 / size.width;
+    CGSize target = CGSizeMake(120, floor(size.height * scale));
+    UIGraphicsBeginImageContextWithOptions(target, YES, 1.0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGContextScaleCTM(ctx, scale, scale);
+    [self.webView.layer renderInContext:ctx];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
+// Records the page shown right now into the current tab entry.
+- (void)storeCurrentTabState
+{
+    if (self.currentTab >= self.tabs.count) return;
+    NSMutableDictionary *tab = self.tabs[self.currentTab];
+    NSURL *url = self.webView.request.URL ?: self.currentURL;
+    tab[@"url"] = ([BRSettings isHomeURL:url] || !url) ? @"" : (url.absoluteString ?: @"");
+    tab[@"title"] = self.currentTitle ?: @"";
+    UIImage *snapshot = [self snapshotOfWebView];
+    if (snapshot) tab[@"snapshot"] = snapshot;
+    else [tab removeObjectForKey:@"snapshot"];
+}
+
+- (void)openTabAtIndex:(NSUInteger)index
+{
+    if (index >= self.tabs.count) return;
+    self.currentTab = index;
+    NSDictionary *tab = self.tabs[index];
+    NSURL *url = [NSURL URLWithString:tab[@"url"] ?: @""];
+    self.currentTitle = tab[@"title"];
+    [self updateTabsButton];
+    [self saveTabs];
+    if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:url];
+    else [self goHome];
+}
+
+- (void)showTabs
+{
+    [self storeCurrentTabState];
+    BRTabsViewController *tabsController = [[BRTabsViewController alloc] init];
+    tabsController.delegate = self;
+    tabsController.tabs = self.tabs;
+    tabsController.currentIndex = self.currentTab;
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:tabsController];
+    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)tabsViewController:(BRTabsViewController *)controller didSelectTabAtIndex:(NSUInteger)index
+{
+    if (index == self.currentTab) return;
+    [self openTabAtIndex:index];
+}
+
+- (void)tabsViewController:(BRTabsViewController *)controller didCloseTabAtIndex:(NSUInteger)index
+{
+    if (index >= self.tabs.count) return;
+    [self.tabs removeObjectAtIndex:index];
+    if (!self.tabs.count) {
+        [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
+        [self openTabAtIndex:0];
+        return;
+    }
+    if (index == self.currentTab) {
+        [self openTabAtIndex:MIN(index, self.tabs.count - 1)];
+    } else {
+        if (index < self.currentTab) self.currentTab--;
+        [self updateTabsButton];
+        [self saveTabs];
+    }
+    controller.currentIndex = self.currentTab;
+}
+
+- (void)tabsViewControllerDidRequestNewTab:(BRTabsViewController *)controller
+{
+    [self storeCurrentTabState];
+    [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
+    [self openTabAtIndex:self.tabs.count - 1];
 }
 
 - (void)viewDidLayoutSubviews
@@ -198,7 +326,7 @@ static const CGFloat BRBarHeight = 44;
     if (loading) [self.spinner startAnimating];
     else [self.spinner stopAnimating];
     UIBarButtonItem *item = loading ? self.stopItem : self.reloadItem;
-    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, item];
+    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, self.tabsItem, item];
     else self.navItem.rightBarButtonItem = item;
 }
 
@@ -334,6 +462,12 @@ static const CGFloat BRBarHeight = 44;
         NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
         self.currentTitle = title;
         if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [[BRLibrary shared] recordVisit:url title:title];
+        if (self.currentTab < self.tabs.count) {
+            NSMutableDictionary *tab = self.tabs[self.currentTab];
+            tab[@"url"] = ([BRSettings isHomeURL:url] || !url) ? @"" : (url.absoluteString ?: @"");
+            tab[@"title"] = title;
+            [self saveTabs];
+        }
         BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
               (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB());
