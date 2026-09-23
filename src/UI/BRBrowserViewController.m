@@ -116,6 +116,32 @@ static const CGFloat BRControlHeight = 30;
 }
 @end
 
+// "Reader" entry in the share sheet
+@interface BRReaderActivity : UIActivity
+@property (nonatomic, copy) void (^action)(void);
+@end
+
+@implementation BRReaderActivity
+- (NSString *)activityType { return @"com.samcejko.browser.reader"; }
+- (NSString *)activityTitle { return L(@"Reader"); }
+- (UIImage *)activityImage
+{
+    CGFloat side = BRIsPad() ? 76 : 60;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0);
+    [[UIColor colorWithWhite:0.35 alpha:1] setFill];
+    CGFloat x = side * 0.22, w = side * 0.56, y = side * 0.24;
+    for (int i = 0; i < 5; i++) {
+        CGFloat lineW = (i == 0) ? w * 0.7 : (i == 4 ? w * 0.5 : w);
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y + i * side * 0.11, lineW, side * 0.055) cornerRadius:2] fill];
+    }
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+- (BOOL)canPerformWithActivityItems:(NSArray *)activityItems { return self.action != nil; }
+- (void)performActivity { if (self.action) self.action(); [self activityDidFinish:YES]; }
+@end
+
 @implementation BRBrowserViewController
 
 #pragma mark - Building the UI
@@ -1333,10 +1359,51 @@ static NSCache *BRFaviconCache(void)
 
 #pragma mark - Sharing and link menu
 
+#pragma mark - Reader
+
+// Shows the current page's article in a clean, light layout (reader.js finds the main content).
+- (void)showReader
+{
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"reader" ofType:@"js"];
+    NSString *script = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
+    if (!script.length) return;
+    NSString *json = [self.webView stringByEvaluatingJavaScriptFromString:script];
+    NSDictionary *article = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+    if (![article isKindOfClass:[NSDictionary class]] || ![article[@"html"] length]) {
+        [[[UIAlertView alloc] initWithTitle:nil message:L(@"No article was found on this page.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+        return;
+    }
+    BOOL dark = [BRTheme shared].isDark;
+    NSURL *pageURL = [NSURL URLWithString:[article[@"url"] isKindOfClass:[NSString class]] ? article[@"url"] : @""] ?: self.currentURL;
+    NSMutableString *html = [NSMutableString string];
+    [html appendString:@"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"];
+    [html appendFormat:@"<title>%@</title>", BRHTMLEscape(article[@"title"] ?: @"")];
+    [html appendFormat:@"<style>body{font-family:Georgia,'Times New Roman',serif;font-size:19px;line-height:1.55;margin:0;padding:24px 20px 60px;background:%@;color:%@;-webkit-text-size-adjust:100%%}"
+                        ".wrap{max-width:680px;margin:0 auto}h1{font-family:'Helvetica Neue',Helvetica,sans-serif;font-size:30px;line-height:1.2;margin:0 0 8px}"
+                        ".meta{font-family:'Helvetica Neue',Helvetica,sans-serif;font-size:13px;color:#888;margin-bottom:24px}.meta a{color:#888}"
+                        "img{max-width:100%%;height:auto;display:block;margin:16px auto}figure{margin:16px 0}figcaption,small{font-size:14px;color:#888}"
+                        "p{margin:0 0 1em}h2,h3,h4{font-family:'Helvetica Neue',Helvetica,sans-serif;line-height:1.25;margin:1.4em 0 0.5em}a{color:%@}"
+                        "blockquote{margin:1em 0;padding-left:16px;border-left:3px solid #ccc;color:#666}pre,code{font-family:Menlo,Courier,monospace;font-size:14px;white-space:pre-wrap}"
+                        "table{border-collapse:collapse;font-size:15px}td,th{border:1px solid #ccc;padding:4px 8px}ul,ol{padding-left:24px}</style></head><body><div class=\"wrap\">",
+                        dark ? @"#1c1c1e" : @"#fbf8f2", dark ? @"#e6e6e6" : @"#222", dark ? @"#8ab4f8" : @"#1a5db0"];
+    [html appendFormat:@"<h1>%@</h1>", BRHTMLEscape(article[@"title"] ?: @"")];
+    [html appendFormat:@"<div class=\"meta\">%@%@<a href=\"%@\">%@</a></div>", BRHTMLEscape(article[@"byline"] ?: @""), [article[@"byline"] length] ? @" · " : @"",
+                        BRHTMLEscape(pageURL.absoluteString ?: @""), BRHTMLEscape(pageURL.host ?: @"")];
+    [html appendString:article[@"html"]];
+    [html appendString:@"</div></body></html>"];
+    [self.webView loadHTMLString:html baseURL:pageURL];
+    BRLog(@"Reader: %@ (%lu chars)", article[@"title"], (unsigned long)[article[@"html"] length]);
+}
+
 - (void)shareItems:(NSArray *)items fromRect:(CGRect)rect inView:(UIView *)view
 {
     if (!items.count) return;
-    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:@[[[BRBookmarkActivity alloc] init]]];
+    BRReaderActivity *reader = [[BRReaderActivity alloc] init];
+    __weak BRBrowserViewController *weakSelf = self;
+    BOOL onPage = NO;
+    for (id item in items) if ([item isKindOfClass:[NSURL class]] && [[item absoluteString] isEqualToString:(self.webView.request.URL ?: self.currentURL).absoluteString]) onPage = YES;
+    if (onPage) reader.action = ^{ [weakSelf showReader]; };
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:@[[[BRBookmarkActivity alloc] init], reader]];
     if (BRIsPad()) {
         [self.sharePopover dismissPopoverAnimated:NO];
         self.sharePopover = [[UIPopoverController alloc] initWithContentViewController:activity];
