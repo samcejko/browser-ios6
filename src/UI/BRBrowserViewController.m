@@ -62,6 +62,56 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic) NSInteger loadCount;
 @end
 
+// "Add bookmark" entry in the share sheet
+@interface BRBookmarkActivity : UIActivity
+@property (nonatomic, strong) NSURL *url;
+@property (nonatomic, copy) NSString *pageTitle;
+@end
+
+@implementation BRBookmarkActivity
+- (NSString *)activityType { return @"com.samcejko.browser.bookmark"; }
+- (NSString *)activityTitle { return [[BRLibrary shared] isBookmarked:self.url] ? L(@"Remove bookmark") : L(@"Add bookmark"); }
+- (UIImage *)activityImage
+{
+    CGFloat side = BRIsPad() ? 76 : 60;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0);
+    UIBezierPath *star = [UIBezierPath bezierPath];
+    CGFloat cx = side / 2, cy = side / 2 + 2, outer = side * 0.36, inner = outer * 0.45;
+    for (int i = 0; i < 10; i++) {
+        CGFloat r = (i % 2 == 0) ? outer : inner;
+        CGFloat a = -M_PI_2 + i * M_PI / 5;
+        CGPoint p = CGPointMake(cx + r * cos(a), cy + r * sin(a));
+        if (i == 0) [star moveToPoint:p]; else [star addLineToPoint:p];
+    }
+    [star closePath];
+    [[UIColor colorWithWhite:0.35 alpha:1] setFill];
+    [star fill];
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+- (BOOL)canPerformWithActivityItems:(NSArray *)activityItems
+{
+    for (id item in activityItems) if ([item isKindOfClass:[NSURL class]] && [[[item scheme] lowercaseString] hasPrefix:@"http"]) return YES;
+    return NO;
+}
+- (void)prepareWithActivityItems:(NSArray *)activityItems
+{
+    for (id item in activityItems) {
+        if ([item isKindOfClass:[NSURL class]]) self.url = item;
+        else if ([item isKindOfClass:[NSString class]] && !self.pageTitle) self.pageTitle = item;
+    }
+}
+- (void)performActivity
+{
+    if (self.url) {
+        if ([[BRLibrary shared] isBookmarked:self.url]) [[BRLibrary shared] removeBookmark:self.url];
+        else [[BRLibrary shared] addBookmark:self.url title:self.pageTitle ?: self.url.host];
+    }
+    [self activityDidFinish:YES];
+}
+@end
+
 @implementation BRBrowserViewController
 
 #pragma mark - Building the UI
@@ -125,6 +175,9 @@ static const CGFloat BRControlHeight = 30;
     self.reloadButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.reloadButton.frame = CGRectMake(0, 0, 32, BRControlHeight);
     [self.reloadButton addTarget:self action:@selector(reloadOrStop) forControlEvents:UIControlEventTouchUpInside];
+    UILongPressGestureRecognizer *reloadPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(reloadMenu:)];
+    reloadPress.minimumPressDuration = 0.5;
+    [self.reloadButton addGestureRecognizer:reloadPress];
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
     UIView *rightContainer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 56, BRControlHeight)];
@@ -558,6 +611,27 @@ static NSCache *BRFaviconCache(void)
 {
     if (self.loading) [self stop];
     else [self reload];
+}
+
+// Long press on the reload button: desktop/mobile version of the page and a reload that skips the cache
+- (void)reloadMenu:(UILongPressGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:nil delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    [sheet addButtonWithTitle:L(@"Reload without cache")];
+    [sheet addButtonWithTitle:[BRSettings userAgentMode] == 0 ? L(@"Request desktop version") : L(@"Request mobile version")];
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    sheet.tag = 101;
+    CGRect rect = [self.view convertRect:self.reloadButton.bounds fromView:self.reloadButton];
+    if (BRIsPad()) [sheet showFromRect:rect inView:self.view animated:YES];
+    else [sheet showInView:self.view];
+}
+
+- (void)reloadIgnoringCache
+{
+    NSURL *url = self.currentURL ?: self.webView.request.URL;
+    if (!url) return;
+    [self.webView loadRequest:[NSURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:60]];
 }
 
 - (void)reload
@@ -1154,7 +1228,7 @@ static NSCache *BRFaviconCache(void)
 - (void)shareItems:(NSArray *)items fromRect:(CGRect)rect inView:(UIView *)view
 {
     if (!items.count) return;
-    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:@[[[BRBookmarkActivity alloc] init]]];
     if (BRIsPad()) {
         [self.sharePopover dismissPopoverAnimated:NO];
         self.sharePopover = [[UIPopoverController alloc] initWithContentViewController:activity];
@@ -1241,7 +1315,19 @@ static NSCache *BRFaviconCache(void)
 
 - (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index
 {
-    if (sheet.tag != 100 || index < 0 || index == sheet.cancelButtonIndex) return;
+    if (index < 0 || index == sheet.cancelButtonIndex) return;
+    if (sheet.tag == 101) {
+        NSString *pick = [sheet buttonTitleAtIndex:index];
+        if ([pick isEqualToString:L(@"Reload without cache")]) {
+            [self reloadIgnoringCache];
+        } else {
+            [BRSettings setUserAgentMode:[BRSettings userAgentMode] == 0 ? 1 : 0];
+            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+            [self reloadIgnoringCache];
+        }
+        return;
+    }
+    if (sheet.tag != 100) return;
     NSString *choice = [sheet buttonTitleAtIndex:index];
     NSString *href = self.pressedLink[@"href"], *img = self.pressedLink[@"img"], *text = self.pressedLink[@"text"];
     NSURL *link = href.length ? [NSURL URLWithString:href] : nil;
