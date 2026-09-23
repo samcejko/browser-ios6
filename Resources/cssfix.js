@@ -578,29 +578,38 @@ var CSSFix = (function () {
         return null;
     }
 
+    // values that contain none of the functions we rewrite skip the walker entirely (url(), translate(), ... are common)
+    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|env|image-set|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade)\(/i;
+
     function transformFunctions(s) {
-        if (s.indexOf('(') < 0) return s;
-        var out = '', i = 0, n = s.length;
+        if (s.indexOf('(') < 0 || !INTERESTING_FN.test(s)) return s;
+        var out = [], i = 0, n = s.length, start = 0;
         while (i < n) {
-            var c = s.charAt(i);
-            if (c === '"' || c === "'") { var j = skipString(s, i, n); out += s.slice(i, j); i = j; continue; }
-            if (c === '(') {
-                var m = /([a-zA-Z_-][a-zA-Z0-9_-]*)$/.exec(out);
-                var name = m ? m[1].toLowerCase() : '';
-                var close = matchParen(s, i);
-                var rawInner = s.slice(i + 1, close);
-                if (name === 'url' || name === 'attr' || name === 'format' || name === 'local') { out += '(' + rawInner + ')'; i = close + 1; continue; }
-                var inner = transformFunctions(rawInner);
-                var replaced = name ? applyFunction(name, inner) : null;
-                if (replaced !== null && replaced !== undefined) out = out.slice(0, out.length - m[1].length) + replaced;
-                else out += '(' + inner + ')';
+            var c = s.charCodeAt(i);
+            if (c === 34 || c === 39) { i = skipString(s, i, n); continue; }
+            if (c !== 40) { i++; continue; }
+            // function call: name is the identifier right before the "("
+            var k = i;
+            while (k > start && /[a-zA-Z0-9_-]/.test(s.charAt(k - 1))) k--;
+            var name = s.slice(k, i).toLowerCase();
+            var close = matchParen(s, i);
+            var rawInner = s.slice(i + 1, close);
+            if (name === 'url' || name === 'attr' || name === 'format' || name === 'local' || name === 'var') { i = close + 1; continue; }
+            var inner = transformFunctions(rawInner);
+            var replaced = name ? applyFunction(name, inner) : null;
+            if (replaced !== null && replaced !== undefined) {
+                out.push(s.slice(start, k), replaced);
+            } else if (inner !== rawInner) {
+                out.push(s.slice(start, i + 1), inner, ')');
+            } else {
                 i = close + 1;
                 continue;
             }
-            out += c;
-            i++;
+            start = i = close + 1;
         }
-        return out;
+        if (!out.length) return s;
+        out.push(s.slice(start));
+        return out.join('');
     }
 
     var INHERITED = { color: 1, cursor: 1, direction: 1, font: 1, 'font-family': 1, 'font-size': 1, 'font-style': 1, 'font-weight': 1, 'font-variant': 1,

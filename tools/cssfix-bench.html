@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cssfix bench</title>
+<script src="../Resources/cssfix.js"></script>
+<style>body{font-family:monospace;font-size:12px;white-space:pre-wrap} .fail{color:#b00}</style>
+</head>
+<body>
+<div id="out">running…</div>
+<script>
+var files = ['bootstrap.css', 'pico.css', 'wikipedia.css', 'idnes1.css', 'idnes2.css', 'idnes3.css', 'seznam1.css', 'seznam2.css', 'idnes.html', 'seznam.html'];
+var out = [];
+function load(i) {
+  if (i >= files.length) { document.getElementById('out').textContent = out.join('\n'); document.title = 'bench done'; return; }
+  var name = files[i];
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', 'samples/' + name, true);
+  xhr.onload = function () {
+    if (xhr.status !== 200) { out.push(name + ': HTTP ' + xhr.status); load(i + 1); return; }
+    var text = xhr.responseText, kind = /\.html$/.test(name) ? 'html' : 'css';
+    try {
+      var t0 = Date.now();
+      var res = JSON.parse(CSSFix.run(kind, text, null));
+      var ms = Date.now() - t0;
+      var o = res.out, vars = Object.keys(res.vars).length;
+      var notes = [];
+      var leftovers = (o.match(/var\(--/g) || []).length; if (leftovers) notes.push(leftovers + ' unresolved var()');
+      var grid = (o.match(/display:\s*grid/g) || []).length; if (grid) notes.push(grid + ' display:grid left');
+      var isSel = (o.match(/:is\(|:where\(/g) || []).length; if (isSel) notes.push(isSel + ' :is/:where left');
+      var calc = (o.match(/[^-]calc\(/g) || []).length; if (calc) notes.push(calc + ' unprefixed calc left');
+      var grad = (o.match(/[^-]linear-gradient\(/g) || []).length; if (grad) notes.push(grad + ' unprefixed gradient left');
+      var slash = (o.match(/rgba?\([^)]*\//g) || []).length; if (slash) notes.push(slash + ' rgb slash syntax left');
+      var flex = (o.match(/-webkit-box-pack/g) || []).length;
+      out.push(name + ': ' + text.length + ' -> ' + o.length + ' bytes, ' + ms + ' ms, ' + vars + ' root vars, ' + flex + ' box-pack' + (notes.length ? ' | ' + notes.join(', ') : ''));
+    } catch (e) {
+      out.push(name + ': EXCEPTION ' + e.message + '\n' + (e.stack || ''));
+    }
+    load(i + 1);
+  };
+  xhr.onerror = function () { out.push(name + ': load error'); load(i + 1); };
+  xhr.send();
+}
+load(0);
+</script>
+</body>
+</html>
