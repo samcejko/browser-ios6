@@ -1,5 +1,6 @@
 #import "BRLibraryViewController.h"
 #import "BRLibrary.h"
+#import "BRTheme.h"
 #import "BRCommon.h"
 
 @interface BRLibraryViewController ()
@@ -32,6 +33,7 @@
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
     self.addItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(addCurrent)];
     self.clearItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Clear") style:UIBarButtonItemStylePlain target:self action:@selector(clearHistory)];
+    [[BRTheme shared] applyToTableView:self.tableView];
     [self reload];
 }
 
@@ -92,6 +94,7 @@
     }
     cell.detailTextLabel.text = detail;
     cell.detailTextLabel.textColor = [UIColor grayColor];
+    [[BRTheme shared] styleCell:cell];
     return cell;
 }
 

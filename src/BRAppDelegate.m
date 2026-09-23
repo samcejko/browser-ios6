@@ -1,5 +1,6 @@
 #import "BRAppDelegate.h"
 #import "BRBrowserViewController.h"
+#import "BRTheme.h"
 #import "BRURLProtocol.h"
 #import "BRTLSSocket.h"
 #import "BRAdBlock.h"
@@ -38,8 +39,9 @@
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.browserViewController = [[BRBrowserViewController alloc] init];
     self.window.rootViewController = self.browserViewController;
-    self.window.backgroundColor = [UIColor whiteColor];
+    self.window.backgroundColor = [[BRTheme shared] pageBackgroundColor];
     [self.window makeKeyAndVisible];
+    [application setStatusBarStyle:[[BRTheme shared] statusBarStyle] animated:NO];
     return YES;
 }
 

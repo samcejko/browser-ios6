@@ -238,9 +238,21 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
         BRSetError(error, BRErrorDNS, [NSString stringWithFormat:L(@"Could not resolve %@ (%s). Is the device online?"), host, gai_strerror(gai)]);
         return -1;
     }
+    // IPv4 first: home networks often hand out IPv6 addresses without a working route, and every
+    // IPv6 attempt would otherwise eat the whole connect timeout. With several candidates each one
+    // gets a short timeout so that a dead address does not exhaust WebKit's patience.
+    int count = 0;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) count++;
+    struct addrinfo **order = (struct addrinfo **)calloc((size_t)count, sizeof(struct addrinfo *));
+    int n = 0;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) if (ai->ai_family == AF_INET) order[n++] = ai;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) if (ai->ai_family != AF_INET) order[n++] = ai;
+    int perAttemptMs = count > 1 ? MIN(timeoutMs, 6000) : timeoutMs;
     int fd = -1;
     int lastErr = 0;
-    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+    for (int idx = 0; idx < n; idx++) {
+        struct addrinfo *ai = order[idx];
+        if (idx == n - 1) perAttemptMs = timeoutMs;   // the last candidate may use the full budget
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) { lastErr = errno; continue; }
         int one = 1;
@@ -260,7 +272,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
             pfd.fd = fd;
             pfd.events = POLLOUT;
             pfd.revents = 0;
-            int pr = poll(&pfd, 1, timeoutMs);
+            int pr = poll(&pfd, 1, perAttemptMs);
             if (pr <= 0) {
                 lastErr = (pr == 0) ? ETIMEDOUT : errno;
                 close(fd);
@@ -280,6 +292,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, NSError **error
         fcntl(fd, F_SETFL, flags);   // back to blocking mode
         break;
     }
+    free(order);
     freeaddrinfo(res);
     if (fd < 0) {
         NSString *why = lastErr == ETIMEDOUT ? L(@"connection timed out") : [NSString stringWithUTF8String:strerror(lastErr)];

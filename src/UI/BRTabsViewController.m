@@ -1,5 +1,6 @@
 #import "BRTabsViewController.h"
 #import "BRSettings.h"
+#import "BRTheme.h"
 #import "BRCommon.h"
 
 @implementation BRTabsViewController
@@ -16,7 +17,8 @@
     [super viewDidLoad];
     self.tableView.rowHeight = 72;
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(newTab)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:L(@"New tab") style:UIBarButtonItemStyleBordered target:self action:@selector(newTab)];
+    [[BRTheme shared] applyToTableView:self.tableView];
 }
 
 - (void)done
@@ -52,6 +54,7 @@
     cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
     cell.imageView.clipsToBounds = YES;
     cell.accessoryType = (NSUInteger)indexPath.row == self.currentIndex ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    [[BRTheme shared] styleCell:cell];
     return cell;
 }
 

@@ -3,6 +3,7 @@
 #import "BRSettingsViewController.h"
 #import "BRLibraryViewController.h"
 #import "BRTabsViewController.h"
+#import "BRTheme.h"
 #import "BRLibrary.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
@@ -10,47 +11,77 @@
 #import "BRSettings.h"
 
 static const CGFloat BRBarHeight = 44;
+static const CGFloat BRControlHeight = 30;
 
 @interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate>
-@property (nonatomic, strong) UINavigationBar *navBar;
-@property (nonatomic, strong) UINavigationItem *navItem;
-@property (nonatomic, strong) UIToolbar *toolbar;          // iPhone only
+@property (nonatomic, strong) UIView *topBar;
+@property (nonatomic, strong) UIImageView *topBarBackground;
+@property (nonatomic, strong) UIView *bottomBar;             // iPhone only
+@property (nonatomic, strong) UIImageView *bottomBarBackground;
 @property (nonatomic, strong) UIWebView *webView;
 @property (nonatomic, strong) UITextField *urlField;
+@property (nonatomic, strong) UIView *fieldLeftView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
-@property (nonatomic, strong) UIBarButtonItem *backItem;
-@property (nonatomic, strong) UIBarButtonItem *forwardItem;
-@property (nonatomic, strong) UIBarButtonItem *reloadItem;
-@property (nonatomic, strong) UIBarButtonItem *stopItem;
-@property (nonatomic, strong) UIBarButtonItem *homeItem;
-@property (nonatomic, strong) UIBarButtonItem *settingsItem;
-@property (nonatomic, strong) UIBarButtonItem *bookmarksItem;
-@property (nonatomic, strong) UIBarButtonItem *tabsItem;
-@property (nonatomic, strong) NSMutableArray *tabs;        // dictionaries: url, title, snapshot
+@property (nonatomic, strong) UIButton *reloadButton;          // inside the address field
+@property (nonatomic, strong) UIButton *backButton;
+@property (nonatomic, strong) UIButton *forwardButton;
+@property (nonatomic, strong) UIButton *bookmarksButton;
+@property (nonatomic, strong) UIButton *tabsButton;
+@property (nonatomic, strong) UIButton *settingsButton;
+@property (nonatomic, strong) NSMutableArray *tabs;            // dictionaries: url, title, snapshot
 @property (nonatomic) NSUInteger currentTab;
 @property (nonatomic, copy) NSString *currentTitle;
-@property (nonatomic, strong) NSURL *currentURL;           // last main frame URL that was navigated to
-@property (nonatomic, strong) NSURL *httpFallbackURL;      // http:// variant of a typed host, tried when https fails
+@property (nonatomic, strong) NSURL *currentURL;               // last main frame URL that was navigated to
+@property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https fails
 @property (nonatomic) BOOL editingAddress;
+@property (nonatomic) BOOL loading;
 @property (nonatomic) NSInteger loadCount;
 @end
 
 @implementation BRBrowserViewController
 
+#pragma mark - Building the UI
+
+- (UIButton *)textButtonWithTitle:(NSString *)title action:(SEL)action
+{
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    [b setTitle:title forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    b.titleLabel.shadowOffset = CGSizeMake(0, 1);
+    b.contentEdgeInsets = UIEdgeInsetsMake(0, 10, 0, 10);
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+- (UIButton *)iconButtonWithAction:(SEL)action
+{
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.frame = CGRectMake(0, 0, 40, BRControlHeight);
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor whiteColor];
+    BRTheme *theme = [BRTheme shared];
+    self.view.backgroundColor = [theme pageBackgroundColor];
 
     self.webView = [[UIWebView alloc] initWithFrame:self.view.bounds];
     self.webView.delegate = self;
     self.webView.scalesPageToFit = YES;
     self.webView.dataDetectorTypes = UIDataDetectorTypeNone;
-    self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.webView];
 
-    self.urlField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 600, 31)];
-    self.urlField.borderStyle = UITextBorderStyleRoundedRect;
+    // top bar
+    self.topBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, BRBarHeight)];
+    self.topBarBackground = [[UIImageView alloc] initWithFrame:self.topBar.bounds];
+    self.topBarBackground.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.topBar addSubview:self.topBarBackground];
+    [self.view addSubview:self.topBar];
+
+    self.urlField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 300, BRControlHeight)];
+    self.urlField.borderStyle = UITextBorderStyleNone;
     self.urlField.font = [UIFont systemFontOfSize:15];
     self.urlField.placeholder = L(@"Search or enter address");
     self.urlField.keyboardType = UIKeyboardTypeURL;
@@ -59,56 +90,160 @@ static const CGFloat BRBarHeight = 44;
     self.urlField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.urlField.clearButtonMode = UITextFieldViewModeWhileEditing;
     self.urlField.enablesReturnKeyAutomatically = YES;
-    self.urlField.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    self.urlField.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
     self.urlField.delegate = self;
-
+    self.fieldLeftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 8, BRControlHeight)];
+    self.urlField.leftView = self.fieldLeftView;
+    self.urlField.leftViewMode = UITextFieldViewModeAlways;
+    self.reloadButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.reloadButton.frame = CGRectMake(0, 0, 32, BRControlHeight);
+    [self.reloadButton addTarget:self action:@selector(reloadOrStop) forControlEvents:UIControlEventTouchUpInside];
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
     self.spinner.hidesWhenStopped = YES;
-    self.urlField.rightView = self.spinner;
+    UIView *rightContainer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 56, BRControlHeight)];
+    self.spinner.center = CGPointMake(12, BRControlHeight / 2);
+    self.reloadButton.frame = CGRectMake(24, 0, 32, BRControlHeight);
+    [rightContainer addSubview:self.spinner];
+    [rightContainer addSubview:self.reloadButton];
+    self.urlField.rightView = rightContainer;
     self.urlField.rightViewMode = UITextFieldViewModeUnlessEditing;
+    [self.topBar addSubview:self.urlField];
 
-    self.backItem = [[UIBarButtonItem alloc] initWithTitle:@"◀" style:UIBarButtonItemStylePlain target:self action:@selector(goBack)];
-    self.forwardItem = [[UIBarButtonItem alloc] initWithTitle:@"▶" style:UIBarButtonItemStylePlain target:self action:@selector(goForward)];
-    self.reloadItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(reload)];
-    self.stopItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemStop target:self action:@selector(stop)];
-    self.homeItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Home") style:UIBarButtonItemStylePlain target:self action:@selector(goHome)];
-    self.settingsItem = [[UIBarButtonItem alloc] initWithTitle:@"⚙" style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
-    self.bookmarksItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemBookmarks target:self action:@selector(showLibrary)];
-    self.tabsItem = [[UIBarButtonItem alloc] initWithTitle:@"1" style:UIBarButtonItemStyleBordered target:self action:@selector(showTabs)];
-    [self loadTabs];
+    self.backButton = [self iconButtonWithAction:@selector(goBack)];
+    self.forwardButton = [self iconButtonWithAction:@selector(goForward)];
+    self.bookmarksButton = [self textButtonWithTitle:L(@"Bookmarks") action:@selector(showLibrary)];
+    self.tabsButton = [self textButtonWithTitle:L(@"Tabs") action:@selector(showTabs)];
+    self.settingsButton = [self textButtonWithTitle:L(@"Settings") action:@selector(showSettings)];
 
-    UIColor *barTint = [UIColor colorWithRed:0.56 green:0.59 blue:0.64 alpha:1];
-    self.navBar = [[UINavigationBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, BRBarHeight)];
-    self.navBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    self.navBar.tintColor = barTint;
-    self.navItem = [[UINavigationItem alloc] initWithTitle:@""];
-    self.navItem.titleView = self.urlField;
     if (BRIsPad()) {
-        self.navItem.leftBarButtonItems = @[self.backItem, self.forwardItem, self.homeItem];
-        self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, self.tabsItem, self.reloadItem];
+        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.tabsButton, self.settingsButton]) [self.topBar addSubview:v];
     } else {
-        self.navItem.rightBarButtonItem = self.reloadItem;
-    }
-    [self.navBar pushNavigationItem:self.navItem animated:NO];
-    [self.view addSubview:self.navBar];
-
-    if (!BRIsPad()) {
-        self.toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, self.view.bounds.size.height - BRBarHeight, self.view.bounds.size.width, BRBarHeight)];
-        self.toolbar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
-        self.toolbar.tintColor = barTint;
-        UIBarButtonItem *flex1 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        UIBarButtonItem *flex2 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        UIBarButtonItem *flex3 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        UIBarButtonItem *flex4 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        UIBarButtonItem *flex5 = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        self.toolbar.items = @[self.backItem, flex1, self.forwardItem, flex2, self.bookmarksItem, flex3, self.tabsItem, flex4, self.homeItem, flex5, self.settingsItem];
-        [self.view addSubview:self.toolbar];
+        self.bottomBar = [[UIView alloc] initWithFrame:CGRectMake(0, self.view.bounds.size.height - BRBarHeight, self.view.bounds.size.width, BRBarHeight)];
+        self.bottomBarBackground = [[UIImageView alloc] initWithFrame:self.bottomBar.bounds];
+        self.bottomBarBackground.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.bottomBar addSubview:self.bottomBarBackground];
+        for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.tabsButton, self.settingsButton]) [self.bottomBar addSubview:v];
+        [self.view addSubview:self.bottomBar];
     }
 
+    [self loadTabs];
+    [self applyTheme];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeChanged:) name:BRThemeDidChangeNotification object:nil];
     [self updateNavigationState];
+
     NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
     if (restored && [[restored.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:restored];
     else [self goHome];
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)themeChanged:(NSNotification *)note
+{
+    [self applyTheme];
+    [self.view setNeedsLayout];
+}
+
+- (void)applyTheme
+{
+    BRTheme *theme = [BRTheme shared];
+    self.view.backgroundColor = [theme pageBackgroundColor];
+    self.topBarBackground.image = [theme barBackgroundImage];
+    self.bottomBarBackground.image = [theme barBackgroundImage];
+    self.urlField.background = [theme fieldBackgroundImage];
+    self.urlField.textColor = [theme fieldTextColor];
+    self.urlField.keyboardAppearance = theme.isDark ? UIKeyboardAppearanceAlert : UIKeyboardAppearanceDefault;
+    self.spinner.activityIndicatorViewStyle = theme.isDark ? UIActivityIndicatorViewStyleWhite : UIActivityIndicatorViewStyleGray;
+    for (UIButton *b in @[self.bookmarksButton, self.tabsButton, self.settingsButton]) {
+        [b setBackgroundImage:[theme buttonImageHighlighted:NO] forState:UIControlStateNormal];
+        [b setBackgroundImage:[theme buttonImageHighlighted:YES] forState:UIControlStateHighlighted];
+        [b setTitleColor:[theme barTextColor] forState:UIControlStateNormal];
+        [b setTitleShadowColor:[theme barTextShadowColor] forState:UIControlStateNormal];
+    }
+    [self updateNavigationState];
+    [self updateLoadingControls];
+    [[UIApplication sharedApplication] setStatusBarStyle:[theme statusBarStyle] animated:NO];
+}
+
+- (CGFloat)widthForTextButton:(UIButton *)button
+{
+    NSString *title = [button titleForState:UIControlStateNormal] ?: @"";
+    CGSize size = [title sizeWithFont:button.titleLabel.font];
+    return ceil(size.width) + button.contentEdgeInsets.left + button.contentEdgeInsets.right;
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    CGRect b = self.view.bounds;
+    CGFloat width = b.size.width;
+    CGFloat y = (BRBarHeight - BRControlHeight) / 2;
+    CGFloat gap = 6, margin = 8;
+    self.topBar.frame = CGRectMake(0, 0, width, BRBarHeight);
+    CGFloat bottom = self.bottomBar ? BRBarHeight : 0;
+    if (self.bottomBar) self.bottomBar.frame = CGRectMake(0, b.size.height - bottom, width, bottom);
+    self.webView.frame = CGRectMake(0, BRBarHeight, width, b.size.height - BRBarHeight - bottom);
+
+    // text buttons: on narrow screens use a smaller font so that everything fits
+    CGFloat available = width - 2 * margin - 2 * 40 - 4 * gap;
+    NSArray *textButtons = @[self.bookmarksButton, self.tabsButton, self.settingsButton];
+    if (BRIsPad()) available = width * 0.5;
+    CGFloat fontSize = 13;
+    for (;;) {
+        CGFloat total = 0;
+        for (UIButton *tb in textButtons) {
+            tb.titleLabel.font = [UIFont boldSystemFontOfSize:fontSize];
+            tb.contentEdgeInsets = UIEdgeInsetsMake(0, fontSize < 13 ? 7 : 10, 0, fontSize < 13 ? 7 : 10);
+            total += [self widthForTextButton:tb];
+        }
+        if (total <= available || fontSize <= 11) break;
+        fontSize -= 1;
+    }
+
+    if (BRIsPad()) {
+        self.backButton.frame = CGRectMake(margin, y, 40, BRControlHeight);
+        self.forwardButton.frame = CGRectMake(CGRectGetMaxX(self.backButton.frame) + gap, y, 40, BRControlHeight);
+        CGFloat x = width - margin;
+        for (UIButton *tb in @[self.settingsButton, self.tabsButton, self.bookmarksButton]) {
+            CGFloat w = [self widthForTextButton:tb];
+            x -= w;
+            tb.frame = CGRectMake(x, y, w, BRControlHeight);
+            x -= gap;
+        }
+        CGFloat fieldX = CGRectGetMaxX(self.forwardButton.frame) + gap + 2;
+        self.urlField.frame = CGRectMake(fieldX, y, x - fieldX, BRControlHeight);
+    } else {
+        self.urlField.frame = CGRectMake(margin, y, width - 2 * margin, BRControlHeight);
+        self.backButton.frame = CGRectMake(margin, y, 40, BRControlHeight);
+        self.forwardButton.frame = CGRectMake(CGRectGetMaxX(self.backButton.frame) + gap, y, 40, BRControlHeight);
+        CGFloat x = width - margin;
+        for (UIButton *tb in @[self.settingsButton, self.tabsButton, self.bookmarksButton]) {
+            CGFloat w = [self widthForTextButton:tb];
+            x -= w;
+            tb.frame = CGRectMake(x, y, w, BRControlHeight);
+            x -= gap;
+        }
+    }
+}
+
+#pragma mark - Rotation
+
+- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation
+{
+    return BRIsPad() || orientation != UIInterfaceOrientationPortraitUpsideDown;
+}
+
+- (BOOL)shouldAutorotate
+{
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return BRIsPad() ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskAllButUpsideDown;
 }
 
 #pragma mark - Tabs
@@ -141,7 +276,8 @@ static const CGFloat BRBarHeight = 44;
 
 - (void)updateTabsButton
 {
-    self.tabsItem.title = [NSString stringWithFormat:@"%lu", (unsigned long)self.tabs.count];
+    [self.tabsButton setTitle:[NSString stringWithFormat:@"%@ %lu", L(@"Tabs"), (unsigned long)self.tabs.count] forState:UIControlStateNormal];
+    [self.view setNeedsLayout];
 }
 
 - (UIImage *)snapshotOfWebView
@@ -185,6 +321,14 @@ static const CGFloat BRBarHeight = 44;
     else [self goHome];
 }
 
+- (void)presentModal:(UIViewController *)controller
+{
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:controller];
+    [[BRTheme shared] applyToNavigationBar:nav.navigationBar];
+    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
 - (void)showTabs
 {
     [self storeCurrentTabState];
@@ -192,9 +336,7 @@ static const CGFloat BRBarHeight = 44;
     tabsController.delegate = self;
     tabsController.tabs = self.tabs;
     tabsController.currentIndex = self.currentTab;
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:tabsController];
-    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
-    [self presentViewController:nav animated:YES completion:nil];
+    [self presentModal:tabsController];
 }
 
 - (void)tabsViewController:(BRTabsViewController *)controller didSelectTabAtIndex:(NSUInteger)index
@@ -229,33 +371,6 @@ static const CGFloat BRBarHeight = 44;
     [self openTabAtIndex:self.tabs.count - 1];
 }
 
-- (void)viewDidLayoutSubviews
-{
-    [super viewDidLayoutSubviews];
-    CGRect b = self.view.bounds;
-    CGFloat bottom = self.toolbar ? BRBarHeight : 0;
-    self.navBar.frame = CGRectMake(0, 0, b.size.width, BRBarHeight);
-    if (self.toolbar) self.toolbar.frame = CGRectMake(0, b.size.height - bottom, b.size.width, bottom);
-    self.webView.frame = CGRectMake(0, BRBarHeight, b.size.width, b.size.height - BRBarHeight - bottom);
-}
-
-#pragma mark - Rotation
-
-- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation
-{
-    return BRIsPad() || orientation != UIInterfaceOrientationPortraitUpsideDown;
-}
-
-- (BOOL)shouldAutorotate
-{
-    return YES;
-}
-
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations
-{
-    return BRIsPad() ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskAllButUpsideDown;
-}
-
 #pragma mark - Actions
 
 - (void)goBack
@@ -266,6 +381,12 @@ static const CGFloat BRBarHeight = 44;
 - (void)goForward
 {
     [self.webView goForward];
+}
+
+- (void)reloadOrStop
+{
+    if (self.loading) [self stop];
+    else [self reload];
 }
 
 - (void)reload
@@ -318,24 +439,9 @@ static const CGFloat BRBarHeight = 44;
     [self loadURL:url];
 }
 
-#pragma mark - State
-
-- (void)setLoading:(BOOL)loading
-{
-    [UIApplication sharedApplication].networkActivityIndicatorVisible = loading;
-    if (loading) [self.spinner startAnimating];
-    else [self.spinner stopAnimating];
-    UIBarButtonItem *item = loading ? self.stopItem : self.reloadItem;
-    if (BRIsPad()) self.navItem.rightBarButtonItems = @[self.settingsItem, self.bookmarksItem, self.tabsItem, item];
-    else self.navItem.rightBarButtonItem = item;
-}
-
 - (void)showSettings
 {
-    BRSettingsViewController *settings = [[BRSettingsViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
-    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
-    [self presentViewController:nav animated:YES completion:nil];
+    [self presentModal:[[BRSettingsViewController alloc] init]];
 }
 
 - (void)showLibrary
@@ -347,9 +453,7 @@ static const CGFloat BRBarHeight = 44;
         library.currentURL = url;
         library.currentTitle = self.currentTitle;
     }
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:library];
-    nav.modalPresentationStyle = BRIsPad() ? UIModalPresentationFormSheet : UIModalPresentationFullScreen;
-    [self presentViewController:nav animated:YES completion:nil];
+    [self presentModal:library];
 }
 
 - (void)libraryViewController:(BRLibraryViewController *)controller didSelectURL:(NSURL *)url
@@ -357,10 +461,31 @@ static const CGFloat BRBarHeight = 44;
     [self loadURL:url];
 }
 
+#pragma mark - State
+
+- (void)setLoading:(BOOL)loading
+{
+    _loading = loading;
+    [UIApplication sharedApplication].networkActivityIndicatorVisible = loading;
+    [self updateLoadingControls];
+}
+
+- (void)updateLoadingControls
+{
+    BRTheme *theme = [BRTheme shared];
+    if (self.loading) [self.spinner startAnimating];
+    else [self.spinner stopAnimating];
+    [self.reloadButton setImage:self.loading ? [theme stopImage] : [theme reloadImage] forState:UIControlStateNormal];
+}
+
 - (void)updateNavigationState
 {
-    self.backItem.enabled = self.webView.canGoBack;
-    self.forwardItem.enabled = self.webView.canGoForward;
+    BRTheme *theme = [BRTheme shared];
+    BOOL canBack = self.webView.canGoBack, canForward = self.webView.canGoForward;
+    self.backButton.enabled = canBack;
+    self.forwardButton.enabled = canForward;
+    [self.backButton setImage:[theme arrowImagePointingLeft:YES enabled:canBack] forState:UIControlStateNormal];
+    [self.forwardButton setImage:[theme arrowImagePointingLeft:NO enabled:canForward] forState:UIControlStateNormal];
 }
 
 - (void)updateAddressFieldWithURL:(NSURL *)url
@@ -377,13 +502,14 @@ static const CGFloat BRBarHeight = 44;
 {
     NSString *urlString = url.absoluteString ?: @"";
     NSString *message = error.localizedDescription ?: @"";
+    BOOL dark = [BRTheme shared].isDark;
     NSMutableString *html = [NSMutableString string];
     [html appendString:@"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"];
     [html appendFormat:@"<title>%@</title>", BRHTMLEscape(L(@"Page could not be loaded"))];
-    [html appendString:@"<style>body{font-family:Helvetica,Arial,sans-serif;background:#f2f2f5;color:#333;margin:0;padding:24px}"
-                        "h1{font-size:22px;margin:0 0 12px}p{font-size:15px;line-height:1.4}.url{word-break:break-all;color:#777;font-size:13px}"
+    [html appendFormat:@"<style>body{font-family:Helvetica,Arial,sans-serif;background:%@;color:%@;margin:0;padding:24px}"
+                        "h1{font-size:22px;margin:0 0 12px}p{font-size:15px;line-height:1.4}.url{word-break:break-all;color:#888;font-size:13px}"
                         "a.btn{display:inline-block;margin:8px 8px 0 0;padding:10px 16px;background:#4a90e2;color:#fff;text-decoration:none;border-radius:6px;font-size:15px}"
-                        "</style></head><body>"];
+                        "</style></head><body>", dark ? @"#1c1c1e" : @"#f2f2f5", dark ? @"#eee" : @"#333"];
     [html appendFormat:@"<h1>%@</h1>", BRHTMLEscape(L(@"Page could not be loaded"))];
     [html appendFormat:@"<p>%@</p>", BRHTMLEscape(message)];
     [html appendFormat:@"<p class=\"url\">%@</p>", BRHTMLEscape(urlString)];

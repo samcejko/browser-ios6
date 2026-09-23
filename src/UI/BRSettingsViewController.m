@@ -1,25 +1,32 @@
 #import "BRSettingsViewController.h"
 #import "BRSettings.h"
+#import "BRTheme.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRJSEngine.h"
 #import "BRCommon.h"
 
 typedef NS_ENUM(NSInteger, BRSettingsSection) {
-    BRSettingsSectionFeatures = 0,
+    BRSettingsSectionAppearance = 0,
+    BRSettingsSectionFeatures,
     BRSettingsSectionData,
     BRSettingsSectionInfo,
     BRSettingsSectionCount
 };
 
 typedef NS_ENUM(NSInteger, BRFeatureRow) {
-    BRFeatureRowAdBlock = 0,
+    BRFeatureRowUserAgent = 0,
+    BRFeatureRowAdBlock,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
-    BRFeatureRowDesktop,
     BRFeatureRowVerifyTLS,
     BRFeatureRowCount
 };
+
+static const NSInteger BRTagDarkTheme = 100;
+
+@interface BRSettingsViewController () <UIActionSheetDelegate>
+@end
 
 @implementation BRSettingsViewController
 
@@ -36,6 +43,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
 {
     [super viewDidLoad];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
+    [[BRTheme shared] applyToTableView:self.tableView];
 }
 
 - (void)done
@@ -53,6 +61,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
+        case BRSettingsSectionAppearance: return 1;
         case BRSettingsSectionFeatures: return BRFeatureRowCount;
         case BRSettingsSectionData: return 2;
         case BRSettingsSectionInfo: return 4;
@@ -63,7 +72,8 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch (section) {
-        case BRSettingsSectionFeatures: return L(@"Compatibility");
+        case BRSettingsSectionAppearance: return L(@"Appearance");
+        case BRSettingsSectionFeatures: return L(@"Pages");
         case BRSettingsSectionData: return L(@"Data");
         case BRSettingsSectionInfo: return L(@"About");
     }
@@ -73,7 +83,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == BRSettingsSectionFeatures) {
-        return L(@"CSS and JavaScript rewriting makes modern pages work on the iOS 6 engine. Turn them off if a page behaves strangely.");
+        return L(@"The page version tells servers which browser to serve. iPad with iOS 6 gets pages this engine understands best; the modern identity gets current pages that may not work.");
     }
     return nil;
 }
@@ -93,12 +103,23 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:cellId];
     cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
     cell.detailTextLabel.text = nil;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    cell.textLabel.textColor = [UIColor blackColor];
+    [[BRTheme shared] styleCell:cell];
+    if (![BRTheme shared].isDark) cell.textLabel.textColor = [UIColor blackColor];
 
-    if (indexPath.section == BRSettingsSectionFeatures) {
+    if (indexPath.section == BRSettingsSectionAppearance) {
+        cell.textLabel.text = L(@"Dark theme");
+        cell.accessoryView = [self switchWithValue:[BRSettings darkTheme] tag:BRTagDarkTheme];
+    } else if (indexPath.section == BRSettingsSectionFeatures) {
         switch (indexPath.row) {
+            case BRFeatureRowUserAgent:
+                cell.textLabel.text = L(@"Page version");
+                cell.detailTextLabel.text = [BRSettings userAgentModeTitle:[BRSettings userAgentMode]];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                break;
             case BRFeatureRowAdBlock:
                 cell.textLabel.text = L(@"Block ads and trackers");
                 cell.accessoryView = [self switchWithValue:[BRSettings adBlockEnabled] tag:BRFeatureRowAdBlock];
@@ -111,10 +132,6 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
                 cell.textLabel.text = L(@"JavaScript polyfills");
                 cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:BRFeatureRowJSFix];
                 break;
-            case BRFeatureRowDesktop:
-                cell.textLabel.text = L(@"Request desktop pages");
-                cell.accessoryView = [self switchWithValue:[BRSettings desktopMode] tag:BRFeatureRowDesktop];
-                break;
             case BRFeatureRowVerifyTLS:
                 cell.textLabel.text = L(@"Verify certificates");
                 cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:BRFeatureRowVerifyTLS];
@@ -122,7 +139,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
         }
     } else if (indexPath.section == BRSettingsSectionData) {
         cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-        cell.textLabel.textColor = [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
+        cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
         cell.textLabel.text = indexPath.row == 0 ? L(@"Clear cache") : L(@"Clear cookies");
     } else {
         switch (indexPath.row) {
@@ -150,13 +167,18 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
 - (void)switchChanged:(UISwitch *)sw
 {
     switch (sw.tag) {
+        case BRTagDarkTheme:
+            [[BRTheme shared] setDark:sw.on];
+            [[BRTheme shared] applyToNavigationBar:self.navigationController.navigationBar];
+            [[BRTheme shared] applyToTableView:self.tableView];
+            [self.tableView reloadData];
+            return;
         case BRFeatureRowAdBlock: [BRSettings setAdBlockEnabled:sw.on]; break;
         case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; break;
         case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; break;
-        case BRFeatureRowDesktop: [BRSettings setDesktopMode:sw.on]; break;
         case BRFeatureRowVerifyTLS: [BRSettings setVerifyTLS:sw.on]; break;
     }
-    if (sw.tag == BRFeatureRowCSSFix || sw.tag == BRFeatureRowJSFix || sw.tag == BRFeatureRowDesktop) {
+    if (sw.tag == BRFeatureRowCSSFix || sw.tag == BRFeatureRowJSFix) {
         // cached bodies were rewritten with the old settings
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
     }
@@ -165,13 +187,21 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == BRSettingsSectionFeatures && indexPath.row == BRFeatureRowUserAgent) {
+        UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:L(@"Page version") delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+        for (NSInteger m = 0; m <= 2; m++) [sheet addButtonWithTitle:[BRSettings userAgentModeTitle:m]];
+        sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+        CGRect rect = [tableView rectForRowAtIndexPath:indexPath];
+        if (BRIsPad()) [sheet showFromRect:rect inView:tableView animated:YES];
+        else [sheet showInView:self.view];
+        return;
+    }
     if (indexPath.section != BRSettingsSectionData) return;
     if (indexPath.row == 0) {
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
         NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
         NSString *transpiled = [caches stringByAppendingPathComponent:@"transpiled"];
         [[NSFileManager defaultManager] removeItemAtPath:transpiled error:NULL];
-        [[NSFileManager defaultManager] createDirectoryAtPath:transpiled withIntermediateDirectories:YES attributes:nil error:NULL];
         [[BRJSEngine shared] resetContext];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cache cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     } else {
@@ -179,6 +209,14 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
         for (NSHTTPCookie *c in [jar.cookies copy]) [jar deleteCookie:c];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cookies cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     }
+    [self.tableView reloadData];
+}
+
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
+{
+    if (buttonIndex < 0 || buttonIndex > 2) return;
+    [BRSettings setUserAgentMode:buttonIndex];
+    [[NSURLCache sharedURLCache] removeAllCachedResponses];   // servers answer differently per identity
     [self.tableView reloadData];
 }
 

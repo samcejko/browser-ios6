@@ -173,19 +173,19 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     BOOL defaultPort = ([self isSecure] && port == 443) || (![self isSecure] && port == 80);
     [s appendFormat:@"Host: %@\r\n", defaultPort ? host : [NSString stringWithFormat:@"%@:%d", host, port]];
     NSMutableSet *given = [NSMutableSet set];
-    BOOL desktop = [BRSettings desktopMode];
+    NSString *uaOverride = [BRSettings userAgentOverride];
     for (NSString *key in self.headers) {
         NSString *lk = [key lowercaseString];
         if ([lk isEqualToString:@"host"] || [lk isEqualToString:@"content-length"] || [lk isEqualToString:@"connection"] ||
             [lk isEqualToString:@"accept-encoding"] || [lk isEqualToString:@"transfer-encoding"] || [lk isEqualToString:@"expect"] ||
             [lk isEqualToString:@"keep-alive"]) continue;
-        if (desktop && [lk isEqualToString:@"user-agent"]) continue;
+        if (uaOverride && [lk isEqualToString:@"user-agent"]) continue;
         NSString *value = [[self.headers[key] description] stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
         value = [value stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
         [given addObject:lk];
         [s appendFormat:@"%@: %@\r\n", key, value];
     }
-    if (desktop) [s appendFormat:@"User-Agent: %@\r\n", [BRSettings desktopUserAgent]];
+    if (uaOverride) [s appendFormat:@"User-Agent: %@\r\n", uaOverride];
     else if (![given containsObject:@"user-agent"]) [s appendFormat:@"User-Agent: %@\r\n", [BRHTTPRequest defaultUserAgent]];
     if (![given containsObject:@"accept"]) [s appendString:@"Accept: */*\r\n"];
     if (![given containsObject:@"accept-language"]) [s appendFormat:@"Accept-Language: %@\r\n", [BRHTTPRequest acceptLanguage]];

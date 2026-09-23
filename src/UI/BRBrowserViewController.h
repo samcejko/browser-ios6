@@ -5,5 +5,6 @@
 
 - (void)loadURL:(NSURL *)url;
 - (void)goHome;
+- (void)applyTheme;
 
 @end
