@@ -8,6 +8,7 @@
 #import "BRLibrary.h"
 #import "BRDownloader.h"
 #import "BRURLProtocol.h"
+#import "BRWatchdog.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -593,6 +594,7 @@ static const CGFloat BRControlHeight = 30;
 {
     _loading = loading;
     [UIApplication sharedApplication].networkActivityIndicatorVisible = loading;
+    [BRWatchdog setPageLoading:loading];
     [self updateLoadingControls];
 }
 

@@ -122,6 +122,15 @@
             if (openInNewTab(a.href)) e.preventDefault();
         }
     }, false);
+    // Load timing for the app's log: when the DOM was ready, when the page finished, and the longest stretch
+    // during which the engine was too busy to run a 1 s timer (JavaScript or layout work).
+    var brT0 = Date.now(), lastTick = brT0, maxGap = 0, maxGapAt = 0;
+    var tickTimer = setInterval(function () { var now = Date.now(), gap = now - lastTick - 1000; if (gap > maxGap) { maxGap = gap; maxGapAt = lastTick - brT0; } lastTick = now; }, 1000);
+    document.addEventListener('DOMContentLoaded', function () { sendToApp('brlog', 'timing: DOMContentLoaded after ' + (Date.now() - brT0) + ' ms, busy gap so far ' + maxGap + ' ms'); }, false);
+    window.addEventListener('load', function () {
+        sendToApp('brlog', 'timing: load after ' + (Date.now() - brT0) + ' ms, longest busy gap ' + maxGap + ' ms at ' + maxGapAt + ' ms, scripts ' + document.scripts.length + ', errors ' + reportedErrors + ', nodes ' + document.getElementsByTagName('*').length);
+        setTimeout(function () { clearInterval(tickTimer); }, 30000);
+    }, false);
     // Uncaught errors of the page reach the app's log (brlog: scheme) so that broken sites can be diagnosed over SSH
     var reportedErrors = 0;
     window.addEventListener('error', function (e) {
@@ -1211,6 +1220,77 @@
             el.addEventListener('load', function () { fire(el, 'beforescriptexecute'); fire(el, 'afterscriptexecute'); }, false);
         }
     });
+
+    // ---- Newer DOM conveniences: relList, translate, accessKey, minLength, reportValidity, resource hints
+    var makeTokenList = function (el, attr) {
+        var list = {
+            get length() { return this.__tokens().length; },
+            __tokens: function () { var v = el.getAttribute(attr) || ''; return v.split(/\s+/).filter(function (t) { return t; }); },
+            item: function (i) { return this.__tokens()[i] || null; },
+            contains: function (t) { return this.__tokens().indexOf(String(t)) >= 0; },
+            add: function () { var t = this.__tokens(); for (var i = 0; i < arguments.length; i++) if (t.indexOf(String(arguments[i])) < 0) t.push(String(arguments[i])); el.setAttribute(attr, t.join(' ')); },
+            remove: function () { var t = this.__tokens(); for (var i = 0; i < arguments.length; i++) { var k = t.indexOf(String(arguments[i])); if (k >= 0) t.splice(k, 1); } el.setAttribute(attr, t.join(' ')); },
+            toggle: function (token, force) { var has = this.contains(token); if (force === undefined ? has : !force) { if (has) this.remove(token); return false; } this.add(token); return true; },
+            replace: function (a, b) { if (!this.contains(a)) return false; this.remove(a); this.add(b); return true; },
+            supports: function (token) { return ['alternate', 'author', 'bookmark', 'help', 'icon', 'license', 'next', 'nofollow', 'noreferrer', 'prev', 'search', 'stylesheet', 'tag', 'prefetch', 'preconnect', 'preload', 'dns-prefetch', 'modulepreload'].indexOf(String(token).toLowerCase()) >= 0; },
+            toString: function () { return el.getAttribute(attr) || ''; },
+            forEach: function (fn, ctx) { var t = this.__tokens(); for (var i = 0; i < t.length; i++) fn.call(ctx, t[i], i, this); }
+        };
+        try { Object.defineProperty(list, 'value', { get: function () { return el.getAttribute(attr) || ''; }, set: function (v) { el.setAttribute(attr, v); } }); } catch (e) {}
+        return list;
+    };
+    var relOwners = [window.HTMLAnchorElement, window.HTMLLinkElement, window.HTMLAreaElement];
+    for (var ro = 0; ro < relOwners.length; ro++) {
+        if (!relOwners[ro] || !relOwners[ro].prototype || ('relList' in relOwners[ro].prototype)) continue;
+        try { Object.defineProperty(relOwners[ro].prototype, 'relList', { get: function () { return this.__brRelList || (this.__brRelList = makeTokenList(this, 'rel')); }, configurable: true }); } catch (e) {}
+    }
+    if (Ep && !('translate' in document.createElement('div'))) {
+        try { Object.defineProperty(HEp || Ep, 'translate', { get: function () { var v = (this.getAttribute('translate') || '').toLowerCase(); return v !== 'no'; }, set: function (v) { this.setAttribute('translate', v ? 'yes' : 'no'); }, configurable: true }); } catch (e) {}
+    }
+    if (HEp && !('accessKey' in document.createElement('div'))) defineAttrProp(HEp, 'accessKey', 'accesskey');
+    if (HEp && !('accessKeyLabel' in document.createElement('div'))) try { Object.defineProperty(HEp, 'accessKeyLabel', { get: function () { return this.getAttribute('accesskey') || ''; }, configurable: true }); } catch (e) {}
+    if (window.HTMLTextAreaElement && !('minLength' in document.createElement('textarea'))) {
+        try { Object.defineProperty(window.HTMLTextAreaElement.prototype, 'minLength', { get: function () { var v = parseInt(this.getAttribute('minlength'), 10); return isNaN(v) ? -1 : v; }, set: function (v) { this.setAttribute('minlength', v); }, configurable: true }); } catch (e) {}
+    }
+    if (window.HTMLInputElement && !('minLength' in document.createElement('input'))) {
+        try { Object.defineProperty(window.HTMLInputElement.prototype, 'minLength', { get: function () { var v = parseInt(this.getAttribute('minlength'), 10); return isNaN(v) ? -1 : v; }, set: function (v) { this.setAttribute('minlength', v); }, configurable: true }); } catch (e) {}
+    }
+    var validityOwners = [window.HTMLFormElement, window.HTMLInputElement, window.HTMLSelectElement, window.HTMLTextAreaElement, window.HTMLButtonElement];
+    for (var vo = 0; vo < validityOwners.length; vo++) {
+        var VP = validityOwners[vo] && validityOwners[vo].prototype;
+        if (!VP || VP.reportValidity || !VP.checkValidity) continue;
+        VP.reportValidity = function () {
+            var ok = this.checkValidity();
+            if (!ok) {
+                var bad = this.tagName === 'FORM' ? this.querySelector(':invalid') : this;
+                try { if (bad && bad.focus) bad.focus(); } catch (e) {}
+            }
+            return ok;
+        };
+    }
+    // sensors and hardware access: present, permission always denied
+    var sensorError = function (self) { setTimeout(function () { var ev = { type: 'error', error: domException('NotAllowedError', 'Sensor access is not available') }; if (self.onerror) self.onerror(ev); for (var i = 0; i < self.__l.length; i++) self.__l[i](ev); }, 0); };
+    var sensorNames = ['Sensor', 'Accelerometer', 'LinearAccelerationSensor', 'GravitySensor', 'Gyroscope', 'Magnetometer', 'AbsoluteOrientationSensor', 'RelativeOrientationSensor', 'AmbientLightSensor'];
+    for (var sn = 0; sn < sensorNames.length; sn++) (function (name) {
+        if (window[name]) return;
+        var S = function () { this.activated = false; this.hasReading = false; this.timestamp = null; this.onreading = this.onerror = this.onactivate = null; this.__l = []; };
+        S.prototype.start = function () { sensorError(this); };
+        S.prototype.stop = noop;
+        S.prototype.addEventListener = function (t, f) { if (t === 'error') this.__l.push(f); };
+        S.prototype.removeEventListener = noop;
+        try { Object.defineProperty(S, 'name', { value: name }); } catch (e) {}
+        window[name] = S;
+    })(sensorNames[sn]);
+    if (!navigator.bluetooth) navigator.bluetooth = { requestDevice: rejectWith('NotFoundError', 'Bluetooth is not available'), getAvailability: function () { return resolved(false); }, getDevices: function () { return resolved([]); }, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.usb) navigator.usb = { requestDevice: rejectWith('NotFoundError', 'USB is not available'), getDevices: function () { return resolved([]); }, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.serial) navigator.serial = { requestPort: rejectWith('NotFoundError', 'Serial is not available'), getPorts: function () { return resolved([]); }, addEventListener: noop, removeEventListener: noop };
+    if (!navigator.hid) navigator.hid = { requestDevice: function () { return resolved([]); }, getDevices: function () { return resolved([]); }, addEventListener: noop, removeEventListener: noop };
+    if (!window.NDEFReader) { window.NDEFReader = function NDEFReader() { this.onreading = null; this.onreadingerror = null; }; window.NDEFReader.prototype.scan = rejectWith('NotSupportedError', 'NFC is not available'); window.NDEFReader.prototype.write = rejectWith('NotSupportedError', 'NFC is not available'); window.NDEFReader.prototype.addEventListener = noop; window.NDEFReader.prototype.removeEventListener = noop; window.NDEFMessage = function NDEFMessage() {}; window.NDEFRecord = function NDEFRecord() {}; }
+    if (!navigator.gpu) navigator.gpu = { requestAdapter: function () { return resolved(null); }, getPreferredCanvasFormat: function () { return 'bgra8unorm'; }, wgslLanguageFeatures: [] };
+    if (!window.GPU) window.GPU = function GPU() {};
+    if (!window.XRSystem) { window.XRSystem = function XRSystem() {}; window.XRSession = function XRSession() {}; }
+    if (window.HTMLMediaElement && !window.HTMLMediaElement.prototype.requestPictureInPicture) { window.HTMLMediaElement.prototype.requestPictureInPicture = rejectWith('NotSupportedError', 'Picture in picture is not available'); if (!('pictureInPictureEnabled' in document)) try { Object.defineProperty(document, 'pictureInPictureEnabled', { get: function () { return false; }, configurable: true }); document.exitPictureInPicture = rejectWith('InvalidStateError', 'not in picture in picture'); } catch (e) {} }
+    if (window.MathMLElement === undefined) window.MathMLElement = function MathMLElement() {};
 
     // ---- Language runtime extras
     if (!window.globalThis) try { window.globalThis = window; } catch (e) {}
