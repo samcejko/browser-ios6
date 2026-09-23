@@ -18,13 +18,15 @@ static NSString *BRSHA1(NSString *s)
 static NSString * const BRTranspilerGlue =
 @"var BRTranspile = (function () {"
 @"  function needsTranspile(src) { try { new Function(src); return false; } catch (e) { return e instanceof SyntaxError; } }"
-@"  function transpile(src, name) {"
-@"    var out = Babel.transform(src, { presets: [['env', { targets: { ie: '11' }, modules: false, loose: true, exclude: ['transform-typeof-symbol'] }]],"
-@"      sourceType: 'unambiguous', compact: true, comments: false, filename: name || 'script.js', babelrc: false, configFile: false });"
-@"    return out.code;"
+@"  function transpile(src, name, moduleId) {"
+@"    var opts = { presets: [['env', { targets: { ie: '11' }, modules: 'systemjs', loose: true, exclude: ['transform-typeof-symbol'] }]],"
+@"      sourceType: moduleId ? 'module' : 'unambiguous', compact: true, comments: false, filename: name || 'script.js', babelrc: false, configFile: false };"
+@"    if (moduleId) { opts.moduleIds = true; opts.moduleId = moduleId; }"
+@"    return Babel.transform(src, opts).code;"
 @"  }"
 @"  return { needsTranspile: needsTranspile, transpile: transpile,"
-@"    run: function (src, name) { if (!needsTranspile(src)) return ''; return transpile(src, name); } };"
+@"    run: function (src, name) { if (!needsTranspile(src)) return ''; return transpile(src, name); },"
+@"    transpileModule: function (src, moduleId) { return transpile(src, moduleId, moduleId); } };"
 @"})();";
 
 @implementation BRJSTranspiler {

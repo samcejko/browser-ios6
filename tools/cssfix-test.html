@@ -53,8 +53,20 @@ var cases = [
   ['url untouched', '.a{background:url("data:image/svg+xml,%3Csvg xmlns=(x)%3E") no-repeat}', '.a{background:url("data:image/svg+xml,%3Csvg xmlns=(x)%3E") no-repeat}'],
   ['font-face', '@font-face{font-family:X;src:url(a.woff2) format("woff2"),url(a.woff) format("woff")}', '@font-face{font-family:X;src:url(a.woff2) format("woff2"),url(a.woff) format("woff")}'],
   ['import layer', '@import url(a.css) layer(base) supports(display:grid);', '@import url(a.css);'],
-  ['html style block', '<html><style>:root{--m:2px}</style><div style="margin:var(--m);display:flex">x</div></html>', '<html><style>.__{}</style><div style="margin:2px;display:-webkit-box">x</div></html>']
+  ['html style block', '<html><style>:root{--m:2px}</style><div style="margin:var(--m);display:flex">x</div></html>', '<html><style>.__{}</style><div style="margin:2px;display:-webkit-box">x</div></html>'],
+  ['html polyfill injection head', '<!DOCTYPE html><html><head><meta charset="utf-8"><script>var a=1<\/script></head><body></body></html>', '<!DOCTYPE html><html><head><script src="https://x.invalid/p.js"><\/script><meta charset="utf-8"><script>var a=1<\/script></head><body></body></html>'],
+  ['html polyfill injection no head', '<html><body><p>x</p></body></html>', '<html><script src="https://x.invalid/p.js"><\/script><body><p>x</p></body></html>'],
+  ['html fragment untouched', '<div class="a">fragment</div>', '<div class="a">fragment</div>'],
+  ['html json script untouched', '<html><head></head><body><script type="application/ld+json">{"a":1}<\/script><script type="text/template"><b>x</b><\/script></body></html>', '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script type="application/ld+json">{"a":1}<\/script><script type="text/template"><b>x</b><\/script></body></html>']
 ];
+// pretend transpiler: uppercases scripts that contain "modern"; modules become a System.register stub
+window.BRTranspile = {
+  run: function (src) { return src.indexOf('modern') >= 0 ? src.toUpperCase() : ''; },
+  transpileModule: function (src, id) { return 'System.register("' + id + '",[],function(){return{execute:function(){' + src + '}}});'; }
+};
+cases.push(['html inline script transpiled', '<html><head></head><body><script>var modern = 1<\/script><script>var old = 1<\/script></body></html>', '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script>VAR MODERN = 1<\/script><script>var old = 1<\/script></body></html>']);
+cases.push(['html modules', '<html><head><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>',
+  '<html><head><script src="https://x.invalid/p.js"><\/script><script type="systemjs-importmap">{"imports":{}}<\/script></head><body><script>System.import("/app.js").catch(function(e){console.error(e)});<\/script><script>System.register("https://example.com/dir/__inline_module_1.js",[],function(){return{execute:function(){import a from "./a.js"}}});\nSystem.import("https://example.com/dir/__inline_module_1.js").catch(function(e){console.error(e)});<\/script></body></html>']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
 for (var i = 0; i < cases.length; i++) {
@@ -63,6 +75,8 @@ for (var i = 0; i < cases.length; i++) {
     if (c[0] === 'html style block') {
       var r = JSON.parse(CSSFix.run('html', c[1], null)).out;
       got = r.replace(/<style>[^<]*<\/style>/, '<style>.__{}</style>');
+    } else if (c[0].indexOf('html ') === 0) {
+      got = JSON.parse(CSSFix.run('html', c[1], null, '{"polyfillURL":"https://x.invalid/p.js","transpile":true,"pageURL":"https://example.com/dir/page.html?x=1"}')).out;
     } else {
       got = JSON.parse(CSSFix.run('css', c[1], null)).out;
     }

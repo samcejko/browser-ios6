@@ -1184,12 +1184,12 @@ var CSSFix = (function () {
                type === 'application/ecmascript' || type === 'text/jscript' || type === 'application/x-javascript' || type === 'module';
     }
 
-    function transpileInline(code, isModule) {
+    function transpileInline(code, moduleId) {
         if (typeof BRTranspile === 'undefined' || !code || !/[^\s]/.test(code)) return null;
-        var key = hashString(code);
+        var key = hashString(code) + (moduleId ? '|' + moduleId : '');
         if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
         var out = null;
-        try { out = BRTranspile.run(code, isModule ? 'inline-module.js' : 'inline.js'); } catch (e) { out = null; }
+        try { out = moduleId ? BRTranspile.transpileModule(code, moduleId) : BRTranspile.run(code, 'inline.js'); } catch (e) { out = null; }
         if (out === '') out = null;   // already ES5
         if (scriptCacheSize > 2000000) { scriptCache = {}; scriptCacheSize = 0; }
         scriptCache[key] = out;
@@ -1197,20 +1197,54 @@ var CSSFix = (function () {
         return out;
     }
 
+    function attrValue(attrs, name) {
+        var m = new RegExp('\\b' + name + '\\s*=\\s*("([^"]*)"|\'([^\']*)\'|([^\\s>]+))', 'i').exec(attrs);
+        if (!m) return null;
+        return m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+    }
+
+    function jsString(s) {
+        return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/<\//g, '<\\/').replace(/\n/g, '\\n') + '"';
+    }
+
     function fixScripts(html, opts) {
         var re = /(<script\b([^>]*)>)([\s\S]*?)(<\/script\s*>)/gi;
-        return html.replace(re, function (all, open, attrs, body, close) {
-            var typeM = /\btype\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
-            var type = typeM ? (typeM[2] !== undefined ? typeM[2] : typeM[3] !== undefined ? typeM[3] : typeM[4]) : '';
+        var pageBase = '';
+        if (opts && opts.pageURL) {
+            pageBase = String(opts.pageURL).replace(/[#?].*$/, '');
+            pageBase = pageBase.slice(0, pageBase.lastIndexOf('/') + 1);
+        }
+        var inlineCount = 0, modulesConverted = false;
+        html = html.replace(re, function (all, open, attrs, body, close) {
+            var type = attrValue(attrs, 'type') || '';
+            var ltype = trim(type).toLowerCase();
+            if (ltype === 'importmap') return open.replace(/\btype\s*=\s*("importmap"|'importmap'|importmap)/i, 'type="systemjs-importmap"') + body + close;
             if (!isJavaScriptType(type)) return all;
-            var isModule = trim(type).toLowerCase() === 'module';
-            if (isModule) return all;                                    // modules: handled later (SystemJS)
-            if (/\bsrc\s*=/i.test(attrs)) return all;                    // external scripts are transpiled by the network layer
             if (!opts || !opts.transpile) return all;
-            var fixed = transpileInline(body, false);
+            var src = attrValue(attrs, 'src');
+            if (ltype === 'module') {
+                // ES modules are not run by the old engine at all: hand them to SystemJS
+                var cleanAttrs = attrs.replace(/\s*\btype\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '')
+                                      .replace(/\s*\b(src|crossorigin|integrity|defer|async|nomodule|referrerpolicy|fetchpriority)\b(\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/gi, '');
+                if (src) {
+                    modulesConverted = true;
+                    return '<script' + cleanAttrs + '>System.import(' + jsString(src) + ').catch(function(e){console.error(e)});' + close;
+                }
+                if (!/[^\s]/.test(body)) return '';
+                var moduleId = pageBase + '__inline_module_' + (++inlineCount) + '.js';
+                var fixedModule = transpileInline(body, moduleId);
+                if (fixedModule === null) return all;
+                modulesConverted = true;
+                return '<script' + cleanAttrs + '>' + fixedModule + '\nSystem.import(' + jsString(moduleId) + ').catch(function(e){console.error(e)});' + close;
+            }
+            if (src) return all;                                        // external scripts are transpiled by the network layer
+            var fixed = transpileInline(body, null);
             if (fixed === null) return all;
             return open + fixed + close;
         });
+        // nomodule fallbacks would run in addition to the converted modules
+        if (modulesConverted) html = html.replace(/<script\b[^>]*\bnomodule\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
+        return html;
     }
 
     function injectPolyfills(html, url) {

@@ -143,7 +143,7 @@ static NSString *BRPageKey(NSURL *url)
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
         NSBundle *b = [NSBundle mainBundle];
-        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"shims"]) {
+        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"systemjs", @"systemjs-named-register", @"intersection-observer", @"resize-observer", @"shims"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
@@ -190,7 +190,9 @@ static NSString *BRPageKey(NSURL *url)
             NSString *optionsJSON = @"{}";
             if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) {
                 BOOL transpile = [text rangeOfString:@"<script" options:NSCaseInsensitiveSearch].location != NSNotFound && [[BRJSTranspiler shared] prepare];
-                optionsJSON = [NSString stringWithFormat:@"{\"polyfillURL\":\"%@\",\"transpile\":%@}", BRPolyfillURL, transpile ? @"true" : @"false"];
+                NSDictionary *opts = @{ @"polyfillURL": BRPolyfillURL, @"transpile": @(transpile), @"pageURL": pageURL.absoluteString ?: @"" };
+                NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
+                if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }
             NSString *result = [[BRJSEngine shared] callFunction:@"CSSFix.run" arguments:@[kind, text, varsJSON, optionsJSON]];
             if (!result.length) { completion(data, charset); return; }
