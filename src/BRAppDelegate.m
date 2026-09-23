@@ -21,7 +21,7 @@
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
     // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
-    static const NSInteger BRCacheFormatVersion = 7;
+    static const NSInteger BRCacheFormatVersion = 8;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
         [cache removeAllCachedResponses];
@@ -76,6 +76,27 @@
         NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"];
         [result ?: @"" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
         BRLog(@"eval (%lu chars): %@", (unsigned long)result.length, result.length > 600 ? [result substringToIndex:600] : result);
+        return YES;
+    }
+    if ([target hasPrefix:@"evalfile?"]) {
+        // browser:evalfile?path=<file> checks that a script file parses and runs in the current page (testing polyfills on the real engine)
+        NSRange p = [target rangeOfString:@"path="];
+        NSString *path = p.location == NSNotFound ? @"" : [[target substringFromIndex:p.location + p.length] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+        NSString *source = path.length ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
+        NSString *result;
+        if (!source) {
+            result = [NSString stringWithFormat:@"cannot read %@", path];
+        } else {
+            NSData *json = [NSJSONSerialization dataWithJSONObject:@[source] options:0 error:NULL];
+            NSString *literal = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"[\"\"]";
+            literal = [literal substringWithRange:NSMakeRange(1, literal.length - 2)];
+            NSString *code = [NSString stringWithFormat:@"(function(src){var r='';try{new Function(src);r='parses';}catch(e){return 'PARSE ERROR: '+e.message;}"
+                                                         "try{(0,eval)(src);r+=', runs';}catch(e2){r+=', RUN ERROR: '+e2.message+' | '+(e2.stack||'').slice(0,400);}return r;})(%@)", literal];
+            result = [self.browserViewController evaluateJavaScript:code];
+        }
+        NSString *out = [NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"];
+        [result ?: @"" writeToFile:out atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"evalfile %@: %@", path.lastPathComponent, result);
         return YES;
     }
     if ([target isEqualToString:@"dump"]) {

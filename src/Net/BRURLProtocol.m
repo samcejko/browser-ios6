@@ -27,6 +27,57 @@ static const uint8_t BRBlankGIF[] = {
 };
 
 static NSString * const BRHandledKey = @"BRURLProtocolHandled";
+NSString * const BRPageProgressNotification = @"BRPageProgressNotification";
+
+#pragma mark - Page progress and main document facts
+
+static NSURL *g_lastMainURL;
+static NSString *g_lastMainTLS;
+static NSString *g_lastMainContentType;
+static NSString *g_progressPage;        // main document URL string of the page being counted
+static NSUInteger g_progressStarted, g_progressFinished;
+static CFAbsoluteTime g_progressPosted;
+
+static void BRPostProgress(BOOL force)
+{
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (!force && now - g_progressPosted < 0.15) return;
+    g_progressPosted = now;
+    NSDictionary *info = @{ @"page": g_progressPage ?: @"", @"started": @(g_progressStarted), @"finished": @(g_progressFinished) };
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:BRPageProgressNotification object:nil userInfo:info];
+    });
+}
+
+// Called for every request that reaches the network: counts requests per page for the progress bar.
+static void BRProgressRequestStarted(NSURLRequest *request)
+{
+    NSString *page = request.mainDocumentURL.absoluteString ?: request.URL.absoluteString;
+    BOOL isMain = !request.mainDocumentURL || [request.URL isEqual:request.mainDocumentURL];
+    @synchronized ([BRURLProtocol class]) {
+        if (isMain || ![page isEqualToString:g_progressPage]) {
+            if (!isMain && g_progressPage && ![page isEqualToString:g_progressPage]) return;   // a stray load of an old page
+            g_progressPage = page;
+            g_progressStarted = 0;
+            g_progressFinished = 0;
+        }
+        g_progressStarted++;
+    }
+    BRPostProgress(isMain);
+}
+
+static void BRProgressRequestFinished(NSURLRequest *request)
+{
+    NSString *page = request.mainDocumentURL.absoluteString ?: request.URL.absoluteString;
+    BOOL post = NO;
+    @synchronized ([BRURLProtocol class]) {
+        if ([page isEqualToString:g_progressPage] && g_progressFinished < g_progressStarted) {
+            g_progressFinished++;
+            post = YES;
+        }
+    }
+    if (post) BRPostProgress(g_progressFinished == g_progressStarted);
+}
 static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLResponse.userInfo
 static NSString * const BRCacheMaxAgeKey = @"BRMaxAge";
 static const NSUInteger BRMaxCacheableBody = 2 * 1024 * 1024;
@@ -135,6 +186,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, strong) NSArray *clientModes;
 @property (nonatomic, strong) BRHTTPRequest *httpRequest;
 @property (nonatomic) BOOL stopped;             // stopLoading was called
+@property (nonatomic) BOOL counted;             // counted as started in the page progress
 @property (nonatomic) BOOL done;                // finished, failed or redirected: nothing more goes to the client
 @property (nonatomic, strong) NSCachedURLResponse *staleCached;   // stale cache entry being revalidated
 @property (nonatomic, strong) NSMutableData *cacheBody;
@@ -154,6 +206,10 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 {
     [NSURLProtocol registerClass:self];
 }
+
++ (NSURL *)lastMainDocumentURL { @synchronized (self) { return g_lastMainURL; } }
++ (NSString *)lastMainDocumentTLSInfo { @synchronized (self) { return g_lastMainTLS; } }
++ (NSString *)lastMainDocumentContentType { @synchronized (self) { return g_lastMainContentType; } }
 
 + (BOOL)canInitWithRequest:(NSURLRequest *)request
 {
@@ -264,7 +320,16 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     r.onData = ^(NSData *chunk) { [weakSelf handleData:chunk]; };
     r.onComplete = ^(NSError *error) { [weakSelf handleComplete:error]; };
     self.httpRequest = r;
+    self.counted = YES;
+    BRProgressRequestStarted(request);
     [r start];
+}
+
+- (void)noteFinishedForProgress
+{
+    if (!self.counted) return;
+    self.counted = NO;
+    BRProgressRequestFinished(self.request);
 }
 
 - (void)stopLoading
@@ -272,6 +337,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     self.stopped = YES;
     [self.httpRequest cancel];
     self.httpRequest = nil;
+    [self noteFinishedForProgress];
 }
 
 #pragma mark - Worker thread callbacks
@@ -362,6 +428,11 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     if (!self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL]) {
         BRLog(@"%@ %@ -> %ld %@ [%@]", self.request.HTTPMethod ?: @"GET", url.absoluteString, (long)status,
               r.responseHeaders[@"content-type"] ?: @"", r.tlsInfo ?: @"");
+        @synchronized ([BRURLProtocol class]) {
+            g_lastMainURL = url;
+            g_lastMainTLS = [[url.scheme lowercaseString] isEqualToString:@"https"] ? [r.tlsInfo copy] : nil;
+            g_lastMainContentType = [r.responseHeaders[@"content-type"] copy];
+        }
     }
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:[self headerFieldsForWebKit]];
     self.response = response;
@@ -510,6 +581,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 
 - (void)handleComplete:(NSError *)error
 {
+    [self noteFinishedForProgress];
     if (self.stopped || self.done) return;
     self.done = YES;
     if (error) {
@@ -558,7 +630,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *path = self.request.URL.path ?: @"";
     NSData *body = nil;
     NSString *type = @"text/javascript; charset=utf-8";
-    if ([path isEqualToString:@"/polyfills.js"]) body = [BRCSSRewriter polyfillBundle];
+    if ([path hasPrefix:@"/polyfills"] && [path hasSuffix:@".js"]) body = [BRCSSRewriter polyfillBundle];
     self.done = YES;
     if (!body) {
         [self failWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist

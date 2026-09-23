@@ -43,11 +43,11 @@
             return i > -1;
         };
         if (!Ep.closest) Ep.closest = function (s) { var el = this; while (el && el.nodeType === 1) { if (el.matches(s)) return el; el = el.parentNode; } return null; };
-        function toNodes(args) {
+        var toNodes = function toNodes(args) {
             var frag = document.createDocumentFragment();
             for (var i = 0; i < args.length; i++) { var a = args[i]; frag.appendChild(a instanceof Node ? a : document.createTextNode(String(a))); }
             return frag;
-        }
+        };
         var CN = [Ep, window.CharacterData && window.CharacterData.prototype, window.DocumentType && window.DocumentType.prototype];
         for (var c = 0; c < CN.length; c++) {
             var P = CN[c];

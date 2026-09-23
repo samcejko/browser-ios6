@@ -96,11 +96,57 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
++ (NSInteger)searchEngine
+{
+    NSInteger e = [[NSUserDefaults standardUserDefaults] integerForKey:@"BRSearchEngine"];
+    return (e >= 0 && e < [self searchEngineCount]) ? e : 0;
+}
+
++ (void)setSearchEngine:(NSInteger)engine
+{
+    [[NSUserDefaults standardUserDefaults] setInteger:engine forKey:@"BRSearchEngine"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
++ (NSString *)searchEngineTitle:(NSInteger)engine
+{
+    switch (engine) {
+        case 1: return @"Google";
+        case 2: return @"Bing";
+        case 3: return @"Seznam";
+    }
+    return @"DuckDuckGo";
+}
+
++ (NSInteger)searchEngineCount
+{
+    return 4;
+}
+
++ (NSInteger)textSizePercent
+{
+    NSInteger p = [[NSUserDefaults standardUserDefaults] integerForKey:@"BRTextSizePercent"];
+    return (p >= 50 && p <= 300) ? p : 100;
+}
+
++ (void)setTextSizePercent:(NSInteger)percent
+{
+    [[NSUserDefaults standardUserDefaults] setInteger:percent forKey:@"BRTextSizePercent"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 + (NSURL *)searchURLForQuery:(NSString *)query
 {
     NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(
         kCFAllocatorDefault, (__bridge CFStringRef)(query ?: @""), NULL, CFSTR("!*'();:@&=+$,/?%#[]"), kCFStringEncodingUTF8);
-    return [NSURL URLWithString:[@"https://lite.duckduckgo.com/lite/?q=" stringByAppendingString:q ?: @""]];
+    NSString *base;
+    switch ([self searchEngine]) {
+        case 1: base = @"https://www.google.com/search?q="; break;
+        case 2: base = @"https://www.bing.com/search?q="; break;
+        case 3: base = @"https://search.seznam.cz/?q="; break;
+        default: base = @"https://lite.duckduckgo.com/lite/?q="; break;
+    }
+    return [NSURL URLWithString:[base stringByAppendingString:q ?: @""]];
 }
 
 + (NSURL *)homeURL

@@ -6,6 +6,8 @@
 #import "BRTabBar.h"
 #import "BRTheme.h"
 #import "BRLibrary.h"
+#import "BRDownloader.h"
+#import "BRURLProtocol.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -16,11 +18,24 @@ static const CGFloat BRTabBarHeight = 30;
 static const CGFloat BRControlHeight = 30;
 
 @interface BRBrowserViewController () <UIWebViewDelegate, UITextFieldDelegate, BRLibraryViewControllerDelegate, BRTabsViewControllerDelegate, BRTabBarDelegate,
-                                        UIGestureRecognizerDelegate, UIActionSheetDelegate>
+                                        UIGestureRecognizerDelegate, UIActionSheetDelegate, UITableViewDataSource, UITableViewDelegate,
+                                        UIDocumentInteractionControllerDelegate, UIAlertViewDelegate>
 @property (nonatomic, strong) UIButton *shareButton;
 @property (nonatomic, strong) UILongPressGestureRecognizer *linkPress;
 @property (nonatomic, strong) UIPopoverController *sharePopover;      // iPad
 @property (nonatomic, strong) NSDictionary *pressedLink;              // href, text, img of the long-pressed element
+@property (nonatomic, strong) UITableView *suggestionsTable;           // history and bookmark matches while typing
+@property (nonatomic, strong) NSArray *suggestions;                    // dictionaries: title, url, kind
+@property (nonatomic, strong) UIView *findBar;
+@property (nonatomic, strong) UIImageView *findBarBackground;
+@property (nonatomic, strong) UITextField *findField;
+@property (nonatomic, strong) UILabel *findLabel;
+@property (nonatomic, strong) UIButton *findPrevButton;
+@property (nonatomic, strong) UIButton *findNextButton;
+@property (nonatomic, strong) UIButton *findDoneButton;
+@property (nonatomic, strong) UIView *progressView;                    // blue fill in the address field
+@property (nonatomic, strong) UIButton *lockButton;
+@property (nonatomic, strong) UIDocumentInteractionController *documentController;
 @property (nonatomic, strong) UIView *topBar;
 @property (nonatomic, strong) UIImageView *topBarBackground;
 @property (nonatomic, strong) BRTabBar *tabBar;              // iPad only: Safari style tab strip under the address bar
@@ -149,9 +164,23 @@ static const CGFloat BRControlHeight = 30;
         [self.view addSubview:self.bottomBar];
     }
 
+    // loading progress: a translucent fill that grows across the address field
+    self.progressView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, BRControlHeight)];
+    self.progressView.userInteractionEnabled = NO;
+    self.progressView.layer.cornerRadius = 7;
+    self.progressView.hidden = YES;
+    [self.urlField addSubview:self.progressView];
+
+    // padlock for https pages (tap for the connection details)
+    self.lockButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.lockButton.frame = CGRectMake(0, 0, 26, BRControlHeight);
+    [self.lockButton addTarget:self action:@selector(showConnectionInfo) forControlEvents:UIControlEventTouchUpInside];
+
     [self loadTabs];
     [self applyTheme];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeChanged:) name:BRThemeDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageProgress:) name:BRPageProgressNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(textSizeChanged:) name:@"BRTextSizeDidChangeNotification" object:nil];
     [self updateNavigationState];
 
     NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
@@ -188,7 +217,15 @@ static const CGFloat BRControlHeight = 30;
     }
     [self.bookmarksButton setImage:[theme bookmarksImage] forState:UIControlStateNormal];
     [self.shareButton setImage:[theme shareImage] forState:UIControlStateNormal];
+    [self.lockButton setImage:[theme lockImage] forState:UIControlStateNormal];
+    self.progressView.backgroundColor = [theme progressColor];
     [self.tabBar applyTheme];
+    if (self.findBar) [self applyThemeToFindBar];
+    if (self.suggestionsTable) {
+        self.suggestionsTable.backgroundColor = theme.isDark ? [UIColor colorWithWhite:0.12 alpha:1] : [UIColor whiteColor];
+        self.suggestionsTable.separatorColor = theme.isDark ? [UIColor colorWithWhite:0.25 alpha:1] : [UIColor colorWithWhite:0.85 alpha:1];
+        [self.suggestionsTable reloadData];
+    }
     [self updateNavigationState];
     [self updateLoadingControls];
     [[UIApplication sharedApplication] setStatusBarStyle:[theme statusBarStyle] animated:NO];
@@ -213,7 +250,15 @@ static const CGFloat BRControlHeight = 30;
     if (self.tabBar) self.tabBar.frame = CGRectMake(0, BRBarHeight, width, BRTabBarHeight);
     CGFloat bottom = self.bottomBar ? BRBarHeight : 0;
     if (self.bottomBar) self.bottomBar.frame = CGRectMake(0, b.size.height - bottom, width, bottom);
-    self.webView.frame = CGRectMake(0, BRBarHeight + tabsHeight, width, b.size.height - BRBarHeight - tabsHeight - bottom);
+    CGFloat findHeight = (self.findBar && !self.findBar.hidden) ? BRBarHeight : 0;
+    if (findHeight) {
+        self.findBar.frame = CGRectMake(0, BRBarHeight + tabsHeight, width, BRBarHeight);
+        [self layoutFindBar];
+    }
+    CGFloat contentTop = BRBarHeight + tabsHeight + findHeight;
+    self.webView.frame = CGRectMake(0, contentTop, width, b.size.height - contentTop - bottom);
+    if (self.suggestionsTable) self.suggestionsTable.frame = CGRectMake(0, BRBarHeight + tabsHeight, width, b.size.height - BRBarHeight - tabsHeight - bottom);
+    self.progressView.frame = CGRectMake(0, 0, floor(self.urlField.bounds.size.width * [self currentProgress]), self.urlField.bounds.size.height);
 
     // text buttons: on narrow screens use a smaller font so that everything fits
     CGFloat available = width - 2 * margin - 4 * 40 - 6 * gap;
@@ -607,6 +652,10 @@ static const CGFloat BRControlHeight = 30;
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField
 {
+    if (textField == self.findField) {
+        [self findNext];
+        return YES;
+    }
     NSString *text = textField.text;
     [textField resignFirstResponder];
     [self navigateToTypedText:text];
@@ -615,19 +664,388 @@ static const CGFloat BRControlHeight = 30;
 
 - (void)textFieldDidBeginEditing:(UITextField *)textField
 {
+    if (textField != self.urlField) return;
     self.editingAddress = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
         if (textField.isFirstResponder) [textField selectAll:nil];
     });
+    [self showSuggestionsForText:@""];
+}
+
+- (BOOL)textField:(UITextField *)textField shouldChangeCharactersInRange:(NSRange)range replacementString:(NSString *)string
+{
+    if (textField == self.urlField) {
+        NSString *current = textField.text ?: @"";
+        if (range.location <= current.length && range.location + range.length <= current.length) {
+            [self showSuggestionsForText:[current stringByReplacingCharactersInRange:range withString:string ?: @""]];
+        }
+    }
+    return YES;
+}
+
+- (BOOL)textFieldShouldClear:(UITextField *)textField
+{
+    if (textField == self.urlField) [self showSuggestionsForText:@""];
+    return YES;
 }
 
 - (void)textFieldDidEndEditing:(UITextField *)textField
 {
+    if (textField != self.urlField) return;
     self.editingAddress = NO;
+    [self hideSuggestions];
     [self updateAddressFieldWithURL:self.webView.request.URL ?: self.currentURL];
 }
 
 #pragma mark - UIWebViewDelegate
+
+#pragma mark - Loading progress, padlock, text size
+
+- (CGFloat)currentProgress
+{
+    return self.progressView.hidden ? 0 : self.progressView.tag / 1000.0;
+}
+
+- (void)setProgress:(CGFloat)progress animated:(BOOL)animated
+{
+    progress = MAX(0, MIN(1, progress));
+    self.progressView.tag = (NSInteger)(progress * 1000);
+    self.progressView.hidden = NO;
+    CGRect frame = CGRectMake(0, 0, floor(self.urlField.bounds.size.width * progress), self.urlField.bounds.size.height);
+    if (animated) [UIView animateWithDuration:0.25 animations:^{ self.progressView.frame = frame; }];
+    else self.progressView.frame = frame;
+    if (progress >= 1) {
+        [UIView animateWithDuration:0.4 delay:0.2 options:0 animations:^{ self.progressView.alpha = 0; } completion:^(BOOL finished) {
+            if (self.progressView.tag >= 1000) { self.progressView.hidden = YES; self.progressView.alpha = 1; self.progressView.frame = CGRectMake(0, 0, 0, self.urlField.bounds.size.height); }
+        }];
+    } else {
+        self.progressView.alpha = 1;
+    }
+}
+
+- (void)pageProgress:(NSNotification *)note
+{
+    if (!self.loading) return;
+    NSUInteger started = [note.userInfo[@"started"] unsignedIntegerValue], finished = [note.userInfo[@"finished"] unsignedIntegerValue];
+    CGFloat p = started ? 0.1 + 0.8 * (CGFloat)finished / (CGFloat)started : 0.1;
+    if (p > [self currentProgress]) [self setProgress:p animated:YES];
+}
+
+- (void)updateLockIcon
+{
+    NSURL *url = self.webView.request.URL ?: self.currentURL;
+    BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"https"] && [[BRURLProtocol lastMainDocumentTLSInfo] length] > 0;
+    if (secure) {
+        if (self.urlField.leftView != self.lockButton) self.urlField.leftView = self.lockButton;
+    } else if (self.urlField.leftView != self.fieldLeftView) {
+        self.urlField.leftView = self.fieldLeftView;
+    }
+}
+
+- (void)showConnectionInfo
+{
+    NSString *tls = [BRURLProtocol lastMainDocumentTLSInfo] ?: @"";
+    NSString *host = ([BRURLProtocol lastMainDocumentURL] ?: self.currentURL).host ?: @"";
+    NSString *verified = [BRSettings verifyTLS] ? L(@"Certificate verified.") : L(@"Certificate not verified (switched off in Settings).");
+    NSString *message = [NSString stringWithFormat:@"%@\n%@\n%@", host, tls, verified];
+    [[[UIAlertView alloc] initWithTitle:L(@"Secure connection") message:message delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+}
+
+- (void)applyTextSize
+{
+    NSInteger percent = [BRSettings textSizePercent];
+    NSString *js = [NSString stringWithFormat:
+        @"(function(p){var s=document.getElementById('br-textsize');if(p===100){if(s)s.parentNode.removeChild(s);return;}"
+         "if(!s){s=document.createElement('style');s.id='br-textsize';(document.head||document.documentElement).appendChild(s);}"
+         "s.textContent='html,body,body *{-webkit-text-size-adjust:'+p+'%% !important}';})(%ld)", (long)percent];
+    [self.webView stringByEvaluatingJavaScriptFromString:js];
+}
+
+- (void)textSizeChanged:(NSNotification *)note
+{
+    [self applyTextSize];
+}
+
+#pragma mark - Address suggestions
+
+- (NSArray *)suggestionsForText:(NSString *)text
+{
+    NSString *t = [[text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    NSMutableArray *out = [NSMutableArray array];
+    BRLibrary *lib = [BRLibrary shared];
+    if (!t.length) {
+        for (NSDictionary *b in lib.bookmarks) {
+            if (out.count >= 8) break;
+            [out addObject:@{ @"title": b[@"title"] ?: @"", @"url": b[@"url"] ?: @"", @"kind": @"bookmark" }];
+        }
+        return out;
+    }
+    BOOL looksLikeURL = [t rangeOfString:@" "].location == NSNotFound && ([t rangeOfString:@"."].location != NSNotFound || [t rangeOfString:@"://"].location != NSNotFound);
+    [out addObject:@{ @"title": [NSString stringWithFormat:L(@"Search %@ for “%@”"), [BRSettings searchEngineTitle:[BRSettings searchEngine]], text],
+                      @"url": [BRSettings searchURLForQuery:text].absoluteString ?: @"", @"kind": looksLikeURL ? @"search-secondary" : @"search" }];
+    NSMutableArray *scored = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    NSArray *sources = @[lib.bookmarks, lib.history];
+    for (NSUInteger s = 0; s < sources.count; s++) {
+        for (NSDictionary *e in sources[s]) {
+            NSString *url = [e[@"url"] isKindOfClass:[NSString class]] ? e[@"url"] : @"";
+            NSString *title = [e[@"title"] isKindOfClass:[NSString class]] ? e[@"title"] : @"";
+            if (!url.length || [seen containsObject:url]) continue;
+            NSString *lurl = [url lowercaseString];
+            NSString *bare = lurl;
+            NSRange scheme = [bare rangeOfString:@"://"];
+            if (scheme.location != NSNotFound) bare = [bare substringFromIndex:scheme.location + 3];
+            if ([bare hasPrefix:@"www."]) bare = [bare substringFromIndex:4];
+            NSInteger score;
+            if ([bare hasPrefix:t]) score = 0;
+            else if ([lurl rangeOfString:t].location != NSNotFound) score = 1;
+            else if ([[title lowercaseString] rangeOfString:t].location != NSNotFound) score = 2;
+            else continue;
+            [seen addObject:url];
+            [scored addObject:@{ @"title": title, @"url": url, @"kind": s == 0 ? @"bookmark" : @"history", @"score": @(score + (NSInteger)s) }];
+            if (scored.count >= 40) break;
+        }
+    }
+    [scored sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"score"] compare:b[@"score"]]; }];
+    for (NSDictionary *e in scored) {
+        if (out.count >= 8) break;
+        [out addObject:e];
+    }
+    [out addObject:@{ @"title": [NSString stringWithFormat:L(@"Find “%@” on this page"), text], @"url": @"", @"kind": @"find", @"query": text }];
+    return out;
+}
+
+- (void)showSuggestionsForText:(NSString *)text
+{
+    self.suggestions = [self suggestionsForText:text];
+    if (!self.suggestions.count) {
+        [self hideSuggestions];
+        return;
+    }
+    if (!self.suggestionsTable) {
+        self.suggestionsTable = [[UITableView alloc] initWithFrame:self.webView.frame style:UITableViewStylePlain];
+        self.suggestionsTable.dataSource = self;
+        self.suggestionsTable.delegate = self;
+        self.suggestionsTable.rowHeight = 50;
+        [self.view insertSubview:self.suggestionsTable aboveSubview:self.webView];
+        [self applyTheme];
+    }
+    self.suggestionsTable.hidden = NO;
+    [self.view setNeedsLayout];
+    [self.suggestionsTable reloadData];
+}
+
+- (void)hideSuggestions
+{
+    self.suggestionsTable.hidden = YES;
+    self.suggestions = nil;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    return (NSInteger)self.suggestions.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    static NSString *cellId = @"suggestion";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
+    NSDictionary *s = self.suggestions[(NSUInteger)indexPath.row];
+    NSString *kind = s[@"kind"];
+    BRTheme *theme = [BRTheme shared];
+    BOOL action = [kind hasPrefix:@"search"] || [kind isEqualToString:@"find"];
+    cell.textLabel.text = [s[@"title"] length] ? s[@"title"] : s[@"url"];
+    cell.textLabel.font = action ? [UIFont systemFontOfSize:16] : [UIFont boldSystemFontOfSize:16];
+    cell.detailTextLabel.text = action ? nil : s[@"url"];
+    cell.detailTextLabel.textColor = [UIColor grayColor];
+    cell.backgroundColor = theme.isDark ? [UIColor colorWithWhite:0.12 alpha:1] : [UIColor whiteColor];
+    cell.textLabel.textColor = action ? (theme.isDark ? [UIColor colorWithRed:0.55 green:0.72 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1])
+                                      : (theme.isDark ? [UIColor colorWithWhite:0.94 alpha:1] : [UIColor blackColor]);
+    cell.textLabel.backgroundColor = [UIColor clearColor];
+    cell.detailTextLabel.backgroundColor = [UIColor clearColor];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:NO];
+    NSDictionary *s = self.suggestions[(NSUInteger)indexPath.row];
+    [self.urlField resignFirstResponder];
+    if ([s[@"kind"] isEqualToString:@"find"]) {
+        [self showFindBarWithText:s[@"query"]];
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:s[@"url"] ?: @""];
+    if (url) [self loadURL:url];
+}
+
+#pragma mark - Find on page
+
+- (void)applyThemeToFindBar
+{
+    BRTheme *theme = [BRTheme shared];
+    self.findBarBackground.image = [theme barBackgroundImage];
+    self.findField.background = [theme fieldBackgroundImage];
+    self.findField.textColor = [theme fieldTextColor];
+    self.findLabel.textColor = [theme barTextColor];
+    self.findLabel.shadowColor = [theme barTextShadowColor];
+    [self.findPrevButton setImage:[theme arrowImagePointingLeft:YES enabled:YES] forState:UIControlStateNormal];
+    [self.findNextButton setImage:[theme arrowImagePointingLeft:NO enabled:YES] forState:UIControlStateNormal];
+    [self.findDoneButton setBackgroundImage:[theme buttonImageHighlighted:NO] forState:UIControlStateNormal];
+    [self.findDoneButton setBackgroundImage:[theme buttonImageHighlighted:YES] forState:UIControlStateHighlighted];
+    [self.findDoneButton setTitleColor:[theme barTextColor] forState:UIControlStateNormal];
+    [self.findDoneButton setTitleShadowColor:[theme barTextShadowColor] forState:UIControlStateNormal];
+}
+
+- (void)layoutFindBar
+{
+    CGFloat width = self.findBar.bounds.size.width, y = (BRBarHeight - BRControlHeight) / 2, gap = 6, margin = 8;
+    CGFloat doneWidth = [self widthForTextButton:self.findDoneButton];
+    self.findDoneButton.frame = CGRectMake(width - margin - doneWidth, y, doneWidth, BRControlHeight);
+    self.findNextButton.frame = CGRectMake(CGRectGetMinX(self.findDoneButton.frame) - gap - 40, y, 40, BRControlHeight);
+    self.findPrevButton.frame = CGRectMake(CGRectGetMinX(self.findNextButton.frame) - gap - 40, y, 40, BRControlHeight);
+    CGFloat labelWidth = BRIsPad() ? 130 : 90;
+    self.findLabel.frame = CGRectMake(CGRectGetMinX(self.findPrevButton.frame) - gap - labelWidth, y, labelWidth, BRControlHeight);
+    CGFloat fieldWidth = CGRectGetMinX(self.findLabel.frame) - gap - margin;
+    self.findField.frame = CGRectMake(margin, y, MAX(80, fieldWidth), BRControlHeight);
+}
+
+- (void)showFindBarWithText:(NSString *)text
+{
+    if (!self.findBar) {
+        self.findBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, BRBarHeight)];
+        self.findBarBackground = [[UIImageView alloc] initWithFrame:self.findBar.bounds];
+        self.findBarBackground.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.findBar addSubview:self.findBarBackground];
+        self.findField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 200, BRControlHeight)];
+        self.findField.borderStyle = UITextBorderStyleNone;
+        self.findField.font = [UIFont systemFontOfSize:15];
+        self.findField.placeholder = L(@"Find on page");
+        self.findField.returnKeyType = UIReturnKeySearch;
+        self.findField.autocorrectionType = UITextAutocorrectionTypeNo;
+        self.findField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        self.findField.clearButtonMode = UITextFieldViewModeWhileEditing;
+        self.findField.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+        self.findField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 8, BRControlHeight)];
+        self.findField.leftViewMode = UITextFieldViewModeAlways;
+        self.findField.delegate = self;
+        [self.findField addTarget:self action:@selector(findTextChanged) forControlEvents:UIControlEventEditingChanged];
+        [self.findBar addSubview:self.findField];
+        self.findLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        self.findLabel.font = [UIFont boldSystemFontOfSize:13];
+        self.findLabel.backgroundColor = [UIColor clearColor];
+        self.findLabel.textAlignment = NSTextAlignmentRight;
+        self.findLabel.shadowOffset = CGSizeMake(0, 1);
+        [self.findBar addSubview:self.findLabel];
+        self.findPrevButton = [self iconButtonWithAction:@selector(findPrevious)];
+        self.findNextButton = [self iconButtonWithAction:@selector(findNext)];
+        self.findDoneButton = [self textButtonWithTitle:L(@"Done") action:@selector(hideFindBar)];
+        [self.findBar addSubview:self.findPrevButton];
+        [self.findBar addSubview:self.findNextButton];
+        [self.findBar addSubview:self.findDoneButton];
+        [self.view addSubview:self.findBar];
+        [self applyThemeToFindBar];
+    }
+    self.findBar.hidden = NO;
+    self.findField.text = text ?: @"";
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+    [self findTextChanged];
+    if (!text.length) [self.findField becomeFirstResponder];
+}
+
+- (void)hideFindBar
+{
+    [self.findField resignFirstResponder];
+    self.findBar.hidden = YES;
+    [self.webView stringByEvaluatingJavaScriptFromString:@"window.getSelection().removeAllRanges()"];
+    [self.view setNeedsLayout];
+}
+
+- (NSString *)jsStringLiteral:(NSString *)s
+{
+    NSData *d = [NSJSONSerialization dataWithJSONObject:@[s ?: @""] options:0 error:NULL];
+    NSString *json = d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : @"[\"\"]";
+    return [json substringWithRange:NSMakeRange(1, json.length - 2)];   // strip the array brackets
+}
+
+- (void)findTextChanged
+{
+    NSString *q = self.findField.text ?: @"";
+    if (!q.length) {
+        self.findLabel.text = @"";
+        [self.webView stringByEvaluatingJavaScriptFromString:@"window.getSelection().removeAllRanges()"];
+        return;
+    }
+    NSString *js = [NSString stringWithFormat:
+        @"(function(q){var t=(document.body?document.body.innerText:'').toLowerCase();var n=0,i=0;q=q.toLowerCase();"
+         "while(q&&(i=t.indexOf(q,i))>=0){n++;i+=q.length;}window.getSelection().removeAllRanges();"
+         "if(n)window.find(q,false,false,true,false,true,false);return n;})(%@)", [self jsStringLiteral:q]];
+    NSInteger n = [[self.webView stringByEvaluatingJavaScriptFromString:js] integerValue];
+    self.findLabel.text = n ? [NSString stringWithFormat:L(@"%ld matches"), (long)n] : L(@"No matches");
+}
+
+- (void)findStep:(BOOL)backwards
+{
+    NSString *q = self.findField.text ?: @"";
+    if (!q.length) return;
+    NSString *js = [NSString stringWithFormat:@"window.find(%@,false,%@,true,false,true,false)", [self jsStringLiteral:q], backwards ? @"true" : @"false"];
+    [self.webView stringByEvaluatingJavaScriptFromString:js];
+}
+
+- (void)findNext { [self findStep:NO]; }
+- (void)findPrevious { [self findStep:YES]; }
+
+#pragma mark - Downloads
+
+- (void)startDownload:(NSURL *)url
+{
+    if ([[BRDownloader shared] isDownloading:url]) return;
+    [[[UIAlertView alloc] initWithTitle:nil message:[NSString stringWithFormat:L(@"Downloading %@"), [url.lastPathComponent length] > 1 ? url.lastPathComponent : url.host]
+                               delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+    [[BRDownloader shared] downloadURL:url completion:^(NSString *path, NSError *error) {
+        if (error) {
+            [[[UIAlertView alloc] initWithTitle:nil message:[NSString stringWithFormat:L(@"Download failed: %@"), error.localizedDescription] delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+            return;
+        }
+        long long size = [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] fileSize];
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:nil message:[NSString stringWithFormat:L(@"Downloaded %@ (%@)"), path.lastPathComponent, [BRDownloader formattedSize:size]]
+                                                       delegate:self cancelButtonTitle:L(@"OK") otherButtonTitles:L(@"Open"), nil];
+        alert.tag = 200;
+        self.documentController = [UIDocumentInteractionController interactionControllerWithURL:[NSURL fileURLWithPath:path]];
+        [alert show];
+    }];
+}
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
+{
+    if (alertView.tag == 200 && buttonIndex != alertView.cancelButtonIndex && self.documentController) {
+        [self openDocumentController];
+    }
+}
+
+- (void)openDocumentController
+{
+    self.documentController.delegate = self;
+    CGRect rect = self.shareButton.superview ? [self.view convertRect:self.shareButton.frame fromView:self.shareButton.superview] : CGRectMake(20, 20, 1, 1);
+    if (![self.documentController presentOpenInMenuFromRect:rect inView:self.view animated:YES]) {
+        [self.documentController presentOptionsMenuFromRect:rect inView:self.view animated:YES];
+    }
+}
+
+- (UIViewController *)documentInteractionControllerViewControllerForPreview:(UIDocumentInteractionController *)controller
+{
+    return self;
+}
+
+- (void)libraryViewController:(BRLibraryViewController *)controller didSelectDownloadAtPath:(NSString *)path
+{
+    self.documentController = [UIDocumentInteractionController interactionControllerWithURL:[NSURL fileURLWithPath:path]];
+    self.documentController.delegate = self;
+    CGRect rect = self.shareButton.superview ? [self.view convertRect:self.shareButton.frame fromView:self.shareButton.superview] : CGRectMake(20, 20, 1, 1);
+    if (![self.documentController presentPreviewAnimated:YES]) [self.documentController presentOptionsMenuFromRect:rect inView:self.view animated:YES];
+}
 
 #pragma mark - Sharing and link menu
 
@@ -794,6 +1212,7 @@ static const CGFloat BRControlHeight = 30;
 - (void)webViewDidStartLoad:(UIWebView *)webView
 {
     self.loadCount++;
+    if (!self.loading) [self setProgress:0.08 animated:NO];
     [self setLoading:YES];
     [self updateNavigationState];
 }
@@ -810,6 +1229,9 @@ static const CGFloat BRControlHeight = 30;
     }
     if (self.loadCount == 0) {
         self.httpFallbackURL = nil;
+        [self setProgress:1 animated:YES];
+        [self updateLockIcon];
+        [self applyTextSize];
         NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
         self.currentTitle = title;
         if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [[BRLibrary shared] recordVisit:url title:title];
@@ -837,11 +1259,23 @@ static const CGFloat BRControlHeight = 30;
     [self updateNavigationState];
 
     if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return;
-    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && (error.code == 102 || error.code == 204)) return;   // frame load interrupted, plug-in
-
     NSString *failingString = error.userInfo[NSURLErrorFailingURLStringErrorKey];
     NSURL *failingURL = failingString.length ? [NSURL URLWithString:failingString] : error.userInfo[NSURLErrorFailingURLErrorKey];
     if (!failingURL) failingURL = self.currentURL;
+    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) {
+        // "Frame load interrupted": WebKit refused to show the response, typically a file to download
+        NSString *ctype = [[BRURLProtocol lastMainDocumentContentType] lowercaseString] ?: @"";
+        NSURL *last = [BRURLProtocol lastMainDocumentURL];
+        BOOL renderable = [ctype hasPrefix:@"text/"] || [ctype hasPrefix:@"image/"] || [ctype hasPrefix:@"video/"] || [ctype hasPrefix:@"audio/"] ||
+                          [ctype hasPrefix:@"application/pdf"] || [ctype hasPrefix:@"application/xhtml"] || [ctype hasPrefix:@"application/xml"];
+        if ([[failingURL.scheme lowercaseString] hasPrefix:@"http"] && last && [last.absoluteString isEqualToString:failingURL.absoluteString] && !renderable) {
+            BRLog(@"Download detected: %@ (%@)", failingURL.absoluteString, ctype);
+            [self setProgress:1 animated:NO];
+            [self startDownload:failingURL];
+        }
+        return;
+    }
+    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 204) return;   // plug-in
     NSString *mainString = webView.request.URL.absoluteString ?: @"";
     BOOL mainFrame = [failingURL.absoluteString isEqualToString:self.currentURL.absoluteString] || [failingURL.absoluteString isEqualToString:mainString];
     if (!mainFrame) {

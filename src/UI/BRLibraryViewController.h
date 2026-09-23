@@ -4,6 +4,8 @@
 
 @protocol BRLibraryViewControllerDelegate <NSObject>
 - (void)libraryViewController:(BRLibraryViewController *)controller didSelectURL:(NSURL *)url;
+@optional
+- (void)libraryViewController:(BRLibraryViewController *)controller didSelectDownloadAtPath:(NSString *)path;
 @end
 
 // Bookmarks and history in one table with a segmented control on top.

@@ -311,6 +311,34 @@ static UIImage *BRBarImage(UIColor *top, UIColor *bottom, UIColor *line, CGFloat
     }];
 }
 
+- (UIColor *)progressColor
+{
+    return self.dark ? [UIColor colorWithRed:0.35 green:0.55 blue:0.95 alpha:0.35] : [UIColor colorWithRed:0.25 green:0.5 blue:0.9 alpha:0.22];
+}
+
+- (UIImage *)lockImage
+{
+    return [self cachedImage:@"lock" builder:^UIImage *{
+        CGSize size = CGSizeMake(16, 18);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+        UIColor *color = self.dark ? RGB(200, 200, 206) : RGB(90, 90, 100);
+        UIBezierPath *shackle = [UIBezierPath bezierPath];
+        [shackle moveToPoint:CGPointMake(4.5, 8)];
+        [shackle addLineToPoint:CGPointMake(4.5, 5.5)];
+        [shackle addArcWithCenter:CGPointMake(8, 5.5) radius:3.5 startAngle:M_PI endAngle:0 clockwise:YES];
+        [shackle addLineToPoint:CGPointMake(11.5, 8)];
+        shackle.lineWidth = 1.8;
+        [color setStroke];
+        [shackle stroke];
+        UIBezierPath *body = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(2, 8, 12, 9) cornerRadius:2];
+        [color setFill];
+        [body fill];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return img;
+    }];
+}
+
 - (UIImage *)plusImage
 {
     return [self cachedImage:@"plus" builder:^UIImage *{

@@ -3,8 +3,12 @@
 #import "BRSettings.h"
 #import "BRCommon.h"
 
+#include <zlib.h>
+
 static const NSUInteger BRMaxPagesRemembered = 8;
-static NSString * const BRPolyfillURL = @"https://ios6-browser.invalid/polyfills.js";
+// The bundle is cached by pages for a year, so its URL carries a checksum of the content: a new
+// build with new polyfills gets a new URL instead of the old cached bundle.
+static NSString *g_polyfillURL;
 
 static NSStringEncoding BREncodingForCharset(NSString *charset)
 {
@@ -137,7 +141,8 @@ static NSString *BRPageKey(NSURL *url)
 
 + (NSString *)polyfillURLString
 {
-    return BRPolyfillURL;
+    [self polyfillBundle];
+    return g_polyfillURL ?: @"https://ios6-browser.invalid/polyfills.js";
 }
 
 + (NSData *)polyfillBundle
@@ -158,7 +163,10 @@ static NSString *BRPageKey(NSURL *url)
             [d appendData:[@"\n;\n" dataUsingEncoding:NSUTF8StringEncoding]];
         }
         bundle = d;
-        BRLog(@"Polyfill bundle assembled: %lu KB", (unsigned long)(d.length / 1024));
+        unsigned long crc = crc32(0L, Z_NULL, 0);
+        crc = crc32(crc, (const Bytef *)d.bytes, (uInt)d.length);
+        g_polyfillURL = [NSString stringWithFormat:@"https://ios6-browser.invalid/polyfills-%08lx.js", crc];
+        BRLog(@"Polyfill bundle assembled: %lu KB (%@)", (unsigned long)(d.length / 1024), g_polyfillURL);
     });
     return bundle;
 }
@@ -189,7 +197,7 @@ static NSString *BRPageKey(NSURL *url)
             }
             NSString *optionsJSON = @"{}";
             if ([kind isEqualToString:@"html"] && [BRSettings jsFixEnabled]) {
-                NSDictionary *opts = @{ @"polyfillURL": BRPolyfillURL, @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"" };
+                NSDictionary *opts = @{ @"polyfillURL": [BRCSSRewriter polyfillURLString], @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"" };
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

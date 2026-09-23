@@ -20,6 +20,15 @@
 + (BOOL)darkTheme;                       // default NO
 + (void)setDarkTheme:(BOOL)dark;
 
+// 0 = DuckDuckGo Lite, 1 = Google, 2 = Bing, 3 = Seznam
++ (NSInteger)searchEngine;
++ (void)setSearchEngine:(NSInteger)engine;
++ (NSString *)searchEngineTitle:(NSInteger)engine;
++ (NSInteger)searchEngineCount;
+
++ (NSInteger)textSizePercent;            // 100 = the page's own size
++ (void)setTextSizePercent:(NSInteger)percent;
+
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page
 + (BOOL)isHomeURL:(NSURL *)url;

@@ -1,5 +1,6 @@
 #import "BRLibraryViewController.h"
 #import "BRLibrary.h"
+#import "BRDownloader.h"
 #import "BRTheme.h"
 #import "BRCommon.h"
 
@@ -14,7 +15,16 @@
 
 - (instancetype)init
 {
-    return [super initWithStyle:UITableViewStylePlain];
+    self = [super initWithStyle:UITableViewStylePlain];
+    if (self) {
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(downloadsChanged) name:BRDownloadsDidChangeNotification object:nil];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (BOOL)showingHistory
@@ -22,10 +32,15 @@
     return self.segment.selectedSegmentIndex == 1;
 }
 
+- (BOOL)showingDownloads
+{
+    return self.segment.selectedSegmentIndex == 2;
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.segment = [[UISegmentedControl alloc] initWithItems:@[L(@"Bookmarks"), L(@"History")]];
+    self.segment = [[UISegmentedControl alloc] initWithItems:@[L(@"Bookmarks"), L(@"History"), L(@"Downloads")]];
     self.segment.segmentedControlStyle = UISegmentedControlStyleBar;
     self.segment.selectedSegmentIndex = 0;
     [self.segment addTarget:self action:@selector(segmentChanged) forControlEvents:UIControlEventValueChanged];
@@ -37,11 +52,21 @@
     [self reload];
 }
 
+- (void)downloadsChanged
+{
+    if ([self showingDownloads]) [self reload];
+}
+
 - (void)reload
 {
     BRLibrary *lib = [BRLibrary shared];
-    self.items = [self showingHistory] ? lib.history : lib.bookmarks;
-    self.navigationItem.rightBarButtonItem = [self showingHistory] ? self.clearItem : self.addItem;
+    if ([self showingDownloads]) {
+        self.items = [BRDownloader downloadedFiles];
+        self.navigationItem.rightBarButtonItem = nil;
+    } else {
+        self.items = [self showingHistory] ? lib.history : lib.bookmarks;
+        self.navigationItem.rightBarButtonItem = [self showingHistory] ? self.clearItem : self.addItem;
+    }
     self.addItem.enabled = self.currentURL != nil && ![lib isBookmarked:self.currentURL];
     [self.tableView reloadData];
 }
@@ -82,8 +107,18 @@
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
     NSDictionary *e = self.items[(NSUInteger)indexPath.row];
-    cell.textLabel.text = e[@"title"] ?: e[@"url"];
     cell.textLabel.font = [UIFont boldSystemFontOfSize:16];
+    if ([self showingDownloads]) {
+        cell.textLabel.text = e[@"name"];
+        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+        df.dateStyle = NSDateFormatterShortStyle;
+        df.timeStyle = NSDateFormatterShortStyle;
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@  %@", [BRDownloader formattedSize:[e[@"size"] longLongValue]], [df stringFromDate:e[@"date"]]];
+        cell.detailTextLabel.textColor = [UIColor grayColor];
+        [[BRTheme shared] styleCell:cell];
+        return cell;
+    }
+    cell.textLabel.text = e[@"title"] ?: e[@"url"];
     NSString *detail = e[@"url"];
     if ([self showingHistory] && e[@"time"]) {
         NSDate *d = [NSDate dateWithTimeIntervalSince1970:[e[@"time"] doubleValue]];
@@ -101,6 +136,14 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     NSDictionary *e = self.items[(NSUInteger)indexPath.row];
+    if ([self showingDownloads]) {
+        [tableView deselectRowAtIndexPath:indexPath animated:YES];
+        NSString *path = e[@"path"];
+        [self dismissViewControllerAnimated:YES completion:^{
+            if (path && [self.delegate respondsToSelector:@selector(libraryViewController:didSelectDownloadAtPath:)]) [self.delegate libraryViewController:self didSelectDownloadAtPath:path];
+        }];
+        return;
+    }
     NSURL *url = [NSURL URLWithString:e[@"url"] ?: @""];
     [self dismissViewControllerAnimated:YES completion:nil];
     if (url) [self.delegate libraryViewController:self didSelectURL:url];
@@ -114,6 +157,13 @@
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath
 {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    if ([self showingDownloads]) {
+        NSDictionary *e = self.items[(NSUInteger)indexPath.row];
+        [[NSFileManager defaultManager] removeItemAtPath:e[@"path"] error:NULL];
+        self.items = [BRDownloader downloadedFiles];
+        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
+        return;
+    }
     if ([self showingHistory]) [[BRLibrary shared] removeHistoryAtIndex:(NSUInteger)indexPath.row];
     else [[BRLibrary shared] removeBookmarkAtIndex:(NSUInteger)indexPath.row];
     self.items = [self showingHistory] ? [BRLibrary shared].history : [BRLibrary shared].bookmarks;
@@ -123,7 +173,7 @@
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    return ![self showingHistory];
+    return ![self showingHistory] && ![self showingDownloads];
 }
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to

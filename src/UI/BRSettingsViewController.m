@@ -16,6 +16,8 @@ typedef NS_ENUM(NSInteger, BRSettingsSection) {
 
 typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowUserAgent = 0,
+    BRFeatureRowSearchEngine,
+    BRFeatureRowTextSize,
     BRFeatureRowAdBlock,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
@@ -120,6 +122,18 @@ static const NSInteger BRTagDarkTheme = 100;
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleBlue;
                 break;
+            case BRFeatureRowSearchEngine:
+                cell.textLabel.text = L(@"Search engine");
+                cell.detailTextLabel.text = [BRSettings searchEngineTitle:[BRSettings searchEngine]];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                break;
+            case BRFeatureRowTextSize:
+                cell.textLabel.text = L(@"Text size");
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld %%", (long)[BRSettings textSizePercent]];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                break;
             case BRFeatureRowAdBlock:
                 cell.textLabel.text = L(@"Block ads and trackers");
                 cell.accessoryView = [self switchWithValue:[BRSettings adBlockEnabled] tag:BRFeatureRowAdBlock];
@@ -187,10 +201,19 @@ static const NSInteger BRTagDarkTheme = 100;
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == BRSettingsSectionFeatures && indexPath.row == BRFeatureRowUserAgent) {
-        UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:L(@"Page version") delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
-        for (NSInteger m = 0; m <= 2; m++) [sheet addButtonWithTitle:[BRSettings userAgentModeTitle:m]];
+    if (indexPath.section == BRSettingsSectionFeatures &&
+        (indexPath.row == BRFeatureRowUserAgent || indexPath.row == BRFeatureRowSearchEngine || indexPath.row == BRFeatureRowTextSize)) {
+        NSString *title = indexPath.row == BRFeatureRowUserAgent ? L(@"Page version") : indexPath.row == BRFeatureRowSearchEngine ? L(@"Search engine") : L(@"Text size");
+        UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+        if (indexPath.row == BRFeatureRowUserAgent) {
+            for (NSInteger m = 0; m <= 2; m++) [sheet addButtonWithTitle:[BRSettings userAgentModeTitle:m]];
+        } else if (indexPath.row == BRFeatureRowSearchEngine) {
+            for (NSInteger e = 0; e < [BRSettings searchEngineCount]; e++) [sheet addButtonWithTitle:[BRSettings searchEngineTitle:e]];
+        } else {
+            for (NSNumber *p in [self textSizes]) [sheet addButtonWithTitle:[NSString stringWithFormat:@"%@ %%", p]];
+        }
         sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+        sheet.tag = indexPath.row;
         CGRect rect = [tableView rectForRowAtIndexPath:indexPath];
         if (BRIsPad()) [sheet showFromRect:rect inView:tableView animated:YES];
         else [sheet showInView:self.view];
@@ -212,11 +235,27 @@ static const NSInteger BRTagDarkTheme = 100;
     [self.tableView reloadData];
 }
 
+- (NSArray *)textSizes
+{
+    return @[@80, @90, @100, @110, @125, @150, @175];
+}
+
 - (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
 {
-    if (buttonIndex < 0 || buttonIndex > 2) return;
-    [BRSettings setUserAgentMode:buttonIndex];
-    [[NSURLCache sharedURLCache] removeAllCachedResponses];   // servers answer differently per identity
+    if (buttonIndex < 0 || buttonIndex == actionSheet.cancelButtonIndex) return;
+    if (actionSheet.tag == BRFeatureRowUserAgent) {
+        if (buttonIndex > 2) return;
+        [BRSettings setUserAgentMode:buttonIndex];
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];   // servers answer differently per identity
+    } else if (actionSheet.tag == BRFeatureRowSearchEngine) {
+        if (buttonIndex >= [BRSettings searchEngineCount]) return;
+        [BRSettings setSearchEngine:buttonIndex];
+    } else if (actionSheet.tag == BRFeatureRowTextSize) {
+        NSArray *sizes = [self textSizes];
+        if ((NSUInteger)buttonIndex >= sizes.count) return;
+        [BRSettings setTextSizePercent:[sizes[(NSUInteger)buttonIndex] integerValue]];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"BRTextSizeDidChangeNotification" object:nil];
+    }
     [self.tableView reloadData];
 }
 
