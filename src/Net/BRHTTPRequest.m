@@ -173,7 +173,7 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     BOOL defaultPort = ([self isSecure] && port == 443) || (![self isSecure] && port == 80);
     [s appendFormat:@"Host: %@\r\n", defaultPort ? host : [NSString stringWithFormat:@"%@:%d", host, port]];
     NSMutableSet *given = [NSMutableSet set];
-    NSString *uaOverride = [BRSettings userAgentOverride];
+    NSString *uaOverride = [BRSettings userAgentOverrideForURL:self.url];
     for (NSString *key in self.headers) {
         NSString *lk = [key lowercaseString];
         if ([lk isEqualToString:@"host"] || [lk isEqualToString:@"content-length"] || [lk isEqualToString:@"connection"] ||

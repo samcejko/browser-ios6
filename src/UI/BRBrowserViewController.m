@@ -727,9 +727,10 @@ static NSCache *BRFaviconCache(void)
 - (void)reloadMenu:(UILongPressGestureRecognizer *)recognizer
 {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:nil delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    NSString *host = (self.webView.request.URL ?: self.currentURL).host;
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:host delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
     [sheet addButtonWithTitle:L(@"Reload without cache")];
-    [sheet addButtonWithTitle:[BRSettings userAgentMode] == 0 ? L(@"Request desktop version") : L(@"Request mobile version")];
+    [sheet addButtonWithTitle:[BRSettings userAgentModeForHost:host] == 0 ? L(@"Request desktop version") : L(@"Request mobile version")];
     sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
     sheet.tag = 101;
     CGRect rect = [self.view convertRect:self.reloadButton.bounds fromView:self.reloadButton];
@@ -1535,7 +1536,9 @@ static NSCache *BRFaviconCache(void)
         if ([pick isEqualToString:L(@"Reload without cache")]) {
             [self reloadIgnoringCache];
         } else {
-            [BRSettings setUserAgentMode:[BRSettings userAgentMode] == 0 ? 1 : 0];
+            // per site, like Safari's "request desktop website"
+            NSString *host = (self.webView.request.URL ?: self.currentURL).host;
+            [BRSettings setUserAgentMode:[BRSettings userAgentModeForHost:host] == 0 ? 1 : 0 forHost:host];
             [[NSURLCache sharedURLCache] removeAllCachedResponses];
             [self reloadIgnoringCache];
         }

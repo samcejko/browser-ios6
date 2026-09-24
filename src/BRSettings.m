@@ -67,13 +67,7 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
 
 + (NSString *)userAgentOverride
 {
-    switch ([self userAgentMode]) {
-        case 1:   // Safari 6 on OS X: the same engine generation, servers send pages the engine can render
-            return @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_5) AppleWebKit/536.30.1 (KHTML, like Gecko) Version/6.0.5 Safari/536.30.1";
-        case 2:   // a current iPad: modern pages, which may or may not survive the old engine
-            return @"Mozilla/5.0 (iPad; CPU OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1";
-    }
-    return nil;
+    return [self userAgentStringForMode:[self userAgentMode]];
 }
 
 + (NSString *)userAgentModeTitle:(NSInteger)mode
@@ -83,6 +77,49 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
         case 2: return L(@"Modern iPad (Safari 17)");
     }
     return L(@"iPad with iOS 6");
+}
+
+static NSString *BRHostKey(NSString *host)
+{
+    NSString *h = [host lowercaseString] ?: @"";
+    if ([h hasPrefix:@"www."]) h = [h substringFromIndex:4];
+    return h;
+}
+
++ (NSInteger)userAgentModeForHost:(NSString *)host
+{
+    NSDictionary *overrides = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"BRUserAgentHosts"];
+    NSNumber *m = overrides[BRHostKey(host)];
+    if (m && [m integerValue] >= 0 && [m integerValue] <= 2) return [m integerValue];
+    return [self userAgentMode];
+}
+
++ (void)setUserAgentMode:(NSInteger)mode forHost:(NSString *)host
+{
+    NSString *key = BRHostKey(host);
+    if (!key.length) return;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *overrides = [[d dictionaryForKey:@"BRUserAgentHosts"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (mode < 0 || mode == [self userAgentMode]) [overrides removeObjectForKey:key];
+    else overrides[key] = @(mode);
+    [d setObject:overrides forKey:@"BRUserAgentHosts"];
+    [d synchronize];
+}
+
++ (NSString *)userAgentStringForMode:(NSInteger)mode
+{
+    switch (mode) {
+        case 1:   // Safari 6 on OS X: the same engine generation, servers send pages the engine can render
+            return @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_5) AppleWebKit/536.30.1 (KHTML, like Gecko) Version/6.0.5 Safari/536.30.1";
+        case 2:   // a current iPad: modern pages, which may or may not survive the old engine
+            return @"Mozilla/5.0 (iPad; CPU OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1";
+    }
+    return nil;
+}
+
++ (NSString *)userAgentOverrideForURL:(NSURL *)url
+{
+    return [self userAgentStringForMode:[self userAgentModeForHost:url.host]];
 }
 
 + (BOOL)darkTheme

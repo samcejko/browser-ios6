@@ -16,6 +16,10 @@
 + (void)setUserAgentMode:(NSInteger)mode;
 + (NSString *)userAgentOverride;         // nil for mode 0
 + (NSString *)userAgentModeTitle:(NSInteger)mode;
+// Per-site identity (Safari's "request desktop website"): overrides the global mode for one host
++ (NSInteger)userAgentModeForHost:(NSString *)host;
++ (void)setUserAgentMode:(NSInteger)mode forHost:(NSString *)host;   // -1 removes the override
++ (NSString *)userAgentOverrideForURL:(NSURL *)url;                  // nil when the engine's own identity applies
 
 + (BOOL)darkTheme;                       // default NO
 + (void)setDarkTheme:(BOOL)dark;
