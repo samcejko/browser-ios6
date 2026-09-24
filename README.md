@@ -46,7 +46,7 @@ the app around it:
   downloads with an "open in" menu, loading progress in the address field, padlock with connection
   details, search engine choice, text size, start page with most visited sites and bookmarks, favicons
   in the tab strip, long press on links (new tab, copy, share, save image, open in Safari), long press
-  on reload (desktop/mobile version, reload without cache), "Add bookmark" in the share sheet,
+  on reload (desktop/mobile version remembered per site, reload without cache), "Add bookmark" in the share sheet,
   private browsing (no history or cache, cookies restored afterwards), search suggestions from
   DuckDuckGo while typing, a reader view that extracts the article of a page into a clean layout,
   long press on a tab (close others, duplicate), pull to refresh.

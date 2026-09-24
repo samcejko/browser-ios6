@@ -297,23 +297,36 @@ static const CGFloat BRControlHeight = 30;
         id p = ((id (*)(id, SEL))objc_msgSend)(prefsClass, standard);
         if (p) [targets addObject:p];
     }
-    SEL docViewSel = NSSelectorFromString(@"_documentView");
-    if ([self.webView respondsToSelector:docViewSel]) {
-        id docView = ((id (*)(id, SEL))objc_msgSend)(self.webView, docViewSel);
-        SEL webViewSel = NSSelectorFromString(@"webView");
-        id inner = (docView && [docView respondsToSelector:webViewSel]) ? ((id (*)(id, SEL))objc_msgSend)(docView, webViewSel) : nil;
-        SEL prefsSel = NSSelectorFromString(@"preferences");
-        id p = (inner && [inner respondsToSelector:prefsSel]) ? ((id (*)(id, SEL))objc_msgSend)(inner, prefsSel) : nil;
-        if (p && ![targets containsObject:p]) [targets addObject:p];
+    // the document view inside the UIWebView owns the WebView (and its own WebPreferences)
+    SEL webViewSel = NSSelectorFromString(@"webView");
+    SEL prefsSel = NSSelectorFromString(@"preferences");
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:self.webView];
+    NSString *docViewClass = nil;
+    while (queue.count) {
+        UIView *v = queue[0];
+        [queue removeObjectAtIndex:0];
+        if (v != self.webView && [v respondsToSelector:webViewSel]) {
+            docViewClass = NSStringFromClass([v class]);
+            id inner = ((id (*)(id, SEL))objc_msgSend)(v, webViewSel);
+            id p = (inner && [inner respondsToSelector:prefsSel]) ? ((id (*)(id, SEL))objc_msgSend)(inner, prefsSel) : nil;
+            if (p && ![targets containsObject:p]) [targets addObject:p];
+            SEL innerSetter = NSSelectorFromString(@"_setWebGLEnabled:");
+            if (inner && [inner respondsToSelector:innerSetter]) ((void (*)(id, SEL, BOOL))objc_msgSend)(inner, innerSetter, YES);
+            break;
+        }
+        [queue addObjectsFromArray:v.subviews];
     }
     NSInteger done = 0;
+    NSMutableString *report = [NSMutableString string];
+    SEL getter = NSSelectorFromString(@"webGLEnabled");
     for (id p in targets) {
         if ([p respondsToSelector:setter]) {
             ((void (*)(id, SEL, BOOL))objc_msgSend)(p, setter, YES);
             done++;
         }
+        if ([p respondsToSelector:getter]) [report appendFormat:@" %@=%d", [p class], (int)((BOOL (*)(id, SEL))objc_msgSend)(p, getter)];
     }
-    BRLog(@"WebGL switch: %ld preference object(s) updated", (long)done);
+    BRLog(@"WebGL switch: %ld preference object(s) updated, document view %@,%@", (long)done, docViewClass ?: @"not found", report);
 }
 
 - (void)themeChanged:(NSNotification *)note
