@@ -40,6 +40,7 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) NSArray *historyItems;                   // WebHistoryItem objects behind the history menu
 @property (nonatomic, copy) void (^authCompletion)(NSString *user, NSString *password);   // login dialog in progress
 @property (nonatomic, strong) UIAlertView *authAlert;
+@property (nonatomic, strong) NSURL *challengeURL;                    // page behind the "open in Safari" offer
 @property (nonatomic, strong) UIView *findBar;
 @property (nonatomic, strong) UIImageView *findBarBackground;
 @property (nonatomic, strong) UITextField *findField;
@@ -388,6 +389,7 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(textSizeChanged:) name:@"BRTextSizeDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(privateModeChanged:) name:@"BRPrivateModeDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageStyleChanged:) name:@"BRPageStyleDidChangeNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openURLNotification:) name:@"BROpenURLNotification" object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
 
@@ -1204,8 +1206,8 @@ static void BRWebThreadLock(void)
 - (void)updateAddressFieldWithURL:(NSURL *)url
 {
     if (self.editingAddress) return;
-    if (!url || [BRSettings isHomeURL:url] || [url.scheme isEqualToString:@"about"] || [url.scheme isEqualToString:@"applewebdata"]) {
-        self.urlField.text = @"";
+    if (!url || [BRSettings isHomeURL:url] || [url isFileURL] || [url.scheme isEqualToString:@"about"] || [url.scheme isEqualToString:@"applewebdata"]) {
+        self.urlField.text = @"";   // bundled pages (start page, help) have no address worth showing
         return;
     }
     self.urlField.text = url.absoluteString;
@@ -1230,6 +1232,9 @@ static void BRWebThreadLock(void)
     if ([[url.scheme lowercaseString] isEqualToString:@"https"] && urlString.length > 5) {
         NSString *httpURL = [@"http" stringByAppendingString:[urlString substringFromIndex:5]];
         [html appendFormat:@"<a class=\"btn\" href=\"%@\">%@</a>", BRHTMLEscape(httpURL), BRHTMLEscape(L(@"Open via http://"))];
+    }
+    if ([[url.scheme lowercaseString] hasPrefix:@"http"]) {
+        [html appendFormat:@"<a class=\"btn\" href=\"brsafari:%@\">%@</a>", BRHTMLEscape([urlString stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: urlString), BRHTMLEscape(L(@"Open in Safari"))];
     }
     [html appendString:@"</p></body></html>"];
     [self.webView loadHTMLString:html baseURL:url];
@@ -1395,6 +1400,13 @@ static void BRWebThreadLock(void)
 - (void)pageStyleChanged:(NSNotification *)note
 {
     [self applyPageStyle];
+}
+
+// Settings (a modal) asks for a page, e.g. the help page
+- (void)openURLNotification:(NSNotification *)note
+{
+    NSURL *url = note.userInfo[@"url"];
+    if ([url isKindOfClass:[NSURL class]]) [self loadURL:url];
 }
 
 - (void)privateModeChanged:(NSNotification *)note
@@ -1750,6 +1762,9 @@ static void BRWebThreadLock(void)
 {
     if (alertView.tag == 200 && buttonIndex != alertView.cancelButtonIndex && self.documentController) {
         [self openDocumentController];
+    } else if (alertView.tag == 400) {
+        if (buttonIndex != alertView.cancelButtonIndex && self.challengeURL) [[UIApplication sharedApplication] openURL:self.challengeURL];
+        self.challengeURL = nil;
     } else if (alertView.tag == 300) {
         void (^completion)(NSString *, NSString *) = self.authCompletion;
         self.authCompletion = nil;
@@ -1820,6 +1835,23 @@ static void BRWebThreadLock(void)
     NSString *target = [NSString stringWithFormat:@"https://%@.translate.goog%@%@_x_tr_sl=auto&_x_tr_tl=%@&_x_tr_hl=%@", proxyHost, pathAndQuery, joiner, language, language];
     NSURL *url = [NSURL URLWithString:target];
     if (url) [self loadURL:url];
+}
+
+#pragma mark - Screenshot
+
+// The visible part of the page into the Photos library
+- (void)savePageScreenshot
+{
+    CGSize size = self.webView.bounds.size;
+    if (size.width < 1 || size.height < 1) return;
+    UIGraphicsBeginImageContextWithOptions(size, YES, [UIScreen mainScreen].scale);
+    [self.webView.layer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (image) {
+        UIImageWriteToSavedPhotosAlbum(image, nil, NULL, NULL);
+        [[[UIAlertView alloc] initWithTitle:nil message:L(@"Screenshot saved to Photos.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+    }
 }
 
 #pragma mark - Print, view source
@@ -1996,6 +2028,20 @@ static void BRWebThreadLock(void)
             translate.icon = BRActivityIconTranslate;
             translate.action = ^{ [weakSelf translateCurrentPage]; };
             [activities addObject:translate];
+        }
+        BRActionActivity *snapshot = [[BRActionActivity alloc] init];
+        snapshot.title = L(@"Save screenshot");
+        snapshot.type = @"com.samcejko.browser.screenshot";
+        snapshot.icon = BRActivityIconDocument;
+        snapshot.action = ^{ [weakSelf savePageScreenshot]; };
+        [activities addObject:snapshot];
+        if ([[page.scheme lowercaseString] hasPrefix:@"http"]) {
+            BRActionActivity *safari = [[BRActionActivity alloc] init];
+            safari.title = L(@"Open in Safari");
+            safari.type = @"com.samcejko.browser.safari";
+            safari.icon = BRActivityIconLines;
+            safari.action = ^{ [[UIApplication sharedApplication] openURL:page]; };
+            [activities addObject:safari];
         }
         [shared addObject:[self.webView viewPrintFormatter]];   // brings the system "Print" entry (AirPrint)
     }
@@ -2192,6 +2238,13 @@ static void BRWebThreadLock(void)
         [self printPage];
         return NO;
     }
+    if ([scheme isEqualToString:@"brsafari"]) {
+        // the error page's "Open in Safari" button
+        NSString *spec = url.absoluteString.length > 9 ? [url.absoluteString substringFromIndex:9] : @"";
+        NSURL *target = [NSURL URLWithString:[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec];
+        if (target && [[target.scheme lowercaseString] hasPrefix:@"http"]) [[UIApplication sharedApplication] openURL:target];
+        return NO;
+    }
     if ([scheme isEqualToString:@"brshare"]) {
         // navigator.share() from shims-extra.js: brshare:<percent-encoded JSON {title, text, url}>
         NSString *spec = url.absoluteString.length > 8 ? [url.absoluteString substringFromIndex:8] : @"";
@@ -2266,7 +2319,27 @@ static void BRWebThreadLock(void)
             NSString *info = [webView stringByEvaluatingJavaScriptFromString:@"document.getElementById('info').innerText"];
             BRLog(@"Home page: %@", info ?: @"");
         }
+        [self checkForBrowserChallenge:title url:url];
     }
+}
+
+// Cloudflare-style "verifying your browser" pages never pass on this engine: offer Safari once per host
+- (void)checkForBrowserChallenge:(NSString *)title url:(NSURL *)url
+{
+    if (![[url.scheme lowercaseString] hasPrefix:@"http"] || !title.length) return;
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"just a moment|verifying your browser|checking your browser|attention required|access denied" options:NSRegularExpressionCaseInsensitive error:NULL];
+    if (![re firstMatchInString:title options:0 range:NSMakeRange(0, title.length)]) return;
+    static NSMutableSet *asked;
+    if (!asked) asked = [NSMutableSet set];
+    NSString *host = [url.host lowercaseString] ?: @"";
+    if ([asked containsObject:host] || self.authCompletion) return;
+    [asked addObject:host];
+    BRLog(@"Browser challenge page on %@ (%@)", host, title);
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:host message:L(@"This site checks the browser before showing the page, which this engine cannot pass. Open it in Safari?")
+                                                   delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Open in Safari"), nil];
+    alert.tag = 400;
+    self.challengeURL = url;
+    [alert show];
 }
 
 - (void)webView:(UIWebView *)webView didFailLoadWithError:(NSError *)error

@@ -129,6 +129,12 @@
 "The address must contain %s." = "Adresa musí obsahovat %s.";
 "Download link" = "Stáhnout odkaz";
 "Paste and Go" = "Vložit a přejít";
+"Reset settings" = "Obnovit výchozí nastavení";
+"Settings reset." = "Nastavení bylo obnoveno.";
+"Help and gestures" = "Nápověda a gesta";
+"Save screenshot" = "Uložit snímek stránky";
+"Screenshot saved to Photos." = "Snímek stránky byl uložen do Fotek.";
+"This site checks the browser before showing the page, which this engine cannot pass. Open it in Safari?" = "Tento web před zobrazením ověřuje prohlížeč, což tento engine nezvládne. Otevřít stránku v Safari?";
 "Rename" = "Přejmenovat";
 "Edit address" = "Upravit adresu";
 "Save" = "Uložit";

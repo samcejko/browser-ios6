@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Nápověda</title>
+<style>
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 16px; background: #f2f2f5; color: #333; -webkit-text-size-adjust: 100%; }
+body.dark { background: #1c1c1e; color: #eee; }
+.wrap { max-width: 640px; margin: 0 auto; }
+h1 { font-size: 24px; margin: 8px 0 14px; color: #2b5fb3; }
+body.dark h1 { color: #8ab4f8; }
+h2 { font-size: 15px; color: #888; margin: 22px 4px 8px; font-weight: normal; text-transform: uppercase; letter-spacing: 0.5px; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { background: #fff; border: 1px solid #ddd; margin-bottom: -1px; padding: 11px 14px; font-size: 16px; line-height: 1.4; }
+body.dark li { background: #2c2c2e; border-color: #444; }
+li:first-child { border-radius: 8px 8px 0 0; }
+li:last-child { border-radius: 0 0 8px 8px; }
+b { color: #2b5fb3; }
+body.dark b { color: #8ab4f8; }
+p { font-size: 15px; line-height: 1.45; margin: 8px 4px; }
+.note { font-size: 13px; color: #888; margin: 14px 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Nápověda</h1>
+<p>Prohlížeč používá vestavěný engine iOS 6 a všechno, co engine neumí, doplňuje sám: vlastní šifrované spojení
+(TLS 1.2 s aktuálními certifikáty), přepis moderního CSS, doplnění JavaScriptu, převod fontů WOFF2 a obrázků WebP.</p>
+
+<h2>Adresní řádek</h2>
+<ul>
+  <li><b>Adresa nebo hledání</b> – co nevypadá jako adresa, se hledá zvoleným vyhledávačem. Při psaní se nabízí historie, záložky a našeptávač.</li>
+  <li><b>Zkratky</b> – <i>g dotaz</i> hledá na Googlu, <i>b</i> Bing, <i>s</i> Seznam, <i>d</i> DuckDuckGo, <i>w</i> česká a <i>we</i> anglická Wikipedie.</li>
+  <li><b>javascript:</b> – bookmarklet se spustí v otevřené stránce.</li>
+  <li><b>Vložit a přejít</b> – v nabídce po podržení prstu v adresním řádku.</li>
+  <li><b>Zámek</b> vlevo ukáže údaje o šifrovaném spojení; <b>ikona čtečky</b> se objeví u článků.</li>
+  <li><b>Podržení tlačítka Načíst</b> – načtení bez cache, verze pro počítač / mobil, povolení reklam na tomto webu.</li>
+</ul>
+
+<h2>Navigace</h2>
+<ul>
+  <li><b>Tažení od okraje obrazovky</b> – zpět (zleva) a vpřed (zprava).</li>
+  <li><b>Podržení šipky zpět nebo vpřed</b> – seznam stránek v historii panelu.</li>
+  <li><b>Tažení dolů</b> nad začátkem stránky – načte stránku znovu.</li>
+</ul>
+
+<h2>Panely</h2>
+<ul>
+  <li><b>Plus</b> otevře nový panel; <b>podržení plusu</b> nabídne nedávno zavřené panely.</li>
+  <li><b>Podržení panelu</b> – zavřít, zavřít ostatní, duplikovat, znovu otevřít zavřený.</li>
+  <li><b>Podržení odkazu</b> – otevřít v novém panelu nebo na pozadí, kopírovat, sdílet, stáhnout, otevřít v Safari, uložit obrázek.</li>
+</ul>
+
+<h2>Sdílení (ikona se šipkou)</h2>
+<ul>
+  <li><b>Čtečka</b> – článek bez okolního balastu.</li>
+  <li><b>Najít na stránce</b>, <b>Přeložit stránku</b> (přes Překladač Google), <b>Zdrojový kód</b>.</li>
+  <li><b>Tisk</b> (AirPrint) a <b>Uložit jako PDF</b> do stažených souborů.</li>
+  <li><b>Přidat záložku</b>; záložky, historii a stažené soubory otevře ikona knihy. Záložky lze přejmenovat, upravit a seřadit (Upravit, nebo podržení prstu).</li>
+</ul>
+
+<h2>Označený text</h2>
+<ul>
+  <li><b>Hledat</b> a <b>Sdílet</b> v nabídce nad označením; <b>Otevřít</b>, pokud je označená adresa.</li>
+</ul>
+
+<h2>Nastavení</h2>
+<ul>
+  <li><b>Verze stránek</b> – identita prohlížeče (iPad s iOS 6, počítač, moderní iPad). Google se vždy načítá jako moderní iPad.</li>
+  <li><b>Vyhledávač</b> – DuckDuckGo, Google, Bing, Seznam nebo vlastní adresa s %s.</li>
+  <li><b>Domovská stránka</b> – vestavěná úvodní stránka, nebo právě otevřená stránka.</li>
+  <li><b>Soukromí</b> – anonymní prohlížení, blokování reklam, cookies třetích stran, Do Not Track, skrývání cookie lišt.</li>
+  <li><b>Načítat obrázky</b> vypnuté šetří data; <b>Tmavé stránky</b> vnutí stránkám tmavý styl.</li>
+  <li><b>Zapomenout hesla k webům</b> – přihlašovací údaje HTTP autentizace platí jen do ukončení aplikace.</li>
+</ul>
+
+<h2>Co nefunguje</h2>
+<p>Stránky, které vyžadují JavaScript novější než ES5 (syntaxe let/const, šipkové funkce, moduly) bez záložní verze,
+weby s ověřením prohlížeče (Cloudflare) a přehrávače videa s MSE. Přepis takového kódu byl na iPadu 2 vyzkoušen a je
+příliš pomalý.</p>
+<p class="note">Aplikace neposílá žádná data nikam jinam než na navštívené weby a zvolený vyhledávač.</p>
+</div>
+<script>
+try { if (/dark/.test(location.search)) document.body.className = 'dark'; } catch (e) {}
+</script>
+</body>
+</html>

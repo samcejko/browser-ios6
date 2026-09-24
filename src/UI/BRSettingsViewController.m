@@ -85,8 +85,8 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         case BRSettingsSectionAppearance: return BRAppearanceRowCount;
         case BRSettingsSectionFeatures: return BRFeatureRowCount;
         case BRSettingsSectionPrivacy: return BRPrivacyRowCount;
-        case BRSettingsSectionData: return 3;
-        case BRSettingsSectionInfo: return 4;
+        case BRSettingsSectionData: return 4;
+        case BRSettingsSectionInfo: return 5;
     }
     return 0;
 }
@@ -212,9 +212,15 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
     } else if (section == BRSettingsSectionData) {
         cell.selectionStyle = UITableViewCellSelectionStyleBlue;
         cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
-        cell.textLabel.text = row == 0 ? L(@"Clear cache") : row == 1 ? L(@"Clear cookies") : L(@"Forget site passwords");
+        cell.textLabel.text = row == 0 ? L(@"Clear cache") : row == 1 ? L(@"Clear cookies") : row == 2 ? L(@"Forget site passwords") : L(@"Reset settings");
     } else {
         switch (row) {
+            case 4:
+                cell.textLabel.text = L(@"Help and gestures");
+                cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                break;
             case 0:
                 cell.textLabel.text = L(@"Version");
                 cell.detailTextLabel.text = [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] ?: @"?";
@@ -299,7 +305,35 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         else [sheet showInView:self.view];
         return;
     }
+    if (indexPath.section == BRSettingsSectionInfo && indexPath.row == 4) {
+        NSURL *help = [[NSBundle mainBundle] URLForResource:@"help" withExtension:@"html"];
+        if ([BRTheme shared].isDark && help) help = [NSURL URLWithString:[help.absoluteString stringByAppendingString:@"?dark"]];
+        [self dismissViewControllerAnimated:YES completion:^{
+            if (help) [[NSNotificationCenter defaultCenter] postNotificationName:@"BROpenURLNotification" object:nil userInfo:@{ @"url": help }];
+        }];
+        return;
+    }
     if (indexPath.section != BRSettingsSectionData) return;
+    if (indexPath.row == 3) {
+        // back to the defaults (tabs, bookmarks and history stay)
+        [BRSettings setPrivateMode:NO];
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        for (NSString *key in @[@"BRAdBlock", @"BRCSSFix", @"BRJSFix", @"BRUserAgentMode", @"BRDarkTheme", @"BRSearchEngine", @"BRTextSizePercent", @"BRDoNotTrack",
+                                @"BRBlockThirdPartyCookies", @"BRLoadImages", @"BRHideCookieBanners", @"BRPagesDark", @"BRUserAgentHosts", @"BRAdBlockHosts",
+                                @"BRHomePage", @"BRCustomSearch", @"BRVerifyTLS"]) {
+            [d removeObjectForKey:key];
+        }
+        [d synchronize];
+        [[BRTheme shared] setDark:NO];
+        [[BRTheme shared] applyToNavigationBar:self.navigationController.navigationBar];
+        [[BRTheme shared] applyToTableView:self.tableView];
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"BRTextSizeDidChangeNotification" object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"BRPageStyleDidChangeNotification" object:nil];
+        [[[UIAlertView alloc] initWithTitle:nil message:L(@"Settings reset.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+        [self.tableView reloadData];
+        return;
+    }
     if (indexPath.row == 0) {
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
         NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
