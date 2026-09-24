@@ -990,8 +990,10 @@
                     if (cr.indexOf('br-container') >= 0 || names.length) containers.push({ el: el, names: names });
                 }
                 if (cr.indexOf('br-aspect') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
-                var m = /br-aspect\s+(\d+)\s+br-aspect-h\s+(\d+)/.exec(cr);
-                if (!m) continue;
+                // the engine serialises the counters in its own order, so the two are read independently
+                var mw = /br-aspect\s+(\d+)/.exec(cr), mhh = /br-aspect-h\s+(\d+)/.exec(cr);
+                if (!mw || !mhh) continue;
+                var m = [null, mw[1], mhh[1]];
                 var tag = el.tagName;
                 var replaced = tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME' || tag === 'CANVAS' || tag === 'EMBED' || tag === 'OBJECT' || tag === 'SVG';
                 if (!replaced && (el.children.length || (el.textContent || '').replace(/\s+/g, '').length)) continue;   // boxes with content keep their own height
@@ -1083,8 +1085,13 @@
             setStateClass(m, 'br-playing', !m.paused && !m.ended);
             setStateClass(m, 'br-paused', m.paused || m.ended);
             setStateClass(m, 'br-muted', !!m.muted || m.volume === 0);
+            setStateClass(m, 'br-seeking', !!m.seeking);
+            if (e.type === 'waiting') m.__brBuffering = true; else if (e.type === 'playing' || e.type === 'canplay' || e.type === 'pause' || e.type === 'ended') m.__brBuffering = false;
+            if (e.type === 'stalled') m.__brStalled = true; else if (e.type === 'progress' || e.type === 'playing' || e.type === 'canplay') m.__brStalled = false;
+            setStateClass(m, 'br-buffering', !!m.__brBuffering);
+            setStateClass(m, 'br-stalled', !!m.__brStalled);
         };
-        var mediaEvents = ['play', 'playing', 'pause', 'ended', 'volumechange', 'loadedmetadata', 'emptied'];
+        var mediaEvents = ['play', 'playing', 'pause', 'ended', 'volumechange', 'loadedmetadata', 'emptied', 'seeking', 'seeked', 'waiting', 'canplay', 'stalled', 'progress'];
         for (var me = 0; me < mediaEvents.length; me++) document.addEventListener(mediaEvents[me], mediaState, true);
         // :target-within
         var targetChain = [];
@@ -1385,7 +1392,11 @@
         // scroll snap containers
         var snapContainers = [];
         var alignOf = function (child) {
-            if (child.__brSnapAlign === undefined) { var m = /br-snap-align\s+(\d)/.exec(getComputedStyle(child).counterReset || ''); child.__brSnapAlign = m ? parseInt(m[1], 10) : 0; }
+            if (child.__brSnapAlign === undefined) {
+                var cr = getComputedStyle(child).counterReset || '', m = /br-snap-align\s+(\d)/.exec(cr), mm = /br-snap-margin\s+(-?\d+)/.exec(cr);
+                child.__brSnapAlign = m ? parseInt(m[1], 10) : 0;
+                child.__brSnapMargin = mm ? parseInt(mm[1], 10) : 0;   // scroll-margin: the item's own outset from the snap position
+            }
             return child.__brSnapAlign;
         };
         var snapNow = function (c) {
@@ -1398,13 +1409,13 @@
                 var k = kids[i], a = alignOf(k);
                 if (!a) continue;
                 if (c.x) {
-                    var tx = a === 2 ? k.offsetLeft - (cw - k.offsetWidth) / 2 : a === 3 ? k.offsetLeft + k.offsetWidth - cw : k.offsetLeft - c.pad;
+                    var tx = a === 2 ? k.offsetLeft - (cw - k.offsetWidth) / 2 : a === 3 ? k.offsetLeft + k.offsetWidth - cw : k.offsetLeft - c.pad - (k.__brSnapMargin || 0);
                     tx = Math.max(0, Math.min(maxX, tx));
                     var dx = Math.abs(tx - sx);
                     if (dx < bestDX) { bestDX = dx; bestX = tx; }
                 }
                 if (c.y) {
-                    var ty = a === 2 ? k.offsetTop - (ch - k.offsetHeight) / 2 : a === 3 ? k.offsetTop + k.offsetHeight - ch : k.offsetTop - c.pad;
+                    var ty = a === 2 ? k.offsetTop - (ch - k.offsetHeight) / 2 : a === 3 ? k.offsetTop + k.offsetHeight - ch : k.offsetTop - c.pad - (k.__brSnapMargin || 0);
                     ty = Math.max(0, Math.min(maxY, ty));
                     var dy = Math.abs(ty - sy);
                     if (dy < bestDY) { bestDY = dy; bestY = ty; }

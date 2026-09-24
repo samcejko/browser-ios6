@@ -756,13 +756,19 @@ var CSSFix = (function () {
             var words = splitWS(first).slice(1), mapped = [];
             for (var i = 0; i < words.length; i++) mapped.push(SIDES[words[i].toLowerCase()] || words[i]);
             dir = mapped.join(' ');
-        } else if (/^-?[\d.]+(deg|grad|rad|turn)$/i.test(first)) {
-            var ang = 90 - hueDeg(first);
+        } else if (/^-?[\d.]+(deg|grad|rad|turn)$/i.test(first) || first === '0') {
+            var ang = 90 - hueDeg(first === '0' ? '0deg' : first);
             ang = ((ang % 360) + 360) % 360;
             dir = (Math.round(ang * 100) / 100) + 'deg';
         } else rest = args;
-        var stops = normalizeStops(rest);
+        var stops = singleStop(normalizeStops(rest));
         return (dir ? dir + ', ' : '') + stops.join(', ');
+    }
+
+    // a gradient with one colour stop is a solid fill; the old syntax needs two stops for that
+    function singleStop(stops) {
+        if (stops.length === 1) stops.push(splitWS(stops[0])[0]);
+        return stops;
     }
 
     function convertRadialGradient(inner) {
@@ -779,7 +785,7 @@ var CSSFix = (function () {
         } else if (/^(circle|ellipse|closest-|farthest-|-?[\d.]+(px|%|em|rem))/i.test(first)) {
             head = first;
         } else rest = args;
-        var stops = normalizeStops(rest);
+        var stops = singleStop(normalizeStops(rest));
         return (head ? head + ', ' : '') + stops.join(', ');
     }
 
@@ -798,7 +804,7 @@ var CSSFix = (function () {
             }
             if (out.length) stops.push(out.join(' '));
         }
-        return normalizeStops(stops).join(', ');
+        return singleStop(normalizeStops(stops)).join(', ');
     }
 
     // image("a.png"), image(url(a.png), red), image(red): the first image, or a flat gradient of the colour
@@ -1074,6 +1080,44 @@ var CSSFix = (function () {
                 return '-webkit-image-set(' + trim(isv) + ')';
             }
             case 'fit-content': return inner;
+            case 'progress': {
+                // progress(value, start, end) -> a plain number
+                var pa = evalArgs(splitTop(inner, ','));
+                if (pa && pa.length === 3 && sameUnit(pa) && pa[2].n !== pa[1].n) return fmtValue({ n: (pa[0].n - pa[1].n) / (pa[2].n - pa[1].n), u: '' });
+                return null;
+            }
+            case 'mix': case 'calc-mix': {
+                // mix(<progress>, a, b): numbers and lengths interpolate, colours go through color-mix, anything else picks a side
+                var ma = splitTop(inner, ',');
+                if (ma.length !== 3) return null;
+                var mp = mixProgress(trim(ma[0]));
+                if (mp === null) return null;
+                var mA = trim(ma[1]), mB = trim(ma[2]), nA = evalExpr(mA), nB = evalExpr(mB);
+                if (nA && nB && sameUnit([nA, nB])) return fmtValue({ n: nA.n + (nB.n - nA.n) * mp, u: nA.u });
+                if (name === 'mix' && parseColor(mA) && parseColor(mB)) return convertColorFunction('color-mix', 'in srgb, ' + mA + ' ' + Math.round((1 - mp) * 100) + '%, ' + mB);
+                return mp < 0.5 ? mA : mB;
+            }
+            case 'random': {
+                // random([options,] min, max [, step]): one value chosen when the stylesheet is rewritten
+                var rArgs = splitTop(inner, ','), rNums = [];
+                for (var ri = 0; ri < rArgs.length; ri++) { var rvv = evalExpr(rArgs[ri]); if (rvv) rNums.push(rvv); }
+                if (rNums.length < 2 || !sameUnit(rNums)) return null;
+                var rMin = rNums[0].n, rMax = rNums[1].n, rVal = rMin + Math.random() * (rMax - rMin);
+                if (rNums.length > 2 && rNums[2].n > 0) rVal = rMin + Math.round((rVal - rMin) / rNums[2].n) * rNums[2].n;
+                return fmtValue({ n: Math.min(rMax, rVal), u: rNums[0].u });
+            }
+            case 'calc-size': {
+                // calc-size(basis, expr): the basis alone, or the expression evaluated when the basis is a plain length
+                var csArgs = splitTop(inner, ',');
+                if (csArgs.length !== 2) return null;
+                var csBasis = trim(csArgs[0]), csExpr = trim(csArgs[1]).toLowerCase();
+                if (csExpr === 'size') return csBasis;
+                if (csExpr.indexOf('size') < 0) { var csPlain = evalExpr(csExpr); return csPlain ? fmtValue(csPlain) : csExpr; }
+                var csBase = evalExpr(csBasis);
+                if (!csBase) return null;   // auto / stretch / max-content bases need the layout, which only the engine knows
+                var csVal = evalExpr(csExpr.replace(/\bsize\b/g, '(' + fmtValue(csBase) + ')'));
+                return csVal ? fmtValue(csVal) : null;
+            }
             case 'rgb': case 'rgba': case 'hsl': case 'hsla': case 'hwb': case 'oklch': case 'oklab': case 'lab': case 'lch': case 'color': case 'color-mix': case 'light-dark':
             case 'contrast-color': case 'device-cmyk':
                 return convertColorFunction(name, inner);
@@ -1083,7 +1127,13 @@ var CSSFix = (function () {
     }
 
     // values that contain none of the functions we rewrite skip the walker entirely (url(), translate(), ... are common)
-    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade)\(/i;
+    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade|progress|mix|calc-mix|random|calc-size)\(/i;
+
+    function mixProgress(tok) {   // "0.5" or "50%" -> 0.5; timelines and other sources cannot be resolved statically
+        if (/^-?[\d.]+%$/.test(tok)) return parseFloat(tok) / 100;
+        if (/^-?[\d.]+$/.test(tok)) return parseFloat(tok);
+        return null;
+    }
 
     function transformFunctions(s) {
         if (s.indexOf('(') < 0 || !INTERESTING_FN.test(s)) return s;
@@ -1161,7 +1211,7 @@ var CSSFix = (function () {
         appearance: 1, filter: 1, mask: 1, 'mask-image': 1, 'mask-size': 1, 'mask-position': 1, 'mask-repeat': 1, 'mask-composite': 1, 'mask-clip': 1,
         'mask-origin': 1, 'clip-path': 1, 'text-size-adjust': 1, 'font-feature-settings': 1, hyphens: 1, 'box-decoration-break': 1, 'font-kerning': 1,
         'writing-mode': 1, 'text-orientation': 1, 'shape-outside': 1, 'shape-margin': 1, 'text-emphasis': 1, 'text-emphasis-style': 1, 'text-emphasis-color': 1,
-        'line-clamp': 1, 'box-reflect': 1, 'text-combine': 1, 'font-smoothing': 1, 'overflow-scrolling': 1, 'tap-highlight-color': 1, 'text-fill-color': 1, 'hyphenate-character': 1,
+        'line-clamp': 1, 'box-reflect': 1, 'text-combine': 1, 'font-smoothing': 1, 'overflow-scrolling': 1, 'tap-highlight-color': 1, 'text-fill-color': 1, 'hyphenate-character': 1, 'tab-size': 1,
         'text-stroke': 1, 'text-stroke-width': 1, 'text-stroke-color': 1, 'print-color-adjust': 1, 'background-clip': 0 };
 
     var PACK = { 'flex-start': 'start', start: 'start', left: 'start', 'flex-end': 'end', end: 'end', right: 'end', center: 'center',
@@ -1171,9 +1221,15 @@ var CSSFix = (function () {
 
     function isGlobalKeyword(lv) { return lv === 'inherit' || lv === 'initial'; }
 
+    // the two corners of each css-borders-4 side shorthand, clockwise
+    var RADIUS_SIDES = { top: ['border-top-left-radius', 'border-top-right-radius'], right: ['border-top-right-radius', 'border-bottom-right-radius'],
+        bottom: ['border-bottom-right-radius', 'border-bottom-left-radius'], left: ['border-bottom-left-radius', 'border-top-left-radius'] };
+    RADIUS_SIDES['block-start'] = RADIUS_SIDES.top; RADIUS_SIDES['block-end'] = RADIUS_SIDES.bottom;
+    RADIUS_SIDES['inline-start'] = RADIUS_SIDES.left; RADIUS_SIDES['inline-end'] = RADIUS_SIDES.right;
+
     // css-text-4: white-space is "<white-space-collapse> || <text-wrap-mode>"; the old engine knows the five classic values
     function whiteSpaceValue(p, lv) {
-        if (isGlobalKeyword(lv)) return lv;
+        if (isGlobalKeyword(lv)) return p === 'white-space' ? lv : null;
         var collapse = null, wrap = null, toks = lv.split(/\s+/);
         if (toks.length === 1 && /^(normal|pre|nowrap|pre-wrap|pre-line)$/.test(lv)) return lv;
         for (var i = 0; i < toks.length; i++) {
@@ -1293,7 +1349,7 @@ var CSSFix = (function () {
         var autoLeft = false, autoRight = false, hasDisplay = false;
         // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
         // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
-        var markers = [];
+        var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') hasDisplay = true;
@@ -1416,6 +1472,7 @@ var CSSFix = (function () {
                 case 'aspect-ratio': {
                     // the engine has no aspect-ratio: the ratio travels in a harmless counter-reset value that
                     // shims-extra.js reads back from the computed style and turns into a height
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
                     var ar = /(?:^|\s)([\d.]+)\s*(?:\/\s*([\d.]+))?\s*$/.exec(lv.replace(/^auto\s*/, ''));
                     if (ar) {
                         var arw = parseFloat(ar[1]), arh = ar[2] ? parseFloat(ar[2]) : 1;
@@ -1469,11 +1526,13 @@ var CSSFix = (function () {
                     if (p === 'white-space') { push(out, p, wsv || v, imp); continue; }
                     if (wsv) push(out, 'white-space', wsv, imp);
                     if (/\bbalance\b/.test(lv)) markers.push('br-balance 1');   // the shim balances the lines of marked headings
+                    if (p === 'text-wrap' && isGlobalKeyword(lv)) markerKeyword = lv;
                     push(out, p, v, imp);
                     continue;
                 }
                 case 'text-wrap-style':
                     if (lv === 'balance') markers.push('br-balance 1');
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
                     push(out, p, v, imp);
                     continue;
                 case 'vertical-align': {
@@ -1629,6 +1688,7 @@ var CSSFix = (function () {
                     // container elements are marked through counter-reset (read back from the computed style by the
                     // shim): "br-container 1" for a size container, "br-cn-<name> 1" for each container name
                     var cqMarks = [], cqNames = '', cqType = '';
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
                     if (p === 'container') { var slash = lv.indexOf('/'); cqNames = trim(slash >= 0 ? lv.slice(0, slash) : lv); cqType = slash >= 0 ? trim(lv.slice(slash + 1)) : ''; }
                     else if (p === 'container-name') cqNames = lv;
                     else cqType = lv;
@@ -1640,6 +1700,7 @@ var CSSFix = (function () {
                 }
                 case 'scroll-snap-type': {
                     // "x mandatory", "both proximity", "inline mandatory": the shim snaps the scroll position of marked containers
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
                     var snapAxis = /\b(x|inline)\b/.test(lv) ? 'x' : /\b(y|block)\b/.test(lv) ? 'y' : /\bboth\b/.test(lv) ? 'both' : null;
                     if (snapAxis && lv !== 'none') {
                         if (snapAxis !== 'y') markers.push('br-snap-x 1');
@@ -1649,23 +1710,48 @@ var CSSFix = (function () {
                     push(out, p, v, imp);
                     continue;
                 }
-                case 'scroll-snap-align': {
-                    var snapAlign = /\bcenter\b/.test(lv) ? 2 : /\bend\b/.test(lv) ? 3 : /\bstart\b/.test(lv) ? 1 : 0;
-                    if (snapAlign) markers.push('br-snap-align ' + snapAlign);
+                case 'scroll-snap-align': case 'scroll-snap-stop': {
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    if (p === 'scroll-snap-align') {
+                        var snapAlign = /\bcenter\b/.test(lv) ? 2 : /\bend\b/.test(lv) ? 3 : /\bstart\b/.test(lv) ? 1 : 0;
+                        if (snapAlign) markers.push('br-snap-align ' + snapAlign);
+                    } else if (lv === 'always') markers.push('br-snap-stop 1');
                     push(out, p, v, imp);
                     continue;
                 }
                 case 'scroll-padding': case 'scroll-padding-left': case 'scroll-padding-top': case 'scroll-padding-inline-start': case 'scroll-padding-block-start':
-                case 'scroll-padding-inline': case 'scroll-padding-block': {
-                    var spv = /^(-?[\d.]+)(px|em|rem)\b/.exec(lv.split(/\s+/)[p === 'scroll-padding' ? (lv.split(/\s+/).length > 1 ? 3 : 0) : 0] || lv);
-                    if (spv) markers.push('br-snap-pad ' + Math.round(parseFloat(spv[1]) * (spv[2] === 'px' ? 1 : 16)));
+                case 'scroll-padding-inline': case 'scroll-padding-block': case 'scroll-padding-right': case 'scroll-padding-bottom': case 'scroll-padding-inline-end': case 'scroll-padding-block-end':
+                case 'scroll-margin': case 'scroll-margin-left': case 'scroll-margin-top': case 'scroll-margin-inline-start': case 'scroll-margin-block-start': case 'scroll-margin-inline': case 'scroll-margin-block':
+                case 'scroll-margin-right': case 'scroll-margin-bottom': case 'scroll-margin-inline-end': case 'scroll-margin-block-end': {
+                    // the start-side value (px, em, rem) becomes the container's snap padding or the item's snap margin
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    var spToks = lv.split(/\s+/), spTok = spToks[(p === 'scroll-padding' || p === 'scroll-margin') && spToks.length > 1 ? 3 : 0] || spToks[0];
+                    if ((p === 'scroll-padding' || p === 'scroll-margin') && spToks.length === 2) spTok = spToks[1];
+                    if ((p === 'scroll-padding' || p === 'scroll-margin') && spToks.length === 3) spTok = spToks[1];
+                    var spv = /^(-?[\d.]+)(px|em|rem)$/.exec(spTok);
+                    if (spv && !/-(right|bottom|inline-end|block-end)$/.test(p)) markers.push((p.indexOf('scroll-padding') === 0 ? 'br-snap-pad ' : 'br-snap-margin ') + Math.round(parseFloat(spv[1]) * (spv[2] === 'px' ? 1 : 16)));
+                    else if (spv || /^(auto|0)$/.test(spTok)) markers.push('br-snap-end 1');   // end-side values only mark the element as snap-aware
                     push(out, p, v, imp);
                     continue;
                 }
                 case 'scroll-behavior':
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
                     if (lv === 'smooth') markers.push('br-smooth 1');
                     push(out, p, v, imp);
                     continue;
+                case 'border-top-radius': case 'border-right-radius': case 'border-bottom-radius': case 'border-left-radius':
+                case 'border-block-start-radius': case 'border-block-end-radius': case 'border-inline-start-radius': case 'border-inline-end-radius': {
+                    // css-borders-4 side shorthands: "<h1> <h2>? / <v1> <v2>?" -> the two corner longhands
+                    var corners = RADIUS_SIDES[p.replace(/^border-|-radius$/g, '')];
+                    if (isGlobalKeyword(lv)) { push(out, corners[0], v, imp); push(out, corners[1], v, imp); continue; }
+                    var rSlash = scanUntil(v, 0, v.length, '/');
+                    var rh = splitWS(trim(v.slice(0, rSlash))), rv = rSlash < v.length ? splitWS(trim(v.slice(rSlash + 1))) : null;
+                    if (!rh.length) { push(out, p, v, imp); continue; }
+                    var rh2 = rh.length > 1 ? rh[1] : rh[0], rv1 = rv && rv.length ? rv[0] : null, rv2 = rv && rv.length ? (rv.length > 1 ? rv[1] : rv[0]) : null;
+                    push(out, corners[0], rv1 ? rh[0] + ' ' + rv1 : rh[0], imp);
+                    push(out, corners[1], rv2 ? rh2 + ' ' + rv2 : rh2, imp);
+                    continue;
+                }
                 case 'line-clamp':
                     // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box)
                     if (/^\d+$/.test(lv)) {
@@ -1741,19 +1827,21 @@ var CSSFix = (function () {
             if (parts.length) { push(out, '-webkit-transform', parts.join(' '), false); push(out, 'transform', parts.join(' '), false); }
         }
         if (markers.length) push(out, 'counter-reset', markers.join(' '), false);
+        else if (markerKeyword) push(out, 'counter-reset', markerKeyword, false);
         return out;
     }
 
     // ------------------------------------------------------------------ selectors
 
-    var DROP_SELECTOR = /:has\(|::part\(|::slotted\(|:host|:state\(|::backdrop|::marker|::file-selector-button|::cue|::view-transition|:autofill|:picture-in-picture|:defined|:current|:past|:future|::highlight|::spelling-error|::grammar-error|::target-text|:xr-overlay|:open|:closed|:volume-locked|>>>|\/deep\/|^\s*&|\s&|&\s|:nth-child\([^)]*\bof\b/i;
+    var DROP_SELECTOR = /:has\(|::slotted\(|:host|:state\(|::backdrop|::marker|::file-selector-button|::cue|::view-transition|:autofill|:picture-in-picture|:defined|:current|:past|:future|::highlight|::spelling-error|::grammar-error|::target-text|:xr-overlay|:open|:closed|:volume-locked|>>>|\/deep\/|^\s*&|\s&|&\s|:nth-child\([^)]*\bof\b/i;
 
     // Pseudo-classes the engine lacks that shims-extra.js maintains as classes on the elements (focus-within,
     // placeholder-shown, user-invalid/valid, blank, target-within, playing/paused/muted, local-link, modal, fullscreen)
     var STATE_CLASSES = { ':focus-within': '.br-focus-within', ':placeholder-shown': '.br-placeholder-shown', ':user-invalid': '.br-user-invalid',
         ':user-valid': '.br-user-valid', ':blank': '.br-blank', ':target-within': '.br-target-within', ':playing': '.br-playing', ':paused': '.br-paused',
-        ':muted': '.br-muted', ':local-link': '.br-local-link', ':modal': '.br-modal', ':fullscreen': '.br-fullscreen', ':-webkit-full-screen': '.br-fullscreen', ':popover-open': '.br-popover-open' };
-    var STATE_CLASS_RE = /:(focus-within|placeholder-shown|user-invalid|user-valid|blank|target-within|playing|paused|muted|local-link|modal|fullscreen|-webkit-full-screen|popover-open)\b/gi;
+        ':muted': '.br-muted', ':local-link': '.br-local-link', ':modal': '.br-modal', ':fullscreen': '.br-fullscreen', ':-webkit-full-screen': '.br-fullscreen', ':popover-open': '.br-popover-open',
+        ':seeking': '.br-seeking', ':buffering': '.br-buffering', ':stalled': '.br-stalled' };
+    var STATE_CLASS_RE = /:(focus-within|placeholder-shown|user-invalid|user-valid|blank|target-within|playing|paused|muted|local-link|modal|fullscreen|-webkit-full-screen|popover-open|seeking|buffering|stalled)\b/gi;
 
     function isCompound(sel) {   // no combinators at depth 0
         var depth = 0;
@@ -1882,15 +1970,29 @@ var CSSFix = (function () {
             var close = matchParen(sel, at + 4);
             var inner = trim(sel.slice(at + 5, close));
             var prefix = trim(out + sel.slice(i, at));
-            if (!inner || /:(not|is|where|has)\(/i.test(prefix.slice(prefix.lastIndexOf(' ') + 1)) && /\(/.test(prefix) && matchParen(prefix, prefix.indexOf('(')) >= prefix.length) return null;
-            var target = prefix;
+            if (!inner) return null;
+            // ":not(:has(X))" works the same way with the class negated; :has() inside any other function stays unsupported
+            var inNot = /:not\($/i.test(prefix);
+            var target = inNot ? trim(prefix.slice(0, -5)) : prefix;
+            if (!inNot && openParens(prefix) > 0) return null;
             if (!target || /[>+~\s]$/.test(target)) target += '*';
             var h = manifestHash(target + '|' + inner);
             manifestAdd('has', { h: h, target: target, inner: inner });
-            out += sel.slice(i, at) + (/[>+~\s]$/.test(sel.slice(i, at)) || at === i ? '*' : '') + '.br-has-' + h;
+            out += sel.slice(i, at) + ((/[>+~\s]$/.test(sel.slice(i, at)) || at === i) && !inNot ? '*' : '') + '.br-has-' + h;
             i = close + 1;
         }
         return out;
+    }
+
+    function openParens(s) {   // unbalanced "(" outside strings and brackets
+        var depth = 0, i = 0, n = s.length;
+        while (i < n) {
+            var c = s.charCodeAt(i);
+            if (c === 34 || c === 39) { i = skipString(s, i, n); continue; }
+            if (c === 40) depth++; else if (c === 41) depth--;
+            i++;
+        }
+        return depth;
     }
 
     function fixSelector(sel) {
@@ -1908,6 +2010,8 @@ var CSSFix = (function () {
                  .replace(/(\[[^\]]*?)\s+[isIS]\s*\]/g, '$1]')
                  .replace(/:lang\(([^,)]*),[^)]*\)/gi, ':lang($1)')
                  .replace(STATE_CLASS_RE, function (m) { return STATE_CLASSES[m.toLowerCase()] || m; })
+                 // shadow DOM is emulated in the light DOM, so exported parts are plain part attributes
+                 .replace(/::part\(\s*([^)]*?)\s*\)/gi, function (m, names) { var ps = names.split(/\s+/), s = ''; for (var k = 0; k < ps.length; k++) if (ps[k]) s += '[part~="' + ps[k] + '"]'; return s || m; })
                  .replace(/:read-only\b/gi, '[readonly]')
                  .replace(/:read-write\b/gi, ':not([readonly])')
                  .replace(/:dir\(\s*rtl\s*\)/gi, '[dir="rtl"]')
