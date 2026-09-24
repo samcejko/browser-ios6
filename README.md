@@ -61,7 +61,9 @@ the app around it:
   article, popup blocking (`window.open` only after a tap), `navigator.clipboard.writeText` and
   `execCommand('copy')` into the system pasteboard, "Open in background" for links, recently closed
   tabs on a long press of the plus button, a chosen home page, bookmark editing (rename, address,
-  reorder).
+  reorder), a search box over bookmarks and history, a custom search engine (address with `%s`),
+  "Download link" in the link menu, "Open" in the selection menu when the selected text is an
+  address.
 - **Privacy settings**: third-party cookies blocked (like Safari), Do Not Track / Global Privacy
   Control headers, cookie banners of the common consent services hidden by injected CSS, an image
   switch for slow connections, per-site "allow ads on this site", and a forced dark stylesheet for

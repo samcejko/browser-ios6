@@ -26,11 +26,13 @@
 + (BOOL)darkTheme;                       // default NO
 + (void)setDarkTheme:(BOOL)dark;
 
-// 0 = DuckDuckGo Lite, 1 = Google, 2 = Bing, 3 = Seznam
+// 0 = DuckDuckGo Lite, 1 = Google, 2 = Bing, 3 = Seznam, 4 = custom template with %s
 + (NSInteger)searchEngine;
 + (void)setSearchEngine:(NSInteger)engine;
 + (NSString *)searchEngineTitle:(NSInteger)engine;
 + (NSInteger)searchEngineCount;
++ (NSString *)customSearchTemplate;      // e.g. https://search.example.com/?q=%s (nil when none)
++ (void)setCustomSearchTemplate:(NSString *)urlTemplate;
 
 + (NSInteger)textSizePercent;            // 100 = the page's own size
 + (void)setTextSizePercent:(NSInteger)percent;

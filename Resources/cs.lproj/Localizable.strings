@@ -122,6 +122,12 @@
 "Block ads on this site" = "Blokovat reklamy na tomto webu";
 "View source" = "Zdrojový kód";
 "Translate page" = "Přeložit stránku";
+"Custom" = "Vlastní";
+"Custom..." = "Vlastní…";
+"Custom search engine" = "Vlastní vyhledávač";
+"Address with %s in place of the search text" = "Adresa s %s místo hledaného textu";
+"The address must contain %s." = "Adresa musí obsahovat %s.";
+"Download link" = "Stáhnout odkaz";
 "Rename" = "Přejmenovat";
 "Edit address" = "Upravit adresu";
 "Save" = "Uložit";

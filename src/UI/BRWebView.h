@@ -6,6 +6,7 @@
 
 @property (nonatomic, copy) void (^onSearchSelection)(NSString *text);
 @property (nonatomic, copy) void (^onShareSelection)(NSString *text);
+@property (nonatomic, copy) void (^onOpenSelection)(NSString *text);     // the selection looks like an address
 
 + (void)registerMenuItems;
 - (NSString *)selectedText;

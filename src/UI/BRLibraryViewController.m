@@ -4,11 +4,13 @@
 #import "BRTheme.h"
 #import "BRCommon.h"
 
-@interface BRLibraryViewController () <UIActionSheetDelegate, UIAlertViewDelegate>
+@interface BRLibraryViewController () <UIActionSheetDelegate, UIAlertViewDelegate, UISearchBarDelegate>
 @property (nonatomic, strong) UISegmentedControl *segment;
 @property (nonatomic, strong) UIBarButtonItem *addItem;
 @property (nonatomic, strong) UIBarButtonItem *clearItem;
+@property (nonatomic, strong) UISearchBar *searchBar;   // filters bookmarks and history by title or address
 @property (nonatomic, strong) NSArray *items;
+@property (nonatomic, strong) NSArray *allItems;        // unfiltered list of the current segment
 @property (nonatomic) NSInteger editedRow;              // bookmark behind the rename / edit address dialog
 @end
 
@@ -51,6 +53,12 @@
     self.clearItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Clear") style:UIBarButtonItemStylePlain target:self action:@selector(clearHistory)];
     [[BRTheme shared] applyToTableView:self.tableView];
     self.tableView.allowsSelectionDuringEditing = YES;   // tapping a bookmark while editing renames it
+    self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 44)];
+    self.searchBar.placeholder = L(@"Search");
+    self.searchBar.delegate = self;
+    self.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.tableView.tableHeaderView = self.searchBar;
     UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowPressed:)];
     press.minimumPressDuration = 0.5;
     [self.tableView addGestureRecognizer:press];
@@ -73,15 +81,61 @@
 {
     BRLibrary *lib = [BRLibrary shared];
     if ([self showingDownloads]) {
-        self.items = [BRDownloader downloadedFiles];
+        self.allItems = [BRDownloader downloadedFiles];
         self.navigationItem.rightBarButtonItem = nil;
     } else {
-        self.items = [self showingHistory] ? lib.history : lib.bookmarks;
+        self.allItems = [self showingHistory] ? lib.history : lib.bookmarks;
         if ([self showingHistory]) self.navigationItem.rightBarButtonItems = @[self.clearItem];
         else self.navigationItem.rightBarButtonItems = @[self.addItem, self.editButtonItem];   // edit: reorder, delete, rename
     }
+    self.items = [self filteredItems];
     self.addItem.enabled = self.currentURL != nil && ![lib isBookmarked:self.currentURL];
     [self.tableView reloadData];
+}
+
+- (NSArray *)filteredItems
+{
+    NSString *q = [[self.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if (!q.length) return self.allItems;
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSDictionary *e in self.allItems) {
+        NSString *a = [[e[@"title"] isKindOfClass:[NSString class]] ? e[@"title"] : @"" lowercaseString];
+        NSString *b = [[e[@"url"] isKindOfClass:[NSString class]] ? e[@"url"] : ([e[@"name"] isKindOfClass:[NSString class]] ? e[@"name"] : @"") lowercaseString];
+        if ([a rangeOfString:q].location != NSNotFound || [b rangeOfString:q].location != NSNotFound) [out addObject:e];
+    }
+    return out;
+}
+
+- (BOOL)filtering
+{
+    return [self.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length > 0;
+}
+
+// The row's position in the unfiltered library list (deleting, moving and editing work on that list)
+- (NSUInteger)libraryIndexForRow:(NSInteger)row
+{
+    if (row < 0 || (NSUInteger)row >= self.items.count) return NSNotFound;
+    if (![self filtering]) return (NSUInteger)row;
+    NSUInteger i = [self.allItems indexOfObjectIdenticalTo:self.items[(NSUInteger)row]];
+    return i;
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText
+{
+    self.items = [self filteredItems];
+    [self.tableView reloadData];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar
+{
+    [searchBar resignFirstResponder];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar
+{
+    searchBar.text = @"";
+    [searchBar resignFirstResponder];
+    [self reload];
 }
 
 #pragma mark - Editing bookmarks
@@ -96,9 +150,10 @@
 
 - (void)showEditMenuForRow:(NSInteger)row
 {
-    if (row < 0 || (NSUInteger)row >= self.items.count) return;
-    self.editedRow = row;
-    NSDictionary *e = self.items[(NSUInteger)row];
+    NSUInteger libraryIndex = [self libraryIndexForRow:row];
+    if (libraryIndex == NSNotFound) return;
+    self.editedRow = (NSInteger)libraryIndex;
+    NSDictionary *e = self.allItems[libraryIndex];
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:e[@"title"] ?: e[@"url"] delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
     [sheet addButtonWithTitle:L(@"Rename")];
     [sheet addButtonWithTitle:L(@"Edit address")];
@@ -110,8 +165,8 @@
 
 - (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
 {
-    if (buttonIndex < 0 || buttonIndex == actionSheet.cancelButtonIndex || self.editedRow < 0 || (NSUInteger)self.editedRow >= self.items.count) return;
-    NSDictionary *e = self.items[(NSUInteger)self.editedRow];
+    if (buttonIndex < 0 || buttonIndex == actionSheet.cancelButtonIndex || self.editedRow < 0 || (NSUInteger)self.editedRow >= self.allItems.count) return;
+    NSDictionary *e = self.allItems[(NSUInteger)self.editedRow];
     BOOL address = [[actionSheet buttonTitleAtIndex:buttonIndex] isEqualToString:L(@"Edit address")];
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:address ? L(@"Edit address") : L(@"Rename") message:nil delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Save"), nil];
     alert.alertViewStyle = UIAlertViewStylePlainTextInput;
@@ -233,26 +288,31 @@
     if ([self showingDownloads]) {
         NSDictionary *e = self.items[(NSUInteger)indexPath.row];
         [[NSFileManager defaultManager] removeItemAtPath:e[@"path"] error:NULL];
-        self.items = [BRDownloader downloadedFiles];
+        self.allItems = [BRDownloader downloadedFiles];
+        self.items = [self filteredItems];
         [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
         return;
     }
-    if ([self showingHistory]) [[BRLibrary shared] removeHistoryAtIndex:(NSUInteger)indexPath.row];
-    else [[BRLibrary shared] removeBookmarkAtIndex:(NSUInteger)indexPath.row];
-    self.items = [self showingHistory] ? [BRLibrary shared].history : [BRLibrary shared].bookmarks;
+    NSUInteger libraryIndex = [self libraryIndexForRow:indexPath.row];
+    if (libraryIndex == NSNotFound) return;
+    if ([self showingHistory]) [[BRLibrary shared] removeHistoryAtIndex:libraryIndex];
+    else [[BRLibrary shared] removeBookmarkAtIndex:libraryIndex];
+    self.allItems = [self showingHistory] ? [BRLibrary shared].history : [BRLibrary shared].bookmarks;
+    self.items = [self filteredItems];
     [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
     self.addItem.enabled = self.currentURL != nil && ![[BRLibrary shared] isBookmarked:self.currentURL];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    return ![self showingHistory] && ![self showingDownloads];
+    return ![self showingHistory] && ![self showingDownloads] && ![self filtering];
 }
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)from toIndexPath:(NSIndexPath *)to
 {
     [[BRLibrary shared] moveBookmarkFromIndex:(NSUInteger)from.row toIndex:(NSUInteger)to.row];
-    self.items = [BRLibrary shared].bookmarks;
+    self.allItems = [BRLibrary shared].bookmarks;
+    self.items = self.allItems;
 }
 
 @end

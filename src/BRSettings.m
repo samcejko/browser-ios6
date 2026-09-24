@@ -185,13 +185,31 @@ static NSInteger BRBuiltInUserAgentMode(NSString *hostKey)
         case 1: return @"Google";
         case 2: return @"Bing";
         case 3: return @"Seznam";
+        case 4: {
+            NSString *host = [NSURL URLWithString:[self customSearchTemplate] ?: @""].host;
+            return host.length ? host : L(@"Custom");
+        }
     }
     return @"DuckDuckGo";
 }
 
 + (NSInteger)searchEngineCount
 {
-    return 4;
+    return 5;
+}
+
++ (NSString *)customSearchTemplate
+{
+    NSString *t = [[NSUserDefaults standardUserDefaults] stringForKey:@"BRCustomSearch"];
+    return ([t rangeOfString:@"%s"].location != NSNotFound && [[NSURL URLWithString:[t stringByReplacingOccurrencesOfString:@"%s" withString:@"x"]].scheme.lowercaseString hasPrefix:@"http"]) ? t : nil;
+}
+
++ (void)setCustomSearchTemplate:(NSString *)urlTemplate
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (urlTemplate.length) [d setObject:urlTemplate forKey:@"BRCustomSearch"];
+    else [d removeObjectForKey:@"BRCustomSearch"];
+    [d synchronize];
 }
 
 + (NSInteger)textSizePercent
@@ -280,6 +298,12 @@ static void BRSetBoolSetting(NSString *key, BOOL value)
         case 1: base = @"https://www.google.com/search?q="; break;
         case 2: base = @"https://www.bing.com/search?q="; break;
         case 3: base = @"https://search.seznam.cz/?q="; break;
+        case 4: {
+            NSString *t = [self customSearchTemplate];
+            if (t) return [NSURL URLWithString:[t stringByReplacingOccurrencesOfString:@"%s" withString:q ?: @""]];
+            base = @"https://lite.duckduckgo.com/lite/?q=";
+            break;
+        }
         default: base = @"https://lite.duckduckgo.com/lite/?q="; break;
     }
     return [NSURL URLWithString:[base stringByAppendingString:q ?: @""]];

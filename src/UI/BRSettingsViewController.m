@@ -46,7 +46,7 @@ typedef NS_ENUM(NSInteger, BRPrivacyRow) {
 // switch tags: section * 100 + row
 static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 + row; }
 
-@interface BRSettingsViewController () <UIActionSheetDelegate>
+@interface BRSettingsViewController () <UIActionSheetDelegate, UIAlertViewDelegate>
 @end
 
 @implementation BRSettingsViewController
@@ -283,7 +283,8 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         if (indexPath.row == BRFeatureRowUserAgent) {
             for (NSInteger m = 0; m <= 2; m++) [sheet addButtonWithTitle:[BRSettings userAgentModeTitle:m]];
         } else if (indexPath.row == BRFeatureRowSearchEngine) {
-            for (NSInteger e = 0; e < [BRSettings searchEngineCount]; e++) [sheet addButtonWithTitle:[BRSettings searchEngineTitle:e]];
+            for (NSInteger e = 0; e < [BRSettings searchEngineCount] - 1; e++) [sheet addButtonWithTitle:[BRSettings searchEngineTitle:e]];
+            [sheet addButtonWithTitle:[BRSettings customSearchTemplate] ? [NSString stringWithFormat:@"%@ (%@)", [BRSettings searchEngineTitle:4], L(@"Custom")] : L(@"Custom...")];
         } else if (indexPath.row == BRFeatureRowHomePage) {
             [sheet addButtonWithTitle:L(@"Built-in start page")];
             NSURL *current = [BRURLProtocol lastMainDocumentURL];
@@ -322,6 +323,19 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
     return @[@80, @90, @100, @110, @125, @150, @175];
 }
 
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
+{
+    if (alertView.tag != 500 || buttonIndex == alertView.cancelButtonIndex) return;
+    NSString *t = [[alertView textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([t rangeOfString:@"%s"].location == NSNotFound) {
+        [[[UIAlertView alloc] initWithTitle:nil message:L(@"The address must contain %s.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+        return;
+    }
+    [BRSettings setCustomSearchTemplate:t];
+    if ([BRSettings customSearchTemplate]) [BRSettings setSearchEngine:4];
+    [self.tableView reloadData];
+}
+
 - (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
 {
     if (buttonIndex < 0 || buttonIndex == actionSheet.cancelButtonIndex) return;
@@ -331,6 +345,20 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         [[NSURLCache sharedURLCache] removeAllCachedResponses];   // servers answer differently per identity
     } else if (actionSheet.tag == BRFeatureRowSearchEngine) {
         if (buttonIndex >= [BRSettings searchEngineCount]) return;
+        if (buttonIndex == 4) {
+            // the custom engine: a URL template with %s for the query
+            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Custom search engine") message:L(@"Address with %s in place of the search text")
+                                                           delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Save"), nil];
+            alert.alertViewStyle = UIAlertViewStylePlainTextInput;
+            UITextField *field = [alert textFieldAtIndex:0];
+            field.text = [BRSettings customSearchTemplate] ?: @"https://";
+            field.keyboardType = UIKeyboardTypeURL;
+            field.autocorrectionType = UITextAutocorrectionTypeNo;
+            field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            alert.tag = 500;
+            [alert show];
+            return;
+        }
         [BRSettings setSearchEngine:buttonIndex];
     } else if (actionSheet.tag == BRFeatureRowHomePage) {
         if (buttonIndex == 0) [BRSettings setHomePageURLString:nil];

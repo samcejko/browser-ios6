@@ -226,6 +226,7 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
     [BRWebView registerMenuItems];
     __weak BRBrowserViewController *weakSelf = self;
     self.webView.onSearchSelection = ^(NSString *text) { [weakSelf loadURL:[BRSettings searchURLForQuery:text]]; };
+    self.webView.onOpenSelection = ^(NSString *text) { [weakSelf navigateToTypedText:text]; };
     self.webView.onShareSelection = ^(NSString *text) {
         BRBrowserViewController *strongSelf = weakSelf;
         if (strongSelf) [strongSelf shareItems:@[text] fromRect:strongSelf.shareButton.frame inView:strongSelf.shareButton.superview];
@@ -239,7 +240,7 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
     self.webView.scalesPageToFit = YES;
     self.webView.dataDetectorTypes = UIDataDetectorTypeNone;
     self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers
-    self.webView.keyboardDisplayRequiresUserAction = NO;      // scripts may focus fields (search boxes, login forms)
+    self.webView.keyboardDisplayRequiresUserAction = YES;     // like Safari: pages that autofocus a search box must not cover half the screen with the keyboard
     self.webView.mediaPlaybackAllowsAirPlay = YES;
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
@@ -2007,6 +2008,7 @@ static void BRWebThreadLock(void)
         [sheet addButtonWithTitle:L(@"Open in new tab")];
         if (self.tabs.count < 12) [sheet addButtonWithTitle:L(@"Open in background")];
         [sheet addButtonWithTitle:L(@"Copy link")];
+        [sheet addButtonWithTitle:L(@"Download link")];
         [sheet addButtonWithTitle:L(@"Share link")];
         [sheet addButtonWithTitle:L(@"Open in Safari")];
     }
@@ -2078,6 +2080,7 @@ static void BRWebThreadLock(void)
     else if ([choice isEqualToString:L(@"Open in new tab")] && link) [self openURLInNewTab:link];
     else if ([choice isEqualToString:L(@"Open in background")] && link) [self openURLInBackgroundTab:link title:text];
     else if ([choice isEqualToString:L(@"Copy link")] && link) { pasteboard.string = href; }
+    else if ([choice isEqualToString:L(@"Download link")] && link) [self startDownload:link];
     else if ([choice isEqualToString:L(@"Share link")] && link) [self shareURL:link title:text fromRect:self.shareButton.frame inView:self.shareButton.superview];
     else if ([choice isEqualToString:L(@"Open in Safari")] && link) [[UIApplication sharedApplication] openURL:link];
     else if ([choice isEqualToString:L(@"Open image")] && image) [self loadURL:image];
