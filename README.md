@@ -30,7 +30,10 @@ the app around it:
   at the end of the stylesheet, the app collects the manifests of every stylesheet served for a page
   (`https://ios6-browser.invalid/manifest?doc=…`), and the shim evaluates them on the live DOM
   (relative selectors inside each candidate, container sizes from the elements marked by
-  `container-type`).
+  `container-type`). The same marker channel drives shims for `scroll-snap-type`/`scroll-snap-align`
+  (carousels snap after the scroll settles), `scroll-behavior: smooth` (anchor links and
+  `scrollTo({behavior: "smooth"})` glide) and `text-wrap: balance` (headings get the narrowest width
+  that keeps their line count).
 - **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
   **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
   very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's

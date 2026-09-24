@@ -1290,6 +1290,9 @@ var CSSFix = (function () {
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
         var autoLeft = false, autoRight = false, hasDisplay = false;
+        // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
+        // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
+        var markers = [];
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') hasDisplay = true;
@@ -1415,7 +1418,7 @@ var CSSFix = (function () {
                     var ar = /(?:^|\s)([\d.]+)\s*(?:\/\s*([\d.]+))?\s*$/.exec(lv.replace(/^auto\s*/, ''));
                     if (ar) {
                         var arw = parseFloat(ar[1]), arh = ar[2] ? parseFloat(ar[2]) : 1;
-                        if (arw > 0 && arh > 0) push(out, 'counter-reset', 'br-aspect ' + Math.round(arw * 1000) + ' br-aspect-h ' + Math.round(arh * 1000), imp);
+                        if (arw > 0 && arh > 0) markers.push('br-aspect ' + Math.round(arw * 1000) + ' br-aspect-h ' + Math.round(arh * 1000));
                     }
                     push(out, p, v, imp);
                     continue;
@@ -1464,9 +1467,14 @@ var CSSFix = (function () {
                     var wsv = whiteSpaceValue(p, lv);
                     if (p === 'white-space') { push(out, p, wsv || v, imp); continue; }
                     if (wsv) push(out, 'white-space', wsv, imp);
+                    if (/\bbalance\b/.test(lv)) markers.push('br-balance 1');   // the shim balances the lines of marked headings
                     push(out, p, v, imp);
                     continue;
                 }
+                case 'text-wrap-style':
+                    if (lv === 'balance') markers.push('br-balance 1');
+                    push(out, p, v, imp);
+                    continue;
                 case 'vertical-align': {
                     // css-inline-3 baseline keywords (alphabetic, central, first/last) map onto the classic ones
                     var vat = lv.split(/\s+/), vout = [];
@@ -1625,10 +1633,38 @@ var CSSFix = (function () {
                     else cqType = lv;
                     if (cqType === 'size' || cqType === 'inline-size') cqMarks.push('br-container 1');
                     if (cqNames && cqNames !== 'none') { var cqList = cqNames.split(/\s+/); for (var cqi = 0; cqi < cqList.length; cqi++) if (/^[a-z_][\w-]*$/.test(cqList[cqi])) cqMarks.push('br-cn-' + cqList[cqi] + ' 1'); }
-                    if (cqMarks.length) push(out, 'counter-reset', cqMarks.join(' '), imp);
+                    for (var cqk = 0; cqk < cqMarks.length; cqk++) markers.push(cqMarks[cqk]);
                     push(out, p, v, imp);
                     continue;
                 }
+                case 'scroll-snap-type': {
+                    // "x mandatory", "both proximity", "inline mandatory": the shim snaps the scroll position of marked containers
+                    var snapAxis = /\b(x|inline)\b/.test(lv) ? 'x' : /\b(y|block)\b/.test(lv) ? 'y' : /\bboth\b/.test(lv) ? 'both' : null;
+                    if (snapAxis && lv !== 'none') {
+                        if (snapAxis !== 'y') markers.push('br-snap-x 1');
+                        if (snapAxis !== 'x') markers.push('br-snap-y 1');
+                        if (/\bmandatory\b/.test(lv)) markers.push('br-snap-m 1');
+                    }
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'scroll-snap-align': {
+                    var snapAlign = /\bcenter\b/.test(lv) ? 2 : /\bend\b/.test(lv) ? 3 : /\bstart\b/.test(lv) ? 1 : 0;
+                    if (snapAlign) markers.push('br-snap-align ' + snapAlign);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'scroll-padding': case 'scroll-padding-left': case 'scroll-padding-top': case 'scroll-padding-inline-start': case 'scroll-padding-block-start':
+                case 'scroll-padding-inline': case 'scroll-padding-block': {
+                    var spv = /^(-?[\d.]+)(px|em|rem)\b/.exec(lv.split(/\s+/)[p === 'scroll-padding' ? (lv.split(/\s+/).length > 1 ? 3 : 0) : 0] || lv);
+                    if (spv) markers.push('br-snap-pad ' + Math.round(parseFloat(spv[1]) * (spv[2] === 'px' ? 1 : 16)));
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'scroll-behavior':
+                    if (lv === 'smooth') markers.push('br-smooth 1');
+                    push(out, p, v, imp);
+                    continue;
                 case 'line-clamp':
                     // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box)
                     if (/^\d+$/.test(lv)) {
@@ -1703,6 +1739,7 @@ var CSSFix = (function () {
             }
             if (parts.length) { push(out, '-webkit-transform', parts.join(' '), false); push(out, 'transform', parts.join(' '), false); }
         }
+        if (markers.length) push(out, 'counter-reset', markers.join(' '), false);
         return out;
     }
 
@@ -1944,8 +1981,8 @@ var CSSFix = (function () {
         if (p.charAt(0) === '-' && p.charAt(1) === '-') return true;   // custom properties: resolved statically
         if (p.indexOf('grid') >= 0 || p === 'gap' || p === 'row-gap' || p === 'column-gap' && !/column/.test(v) || p === 'aspect-ratio' || p === 'object-fit' ||
             p === 'backdrop-filter' || p === '-webkit-backdrop-filter' ||
-            p === 'overflow' && /clip/i.test(v) || p === 'display' && /grid|contents|flow-root/i.test(v) || p === 'scroll-snap-type' || p === 'scroll-behavior' ||
-            p === 'writing-mode' || p === 'text-wrap' || p === 'anchor-name' || p === 'view-transition-name' || p === 'contain' || p === 'content-visibility' ||
+            p === 'overflow' && /clip/i.test(v) || p === 'display' && /grid|contents|flow-root/i.test(v) ||
+            p === 'writing-mode' || p === 'anchor-name' || p === 'view-transition-name' || p === 'contain' || p === 'content-visibility' ||
             p === 'accent-color' || p === 'color-scheme' || p === 'field-sizing' || p === 'text-box-trim' || p === 'animation-timeline') return false;
         if (/oklch|oklab|lab\(|lch\(|color-mix|light-dark|hwb\(/i.test(v)) return true;   // converted statically
         if (/conic-gradient|paint\(|anchor\(|round\(|mod\(|rem\(|sin\(|cos\(/i.test(v)) return false;

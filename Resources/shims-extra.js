@@ -966,13 +966,16 @@
     }
     // aspect-ratio: cssfix stores the ratio in "counter-reset: br-aspect W br-aspect-h H"; media elements and
     // empty boxes with such a rule get their height from their width (and again when the viewport changes)
-    var aspectTimer = null, aspectElements = [], containerElements = [];
+    var aspectTimer = null, aspectElements = [], containerElements = [], markerHooks = [];
+    var onMarkers = function (fn) { markerHooks.push(fn); };   // fn(list of {el, cr}) after every marker scan
     var applyAspectRatios = function () {
         try {
-            var all = document.getElementsByTagName('*'), found = [], containers = [];
+            var all = document.getElementsByTagName('*'), found = [], containers = [], marked = [];
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
                 var cr = getComputedStyle(el).counterReset || '';
+                if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
+                marked.push({ el: el, cr: cr });
                 if (cr.indexOf('br-c') >= 0) {   // container-type / container-name markers (see the manifest block)
                     var names = [], cn = /br-cn-([\w-]+)/g, cm;
                     while ((cm = cn.exec(cr)) !== null) names.push(cm[1]);
@@ -993,6 +996,7 @@
             aspectElements = found;
             containerElements = containers;
             if (window.__brApplyContainerQueries) window.__brApplyContainerQueries(containers);
+            for (var mh = 0; mh < markerHooks.length; mh++) try { markerHooks[mh](marked); } catch (e2) {}
         } catch (e) {}
     };
     var scheduleAspect = function () { if (aspectTimer) return; aspectTimer = setTimeout(function () { aspectTimer = null; applyAspectRatios(); }, 200); };
@@ -1283,6 +1287,178 @@
         document.addEventListener('focus', reevaluate, true);
         document.addEventListener('blur', reevaluate, true);
         window.__brManifestReload = load;
+    })();
+    // ---- Scroll snap, smooth scrolling and balanced text, driven by the rewriter's counter-reset markers
+    // (br-snap-x/y, br-snap-m, br-snap-pad, br-snap-align on the items, br-smooth, br-balance)
+    (function () {
+        var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
+        var ease = function (t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; };
+        // animate the scroll position of `target` (window or element) to x/y over `ms`
+        var animateScroll = function (target, x, y, ms) {
+            var isWin = target === window;
+            var sx = isWin ? window.pageXOffset : target.scrollLeft, sy = isWin ? window.pageYOffset : target.scrollTop;
+            if (x === null || x === undefined) x = sx;
+            if (y === null || y === undefined) y = sy;
+            if (Math.abs(x - sx) < 1 && Math.abs(y - sy) < 1) { return; }
+            var start = Date.now(), token = {};
+            target.__brScrollAnim = token;
+            var step = function () {
+                if (target.__brScrollAnim !== token) return;
+                var t = Math.min(1, (Date.now() - start) / ms), k = ease(t);
+                var nx = sx + (x - sx) * k, ny = sy + (y - sy) * k;
+                if (isWin) window.scrollTo(nx, ny); else { target.scrollLeft = nx; target.scrollTop = ny; }
+                if (t < 1) raf(step); else target.__brScrollAnim = null;
+            };
+            raf(step);
+        };
+        var smoothWanted = function (arg, target) {
+            var b = arg && typeof arg === 'object' ? arg.behavior : undefined;
+            if (b === 'smooth') return true;
+            if (b === 'instant' || b === 'auto') return false;
+            return false;
+        };
+        // window.scrollTo / scrollBy / scroll with { behavior: 'smooth' }
+        var origWinScrollTo = window.scrollTo, origWinScrollBy = window.scrollBy;
+        window.scrollTo = window.scroll = function (x, y) {
+            if (x && typeof x === 'object') {
+                var tx = x.left !== undefined ? x.left : window.pageXOffset, ty = x.top !== undefined ? x.top : window.pageYOffset;
+                if (smoothWanted(x)) { animateScroll(window, tx, ty, 350); return; }
+                return origWinScrollTo.call(window, tx, ty);
+            }
+            return origWinScrollTo.apply(window, arguments);
+        };
+        window.scrollBy = function (x, y) {
+            if (x && typeof x === 'object') {
+                var dx = x.left || 0, dy = x.top || 0;
+                if (smoothWanted(x)) { animateScroll(window, window.pageXOffset + dx, window.pageYOffset + dy, 350); return; }
+                return origWinScrollBy.call(window, dx, dy);
+            }
+            return origWinScrollBy.apply(window, arguments);
+        };
+        if (Ep) {
+            var origElScrollTo = Ep.scrollTo, origElScrollBy = Ep.scrollBy, origScrollIntoView = Ep.scrollIntoView;
+            Ep.scrollTo = Ep.scroll = function (x, y) {
+                if (x && typeof x === 'object' && smoothWanted(x)) { animateScroll(this, x.left !== undefined ? x.left : this.scrollLeft, x.top !== undefined ? x.top : this.scrollTop, 350); return; }
+                return origElScrollTo.apply(this, arguments);
+            };
+            Ep.scrollBy = function (x, y) {
+                if (x && typeof x === 'object' && smoothWanted(x)) { animateScroll(this, this.scrollLeft + (x.left || 0), this.scrollTop + (x.top || 0), 350); return; }
+                return origElScrollBy.apply(this, arguments);
+            };
+            Ep.scrollIntoView = function (arg) {
+                if (arg && typeof arg === 'object' && smoothWanted(arg)) {
+                    // only the window scrolls smoothly; inside another scroll container the engine jumps as before
+                    var r = this.getBoundingClientRect(), block = arg.block || 'start', inline = arg.inline || 'nearest';
+                    var y = window.pageYOffset + r.top - (block === 'center' ? (window.innerHeight - r.height) / 2 : block === 'end' ? window.innerHeight - r.height : block === 'nearest' ? (r.top >= 0 && r.bottom <= window.innerHeight ? r.top : r.top < 0 ? 0 : window.innerHeight - r.height) : 0);
+                    var x = inline === 'nearest' ? window.pageXOffset : window.pageXOffset + r.left - (inline === 'center' ? (window.innerWidth - r.width) / 2 : inline === 'end' ? window.innerWidth - r.width : 0);
+                    animateScroll(window, x, Math.max(0, y), 350);
+                    return;
+                }
+                return origScrollIntoView.apply(this, arguments);
+            };
+        }
+        // CSS scroll-behavior: smooth on the root: in-page anchor links glide
+        var rootSmooth = false;
+        document.addEventListener('click', function (e) {
+            if (!rootSmooth || e.defaultPrevented || e.button) return;
+            var a = e.target;
+            while (a && a.nodeType === 1 && a.tagName !== 'A') a = a.parentNode;
+            if (!a || a.nodeType !== 1) return;
+            var href = a.getAttribute('href') || '';
+            if (href.charAt(0) !== '#' || href.length < 2) return;
+            var target = null;
+            try { target = document.getElementById(decodeURIComponent(href.slice(1))); } catch (e2) {}
+            if (!target) return;
+            e.preventDefault();
+            var r = target.getBoundingClientRect();
+            animateScroll(window, window.pageXOffset, Math.max(0, window.pageYOffset + r.top), 400);
+            try { if (window.history && history.pushState) history.pushState(null, '', href); } catch (e3) {}
+        }, false);
+        // scroll snap containers
+        var snapContainers = [];
+        var alignOf = function (child) {
+            if (child.__brSnapAlign === undefined) { var m = /br-snap-align\s+(\d)/.exec(getComputedStyle(child).counterReset || ''); child.__brSnapAlign = m ? parseInt(m[1], 10) : 0; }
+            return child.__brSnapAlign;
+        };
+        var snapNow = function (c) {
+            var el = c.el;
+            if (el.__brTouching || el.__brScrollAnim) return;
+            var kids = el.children, bestX = null, bestY = null, bestDX = Infinity, bestDY = Infinity;
+            var cw = el.clientWidth, ch = el.clientHeight, sx = el.scrollLeft, sy = el.scrollTop;
+            var maxX = el.scrollWidth - cw, maxY = el.scrollHeight - ch;
+            for (var i = 0; i < kids.length; i++) {
+                var k = kids[i], a = alignOf(k);
+                if (!a) continue;
+                if (c.x) {
+                    var tx = a === 2 ? k.offsetLeft - (cw - k.offsetWidth) / 2 : a === 3 ? k.offsetLeft + k.offsetWidth - cw : k.offsetLeft - c.pad;
+                    tx = Math.max(0, Math.min(maxX, tx));
+                    var dx = Math.abs(tx - sx);
+                    if (dx < bestDX) { bestDX = dx; bestX = tx; }
+                }
+                if (c.y) {
+                    var ty = a === 2 ? k.offsetTop - (ch - k.offsetHeight) / 2 : a === 3 ? k.offsetTop + k.offsetHeight - ch : k.offsetTop - c.pad;
+                    ty = Math.max(0, Math.min(maxY, ty));
+                    var dy = Math.abs(ty - sy);
+                    if (dy < bestDY) { bestDY = dy; bestY = ty; }
+                }
+            }
+            // proximity snapping only pulls when the nearest stop is within a quarter of the viewport
+            if (bestX !== null && (bestDX < 1 || (!c.mandatory && bestDX > cw / 4))) bestX = null;
+            if (bestY !== null && (bestDY < 1 || (!c.mandatory && bestDY > ch / 4))) bestY = null;
+            if (bestX === null && bestY === null) return;
+            animateScroll(el, bestX === null ? sx : bestX, bestY === null ? sy : bestY, 200);
+        };
+        var attachSnap = function (c) {
+            var el = c.el;
+            if (el.__brSnapAttached) return;
+            el.__brSnapAttached = true;
+            var timer = null;
+            el.addEventListener('scroll', function () { if (el.__brScrollAnim) return; if (timer) clearTimeout(timer); timer = setTimeout(function () { timer = null; var cur = el.__brSnapConfig; if (cur) snapNow(cur); }, 120); }, false);
+            el.addEventListener('touchstart', function () { el.__brTouching = true; }, false);
+            el.addEventListener('touchend', function () { el.__brTouching = false; }, false);
+            el.addEventListener('touchcancel', function () { el.__brTouching = false; }, false);
+        };
+        // balanced headings: the smallest max-width that keeps the line count (binary search, applied inline)
+        var balance = function (el) {
+            if (el.__brBalancing) return;
+            var text = el.textContent || '';
+            if (text.length > 400) return;
+            var cs = getComputedStyle(el);
+            if (cs.display === 'inline' || cs.whiteSpace === 'nowrap') return;
+            el.__brBalancing = true;
+            try {
+                var prev = el.style.maxWidth;
+                el.style.maxWidth = '';
+                var full = el.clientWidth, lineH = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2 || 20;
+                var height = el.offsetHeight, lines = Math.round(height / lineH);
+                if (lines < 2 || full < 80) { el.style.maxWidth = ''; return; }
+                if (el.__brBalanceKey === full + ':' + text.length) { el.style.maxWidth = prev; return; }
+                var lo = Math.floor(full / lines), hi = full, best = full;
+                for (var it = 0; it < 8 && hi - lo > 4; it++) {
+                    var mid = Math.floor((lo + hi) / 2);
+                    el.style.maxWidth = mid + 'px';
+                    if (el.offsetHeight <= height + 1) { best = mid; hi = mid; } else lo = mid;
+                }
+                el.style.maxWidth = best + 'px';
+                el.__brBalanceKey = full + ':' + text.length;
+            } catch (e) {} finally { el.__brBalancing = false; }
+        };
+        onMarkers(function (marked) {
+            rootSmooth = false;
+            snapContainers = [];
+            for (var i = 0; i < marked.length; i++) {
+                var el = marked[i].el, cr = marked[i].cr;
+                if (cr.indexOf('br-smooth') >= 0 && (el === document.documentElement || el === document.body)) rootSmooth = true;
+                if (cr.indexOf('br-snap-x') >= 0 || cr.indexOf('br-snap-y') >= 0) {
+                    var pad = /br-snap-pad\s+(-?\d+)/.exec(cr);
+                    var c = { el: el, x: cr.indexOf('br-snap-x') >= 0, y: cr.indexOf('br-snap-y') >= 0, mandatory: cr.indexOf('br-snap-m') >= 0, pad: pad ? parseInt(pad[1], 10) : 0 };
+                    el.__brSnapConfig = c;
+                    snapContainers.push(c);
+                    attachSnap(c);
+                }
+                if (cr.indexOf('br-balance') >= 0) balance(el);
+            }
+        });
     })();
     // ---- Popover API: [popover] elements, showPopover()/hidePopover()/togglePopover(), popovertarget buttons,
     // light dismiss for auto popovers, ToggleEvent; cssfix rewrites :popover-open to .br-popover-open
