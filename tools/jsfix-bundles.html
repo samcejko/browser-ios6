@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>jsfix bundles</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+table { border-collapse: collapse; } td, th { border: 1px solid #ccc; padding: 3px 6px; text-align: left; vertical-align: top; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<h1>jsfix on real bundles</h1>
+<p>Each bundle is lowered, checked as ES5 (acorn ecmaVersion 5) and run in an iframe with a small smoke test.
+Add <code>?only=name</code> to run one.</p>
+<table><thead><tr><th>bundle</th><th>size</th><th>ms</th><th>ES5</th><th>smoke</th><th>note</th></tr></thead><tbody id="rows"></tbody></table>
+<script>
+var CDN = 'https://cdn.jsdelivr.net/npm/';
+var BUNDLES = [
+  { name: 'bootstrap', url: CDN + 'bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js',
+    html: '<div class="dropdown"><button id="b" data-bs-toggle="dropdown">x</button><ul class="dropdown-menu"><li>a</li></ul></div>',
+    smoke: 'var d = new bootstrap.Dropdown(document.getElementById("b")); d.show(); return [bootstrap.Tooltip.VERSION, document.querySelector(".dropdown-menu").classList.contains("show")];' },
+  { name: 'vue', url: CDN + 'vue@3.4.38/dist/vue.global.prod.js', html: '<div id="app"></div>',
+    smoke: 'var app = Vue.createApp({ data: function () { return { n: 2 }; }, computed: { d: function () { return this.n * 2; } }, template: "<b>{{ n }}-{{ d }}</b>" }); app.mount("#app"); return document.getElementById("app").innerHTML;' },
+  { name: 'alpine', url: CDN + 'alpinejs@3.14.1/dist/cdn.min.js', html: '<div x-data="{ n: 3 }"><span x-text="n * 2"></span></div>',
+    smoke: 'return new Promise(function (r) { setTimeout(function () { r(document.querySelector("span").textContent); }, 300); });' },
+  { name: 'htmx', url: CDN + 'htmx.org@2.0.2/dist/htmx.min.js', html: '<div id="h"></div>', smoke: 'return [htmx.version, typeof htmx.ajax];' },
+  { name: 'swiper', url: CDN + 'swiper@11.1.9/swiper-bundle.min.js', html: '<div class="swiper" style="width:300px"><div class="swiper-wrapper"><div class="swiper-slide">1</div><div class="swiper-slide">2</div></div></div>',
+    smoke: 'var s = new Swiper(".swiper"); s.slideNext(0); return [s.activeIndex, s.slides.length];' },
+  { name: 'chartjs', url: CDN + 'chart.js@4.4.4/dist/chart.umd.js', html: '<canvas id="c" width="200" height="100"></canvas>',
+    smoke: 'var ch = new Chart(document.getElementById("c"), { type: "bar", data: { labels: ["a", "b"], datasets: [{ data: [1, 2] }] }, options: { animation: false } }); return [ch.data.datasets[0].data.length, typeof ch.update];' },
+  { name: 'marked', url: CDN + 'marked@12.0.2/marked.min.js', html: '', smoke: 'return marked.parse("# Hi\\n\\n*x*");' },
+  { name: 'highlightjs', url: CDN + '@highlightjs/cdn-assets@11.10.0/highlight.min.js', html: '', smoke: 'return hljs.highlight("var a = 1;", { language: "javascript" }).value;' },
+  { name: 'axios', url: CDN + 'axios@1.7.7/dist/axios.min.js', html: '', smoke: 'return [typeof axios.get, axios.VERSION];' },
+  { name: 'dayjs', url: CDN + 'dayjs@1.11.13/dayjs.min.js', html: '', smoke: 'return dayjs("2024-05-06").add(1, "day").format("YYYY-MM-DD");' },
+  { name: 'sortable', url: CDN + 'sortablejs@1.15.3/Sortable.min.js', html: '<ul id="l"><li>a</li><li>b</li></ul>', smoke: 'var s = Sortable.create(document.getElementById("l")); return [typeof s.toArray, s.toArray().length];' },
+  { name: 'd3', url: CDN + 'd3@7.9.0/dist/d3.min.js', html: '<svg id="s"></svg>', smoke: 'd3.select("#s").append("circle").attr("r", 5); return [d3.select("#s circle").attr("r"), d3.sum([1, 2, 3])];' },
+  { name: 'gsap', url: CDN + 'gsap@3.12.5/dist/gsap.min.js', html: '<div id="g"></div>', smoke: 'gsap.set("#g", { x: 10 }); return document.getElementById("g").style.transform;' },
+  { name: 'fusejs', url: CDN + 'fuse.js@7.0.0/dist/fuse.min.js', html: '', smoke: 'return new Fuse(["apple", "banana"]).search("apl").map(function (r) { return r.item; });' },
+  { name: 'lit-html (umd)', url: CDN + 'lit-html@1.4.1/lit-html.js', html: '', smoke: 'return 1;', module: true },
+  { name: 'popper', url: CDN + '@popperjs/core@2.11.8/dist/umd/popper.min.js', html: '<div id="r">r</div><div id="t">t</div>', smoke: 'var p = Popper.createPopper(document.getElementById("r"), document.getElementById("t")); return typeof p.update;' },
+  { name: 'tippy', url: CDN + 'tippy.js@6.3.7/dist/tippy-bundle.umd.min.js', html: '', smoke: 'return typeof tippy;', pre: [CDN + '@popperjs/core@2.11.8/dist/umd/popper.min.js'] },
+  { name: 'luxon', url: CDN + 'luxon@3.5.0/build/global/luxon.min.js', html: '', smoke: 'return luxon.DateTime.fromISO("2024-01-02").plus({ days: 1 }).toISODate();' },
+  { name: 'zod', url: CDN + 'zod@3.23.8/lib/index.umd.js', html: '', smoke: 'return Zod.z.string().safeParse(5).success;' },
+  { name: 'immer', url: CDN + 'immer@10.1.1/dist/cjs/immer.cjs.production.js', html: '', smoke: 'return 1;', cjs: true },
+  { name: 'three', url: CDN + 'three@0.160.0/build/three.min.js', html: '', smoke: 'var v = new THREE.Vector3(1, 2, 3); return v.length().toFixed(3);' },
+  { name: 'leaflet', url: CDN + 'leaflet@1.9.4/dist/leaflet.js', html: '<div id="m" style="height:100px"></div>', smoke: 'var m = L.map("m").setView([50, 14], 5); return m.getZoom();' },
+  { name: 'jquery4', url: CDN + 'jquery@4.0.0-beta.2/dist/jquery.min.js', html: '<p class="x">a</p>', smoke: 'return $(".x").text();' },
+  { name: 'react-dom (umd18)', url: CDN + 'react-dom@18.3.1/umd/react-dom.production.min.js', html: '<div id="r"></div>', pre: [CDN + 'react@18.3.1/umd/react.production.min.js'],
+    smoke: 'ReactDOM.flushSync(function () { ReactDOM.createRoot(document.getElementById("r")).render(React.createElement("b", null, "hi")); }); return document.getElementById("r").innerHTML;' },
+  { name: 'preact+hooks', url: CDN + 'preact@10.23.2/dist/preact.umd.js', html: '', smoke: 'return typeof preact.h;' },
+  { name: 'underscore', url: CDN + 'underscore@1.13.7/underscore-umd-min.js', html: '', smoke: 'return _.uniq([1, 1, 2]);' },
+  { name: 'mathjs', url: CDN + 'mathjs@13.1.1/lib/browser/math.js', html: '', smoke: 'return math.evaluate("sqrt(16) + 2^3");' },
+  { name: 'katex', url: CDN + 'katex@0.16.11/dist/katex.min.js', html: '', smoke: 'return katex.renderToString("x^2").length > 100;' },
+  { name: 'mermaid', url: CDN + 'mermaid@10.9.1/dist/mermaid.min.js', html: '', smoke: 'return typeof mermaid.initialize;' },
+];
+var only = (location.search.match(/only=([^&]+)/) || [])[1];
+var rows = document.getElementById('rows');
+var get = function (u) { return fetch(u).then(function (r) { return r.text(); }); };
+var runBundle = function (b) {
+  var tr = document.createElement('tr');
+  tr.innerHTML = '<td>' + b.name + '</td><td></td><td></td><td></td><td></td><td></td>';
+  rows.appendChild(tr);
+  var cell = function (i, text, ok) { tr.children[i].textContent = text; if (ok !== undefined) tr.children[i].className = ok ? 'pass' : 'fail'; };
+  return get(b.url).then(function (src) {
+    cell(1, Math.round(src.length / 1024) + ' KB');
+    var t0 = performance.now(), out, err = null;
+    try { out = JSFix.transpile(src, {}); } catch (e) { err = e; }
+    var ms = Math.round(performance.now() - t0);
+    cell(2, String(ms));
+    if (err) { cell(3, 'no', false); cell(5, 'transpile: ' + (err.message || err.what) + (err.stack && !(err instanceof JSFix.Unsupported) ? ' ' + err.stack.split('\n').slice(1, 3).join(' ') : ''), false); b.result = { ms: ms, error: err.message || err.what }; return; }
+    if (out === null) { out = src; cell(5, 'unchanged (already ES5)'); }
+    try { acorn.parse(out, { ecmaVersion: 5 }); cell(3, 'yes', true); }
+    catch (e) { cell(3, 'no: ' + e.message, false); var pos = e.pos || 0; b.result = { ms: ms, es5: e.message, around: out.slice(Math.max(0, pos - 150), pos + 100) }; return; }
+    return Promise.all((b.pre || []).map(get)).then(function (pres) {
+      return new Promise(function (resolve) {
+        var ifr = document.createElement('iframe');
+        ifr.style.cssText = 'position:absolute;left:-2000px;width:800px;height:600px';
+        document.body.appendChild(ifr);
+        var w = ifr.contentWindow, d = ifr.contentDocument;
+        d.open(); d.write('<!DOCTYPE html><html><body>' + b.html + '</body></html>'); d.close();
+        var errors = [];
+        w.onerror = function (m) { errors.push(String(m)); };
+        try {
+          pres.forEach(function (p) { w.eval(p); });
+          w.eval(out + '\n//# sourceURL=' + b.name + '.lowered.js');
+          Promise.resolve(new w.Function(b.smoke)()).then(function (v) {
+            cell(4, JSON.stringify(v).slice(0, 200), errors.length === 0);
+            if (errors.length) cell(5, errors.join(' | ').slice(0, 300), false);
+            b.result = { ms: ms, smoke: v, errors: errors };
+            resolve();
+          }, function (e) { cell(4, 'rejected: ' + e, false); b.result = { ms: ms, smokeError: String(e) }; resolve(); });
+        } catch (e) { cell(4, 'threw: ' + e.message, false); cell(5, (e.stack || '').split('\n').slice(0, 3).join(' '), false); b.result = { ms: ms, smokeError: e.message, stack: e.stack }; resolve(); }
+      });
+    });
+  }).catch(function (e) { cell(5, 'fetch: ' + e, false); });
+};
+var list = BUNDLES.filter(function (b) { return !only || b.name === decodeURIComponent(only); });
+var chain = Promise.resolve();
+list.forEach(function (b) { chain = chain.then(function () { return runBundle(b); }); });
+chain.then(function () {
+  window.__bundleResults = list.map(function (b) { return { name: b.name, result: b.result }; });
+  document.title = 'jsfix bundles done';
+});
+</script>
+</body>
+</html>

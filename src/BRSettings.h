@@ -13,6 +13,8 @@
 + (void)setCSSFixEnabled:(BOOL)enabled;
 + (BOOL)jsFixEnabled;                    // default YES: JavaScript polyfills injected into pages
 + (void)setJSFixEnabled:(BOOL)enabled;
++ (BOOL)transpileEnabled;                // default YES: scripts in ES2015+ syntax are lowered to ES5 (jsfix.js)
++ (void)setTranspileEnabled:(BOOL)enabled;
 // 0 = iPad with iOS 6 (the engine's own identity), 1 = desktop Safari 6, 2 = a current iPad (Safari 17)
 + (NSInteger)userAgentMode;
 + (void)setUserAgentMode:(NSInteger)mode;

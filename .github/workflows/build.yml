@@ -146,8 +146,9 @@ jobs:
         run: |
           set -e
           mkdir -p Resources/js
-          # (Transpiling with Babel or TypeScript on the device was measured at about 0.1 KB/s with 300 MB of RAM
-          # on an iPad 2, so only polyfills are shipped.)
+          # (Babel and TypeScript on the device ran at about 0.1 KB/s with 300 MB of RAM on an iPad 2; the app's own
+          # transpiler, Resources/jsfix.js, prints ES5 straight from acorn's tree, about 50 KB/s there.)
+          curl -sSfL "https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js" -o Resources/js/acorn.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/regenerator-runtime@0.13.11/runtime.js" -o Resources/js/regenerator-runtime.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/whatwg-fetch@3.6.20/dist/fetch.umd.js" -o Resources/js/fetch.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/intersection-observer@0.12.2/intersection-observer.js" -o Resources/js/intersection-observer.js
@@ -173,7 +174,8 @@ jobs:
           npm install --no-save --silent acorn@8 terser@5
           npx terser Resources/shims.js --compress --mangle --output Resources/js/shims.js
           npx terser Resources/shims-extra.js --compress --mangle --output Resources/js/shims-extra.js
-          node tools/check-es5.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/browserscore.js Resources/js/*.js
+          node tools/check-es5.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/jsfix.js Resources/browserscore.js Resources/js/*.js
+          node tools/jsfix-ci.js
 
       - name: Generate icons and launch images
         run: python3 tools/gen_assets.py Resources

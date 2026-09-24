@@ -30,6 +30,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowLoadImages,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
+    BRFeatureRowTranspile,
     BRFeatureRowVerifyTLS,
     BRFeatureRowCount
 };
@@ -181,6 +182,10 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
                 cell.textLabel.text = L(@"JavaScript polyfills");
                 cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:tag];
                 break;
+            case BRFeatureRowTranspile:
+                cell.textLabel.text = L(@"Translate modern JavaScript");
+                cell.accessoryView = [self switchWithValue:[BRSettings transpileEnabled] tag:tag];
+                break;
             case BRFeatureRowVerifyTLS:
                 cell.textLabel.text = L(@"Verify certificates");
                 cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:tag];
@@ -263,6 +268,7 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
             case BRFeatureRowLoadImages: [BRSettings setLoadImages:sw.on]; break;
             case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; clearCache = YES; break;
             case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; clearCache = YES; break;
+            case BRFeatureRowTranspile: [BRSettings setTranspileEnabled:sw.on]; clearCache = YES; break;
             case BRFeatureRowVerifyTLS: [BRSettings setVerifyTLS:sw.on]; break;
         }
     } else if (section == BRSettingsSectionPrivacy) {
@@ -318,7 +324,7 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         // back to the defaults (tabs, bookmarks and history stay)
         [BRSettings setPrivateMode:NO];
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        for (NSString *key in @[@"BRAdBlock", @"BRCSSFix", @"BRJSFix", @"BRUserAgentMode", @"BRDarkTheme", @"BRSearchEngine", @"BRTextSizePercent", @"BRDoNotTrack",
+        for (NSString *key in @[@"BRAdBlock", @"BRCSSFix", @"BRJSFix", @"BRTranspile", @"BRUserAgentMode", @"BRDarkTheme", @"BRSearchEngine", @"BRTextSizePercent", @"BRDoNotTrack",
                                 @"BRBlockThirdPartyCookies", @"BRLoadImages", @"BRHideCookieBanners", @"BRPagesDark", @"BRUserAgentHosts", @"BRAdBlockHosts",
                                 @"BRHomePage", @"BRCustomSearch", @"BRVerifyTLS"]) {
             [d removeObjectForKey:key];

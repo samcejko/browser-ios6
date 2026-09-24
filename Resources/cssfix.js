@@ -3808,13 +3808,14 @@ var CSSFix = (function () {
                type === 'application/ecmascript' || type === 'text/jscript' || type === 'application/x-javascript' || type === 'module';
     }
 
-    function transpileInline(code, moduleId) {
-        if (typeof BRTranspile === 'undefined' || !code || !/[^\s]/.test(code) || code.length > 32768) return null;
-        var key = hashString(code) + (moduleId ? '|' + moduleId : '');
+    // an inline script in ES2015+ syntax lowered by jsfix.js (loaded into the same context by the app); null: unchanged
+    function transpileInline(code) {
+        if (typeof JSFix === 'undefined' || !code || !/[^\s]/.test(code) || code.length > 600000) return null;
+        var key = hashString(code);
         if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
         var out = null;
-        try { out = moduleId ? BRTranspile.transpileModule(code, moduleId) : BRTranspile.run(code, 'inline.js'); } catch (e) { out = null; }
-        if (out === '') out = null;   // already ES5
+        try { out = JSFix.run(code, '{}'); } catch (e) { out = null; }
+        if (out === '') out = null;   // already ES5 (or not lowerable)
         if (scriptCacheSize > 2000000) { scriptCache = {}; scriptCacheSize = 0; }
         scriptCache[key] = out;
         scriptCacheSize += (out || '').length;
@@ -3838,36 +3839,16 @@ var CSSFix = (function () {
             pageBase = String(opts.pageURL).replace(/[#?].*$/, '');
             pageBase = pageBase.slice(0, pageBase.lastIndexOf('/') + 1);
         }
-        var inlineCount = 0, modulesConverted = false;
         html = html.replace(re, function (all, open, attrs, body, close) {
             var type = attrValue(attrs, 'type') || '';
             var ltype = trim(type).toLowerCase();
             if (!opts || !opts.transpile) return all;
-            if (ltype === 'importmap') return open.replace(/\btype\s*=\s*("importmap"|'importmap'|importmap)/i, 'type="systemjs-importmap"') + body + close;
-            if (!isJavaScriptType(type)) return all;
-            var src = attrValue(attrs, 'src');
-            if (ltype === 'module') {
-                // ES modules are not run by the old engine at all: hand them to SystemJS
-                var cleanAttrs = attrs.replace(/\s*\btype\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '')
-                                      .replace(/\s*\b(src|crossorigin|integrity|defer|async|nomodule|referrerpolicy|fetchpriority)\b(\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/gi, '');
-                if (src) {
-                    modulesConverted = true;
-                    return '<script' + cleanAttrs + '>System.import(' + jsString(src) + ').catch(function(e){console.error(e)});' + close;
-                }
-                if (!/[^\s]/.test(body)) return '';
-                var moduleId = pageBase + '__inline_module_' + (++inlineCount) + '.js';
-                var fixedModule = transpileInline(body, moduleId);
-                if (fixedModule === null) return all;
-                modulesConverted = true;
-                return '<script' + cleanAttrs + '>' + fixedModule + '\nSystem.import(' + jsString(moduleId) + ').catch(function(e){console.error(e)});' + close;
-            }
-            if (src) return all;                                        // external scripts are transpiled by the network layer
-            var fixed = transpileInline(body, null);
+            if (!isJavaScriptType(type) || ltype === 'module') return all;   // (modules: the engine skips them, their nomodule fallbacks run)
+            if (attrValue(attrs, 'src')) return all;                        // external scripts are lowered by the network layer
+            var fixed = transpileInline(body);
             if (fixed === null) return all;
             return open + fixed + close;
         });
-        // nomodule fallbacks would run in addition to the converted modules
-        if (modulesConverted) html = html.replace(/<script\b[^>]*\bnomodule\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
         return html;
     }
 

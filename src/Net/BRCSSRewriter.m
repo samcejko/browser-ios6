@@ -52,9 +52,34 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
     return [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
 }
 
+// Caches/transpiled/<crc>-<length>-<jsfix tag>.js: lowered scripts by content (an empty file: nothing to lower)
+static NSString *BRTranspiledDirectory(void)
+{
+    NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+    return [caches stringByAppendingPathComponent:@"transpiled"];
+}
+
+// a checksum of jsfix.js: results of another version are not reused
+static NSString *BRTranspileTag(void)
+{
+    static NSString *tag;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *path = [[NSBundle mainBundle] pathForResource:@"jsfix" ofType:@"js"];
+        NSData *d = path ? [NSData dataWithContentsOfFile:path] : nil;
+        unsigned long crc = crc32(0L, Z_NULL, 0);
+        if (d.length) crc = crc32(crc, (const Bytef *)d.bytes, (uInt)d.length);
+        tag = [NSString stringWithFormat:@"%08lx", crc];
+    });
+    return tag;
+}
+
 @implementation BRCSSRewriter {
     BOOL _loaded;
     BOOL _loadFailed;
+    BOOL _jsfixLoaded;
+    BOOL _jsfixFailed;
+    NSCache *_transpiled;               // cache key -> lowered script (empty data: unchanged)
     NSMutableDictionary *_pageVars;     // page key -> NSMutableDictionary of --name: value
     NSMutableArray *_pageOrder;
     NSMutableDictionary *_pageManifests;   // page key -> @{ @"has": NSMutableArray, @"cq": NSMutableArray, @"seen": NSMutableSet }
@@ -78,7 +103,8 @@ static CGFloat g_devicePixelRatio = 1;
     CGRect screen = [UIScreen mainScreen].bounds;
     g_viewportWidth = MIN(screen.size.width, screen.size.height);   // portrait width: the wider layout of the two is fine
     g_devicePixelRatio = [UIScreen mainScreen].scale ?: 1;          // read here, on the main thread
-    [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; }];
+    [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; if ([BRSettings transpileEnabled]) [r ensureJSFixLoaded]; }];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{ @autoreleasepool { [BRCSSRewriter pruneTranspiledCache]; } });
 }
 
 - (instancetype)init
@@ -89,6 +115,8 @@ static CGFloat g_devicePixelRatio = 1;
         _pageOrder = [NSMutableArray array];
         _pageManifests = [NSMutableDictionary dictionary];
         _manifestOrder = [NSMutableArray array];
+        _transpiled = [[NSCache alloc] init];
+        _transpiled.totalCostLimit = 8 * 1024 * 1024;
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(engineDidReset:) name:BRJSEngineDidResetNotification object:nil];
     }
     return self;
@@ -174,6 +202,106 @@ static CGFloat g_devicePixelRatio = 1;
 - (void)engineDidReset:(NSNotification *)note
 {
     _loaded = NO;   // posted on the engine thread
+    _jsfixLoaded = NO;
+}
+
+// engine queue only: acorn and the transpiler, loaded on the first script that needs them
+- (BOOL)ensureJSFixLoaded
+{
+    if (_jsfixLoaded) return YES;
+    if (_jsfixFailed) return NO;
+    BRJSEngine *engine = [BRJSEngine shared];
+    if (!engine.available) { _jsfixFailed = YES; return NO; }
+    NSBundle *b = [NSBundle mainBundle];
+    NSString *acornPath = [b pathForResource:@"acorn" ofType:@"js" inDirectory:@"js"] ?: [b pathForResource:@"acorn" ofType:@"js"];
+    NSString *fixPath = [b pathForResource:@"jsfix" ofType:@"js"];
+    NSString *acorn = acornPath ? [NSString stringWithContentsOfFile:acornPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+    NSString *fix = fixPath ? [NSString stringWithContentsOfFile:fixPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+    if (!acorn.length || !fix.length) {
+        BRLog(@"acorn.js or jsfix.js is missing from the bundle");
+        _jsfixFailed = YES;
+        return NO;
+    }
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    if (![engine evaluateScript:acorn sourceName:@"acorn.js"] || ![engine evaluateScript:fix sourceName:@"jsfix.js"]) { _jsfixFailed = YES; return NO; }
+    NSString *probe = [engine callFunction:@"JSFix.run" arguments:@[@"let f = (a = 1) => `${a}`;", @"{\"force\":true}"]];
+    if (!probe.length) { BRLog(@"jsfix.js self test failed"); _jsfixFailed = YES; return NO; }
+    _jsfixLoaded = YES;
+    BRLog(@"jsfix.js loaded in %ld ms", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+    return YES;
+}
+
+// engine queue only: the ES5 text of a script, nil when it needs nothing (or cannot be lowered)
+- (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url
+{
+    unsigned long crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
+    NSString *key = [NSString stringWithFormat:@"%08lx-%lx-%@", crc, (unsigned long)data.length, BRTranspileTag()];
+    NSString *dir = BRTranspiledDirectory();
+    NSString *path = [dir stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]];
+    BOOL private = [BRSettings privateMode];
+    NSData *cached = [_transpiled objectForKey:key];
+    if (!cached && !private) {
+        cached = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
+        if (cached) {
+            [[NSFileManager defaultManager] setAttributes:@{ NSFileModificationDate: [NSDate date] } ofItemAtPath:path error:NULL];   // recently used
+            [_transpiled setObject:cached forKey:key cost:cached.length];
+        }
+    }
+    if (cached) return cached.length ? cached : nil;
+    if (![self ensureJSFixLoaded]) return nil;
+    NSString *used = nil;
+    NSString *text = BRDecode(data, charset.length ? charset : nil, &used);
+    if (!text) return nil;
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    NSString *optsJSON = @"{}";
+    if (url.absoluteString.length) {
+        NSData *oj = [NSJSONSerialization dataWithJSONObject:@{ @"url": url.absoluteString } options:0 error:NULL];
+        if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
+    }
+    BRJSEngine *engine = [BRJSEngine shared];
+    NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
+    long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+    NSData *out = result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
+    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : @"script";
+    if (out) BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes", name, ms, (unsigned long)data.length, (unsigned long)out.length);
+    else {
+        NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
+        if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@)", name, ms, why ?: @"?");
+    }
+    NSData *store = out ?: [NSData data];
+    [_transpiled setObject:store forKey:key cost:store.length + 64];
+    if (!private) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+        [store writeToFile:path atomically:NO];
+    }
+    if (data.length > 200000) [engine collectGarbage];
+    return out;
+}
+
++ (void)pruneTranspiledCache
+{
+    NSString *dir = BRTranspiledDirectory(), *suffix = [NSString stringWithFormat:@"-%@.js", BRTranspileTag()];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *names = [fm contentsOfDirectoryAtPath:dir error:NULL];
+    NSMutableArray *items = [NSMutableArray array];
+    unsigned long long total = 0;
+    for (NSString *n in names) {
+        NSString *p = [dir stringByAppendingPathComponent:n];
+        if (![n hasSuffix:suffix]) { [fm removeItemAtPath:p error:NULL]; continue; }   // an older transpiler's output
+        NSDictionary *a = [fm attributesOfItemAtPath:p error:NULL];
+        if (!a) continue;
+        total += [a fileSize];
+        [items addObject:@[p, [a fileModificationDate] ?: [NSDate distantPast], @([a fileSize])]];
+    }
+    const unsigned long long limit = 48ull * 1024 * 1024;
+    if (total <= limit) return;
+    [items sortUsingComparator:^NSComparisonResult(NSArray *x, NSArray *y) { return [x[1] compare:y[1]]; }];
+    for (NSArray *it in items) {
+        if (total <= limit * 3 / 4) break;
+        [fm removeItemAtPath:it[0] error:NULL];
+        total -= [it[2] unsignedLongLongValue];
+    }
 }
 
 - (BOOL)available
@@ -264,14 +392,21 @@ static NSString *BRPageKey(NSURL *url)
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
           mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion
 {
+    [self rewriteData:data kind:kind charset:charset pageURL:pageURL sourceURL:nil mainFrame:mainFrame completion:completion];
+}
+
+- (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
+          sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion
+{
     if (!completion) return;
     [[BRJSEngine shared] performAsync:^{
         @autoreleasepool {
             NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
             NSString *used = nil;
             if ([kind isEqualToString:@"js"]) {
-                // no transpiling on this hardware (see the build workflow); scripts pass through unchanged
-                completion(data, charset);
+                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL] : nil;
+                if (lowered) completion(lowered, @"utf-8");
+                else completion(data, charset);
                 return;
             }
             if (![self ensureLoaded]) { completion(data, charset); return; }
@@ -286,11 +421,13 @@ static NSString *BRPageKey(NSURL *url)
             if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
             NSString *optionsJSON = @"{}";
             {
-                NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
+                NSMutableDictionary *opts = [@{ @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
                                                 @"devicePixelRatio": @(g_devicePixelRatio) } mutableCopy];
                 // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
                 if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
                 if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;
+                // inline scripts in ES2015+ syntax: lowered by the transpiler in the same context
+                if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixLoaded]) opts[@"transpile"] = @YES;
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

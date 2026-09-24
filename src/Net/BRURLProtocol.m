@@ -602,6 +602,15 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (declared > (long long)BRMaxRewriteBody) kind = nil;
     }
+    // scripts: ES2015+ syntax lowered to ES5 (jsfix.js); scripts the engine parses pass through unchanged
+    if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
+        NSString *path = [url.path lowercaseString] ?: @"";
+        BOOL script = [ctype rangeOfString:@"javascript"].location != NSNotFound || [ctype rangeOfString:@"ecmascript"].location != NSNotFound;
+        if (!script && (!ctype.length || [ctype hasPrefix:@"text/plain"] || [ctype hasPrefix:@"application/octet-stream"]) &&
+            ([path hasSuffix:@".js"] || [path hasSuffix:@".mjs"])) script = YES;
+        long long declared = [r.responseHeaders[@"content-length"] longLongValue];
+        if (script && declared <= (long long)BRMaxRewriteBody) kind = @"js";
+    }
     // WOFF2 fonts are decoded to TTF (no JavaScript involved, so this works even without the rewriter)
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"]) {
         NSString *path = [url.path lowercaseString] ?: @"";
@@ -690,7 +699,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSTimeInterval maxAge = self.cacheMaxAge;
     self.cacheBody = nil;
     BOOL mainFrame = !self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL];
-    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
+    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:url mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : [kind isEqualToString:@"js"] ? @"text/javascript" : @"text/html");

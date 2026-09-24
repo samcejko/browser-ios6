@@ -159,14 +159,12 @@ var cases = [
   ['html fragment untouched', '<div class="a">fragment</div>', '<div class="a">fragment</div>'],
   ['html json script untouched', '<html><head></head><body><script type="application/ld+json">{"a":1}<\/script><script type="text/template"><b>x</b><\/script></body></html>', '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script type="application/ld+json">{"a":1}<\/script><script type="text/template"><b>x</b><\/script></body></html>']
 ];
-// pretend transpiler: uppercases scripts that contain "modern"; modules become a System.register stub
-window.BRTranspile = {
-  run: function (src) { return src.indexOf('modern') >= 0 ? src.toUpperCase() : ''; },
-  transpileModule: function (src, id) { return 'System.register("' + id + '",[],function(){return{execute:function(){' + src + '}}});'; }
-};
+// pretend transpiler (jsfix.js in the app): uppercases scripts that contain "modern", leaves the others ('')
+window.JSFix = { run: function (src) { return src.indexOf('modern') >= 0 ? src.toUpperCase() : ''; } };
 cases.push(['html inline script transpiled', '<html><head></head><body><script>var modern = 1<\/script><script>var old = 1<\/script></body></html>', '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script>VAR MODERN = 1<\/script><script>var old = 1<\/script></body></html>']);
+// module scripts stay as they are (the old engine skips them and runs the nomodule fallback)
 cases.push(['html modules', '<html><head><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>',
-  '<html><head><script src="https://x.invalid/p.js"><\/script><script type="systemjs-importmap">{"imports":{}}<\/script></head><body><script>System.import("/app.js").catch(function(e){console.error(e)});<\/script><script>System.register("https://example.com/dir/__inline_module_1.js",[],function(){return{execute:function(){import a from "./a.js"}}});\nSystem.import("https://example.com/dir/__inline_module_1.js").catch(function(e){console.error(e)});<\/script></body></html>']);
+  '<html><head><script src="https://x.invalid/p.js"><\/script><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
 for (var i = 0; i < cases.length; i++) {

@@ -53,6 +53,18 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
++ (BOOL)transpileEnabled
+{
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:@"BRTranspile"];
+    return v ? [v boolValue] : YES;
+}
+
++ (void)setTranspileEnabled:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:@"BRTranspile"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 + (NSInteger)userAgentMode
 {
     NSInteger m = [[NSUserDefaults standardUserDefaults] integerForKey:@"BRUserAgentMode"];

@@ -17,6 +17,11 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 // with the original charset.
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
           mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion;   // polyfills are injected into main documents only
+// Scripts ("js"): ES2015+ syntax lowered to ES5 by Resources/jsfix.js (on acorn) when the engine cannot parse the
+// script as it is; results are kept in Caches/transpiled by content. `sourceURL` is the script's own URL.
+- (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
+          sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion;
++ (void)pruneTranspiledCache;   // keeps Caches/transpiled under its size limit (call off the main thread)
 
 // The bundle of polyfills injected into every document (assembled once from Resources/js and shims.js).
 + (NSString *)polyfillURLString;
