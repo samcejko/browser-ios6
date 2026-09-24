@@ -1543,6 +1543,107 @@
     // Host object wrappers that carry our added properties must not be collected and recreated without them
     try { window.__brKeepAlive = [window.navigator, window.crypto, window.screen, window.history, window.performance, window.localStorage, window.sessionStorage, navigator.mediaDevices, navigator.geolocation]; } catch (e) {}
 
+    // ---- CSSOM and view interfaces the old engine lacks or hides (browserscore inventory)
+    try {
+        if (Ep && typeof Ep.scrollTo !== 'function') {
+            Ep.scrollTo = function (x, y) { if (x && typeof x === 'object') { y = x.top; x = x.left; } if (x !== undefined && x !== null) this.scrollLeft = x; if (y !== undefined && y !== null) this.scrollTop = y; };
+            Ep.scroll = Ep.scrollTo;
+            Ep.scrollBy = function (x, y) { if (x && typeof x === 'object') { y = x.top; x = x.left; } this.scrollLeft += x || 0; this.scrollTop += y || 0; };
+        }
+        if (window.matchMedia && !window.MediaQueryList) {
+            var mqlProto = Object.getPrototypeOf(window.matchMedia('all'));
+            window.MediaQueryList = function MediaQueryList() {};
+            window.MediaQueryList.prototype = mqlProto;
+            if (!('onchange' in mqlProto)) try { Object.defineProperty(mqlProto, 'onchange', { get: function () { return this.__onchange || null; }, set: function (f) { if (this.__onchange) this.removeListener(this.__onchange); this.__onchange = f; if (f) this.addListener(f); }, configurable: true }); } catch (e0) {}
+        }
+        if (!window.MediaQueryListEvent) window.MediaQueryListEvent = function MediaQueryListEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, false); e.media = init && init.media || ''; e.matches = !!(init && init.matches); return e; };
+        if (!window.Screen && window.screen) { window.Screen = function Screen() {}; window.Screen.prototype = Object.getPrototypeOf(window.screen); }
+        if (window.visualViewport && !window.VisualViewport) {
+            window.VisualViewport = function VisualViewport() {};
+            var vv = window.visualViewport, vvProto = window.VisualViewport.prototype;
+            vvProto.addEventListener = noop; vvProto.removeEventListener = noop; vvProto.dispatchEvent = function () { return true; };
+            var vvNames = ['width', 'height', 'scale', 'offsetLeft', 'offsetTop', 'pageLeft', 'pageTop', 'onresize', 'onscroll', 'onscrollend'];
+            for (var vvi = 0; vvi < vvNames.length; vvi++) if (!(vvNames[vvi] in vvProto)) vvProto[vvNames[vvi]] = vv[vvNames[vvi]] === undefined ? null : vv[vvNames[vvi]];
+            try { vv.__proto__ = vvProto; } catch (e1) {}
+        }
+        if (window.CSSRule) {
+            var ruleConsts = { KEYFRAMES_RULE: 7, KEYFRAME_RULE: 8, MARGIN_RULE: 9, NAMESPACE_RULE: 10, COUNTER_STYLE_RULE: 11, SUPPORTS_RULE: 12, FONT_FEATURE_VALUES_RULE: 14, VIEWPORT_RULE: 15, REGION_STYLE_RULE: 16 };
+            for (var rc in ruleConsts) if (ruleConsts.hasOwnProperty(rc) && !(rc in window.CSSRule)) try { window.CSSRule[rc] = ruleConsts[rc]; } catch (e2) {}
+        }
+        if (!window.CSSKeyframesRule && window.WebKitCSSKeyframesRule) window.CSSKeyframesRule = window.WebKitCSSKeyframesRule;
+        if (!window.CSSKeyframeRule && window.WebKitCSSKeyframeRule) window.CSSKeyframeRule = window.WebKitCSSKeyframeRule;
+        if (window.CSSKeyframesRule && window.CSSKeyframesRule.prototype && !window.CSSKeyframesRule.prototype.appendRule) {
+            window.CSSKeyframesRule.prototype.appendRule = function (rule) { return this.insertRule(rule); };
+        }
+        var ruleStubs = ['CSSGroupingRule', 'CSSConditionRule', 'CSSSupportsRule', 'CSSLayerBlockRule', 'CSSLayerStatementRule', 'CSSContainerRule', 'CSSCounterStyleRule',
+                         'CSSFontFeatureValuesRule', 'CSSFontPaletteValuesRule', 'CSSPropertyRule', 'CSSScopeRule', 'CSSNestedDeclarations', 'CSSStartingStyleRule', 'CSSPositionTryRule', 'CSSViewTransitionRule'];
+        for (var rs = 0; rs < ruleStubs.length; rs++) if (!window[ruleStubs[rs]]) window[ruleStubs[rs]] = (function (n) { var F = function () {}; try { F.prototype = Object.create(window.CSSRule ? window.CSSRule.prototype : Object.prototype); } catch (e3) {} F.prototype.constructor = F; return F; })(ruleStubs[rs]);
+        if (window.CSSStyleRule && window.CSSStyleRule.prototype && !('cssRules' in window.CSSStyleRule.prototype)) {
+            try { Object.defineProperty(window.CSSStyleRule.prototype, 'cssRules', { get: function () { return []; }, configurable: true }); } catch (e4) {}
+            window.CSSStyleRule.prototype.insertRule = function () { return 0; };
+            window.CSSStyleRule.prototype.deleteRule = noop;
+        }
+        // Web Animations: a fuller Animation object for element.animate()
+        if (!window.Animation || !window.Animation.prototype.play) {
+            var Animation = function Animation(effect, timeline) {
+                this.effect = effect || null; this.timeline = timeline || (document.timeline || null); this.id = ''; this.startTime = null; this.currentTime = 0;
+                this.playbackRate = 1; this.playState = 'finished'; this.replaceState = 'active'; this.pending = false;
+                this.onfinish = null; this.oncancel = null; this.onremove = null;
+                var self = this;
+                this.ready = P ? P.resolve(self) : null; this.finished = this.ready;
+            };
+            Animation.prototype.cancel = function () { this.playState = 'idle'; if (typeof this.oncancel === 'function') this.oncancel({ target: this }); };
+            Animation.prototype.finish = function () { this.playState = 'finished'; if (typeof this.onfinish === 'function') this.onfinish({ target: this }); };
+            Animation.prototype.play = function () { this.playState = 'finished'; var s = this; setTimeout(function () { if (typeof s.onfinish === 'function') s.onfinish({ target: s }); }, 0); };
+            Animation.prototype.pause = function () { this.playState = 'paused'; };
+            Animation.prototype.reverse = noop; Animation.prototype.updatePlaybackRate = function (r) { this.playbackRate = r; }; Animation.prototype.persist = noop; Animation.prototype.commitStyles = noop;
+            Animation.prototype.addEventListener = noop; Animation.prototype.removeEventListener = noop; Animation.prototype.dispatchEvent = function () { return true; };
+            window.Animation = Animation;
+            if (Ep) { Ep.animate = function () { var a = new Animation(); a.play(); return a; }; Ep.getAnimations = function () { return []; }; }
+            window.CSSAnimation = function CSSAnimation() { Animation.call(this); this.animationName = ''; };
+            window.CSSAnimation.prototype = Object.create(Animation.prototype);
+            window.CSSTransition = function CSSTransition() { Animation.call(this); this.transitionProperty = ''; };
+            window.CSSTransition.prototype = Object.create(Animation.prototype);
+            if (!window.KeyframeEffect) window.KeyframeEffect = function KeyframeEffect(target, keyframes, options) { this.target = target || null; this.composite = 'replace'; this.pseudoElement = null; this.__k = keyframes; this.__o = options; };
+            window.KeyframeEffect.prototype.getKeyframes = function () { return this.__k || []; };
+            window.KeyframeEffect.prototype.setKeyframes = function (k) { this.__k = k; };
+            window.KeyframeEffect.prototype.getTiming = function () { return typeof this.__o === 'object' && this.__o ? this.__o : { duration: this.__o || 0 }; };
+            window.KeyframeEffect.prototype.getComputedTiming = window.KeyframeEffect.prototype.getTiming;
+            window.KeyframeEffect.prototype.updateTiming = noop;
+            window.AnimationEffect = window.AnimationEffect || window.KeyframeEffect;
+            if (!window.AnimationTimeline) window.AnimationTimeline = function AnimationTimeline() { this.currentTime = 0; };
+            if (!window.DocumentTimeline) { window.DocumentTimeline = function DocumentTimeline() { this.currentTime = 0; }; }
+            if (!document.timeline) document.timeline = new window.DocumentTimeline();
+            if (!document.getAnimations) document.getAnimations = function () { return []; };
+        }
+        // Font loading: FontFace members and a FontFaceSet class behind document.fonts
+        if (window.FontFace && !('weight' in window.FontFace.prototype)) {
+            var ffDefaults = { style: 'normal', weight: 'normal', stretch: 'normal', unicodeRange: 'U+0-10FFFF', variant: 'normal', featureSettings: 'normal', variationSettings: 'normal', display: 'auto', ascentOverride: 'normal', descentOverride: 'normal', lineGapOverride: 'normal' };
+            for (var ffk in ffDefaults) if (ffDefaults.hasOwnProperty(ffk) && !(ffk in window.FontFace.prototype)) window.FontFace.prototype[ffk] = ffDefaults[ffk];
+            if (!('features' in window.FontFace.prototype)) { window.FontFace.prototype.features = {}; window.FontFace.prototype.variations = {}; window.FontFace.prototype.palettes = {}; }
+        }
+        if (document.fonts && !window.FontFaceSet) {
+            var FontFaceSet = function FontFaceSet() {};
+            var fsProto = FontFaceSet.prototype;
+            fsProto.add = function () { return this; }; fsProto['delete'] = function () { return false; }; fsProto.clear = noop; fsProto.has = function () { return false; };
+            fsProto.load = function () { return resolved([]); }; fsProto.check = function () { return true; }; fsProto.forEach = noop; fsProto.entries = function () { return [].entries ? [].entries() : []; };
+            fsProto.keys = fsProto.entries; fsProto.values = fsProto.entries; fsProto.addEventListener = noop; fsProto.removeEventListener = noop; fsProto.dispatchEvent = function () { return true; };
+            fsProto.status = 'loaded'; fsProto.size = 0; fsProto.onloading = null; fsProto.onloadingdone = null; fsProto.onloadingerror = null;
+            fsProto.ready = resolved({ status: 'loaded' });
+            window.FontFaceSet = FontFaceSet;
+            try { document.fonts.__proto__ = fsProto; } catch (e5) {}
+            window.FontFaceSetLoadEvent = window.FontFaceSetLoadEvent || function FontFaceSetLoadEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, false); e.fontfaces = init && init.fontfaces || []; return e; };
+        }
+        if (window.Highlight && !window.Highlight.prototype.has) {
+            var hp = window.Highlight.prototype;
+            hp.has = function () { return false; }; hp.add = function () { return this; }; hp['delete'] = function () { return false; }; hp.clear = noop; hp.forEach = noop;
+            hp.values = function () { return []; }; hp.keys = hp.values; hp.entries = hp.values; hp.size = 0; hp.priority = 0; hp.type = 'highlight';
+        }
+        if (!window.CaretPosition) { window.CaretPosition = function CaretPosition() { this.offsetNode = null; this.offset = 0; }; window.CaretPosition.prototype.getClientRect = function () { return null; }; }
+        if (!document.caretPositionFromPoint) document.caretPositionFromPoint = function (x, y) { var r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null; var c = new window.CaretPosition(); if (r) { c.offsetNode = r.startContainer; c.offset = r.startOffset; } return c; };
+        if (!document.elementsFromPoint) document.elementsFromPoint = function (x, y) { var el = document.elementFromPoint(x, y), list = []; while (el) { list.push(el); el = el.parentElement; } return list; };
+    } catch (eCSSOM) {}
+
     // ---- Language runtime extras
     if (!window.globalThis) try { window.globalThis = window; } catch (e) {}
     if (!window.queueMicrotask) window.queueMicrotask = function (cb) { if (P) P.resolve().then(cb); else setTimeout(cb, 0); };

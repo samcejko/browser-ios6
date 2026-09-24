@@ -57,22 +57,34 @@ function listValues (def) {
 	return out;
 }
 
+// A property entry. `children` lists concrete properties of a template such as "border-<side>-radius"
+// (strings, or an object of property -> def); they inherit the parent's values (Feature._createChildren).
+function propertyFeature (prop, def, features, inheritedValues) {
+	def = typeof def === 'object' && def ? def : {};
+	let values = listValues(def);
+	if (!values.length && inheritedValues) values = inheritedValues;
+	if (def.children) {
+		const kids = Array.isArray(def.children)
+			? def.children.map(c => (typeof c === 'string' ? [c, {}] : [c.id || c.value || prop, c]))
+			: Object.entries(def.children);
+		for (const [kidProp, kidDef] of kids) {
+			const merged = { ...def, ...(kidDef || {}) };
+			delete merged.children;
+			delete merged.isGroup;
+			if (kidDef && kidDef.children) merged.children = kidDef.children;
+			propertyFeature(kidProp, merged, features, values);
+		}
+		return;
+	}
+	const feature = { type: 'properties', code: prop, gate: { k: 'prop', p: prop }, tests: [] };
+	for (const v of values) feature.tests.push({ k: 'val', p: prop, v });
+	features.push(feature);
+}
+
 function convertProperties (group, features) {
 	for (const [prop, rawDef] of Object.entries(group)) {
 		if (prop === 'properties') continue;
-		const def = typeof rawDef === 'object' && rawDef ? rawDef : {};
-		const feature = { type: 'properties', code: prop, gate: null, tests: [] };
-		if (!def.children) feature.gate = { k: 'prop', p: prop };
-		for (const v of listValues(def)) feature.tests.push({ k: 'val', p: prop, v });
-		if (def.children) {
-			const kids = Array.isArray(def.children) ? def.children : Object.entries(def.children).map(([id, d]) => ({ ...(d || {}), id }));
-			for (const kid of kids) {
-				const v = typeof kid === 'string' ? kid : (kid.value || kid.id);
-				if (v) feature.tests.push({ k: 'val', p: prop, v });
-			}
-		}
-		if (!feature.gate && !feature.tests.length) feature.tests.push({ k: 'prop', p: prop });
-		features.push(feature);
+		propertyFeature(prop, rawDef, features, null);
 	}
 }
 

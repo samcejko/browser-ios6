@@ -121,12 +121,72 @@
         }
         return null;
     }
-    function nativeMember(t) {
-        var name = resolveGlobal(t.g);
-        if (!name) return false;
-        var object = window[name];
-        if (!object) return false;
-        if (t.path) { object = object[t.path]; if (!object) return false; }
+    // This engine keeps IDL attributes on the instances, not on the prototypes, so a prototype lookup alone would
+    // report almost every DOM attribute as missing. When the prototype has nothing, a real instance is asked.
+    var instanceFactories = {
+        Element: function () { return document.createElement('div'); },
+        HTMLElement: function () { return document.createElement('div'); },
+        HTMLImageElement: function () { return document.createElement('img'); },
+        HTMLInputElement: function () { return document.createElement('input'); },
+        HTMLVideoElement: function () { return document.createElement('video'); },
+        HTMLMediaElement: function () { return document.createElement('video'); },
+        HTMLCanvasElement: function () { return document.createElement('canvas'); },
+        HTMLIFrameElement: function () { return document.createElement('iframe'); },
+        HTMLStyleElement: function () { return document.createElement('style'); },
+        HTMLLinkElement: function () { return document.createElement('link'); },
+        Node: function () { return document.createElement('div'); },
+        Document: function () { return document; },
+        Text: function () { return document.createTextNode('x'); },
+        Range: function () { return document.createRange(); },
+        Window: function () { return window; },
+        Screen: function () { return window.screen; },
+        Navigator: function () { return window.navigator; },
+        History: function () { return window.history; },
+        Location: function () { return window.location; },
+        Performance: function () { return window.performance; },
+        Storage: function () { return window.localStorage; },
+        MediaQueryList: function () { return window.matchMedia('all'); },
+        CSSStyleDeclaration: function () { return document.createElement('div').style; },
+        StyleSheet: function () { return styleSheetInstance(); },
+        CSSStyleSheet: function () { return styleSheetInstance(); },
+        CSSRule: function () { return ruleInstance('.bs-x { color: red }'); },
+        CSSStyleRule: function () { return ruleInstance('.bs-x { color: red }'); },
+        CSSMediaRule: function () { return ruleInstance('@media all { .bs-x { color: red } }'); },
+        CSSFontFaceRule: function () { return ruleInstance('@font-face { font-family: x }'); },
+        CSSImportRule: function () { return ruleInstance('@import url(x.css);'); },
+        CSSPageRule: function () { return ruleInstance('@page { margin: 0 }'); },
+        CSSKeyframesRule: function () { return ruleInstance('@-webkit-keyframes bsk { from { top: 0 } }'); },
+        CSSKeyframeRule: function () { var r = ruleInstance('@-webkit-keyframes bsk { from { top: 0 } }'); return r && r.cssRules ? r.cssRules[0] : null; },
+        Event: function () { return document.createEvent('Event'); },
+        UIEvent: function () { return document.createEvent('UIEvent'); },
+        MouseEvent: function () { return document.createEvent('MouseEvent'); },
+        KeyboardEvent: function () { return document.createEvent('KeyboardEvent'); },
+        TouchEvent: function () { return document.createEvent('TouchEvent'); },
+        AnimationEvent: function () { return document.createEvent('WebKitAnimationEvent'); },
+        TransitionEvent: function () { return document.createEvent('WebKitTransitionEvent'); },
+        CustomEvent: function () { return document.createEvent('CustomEvent'); },
+        XMLHttpRequest: function () { return new XMLHttpRequest(); },
+        Image: function () { return new Image(); },
+        FontFace: function () { return window.FontFace ? new window.FontFace('bs', 'url(x)') : null; },
+        FontFaceSet: function () { return document.fonts; },
+        Animation: function () { return window.Animation ? new window.Animation() : null; },
+        DOMMatrix: function () { return window.DOMMatrix ? new window.DOMMatrix() : null; },
+        DOMRect: function () { return document.createElement('div').getBoundingClientRect(); },
+        ClientRect: function () { return document.createElement('div').getBoundingClientRect(); },
+        VisualViewport: function () { return window.visualViewport; },
+        Highlight: function () { return window.Highlight ? new window.Highlight() : null; },
+        IntersectionObserver: function () { return window.IntersectionObserver ? new window.IntersectionObserver(function () {}) : null; },
+        ResizeObserver: function () { return window.ResizeObserver ? new window.ResizeObserver(function () {}) : null; },
+        MutationObserver: function () { return window.MutationObserver ? new window.MutationObserver(function () {}) : null; }
+    };
+    function styleSheetInstance() { rulesParse('.bs-x { color: red }'); return styleEl.sheet; }
+    function ruleInstance(css) { return rulesParse(css); }
+    function instanceOf(g) {
+        var f = instanceFactories[g];
+        if (!f) return null;
+        try { return f() || null; } catch (e) { return null; }
+    }
+    function memberPresent(object, t) {
         for (var i = 0; i < domPrefixes.length; i++) {
             var m = prefixDom(domPrefixes[i], t.m);
             var present = false;
@@ -136,6 +196,21 @@
             return true;
         }
         return false;
+    }
+    function nativeMember(t) {
+        var name = resolveGlobal(t.g);
+        if (!name) return false;
+        var object = window[name];
+        if (!object) return false;
+        var isConstructor = typeof object === 'function' || (typeof object === 'object' && object.prototype && /^[A-Z]/.test(t.g));
+        if (t.path && isConstructor) {
+            var proto = object[t.path];
+            if (proto && memberPresent(proto, t)) return true;
+            var inst = instanceOf(t.g);
+            return inst ? memberPresent(inst, t) : false;
+        }
+        // lower-case globals (document, navigator) are instances themselves
+        return memberPresent(object, t);
     }
     function nativeExtends(g, s) {
         var C = window[resolveGlobal(g) || g], S = window[resolveGlobal(s) || s];
@@ -167,17 +242,28 @@
         try { return fix.fixCSS(css, ctx) || ''; } catch (e) { return ''; }
     }
     // the declaration (and any extra rules) after rewriting, given an optional container context
+    var contextBaseline = {};
+    function contextRuleCount(context) {
+        if (!context) return 1;
+        if (contextBaseline[context] === undefined) contextBaseline[context] = parseRewritten(rewriteCSS('.bs{' + context + '}')).length;
+        return contextBaseline[context];
+    }
     function emulatedDeclaration(p, v, context) {
         var css = '.bs{' + (context || '') + p + ':' + v + '}';
         var out = rewriteCSS(css);
         if (!out) return false;
         var rules = parseRewritten(out);
         if (!rules.length) return false;
-        var main = rules[0], extra = rules.length > 1;
-        var accepted = false, changed = extra;
+        var main = rules[0];
+        // rules the declaration added beyond what the bare context produces (grid columns, flex gaps, wrap items)
+        var extra = rules.length > contextRuleCount(context);
+        var accepted = extra, changed = extra;
+        var contextProps = context ? parseRewritten(rewriteCSS('.bs{' + context + '}'))[0].decls : [];
         for (var i = 0; i < main.decls.length; i++) {
             var dp = main.decls[i][0], dv = main.decls[i][1];
-            if (context && (dp === 'display' || dp === '-webkit-box-orient' || dp === '-webkit-box-direction' || dp === 'flex-direction')) continue;   // the context itself
+            var fromContext = false;
+            for (var c = 0; c < contextProps.length; c++) if (contextProps[c][0] === dp && contextProps[c][1] === dv) fromContext = true;
+            if (fromContext) continue;
             if (dp !== p || dv.toLowerCase() !== v.toLowerCase()) changed = true;
             if (nativeValue(dp, dv)) accepted = true;
         }
@@ -203,12 +289,25 @@
         return true;
     }
     function emulatedAtrule(t) {
+        if (!fix || t.parent) return false;
+        var m = /^@([a-z-]+)\s*([\s\S]*)$/i.exec(t.code);
+        if (!m) return false;
+        var name = m[1].toLowerCase(), prelude = m[2].replace(/^\s+|\s+$/g, '');
+        try {
+            // conditions the rewriter evaluates itself (the rule is then unwrapped or dropped on purpose)
+            if (name === 'supports') return typeof fix.evalSupports(prelude) === 'boolean';
+            if (name === 'media') { var q = fix.fixMedia(prelude); return typeof q === 'string' && nativeMedia(q); }
+            if (name === 'layer' || name === 'scope') {
+                if (t.contents === false) return true;   // statements are consumed without error
+                var out = rewriteCSS(t.code + '{.bs{color:rgb(1,2,3)}}');
+                return /\.bs\s*\{/.test(out) && rulesParse(out) !== null;
+            }
+        } catch (e) { return false; }
         var inner = typeof t.contents === 'string' && t.contents ? t.contents : '.bs{color:rgb(1,2,3)}';
         var css = t.contents === false ? t.code + ';' : t.code + '{' + inner + '}';
-        if (t.parent) css = t.parent + '{' + css + '}';
-        var out = rewriteCSS(css);
-        if (!out || !/\S/.test(out)) return false;
-        return rulesParse(out) !== null && out.replace(/\s+/g, '') !== css.replace(/\s+/g, '');
+        var rewritten = rewriteCSS(css);
+        if (!rewritten || !/\S/.test(rewritten)) return false;
+        return rulesParse(rewritten) !== null && rewritten.replace(/\s+/g, '') !== css.replace(/\s+/g, '');
     }
     function emulatedMedia(q) {
         if (!fix) return false;

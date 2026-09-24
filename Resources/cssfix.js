@@ -304,26 +304,38 @@ var CSSFix = (function () {
 
     var NAMED = { black: [0, 0, 0], white: [255, 255, 255], red: [255, 0, 0], green: [0, 128, 0], blue: [0, 0, 255], yellow: [255, 255, 0],
         gray: [128, 128, 128], grey: [128, 128, 128], silver: [192, 192, 192], orange: [255, 165, 0], purple: [128, 0, 128], pink: [255, 192, 203],
+        rebeccapurple: [102, 51, 153], teal: [0, 128, 128], olive: [128, 128, 0], navy: [0, 0, 128], maroon: [128, 0, 0], lime: [0, 255, 0], aqua: [0, 255, 255],
+        cyan: [0, 255, 255], magenta: [255, 0, 255], fuchsia: [255, 0, 255], brown: [165, 42, 42], gold: [255, 215, 0], beige: [245, 245, 220],
         transparent: [0, 0, 0, 0], currentcolor: null };
+    // colour keywords the old engine does not know (CSS Color 4 named and system colours), as plain hex
+    var COLOR_KEYWORDS = { rebeccapurple: '#663399', canvas: '#ffffff', canvastext: '#000000', linktext: '#0000ee', visitedtext: '#551a8b',
+        activetext: '#ff0000', field: '#ffffff', fieldtext: '#000000', accentcolor: '#0a84ff', accentcolortext: '#ffffff', buttonborder: '#767676',
+        buttontext: '#000000', mark: '#ffff00', marktext: '#000000', selecteditem: '#b3d4fc', selecteditemtext: '#000000' };
+    var COLOR_KEYWORD_RE = /\b(rebeccapurple|canvas|canvastext|linktext|visitedtext|activetext|field|fieldtext|accentcolor|accentcolortext|buttonborder|buttontext|mark|marktext|selecteditem|selecteditemtext)\b/i;
 
     function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
     function gamma(c) { c = clamp01(c); return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; }
     function to255(c) { return Math.round(clamp01(c) * 255); }
 
     function numOrPct(tok, scale) {   // "50%" -> scale*0.5 ; "0.5" -> 0.5 ; "none" -> 0
-        if (tok === 'none') return 0;
+        if (tok === undefined || tok === 'none') return 0;
         if (tok.charAt(tok.length - 1) === '%') return parseFloat(tok) / 100 * scale;
-        return parseFloat(tok);
+        var n = parseFloat(tok);
+        return isNaN(n) ? 0 : n;
     }
 
     function alphaOf(tok) {
         if (tok === undefined || tok === null) return 1;
+        if (tok === 'none') return 0;   // a missing alpha renders as 0 (CSS Color 4)
         if (tok.charAt(tok.length - 1) === '%') return parseFloat(tok) / 100;
-        return parseFloat(tok);
+        var a = parseFloat(tok);
+        return isNaN(a) ? 1 : a;
     }
 
     function hueDeg(tok) {
+        if (tok === 'none') return 0;
         var v = parseFloat(tok);
+        if (isNaN(v)) return 0;
         if (/grad$/.test(tok)) v = v * 0.9;
         else if (/rad$/.test(tok)) v = v * 180 / Math.PI;
         else if (/turn$/.test(tok)) v = v * 360;
@@ -511,9 +523,15 @@ var CSSFix = (function () {
         return out;
     }
 
+    // "in lch", "in hsl longer hue": colour interpolation methods the old engine cannot parse
+    var INTERPOLATION_RE = /\s*\bin\s+[a-z][a-z0-9-]*(\s+(shorter|longer|increasing|decreasing)\s+hue)?\b\s*/i;
+
     function convertLinearGradient(inner) {
+        inner = inner.replace(INTERPOLATION_RE, ' ');
         var args = splitTop(inner, ',');
         var first = trim(args[0]);
+        if (!first) args = args.slice(1);
+        first = trim(args[0] || '');
         var rest = args.slice(1);
         var dir = null;
         if (/^to\s+/i.test(first)) {
@@ -530,8 +548,10 @@ var CSSFix = (function () {
     }
 
     function convertRadialGradient(inner) {
+        inner = inner.replace(INTERPOLATION_RE, ' ');
         var args = splitTop(inner, ',');
         var first = trim(args[0]);
+        if (!first) { args = args.slice(1); first = trim(args[0] || ''); }
         var rest = args.slice(1);
         var head = null;
         if (/\bat\b/i.test(first)) {
@@ -557,54 +577,211 @@ var CSSFix = (function () {
     // viewport of the page being rewritten (set by run()), for clamp()/min()/max() with viewport units
     var g_viewportWidth = 768, g_viewportHeight = 1024;
 
-    // a single length in px when its unit can be resolved statically (px, vw, vh, vmin, vmax, rem, em, number 0)
-    function evalLengthPx(s) {
-        var m = /^(-?[\d.]+)(px|vw|vh|vmin|vmax|rem|em|)$/i.exec(trim(s));
-        if (!m) return null;
-        var n = parseFloat(m[1]), u = m[2].toLowerCase();
-        if (isNaN(n)) return null;
-        if (u === 'px') return n;
-        if (u === '') return n === 0 ? 0 : null;
-        if (u === 'vw') return n * g_viewportWidth / 100;
-        if (u === 'vh') return n * g_viewportHeight / 100;
-        if (u === 'vmin') return n * Math.min(g_viewportWidth, g_viewportHeight) / 100;
-        if (u === 'vmax') return n * Math.max(g_viewportWidth, g_viewportHeight) / 100;
-        return n * 16;   // rem, em at the usual root size
-    }
+    function pxString(n) { return (Math.round(n * 100) / 100) + 'px'; }
 
-    function evalAllPx(args) {
+    // ---- calc-style expressions evaluated statically: numbers with absolute, font or viewport units, + - * /, parentheses.
+    // Returns {n, u} with u '' (number), 'px' or 'deg', or null when something (%, ch, unknown idents) cannot be resolved.
+    var MATH_CONSTANTS = { e: Math.E, pi: Math.PI };
+    function unitValue(num, unit) {
+        var n = parseFloat(num);
+        if (isNaN(n)) return null;
+        switch (unit) {
+            case '': return { n: n, u: '' };
+            case 'px': return { n: n, u: 'px' };
+            case 'vw': return { n: n * g_viewportWidth / 100, u: 'px' };
+            case 'vh': return { n: n * g_viewportHeight / 100, u: 'px' };
+            case 'vmin': return { n: n * Math.min(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
+            case 'vmax': return { n: n * Math.max(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
+            case 'rem': case 'em': return { n: n * 16, u: 'px' };
+            case 'pt': return { n: n * 4 / 3, u: 'px' };
+            case 'pc': return { n: n * 16, u: 'px' };
+            case 'in': return { n: n * 96, u: 'px' };
+            case 'cm': return { n: n * 96 / 2.54, u: 'px' };
+            case 'mm': return { n: n * 96 / 25.4, u: 'px' };
+            case 'q': return { n: n * 96 / 101.6, u: 'px' };
+            case 'deg': return { n: n, u: 'deg' };
+            case 'grad': return { n: n * 0.9, u: 'deg' };
+            case 'rad': return { n: n * 180 / Math.PI, u: 'deg' };
+            case 'turn': return { n: n * 360, u: 'deg' };
+        }
+        return null;
+    }
+    function evalExpr(expr) {
+        var s = trim(expr).toLowerCase(), pos = 0, failed = false;
+        function peek() { return s.charAt(pos); }
+        function skip() { while (pos < s.length && /\s/.test(s.charAt(pos))) pos++; }
+        function atom() {
+            skip();
+            var c = peek();
+            if (c === '(') { pos++; var v = sum(); skip(); if (peek() !== ')') { failed = true; return null; } pos++; return v; }
+            if (c === '-' || c === '+') { pos++; var inner = atom(); if (!inner) return null; return { n: c === '-' ? -inner.n : inner.n, u: inner.u }; }
+            var m = /^(\d*\.?\d+(?:e[-+]?\d+)?)([a-z%]*)/.exec(s.slice(pos));
+            if (m) { pos += m[0].length; var uv = unitValue(m[1], m[2]); if (!uv) failed = true; return uv; }
+            var id = /^[a-z][a-z0-9-]*/.exec(s.slice(pos));
+            if (id && MATH_CONSTANTS.hasOwnProperty(id[0])) { pos += id[0].length; return { n: MATH_CONSTANTS[id[0]], u: '' }; }
+            failed = true;
+            return null;
+        }
+        function product() {
+            var left = atom();
+            for (;;) {
+                skip();
+                var op = peek();
+                if (op !== '*' && op !== '/') return left;
+                pos++;
+                var right = atom();
+                if (!left || !right) { failed = true; return null; }
+                if (op === '*') {
+                    if (left.u && right.u) { failed = true; return null; }
+                    left = { n: left.n * right.n, u: left.u || right.u };
+                } else {
+                    if (right.u && right.u !== left.u) { failed = true; return null; }
+                    if (right.n === 0) { failed = true; return null; }
+                    left = { n: left.n / right.n, u: right.u ? '' : left.u };
+                }
+            }
+        }
+        function sum() {
+            var left = product();
+            for (;;) {
+                skip();
+                var op = peek();
+                if (op !== '+' && op !== '-') return left;
+                pos++;
+                var right = product();
+                if (!left || !right) { failed = true; return null; }
+                if (left.u !== right.u) { if (left.n === 0 && !left.u) left.u = right.u; else if (right.n === 0 && !right.u) right.u = left.u; else { failed = true; return null; } }
+                left = { n: op === '+' ? left.n + right.n : left.n - right.n, u: left.u };
+            }
+        }
+        var result = sum();
+        skip();
+        if (failed || !result || pos < s.length || isNaN(result.n) || !isFinite(result.n)) return null;
+        return result;
+    }
+    function fmtValue(v) {
+        var n = Math.round(v.n * 100000) / 100000;   // enough precision for nested evaluation
+        return n + (v.u || '');
+    }
+    function evalArgs(args) {
         var out = [];
-        for (var i = 0; i < args.length; i++) { var v = evalLengthPx(args[i]); if (v === null) return null; out.push(v); }
+        for (var i = 0; i < args.length; i++) { var v = evalExpr(args[i]); if (!v) return null; out.push(v); }
         return out;
     }
-
-    function pxString(n) { return (Math.round(n * 100) / 100) + 'px'; }
+    function sameUnit(vals) {
+        for (var i = 1; i < vals.length; i++) if (vals[i].u !== vals[0].u) return false;
+        return true;
+    }
+    function toRadians(v) { return v.u === 'deg' ? v.n * Math.PI / 180 : v.n; }
+    // math functions with statically evaluable arguments; null when they must be left alone
+    function evalMathFunction(name, args) {
+        var vals, a, b;
+        switch (name) {
+            case 'round': {
+                var strategy = 'nearest', list = args.slice(0);
+                if (/^(nearest|up|down|to-zero)$/.test(trim(list[0]).toLowerCase())) strategy = trim(list.shift()).toLowerCase();
+                vals = evalArgs(list);
+                if (!vals || vals.length < 1) return null;
+                a = vals[0]; b = vals.length > 1 ? vals[1] : { n: 1, u: a.u };
+                if (a.u !== b.u || b.n === 0) return null;
+                var q = a.n / b.n, r;
+                if (strategy === 'up') r = Math.ceil(q); else if (strategy === 'down') r = Math.floor(q); else if (strategy === 'to-zero') r = q < 0 ? Math.ceil(q) : Math.floor(q); else r = Math.round(q);
+                return fmtValue({ n: r * b.n, u: a.u });
+            }
+            case 'mod': case 'rem': {
+                vals = evalArgs(args);
+                if (!vals || vals.length !== 2 || vals[0].u !== vals[1].u || vals[1].n === 0) return null;
+                a = vals[0].n; b = vals[1].n;
+                var res = name === 'mod' ? a - b * Math.floor(a / b) : a - b * (a / b < 0 ? Math.ceil(a / b) : Math.floor(a / b));
+                return fmtValue({ n: res, u: vals[0].u });
+            }
+            case 'abs': vals = evalArgs(args); return vals && vals.length === 1 ? fmtValue({ n: Math.abs(vals[0].n), u: vals[0].u }) : null;
+            case 'sign': {
+                var sv = /^\s*(-?)\s*[\d.]/.exec(args[0] || '');
+                vals = evalArgs(args);
+                if (vals && vals.length === 1) return String(vals[0].n > 0 ? 1 : vals[0].n < 0 ? -1 : 0);
+                return sv ? (sv[1] === '-' ? '-1' : '1') : null;   // percentages keep their sign
+            }
+            case 'pow': vals = evalArgs(args); return vals && vals.length === 2 && !vals[0].u && !vals[1].u ? fmtValue({ n: Math.pow(vals[0].n, vals[1].n), u: '' }) : null;
+            case 'sqrt': vals = evalArgs(args); return vals && vals.length === 1 && !vals[0].u && vals[0].n >= 0 ? fmtValue({ n: Math.sqrt(vals[0].n), u: '' }) : null;
+            case 'hypot': {
+                vals = evalArgs(args);
+                if (!vals || !vals.length || !sameUnit(vals)) return null;
+                var sq = 0;
+                for (var i = 0; i < vals.length; i++) sq += vals[i].n * vals[i].n;
+                return fmtValue({ n: Math.sqrt(sq), u: vals[0].u });
+            }
+            case 'exp': vals = evalArgs(args); return vals && vals.length === 1 && !vals[0].u ? fmtValue({ n: Math.exp(vals[0].n), u: '' }) : null;
+            case 'log': {
+                vals = evalArgs(args);
+                if (!vals || !vals.length || vals[0].u || vals[0].n <= 0) return null;
+                var lg = Math.log(vals[0].n);
+                if (vals.length > 1) { if (vals[1].u || vals[1].n <= 0) return null; lg /= Math.log(vals[1].n); }
+                return fmtValue({ n: lg, u: '' });
+            }
+            case 'sin': case 'cos': case 'tan': {
+                vals = evalArgs(args);
+                if (!vals || vals.length !== 1 || (vals[0].u && vals[0].u !== 'deg')) return null;
+                var rad = toRadians(vals[0]);
+                var t = name === 'sin' ? Math.sin(rad) : name === 'cos' ? Math.cos(rad) : Math.tan(rad);
+                if (!isFinite(t) || Math.abs(t) > 1e12) return null;
+                return fmtValue({ n: t, u: '' });
+            }
+            case 'asin': case 'acos': case 'atan': {
+                vals = evalArgs(args);
+                if (!vals || vals.length !== 1 || vals[0].u) return null;
+                var an = name === 'asin' ? Math.asin(vals[0].n) : name === 'acos' ? Math.acos(vals[0].n) : Math.atan(vals[0].n);
+                if (isNaN(an)) return null;
+                return fmtValue({ n: an * 180 / Math.PI, u: 'deg' });
+            }
+            case 'atan2': {
+                vals = evalArgs(args);
+                if (!vals || vals.length !== 2 || vals[0].u !== vals[1].u) return null;
+                return fmtValue({ n: Math.atan2(vals[0].n, vals[1].n) * 180 / Math.PI, u: 'deg' });
+            }
+        }
+        return null;
+    }
 
     function applyFunction(name, inner) {
         switch (name) {
-            case 'calc': return '-webkit-calc(' + inner + ')';
+            case 'calc': {
+                var calcEval = evalExpr(inner);
+                if (calcEval) return fmtValue(calcEval);
+                // constants and evaluable pieces are substituted; the rest stays a calc() the old engine understands
+                var calcInner = inner.replace(/(^|[^\w.-])(e|pi)(?![\w.-])/gi, function (m, pre, id) { return pre + Math.round(MATH_CONSTANTS[id.toLowerCase()] * 100000) / 100000; });
+                return '-webkit-calc(' + calcInner + ')';
+            }
             case 'clamp': {
                 var a = splitTop(inner, ',');
                 if (a.length === 3) {
-                    var cv = evalAllPx(a);
-                    if (cv) return pxString(Math.min(Math.max(cv[1], cv[0]), cv[2]));
+                    var cv = evalArgs(a);
+                    if (cv && sameUnit(cv)) return fmtValue({ n: Math.min(Math.max(cv[1].n, cv[0].n), cv[2].n), u: cv[0].u });
                     return trim(a[1]);
                 }
                 return trim(a[0]);
             }
-            case 'min': { var mn = splitTop(inner, ','), mnv = evalAllPx(mn); return mnv ? pxString(Math.min.apply(null, mnv)) : pickMin(mn); }
-            case 'max': { var mx = splitTop(inner, ','), mxv = evalAllPx(mx); return mxv ? pxString(Math.max.apply(null, mxv)) : trim(mx[0]); }
+            case 'min': { var mn = splitTop(inner, ','), mnv = evalArgs(mn); if (mnv && sameUnit(mnv)) { var mnBest = mnv[0]; for (var mi = 1; mi < mnv.length; mi++) if (mnv[mi].n < mnBest.n) mnBest = mnv[mi]; return fmtValue(mnBest); } return pickMin(mn); }
+            case 'max': { var mx = splitTop(inner, ','), mxv = evalArgs(mx); if (mxv && sameUnit(mxv)) { var mxBest = mxv[0]; for (var xi = 1; xi < mxv.length; xi++) if (mxv[xi].n > mxBest.n) mxBest = mxv[xi]; return fmtValue(mxBest); } return trim(mx[0]); }
+            case 'round': case 'mod': case 'rem': case 'abs': case 'sign': case 'pow': case 'sqrt': case 'hypot':
+            case 'sin': case 'cos': case 'tan': case 'asin': case 'acos': case 'atan': case 'atan2': case 'exp': case 'log': {
+                var mr = evalMathFunction(name, splitTop(inner, ','));
+                if (mr !== null) return mr;
+                var r = splitTop(inner, ',');
+                return trim(/^(nearest|up|down|to-zero)$/.test(trim(r[0])) && r.length > 1 ? r[1] : r[0]);
+            }
             case 'linear-gradient': case 'repeating-linear-gradient':
                 return '-webkit-' + name + '(' + convertLinearGradient(inner) + ')';
             case 'radial-gradient': case 'repeating-radial-gradient':
                 return '-webkit-' + name + '(' + convertRadialGradient(inner) + ')';
             case 'conic-gradient': case 'repeating-conic-gradient': case 'paint': case 'element': case 'cross-fade':
                 return 'none';
-            case 'image-set': return '-webkit-image-set(' + inner.replace(/\s*type\([^)]*\)/g, '') + ')';
+            case 'image-set': {
+                // type() hints go, bare strings become url(), gradients stay as they are
+                var isv = inner.replace(/\s*type\([^)]*\)/g, '').replace(/(^|,)\s*("[^"]*"|'[^']*')/g, function (m, pre, str) { return pre + ' url(' + str + ')'; });
+                return '-webkit-image-set(' + trim(isv) + ')';
+            }
             case 'fit-content': return inner;
-            case 'round': case 'mod': case 'rem': case 'abs': case 'sign': case 'pow': case 'sqrt': case 'hypot':
-            case 'sin': case 'cos': case 'tan': case 'asin': case 'acos': case 'atan': case 'atan2': case 'exp': case 'log':
-                { var r = splitTop(inner, ','); return trim(/^(nearest|up|down|to-zero)$/.test(trim(r[0])) && r.length > 1 ? r[1] : r[0]); }
             case 'rgb': case 'rgba': case 'hsl': case 'hsla': case 'hwb': case 'oklch': case 'oklab': case 'lab': case 'lch': case 'color': case 'color-mix': case 'light-dark':
                 return convertColorFunction(name, inner);
             case 'env': { var e = splitTop(inner, ','); return e.length > 1 ? trim(e[1]) : '0px'; }
@@ -657,6 +834,7 @@ var CSSFix = (function () {
     function fixValue(p, v) {
         if (v.indexOf('(') >= 0) v = transformFunctions(v);
         v = fixHexAlpha(v);
+        if (COLOR_KEYWORD_RE.test(v)) v = v.replace(new RegExp(COLOR_KEYWORD_RE.source, 'gi'), function (m) { return COLOR_KEYWORDS[m.toLowerCase()] || m; });
         if (/\d(dvh|svh|lvh|dvw|svw|lvw|cqw|cqh|cqi|cqb|cqmin|cqmax|vi|vb)\b/.test(v)) {
             v = v.replace(/(\d)(dvh|svh|lvh|cqh|cqb|vb)\b/g, '$1vh').replace(/(\d)(dvw|svw|lvw|cqw|cqi|vi)\b/g, '$1vw')
                  .replace(/(\d)cqmin\b/g, '$1vmin').replace(/(\d)cqmax\b/g, '$1vmax');
@@ -834,7 +1012,8 @@ var CSSFix = (function () {
                 case 'flex': {
                     var f = parseFlexShorthand(v);
                     push(out, '-webkit-box-flex', f.grow, imp);
-                    if (f.basis && f.basis !== '0' && f.basis !== '0px' && f.basis !== '0%') push(out, 'width', f.basis, imp);
+                    if (f.basis && f.basis !== '0' && f.basis !== '0px' && f.basis !== '0%') push(out, 'width', /^(min-content|max-content|fit-content|stretch)$/.test(f.basis) ? 'auto' : f.basis, imp);
+                    else if (/\b(auto|content)\b/.test(lv) || lv === 'none' || lv === 'initial') push(out, 'width', 'auto', imp);
                     push(out, p, v, imp);
                     continue;
                 }
@@ -843,7 +1022,8 @@ var CSSFix = (function () {
                     push(out, p, v, imp);
                     continue;
                 case 'flex-basis':
-                    if (lv !== 'auto' && lv !== 'content' && lv !== '0' && lv !== '0px') push(out, 'width', v, imp);
+                    if (lv === 'auto' || lv === 'content' || /^(min-content|max-content|fit-content|stretch|-webkit-)/.test(lv)) push(out, 'width', 'auto', imp);
+                    else if (lv !== '0' && lv !== '0px') push(out, 'width', v, imp);
                     push(out, p, v, imp);
                     continue;
                 case 'order': {
@@ -857,9 +1037,6 @@ var CSSFix = (function () {
                     push(out, 'top', ib[0], imp); push(out, 'right', ib[1], imp); push(out, 'bottom', ib[2], imp); push(out, 'left', ib[3], imp);
                     continue;
                 }
-                case 'text-align':
-                    push(out, p, lv === 'start' ? 'left' : lv === 'end' ? 'right' : v, imp);
-                    continue;
                 case 'aspect-ratio': {
                     // the engine has no aspect-ratio: the ratio travels in a harmless counter-reset value that
                     // shims-extra.js reads back from the computed style and turns into a height
@@ -900,14 +1077,96 @@ var CSSFix = (function () {
                 case 'overflow': case 'overflow-x': case 'overflow-y':
                     push(out, p, lv === 'overlay' ? 'auto' : lv === 'clip' ? 'hidden' : v, imp);
                     continue;
+                case 'opacity':
+                    push(out, p, /%$/.test(lv) ? String(Math.round(parseFloat(lv) * 10) / 1000) : v, imp);
+                    continue;
+                case 'overflow-wrap': case 'word-wrap':
+                    push(out, 'word-wrap', lv === 'anywhere' ? 'break-word' : v, imp);
+                    if (p === 'overflow-wrap') push(out, p, v, imp);
+                    continue;
+                case 'word-break':
+                    push(out, p, lv === 'auto-phrase' ? 'normal' : v, imp);
+                    continue;
+                case 'white-space':
+                    push(out, p, lv === 'break-spaces' ? 'pre-wrap' : v, imp);
+                    continue;
+                case 'line-break':
+                    push(out, '-webkit-line-break', lv === 'anywhere' ? 'loose' : v, imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'text-align': {
+                    var ta = lv === 'start' ? 'left' : lv === 'end' ? 'right' : lv === 'justify-all' ? 'justify' : v;
+                    push(out, p, ta, imp);
+                    continue;
+                }
+                case 'font-weight': {
+                    // arbitrary numbers (CSS Fonts 4) become the nearest hundred the old engine knows
+                    var fw = /^-?[\d.]+$/.test(lv) ? parseFloat(lv) : NaN;
+                    if (!isNaN(fw) && (fw % 100 !== 0 || fw < 100 || fw > 900)) fw = Math.min(900, Math.max(100, Math.round(fw / 100) * 100));
+                    push(out, p, isNaN(fw) ? v : String(fw), imp);
+                    continue;
+                }
+                case 'font-style':
+                    push(out, p, /^oblique\s+-?[\d.]+(deg|grad|rad|turn)/.test(lv) ? 'oblique' : v, imp);
+                    continue;
+                case 'text-decoration': {
+                    // the shorthand may carry style, colour and thickness; the old engine only takes the lines
+                    var lines = [], tdToks = splitWS(lv), other = false;
+                    for (var tdi = 0; tdi < tdToks.length; tdi++) {
+                        if (/^(none|underline|overline|line-through|blink)$/.test(tdToks[tdi])) lines.push(tdToks[tdi]); else other = true;
+                    }
+                    push(out, p, other && lines.length ? lines.join(' ') : v, imp);
+                    continue;
+                }
+                case 'text-decoration-line':
+                    push(out, 'text-decoration', v, imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'text-shadow': case 'box-shadow': {
+                    // a fourth length (spread) in text-shadow is CSS Text Decoration 4: the old parser rejects the whole value
+                    if (p === 'text-shadow') {
+                        var shadows = splitTop(v, ','), fixedShadows = [];
+                        for (var shi = 0; shi < shadows.length; shi++) {
+                            var stoks = splitWS(trim(shadows[shi])), lens = [], others = [];
+                            for (var sti = 0; sti < stoks.length; sti++) { if (/^-?[\d.]+(px|em|rem|pt|%|vw|vh)?$/.test(stoks[sti]) && lens.length < 3) lens.push(stoks[sti]); else if (/^-?[\d.]+(px|em|rem|pt|%|vw|vh)?$/.test(stoks[sti])) { /* spread dropped */ } else others.push(stoks[sti]); }
+                            fixedShadows.push(lens.concat(others).join(' '));
+                        }
+                        push(out, p, fixedShadows.join(', '), imp);
+                        continue;
+                    }
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'list-style-type': {
+                    var LST_SAFE = /^(disc|circle|square|decimal|decimal-leading-zero|lower-roman|upper-roman|lower-greek|lower-latin|upper-latin|lower-alpha|upper-alpha|armenian|georgian|none|inherit|initial|hebrew|hiragana|katakana|hiragana-iroha|katakana-iroha|cjk-ideographic|lower-norwegian|upper-norwegian|afar|amharic|arabic-indic|bengali|cambodian|devanagari|gujarati|gurmukhi|kannada|khmer|lao|malayalam|mongolian|myanmar|oriya|persian|telugu|thai|tibetan|urdu)$/;
+                    var lst = v;
+                    if (!LST_SAFE.test(lv)) lst = /decimal|numeric|formal|informal|hangul|hanja|chinese|japanese|tamil|ethiopic|arabic|persian/.test(lv) ? 'decimal' : 'disc';
+                    push(out, p, lst, imp);
+                    continue;
+                }
+                case 'break-before': case 'break-after': {
+                    var side = p === 'break-before' ? 'before' : 'after';
+                    var pageVal = /^avoid/.test(lv) ? 'avoid' : (lv === 'page' || lv === 'always' || lv === 'recto' || lv === 'verso') ? 'always' : (lv === 'left' || lv === 'right') ? lv : 'auto';
+                    var colVal = /^avoid/.test(lv) ? 'avoid' : (lv === 'column' || lv === 'always') ? 'always' : 'auto';
+                    push(out, 'page-break-' + side, pageVal, imp);
+                    push(out, '-webkit-column-break-' + side, colVal, imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'min-width': case 'min-height': case 'min-inline-size': case 'min-block-size':
+                    // "auto" is the flexbox initial value; the old engine only knows 0 there
+                    push(out, p === 'min-inline-size' ? 'min-width' : p === 'min-block-size' ? 'min-height' : p, lv === 'auto' ? '0' : v, imp);
+                    continue;
                 case 'translate': translate = v; continue;
                 case 'rotate': rotate = v; continue;
                 case 'scale': scale = v; continue;
-                case 'transform':
+                case 'transform': {
                     hasTransform = true;
-                    push(out, '-webkit-transform', v, imp);
+                    var tfv = v.replace(/\s*perspective\(\s*none\s*\)\s*/gi, ' ').replace(/^\s+|\s+$/g, '') || 'none';
+                    push(out, '-webkit-transform', tfv, imp);
                     push(out, p, v, imp);
                     continue;
+                }
                 case 'transition': case 'transition-property': {
                     var tv = v.replace(/(^|[\s,])(transform|filter|mask|clip-path|backdrop-filter)\b/g, '$1-webkit-$2');
                     push(out, '-webkit-' + p, tv, imp);
@@ -968,9 +1227,20 @@ var CSSFix = (function () {
         }
         if ((translate || rotate || scale) && !hasTransform) {
             var parts = [];
-            if (translate && translate !== 'none') { var tt = splitWS(translate); parts.push(tt.length > 1 ? 'translate(' + tt[0] + ', ' + tt[1] + ')' : 'translate(' + tt[0] + ')'); }
-            if (rotate && rotate !== 'none') parts.push('rotate(' + rotate + ')');
-            if (scale && scale !== 'none') { var st = splitWS(scale); parts.push(st.length > 1 ? 'scale(' + st[0] + ', ' + st[1] + ')' : 'scale(' + st[0] + ')'); }
+            if (translate && translate !== 'none') {
+                var tt = splitWS(translate);
+                parts.push(tt.length > 2 ? 'translate3d(' + tt[0] + ', ' + tt[1] + ', ' + tt[2] + ')' : tt.length > 1 ? 'translate(' + tt[0] + ', ' + tt[1] + ')' : 'translate(' + tt[0] + ')');
+            }
+            if (rotate && rotate !== 'none') {
+                var rt = splitWS(rotate), rl = rt[0].toLowerCase();
+                if (rt.length === 2 && (rl === 'x' || rl === 'y' || rl === 'z')) parts.push(rl === 'z' ? 'rotate(' + rt[1] + ')' : 'rotate' + rl.toUpperCase() + '(' + rt[1] + ')');
+                else if (rt.length === 4) parts.push('rotate3d(' + rt[0] + ', ' + rt[1] + ', ' + rt[2] + ', ' + rt[3] + ')');
+                else parts.push('rotate(' + rotate + ')');
+            }
+            if (scale && scale !== 'none') {
+                var st = splitWS(scale);
+                parts.push(st.length > 2 ? 'scale3d(' + st[0] + ', ' + st[1] + ', ' + st[2] + ')' : st.length > 1 ? 'scale(' + st[0] + ', ' + st[1] + ')' : 'scale(' + st[0] + ')');
+            }
             if (parts.length) { push(out, '-webkit-transform', parts.join(' '), false); push(out, 'transform', parts.join(' '), false); }
         }
         return out;

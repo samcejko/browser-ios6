@@ -33,7 +33,12 @@ the app around it:
   turns into a height for media elements and empty boxes, and `fit-content`/`max-content`/
   `min-content` widths become shrink-to-fit tables. The start page links a bundled **CSS3 test** page
   (`https://ios6-browser.invalid/csstest.html`, served through the rewriter) that measures what the
-  engine really renders after the rewrite; css3test.com itself no longer runs on ES5 engines.
+  engine really renders after the rewrite; css3test.com itself no longer runs on ES5 engines. A second
+  page, **Browserscore** (`https://ios6-browser.invalid/browserscore.html`), runs the feature
+  definitions of browserscore.dev (the css3test successor; `browserscore/features`, MIT, flattened at
+  build time by `tools/browserscore-convert.mjs`) with an ES5 runner that reports three states per
+  test: accepted natively, accepted after the CSS rewriter, missing. `tools/browserscore-dev.html`
+  runs the same thing in a desktop browser against a checkout served as `/repo/`.
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
   shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
   TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship
