@@ -1142,6 +1142,7 @@ var CSSFix = (function () {
     // rewritten to classes (.br-has-<hash>, .br-cq-<hash>) that shims-extra.js toggles on the elements; the
     // entries travel in a trailing comment of the rewritten output and the app hands them to the page.
     var g_manifest = null, g_suppressManifest = false;   // suppressed while @supports selector() is only being evaluated
+    var g_hostScope = null;   // id of the shadow host whose stylesheet is being rewritten (see hostSelector)
     function manifestHash(s) {
         var h = 5381;
         for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
@@ -1344,7 +1345,7 @@ var CSSFix = (function () {
 
     function manifestAdd(kind, entry) {
         if (g_suppressManifest) return;
-        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], seen: {} };
+        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], seen: {} };
         var key = kind + ':' + entry.h;
         if (g_manifest.seen[key]) return;
         g_manifest.seen[key] = true;
@@ -1929,6 +1930,105 @@ var CSSFix = (function () {
 
     function push(out, p, v, imp) { out.push({ p: p, v: v, imp: imp }); }
 
+    // font-variant-* keywords as OpenType feature settings (small caps and sub/superscripts are synthesised instead)
+    var FONT_VARIANT_FEATURES = {
+        'common-ligatures': '"liga" 1, "clig" 1', 'no-common-ligatures': '"liga" 0, "clig" 0', 'discretionary-ligatures': '"dlig" 1',
+        'no-discretionary-ligatures': '"dlig" 0', 'historical-ligatures': '"hlig" 1', 'no-historical-ligatures': '"hlig" 0',
+        contextual: '"calt" 1', 'no-contextual': '"calt" 0', 'lining-nums': '"lnum" 1', 'oldstyle-nums': '"onum" 1',
+        'proportional-nums': '"pnum" 1', 'tabular-nums': '"tnum" 1', 'diagonal-fractions': '"frac" 1', 'stacked-fractions': '"afrc" 1',
+        ordinal: '"ordn" 1', 'slashed-zero': '"zero" 1', jis78: '"jp78" 1', jis83: '"jp83" 1', jis90: '"jp90" 1', jis04: '"jp04" 1',
+        simplified: '"smpl" 1', traditional: '"trad" 1', 'full-width': '"fwid" 1', 'proportional-width': '"pwid" 1', ruby: '"ruby" 1',
+        unicase: '"unic" 1', 'titling-caps': '"titl" 1', 'historical-forms': '"hist" 1'
+    };
+    // ---- positions: the engine takes two plain values; an offset from the right or bottom edge ("right 20px bottom
+    // 10px", background-position-x: right 20px) becomes calc(100% - offset)
+    var POS_KEYWORDS = { left: 'x', right: 'x', top: 'y', bottom: 'y', center: 'c' };
+    function edgeValue(kw, off) {
+        if (kw === 'center') return '50%';
+        var far = kw === 'right' || kw === 'bottom';
+        if (!off) return far ? '100%' : '0%';
+        if (!far) return off;
+        return off.charAt(0) === '-' ? '-webkit-calc(100% + ' + off.slice(1) + ')' : '-webkit-calc(100% - ' + off.replace(/^\+/, '') + ')';
+    }
+    function isPosLength(t) { return /^[-+]?(\d*\.)?\d+([a-z%]+)?$/i.test(t) || /^(-webkit-)?calc\(/i.test(t); }
+    // one layer of a 3/4-value position as [x, y]; null when it is a plain 1/2-value one (or not a position)
+    function positionPair(layer) {
+        var toks = splitWS(trim(layer)), groups = [], i;
+        if (toks.length < 3) return null;
+        for (i = 0; i < toks.length; i++) {
+            var t = toks[i].toLowerCase();
+            if (!POS_KEYWORDS[t]) return null;
+            var g = { kw: t, off: null };
+            if (i + 1 < toks.length && isPosLength(toks[i + 1])) { g.off = toks[i + 1]; i++; }
+            groups.push(g);
+        }
+        if (groups.length !== 2) return null;
+        var a = groups[0], b = groups[1], swap = POS_KEYWORDS[a.kw] === 'y' || POS_KEYWORDS[b.kw] === 'x';
+        var h = swap ? b : a, vv = swap ? a : b;
+        return [edgeValue(h.kw, h.off), edgeValue(vv.kw, vv.off)];
+    }
+    function convertPositions(v) {
+        var layers = splitTop(v, ','), out = [], changed = false;
+        for (var i = 0; i < layers.length; i++) {
+            var pp = positionPair(layers[i]);
+            if (pp) { out.push(pp.join(' ')); changed = true; } else out.push(trim(layers[i]));
+        }
+        return changed ? out.join(', ') : null;
+    }
+    // background-position-x / -y (and the logical ones): "right 20px" per layer
+    function convertAxisPositions(v, horizontal) {
+        var layers = splitTop(v, ','), out = [], changed = false;
+        for (var i = 0; i < layers.length; i++) {
+            var toks = splitWS(trim(layers[i])), kw = toks[0] ? toks[0].toLowerCase() : '';
+            kw = { 'x-start': 'left', 'x-end': 'right', 'y-start': 'top', 'y-end': 'bottom' }[kw] || kw;
+            if (toks.length === 2 && isPosLength(toks[1]) && (horizontal ? /^(left|right)$/.test(kw) : /^(top|bottom)$/.test(kw))) { out.push(edgeValue(kw, toks[1])); changed = true; }
+            else out.push(trim(layers[i]));
+        }
+        return changed ? out.join(', ') : null;
+    }
+    // perspective-origin / a 1-2 value origin as [x, y]
+    function originPair(lv) {
+        var toks = splitWS(lv), kwv = function (t) { return t === 'center' ? '50%' : (t === 'left' || t === 'top') ? '0%' : (t === 'right' || t === 'bottom') ? '100%' : t; };
+        if (toks.length === 1) {
+            var t = toks[0];
+            if (t === 'top' || t === 'bottom') return ['50%', kwv(t)];
+            return [kwv(t), '50%'];
+        }
+        if (toks.length !== 2) return null;
+        var a = toks[0], b = toks[1];
+        if (a === 'top' || a === 'bottom' || b === 'left' || b === 'right') { var tmp = a; a = b; b = tmp; }
+        return [kwv(a), kwv(b)];
+    }
+
+    // selectors that reach the whole page (features there would slow down all text)
+    function broadSelectors(sels) {
+        if (!sels) return false;
+        for (var i = 0; i < sels.length; i++) {
+            var s = trim(sels[i]).toLowerCase().replace(/^:(where|is)\((.*)\)$/, '$2');
+            if (/^(html|body|:root|\*|html\s+body|html\s*>\s*body|:host|html\s+\*|body\s+\*)$/.test(s)) return true;
+        }
+        return false;
+    }
+
+    // text-decoration-color: the old engine paints decorations in the text stroke colour when the stroke is wider than
+    // 0 (a fully transparent stroke colour is skipped), otherwise in the fill colour. A 0.001px stroke draws nothing
+    // visible on the glyphs and carries the decoration colour; a transparent colour keeps a trace of alpha.
+    function pushDecorationColor(out, v, imp) {
+        var lv = trim(v).toLowerCase();
+        if (isGlobalKeyword(lv) || lv === 'unset') {
+            var kw = lv === 'unset' ? 'initial' : lv;
+            push(out, '-webkit-text-stroke-color', kw, imp);
+            push(out, '-webkit-text-stroke-width', kw, imp);
+            return;
+        }
+        if (lv === 'currentcolor') { push(out, '-webkit-text-stroke-color', 'currentColor', imp); return; }
+        var c = parseColor(v);
+        if (!c) return;
+        var a = c.length > 3 ? c[3] : 1;
+        push(out, '-webkit-text-stroke-color', 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', ' + (a < 0.004 ? 0.004 : Math.round(a * 1000) / 1000) + ')', imp);
+        push(out, '-webkit-text-stroke-width', '0.001px', imp);
+    }
+
     // two-value display syntax (css-display-3): "block flex" -> flex, "inline flow-root" -> inline-block, ...
     var DISPLAY_INSIDE = { flow: 1, 'flow-root': 1, table: 1, flex: 1, grid: 1, ruby: 1, math: 1 };
     function normalizeDisplay(lv) {
@@ -2023,6 +2123,7 @@ var CSSFix = (function () {
         // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
         // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
+        var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') hasDisplay = true;
@@ -2119,7 +2220,25 @@ var CSSFix = (function () {
                 case 'background-position-inline': case 'background-position-block': {
                     var bpx = p === 'background-position-inline', bpl = splitTop(v, ','), bpo = [];
                     for (var bpk = 0; bpk < bpl.length; bpk++) bpo.push(trim(bpl[bpk]).replace(/\bstart\b/g, bpx ? 'left' : 'top').replace(/\bend\b/g, bpx ? 'right' : 'bottom'));
-                    push(out, bpx ? 'background-position-x' : 'background-position-y', bpo.join(', '), imp);
+                    var bpv = bpo.join(', ');
+                    push(out, bpx ? 'background-position-x' : 'background-position-y', convertAxisPositions(bpv, bpx) || bpv, imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'background-position-x': case 'background-position-y':
+                    push(out, p, convertAxisPositions(v, p === 'background-position-x') || v, imp);
+                    continue;
+                case 'background-position':
+                    push(out, p, convertPositions(v) || v, imp);
+                    continue;
+                case 'mask-position': case '-webkit-mask-position':
+                    push(out, '-webkit-mask-position', convertPositions(v) || v, imp);
+                    if (p === 'mask-position') push(out, p, v, imp);
+                    continue;
+                case 'perspective-origin': case '-webkit-perspective-origin': {
+                    // the engine exposes the two longhands only
+                    var po = isGlobalKeyword(lv) ? [lv, lv] : originPair(lv);
+                    if (po) { push(out, '-webkit-perspective-origin-x', po[0], imp); push(out, '-webkit-perspective-origin-y', po[1], imp); }
                     push(out, p, v, imp);
                     continue;
                 }
@@ -2142,6 +2261,9 @@ var CSSFix = (function () {
                 }
                 case 'display':
                     if (lv.indexOf(' ') > 0 || lv === 'flow') { lv = normalizeDisplay(lv); v = lv; }
+                    // a column flex container stays a block (see columnFlex); its classes are remembered so that a later
+                    // rule turning the same class into a row ("navbar-expand-lg .navbar-nav") makes it a box again
+                    if ((lv === 'flex' || lv === 'inline-flex') && columnFlex && !wrap) rememberColumnFlex(ctx, lv === 'inline-flex');
                     if (lv === 'flex') push(out, 'display', (wrap || columnFlex) ? 'block' : '-webkit-box', imp);
                     else if (lv === 'inline-flex') push(out, 'display', (wrap || columnFlex) ? 'inline-block' : '-webkit-inline-box', imp);
                     else if (lv === 'grid' || lv === 'flow-root' || lv === 'contents') push(out, 'display', 'block', imp);
@@ -2151,12 +2273,14 @@ var CSSFix = (function () {
                 case 'flex-direction':
                     if (isGlobalKeyword(lv)) { push(out, '-webkit-box-orient', lv, imp); push(out, '-webkit-box-direction', lv, imp); }
                     else {
+                        if (!hasDisplay && /^row/.test(lv)) { var cfd = columnFlexDisplay(ctx); if (cfd) push(out, 'display', cfd, imp); }
                         push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
                         push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
                     }
                     push(out, p, v, imp);
                     continue;
                 case 'flex-flow':
+                    if (!hasDisplay && /\brow/.test(lv) && !(/wrap/.test(lv) && !/nowrap/.test(lv))) { var cff = columnFlexDisplay(ctx); if (cff) push(out, 'display', cff, imp); }
                     if (/column|row/.test(lv)) {
                         push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
                         push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
@@ -2361,16 +2485,23 @@ var CSSFix = (function () {
                     push(out, p, /^oblique\s+-?[\d.]+(deg|grad|rad|turn)/.test(lv) ? 'oblique' : v, imp);
                     continue;
                 case 'text-decoration': {
-                    // the shorthand may carry style, colour and thickness; the old engine only takes the lines
-                    var lines = [], tdToks = splitWS(lv), other = false;
+                    // the shorthand may carry style, colour and thickness; the old engine only takes the lines (the
+                    // colour goes the text-decoration-color way below)
+                    var lines = [], tdToks = splitWS(lv), other = false, tdColor = null;
                     for (var tdi = 0; tdi < tdToks.length; tdi++) {
-                        if (/^(none|underline|overline|line-through|blink)$/.test(tdToks[tdi])) lines.push(tdToks[tdi]); else other = true;
+                        if (/^(none|underline|overline|line-through|blink)$/.test(tdToks[tdi])) lines.push(tdToks[tdi]);
+                        else { other = true; if (!/^(solid|double|dotted|dashed|wavy|auto|from-font|-?[\d.]+[a-z%]*)$/.test(tdToks[tdi])) tdColor = splitWS(v)[tdi]; }
                     }
                     push(out, p, other && lines.length ? lines.join(' ') : v, imp);
+                    if (tdColor) pushDecorationColor(out, tdColor, imp);
                     continue;
                 }
                 case 'text-decoration-line':
                     push(out, 'text-decoration', v, imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'text-decoration-color': case '-webkit-text-decoration-color':
+                    pushDecorationColor(out, v, imp);
                     push(out, p, v, imp);
                     continue;
                 case 'text-shadow': case 'box-shadow': {
@@ -2573,18 +2704,38 @@ var CSSFix = (function () {
                     }
                     push(out, p, v, imp);
                     continue;
-                case 'font-variant-caps':
-                    if (/^(all-)?(small|petite)-caps$/.test(lv)) push(out, 'font-variant', 'small-caps', imp);
-                    else if (lv === 'normal') push(out, 'font-variant', 'normal', imp);
+                case 'font-variant-caps': case 'font-variant-numeric': case 'font-variant-east-asian': case 'font-variant-ligatures':
+                case 'font-variant-position': case 'font-variant-alternates': case 'font-variant': {
+                    // OpenType features for what the keywords ask (collected for the whole rule, below); small capitals
+                    // and sub/superscripts are synthesised by the engine, as the spec allows for fonts without them
+                    if (isGlobalKeyword(lv)) {
+                        if (p === 'font-variant' || p === 'font-variant-caps') push(out, 'font-variant', lv, imp);
+                        if (p !== 'font-variant-caps' && p !== 'font-variant-position') features.push(lv);
+                        push(out, p, v, imp);
+                        continue;
+                    }
+                    var fvToks = splitWS(lv), fvCaps = null, fvPos = null;
+                    for (var fvi = 0; fvi < fvToks.length; fvi++) {
+                        var fvt = fvToks[fvi];
+                        if (/^(all-)?(small|petite)-caps$/.test(fvt)) fvCaps = fvt;
+                        else if (fvt === 'sub' || fvt === 'super') fvPos = fvt;
+                        else if (FONT_VARIANT_FEATURES.hasOwnProperty(fvt)) features.push(FONT_VARIANT_FEATURES[fvt]);
+                        else if (fvt === 'none' && (p === 'font-variant' || p === 'font-variant-ligatures')) features.push(FONT_VARIANT_FEATURES['no-common-ligatures'], FONT_VARIANT_FEATURES['no-discretionary-ligatures'], FONT_VARIANT_FEATURES['no-historical-ligatures'], FONT_VARIANT_FEATURES['no-contextual']);
+                    }
+                    if (fvCaps) {
+                        push(out, 'font-variant', 'small-caps', imp);
+                        if (/^all-/.test(fvCaps)) push(out, 'text-transform', 'lowercase', imp);   // capitals shrink too
+                    } else if ((p === 'font-variant' || p === 'font-variant-caps') && (lv === 'normal' || lv === 'none')) push(out, 'font-variant', 'normal', imp);
+                    if (fvPos) { push(out, 'vertical-align', fvPos, imp); push(out, 'font-size', 'smaller', imp); }
                     push(out, p, v, imp);
                     continue;
-                case 'font-variant':
-                    // the engine knows normal and small-caps; the level 4 keyword lists would invalidate the declaration
-                    if (/(^|\s)(all-)?(small|petite)-caps(\s|$)/.test(lv)) push(out, p, 'small-caps', imp);
-                    else if (/^(normal|none|inherit|initial|small-caps)$/.test(lv)) push(out, p, v, imp);
+                }
+                case 'font-feature-settings': case '-webkit-font-feature-settings':
+                    // only where a rule asks for more than the defaults, and not for the whole page: features switch on
+                    // the engine's complex text layout, which is slow on this hardware
+                    if (!/^\s*normal\s*$/i.test(lv) && !/^(\s*,?\s*["'](kern|liga|clig|calt|rlig|locl|ccmp|mark|mkmk)["']\s*(1|on)?)+\s*$/i.test(lv)) features.push(v);
                     continue;
-                case 'font-feature-settings': case '-webkit-font-feature-settings': case 'font-variant-ligatures': case 'font-kerning':
-                case '-webkit-font-kerning': case 'font-variant-numeric': case 'font-optical-sizing': case 'font-variation-settings':
+                case 'font-kerning': case '-webkit-font-kerning': case 'font-optical-sizing': case 'font-variation-settings':
                     continue;   // each of these switches on complex text layout for the whole element
                 case 'object-fit': case 'object-position':
                     // object-fit-images (in the polyfill bundle) reads the intent from this font-family hack
@@ -2636,6 +2787,15 @@ var CSSFix = (function () {
                 parts.push(st.length > 2 ? 'scale3d(' + st[0] + ', ' + st[1] + ', ' + st[2] + ')' : st.length > 1 ? 'scale(' + st[0] + ', ' + st[1] + ')' : 'scale(' + st[0] + ')');
             }
             if (parts.length) { push(out, '-webkit-transform', parts.join(' '), false); push(out, 'transform', parts.join(' '), false); }
+        }
+        if (features.length && !broadSelectors(ctx.curSels)) {
+            var fset = [], fseen = {};
+            for (var fi = 0; fi < features.length; fi++) {
+                var ftag = trim(features[fi]);
+                if (isGlobalKeyword(ftag.toLowerCase())) { fset = [ftag.toLowerCase()]; break; }
+                if (!fseen[ftag]) { fseen[ftag] = 1; fset.push(ftag); }
+            }
+            push(out, '-webkit-font-feature-settings', fset.join(', '), false);
         }
         if (markers.length || markerKeyword) {
             // a counter-reset of the rule itself keeps its counters next to the markers
@@ -2819,12 +2979,92 @@ var CSSFix = (function () {
         return depth;
     }
 
+    // A stylesheet inside an emulated shadow root (the shim's <div data-shadow-root> in the host, see attachShadow):
+    // its selectors are scoped to that root, :host is the host element (data-br-host="<id>"), ::slotted() the host's
+    // light DOM children.
+    function hostSelector(sel) {
+        var host = '[data-br-host="' + g_hostScope + '"]', shadow = host + ' > [data-shadow-root]';
+        var FN = '((?:[^()]|\\([^()]*\\))*)';
+        var slotted = new RegExp('^(.*?)::slotted\\(' + FN + '\\)(.*)$', 'i').exec(sel);
+        if (slotted) return host + ' > ' + (trim(slotted[2]) || '*') + ':not([data-shadow-root])' + slotted[3];
+        var ctxm = new RegExp(':host-context\\(' + FN + '\\)', 'i').exec(sel);
+        if (ctxm) return trim(ctxm[1]) + ' ' + host + hostRest(sel.slice(ctxm.index + ctxm[0].length), shadow);
+        var hm = new RegExp(':host(\\(' + FN + '\\))?', 'i').exec(sel);
+        if (hm) {
+            var compound = hm[2] ? trim(hm[2]) : '';
+            var hostPart = compound ? (mergeCompound(host, compound) || host + compound) : host;
+            return trim(sel.slice(0, hm.index)) ? null : hostPart + hostRest(sel.slice(hm.index + hm[0].length), shadow);
+        }
+        return shadow + ' ' + sel;
+    }
+    function hostRest(rest, shadow) {   // what follows :host in a selector
+        if (!trim(rest)) return '';
+        if (/^[:.\[#]/.test(rest)) return rest;   // :host:hover, :host::before
+        return ' > [data-shadow-root] ' + trim(rest).replace(/^>\s*/, '');
+    }
+
+    // Structural selectors the shim computes ("sc" manifest entries, class .br-sc-<hash> on the matching elements):
+    //   :nth-child(An+B of S) / :nth-last-child(An+B of S)   {k:'nth', last, an, of}
+    //   :nth-col(An+B) / :nth-last-col(An+B)                 {k:'col', last, an}   (table cells by column)
+    //   A || B                                                {k:'cc', col, cell}   (cells in the columns of col elements A)
+    function rewriteStructural(sel) {
+        var guard = 0, m;
+        while (guard++ < 8 && (m = /:(nth-child|nth-last-child)\(/i.exec(sel)) !== null) {
+            var open = m.index + m[0].length - 1, close = matchParen(sel, open), inner = sel.slice(open + 1, close);
+            var of = /^\s*([\s\S]*?)\s+of\s+([\s\S]*)$/i.exec(inner);
+            if (!of) { sel = sel.slice(0, m.index) + '\u0001' + m[1] + sel.slice(m.index + m[0].length - 1); continue; }   // plain one: kept
+            var ofSels = fixSelectorList(of[2]);
+            if (!ofSels.length) return null;
+            var an = trim(of[1]).toLowerCase(), h = manifestHash('nth|' + m[1] + '|' + an + '|' + ofSels.join(','));
+            manifestAdd('sc', { h: h, k: 'nth', last: /last/i.test(m[1]) ? 1 : 0, an: an, of: ofSels.join(',') });
+            sel = sel.slice(0, m.index) + ((m.index === 0 || /[\s>+~(]$/.test(sel.slice(0, m.index))) ? '*' : '') + '.br-sc-' + h + sel.slice(close + 1);
+        }
+        sel = sel.replace(/\u0001/g, ':');
+        sel = sel.replace(/:(nth-col|nth-last-col)\(([^)]*)\)/gi, function (all, kind, an) {
+            var h = manifestHash('col|' + kind + '|' + trim(an).toLowerCase());
+            manifestAdd('sc', { h: h, k: 'col', last: /last/i.test(kind) ? 1 : 0, an: trim(an).toLowerCase() });
+            return '.br-sc-' + h;
+        });
+        var cc = sel.indexOf('||');
+        if (cc > 0) {
+            var colSel = fixSelectorList(trim(sel.slice(0, cc))), cellSel = trim(sel.slice(cc + 2));
+            if (!colSel.length || !cellSel) return null;
+            var hc = manifestHash('cc|' + colSel.join(',') + '|' + cellSel);
+            manifestAdd('sc', { h: hc, k: 'cc', col: colSel.join(','), cell: cellSel });
+            sel = cellSel + '.br-sc-' + hc;
+        }
+        return sel.replace(/(^|[\s>+~(])\.br-sc-/g, '$1*.br-sc-');
+    }
+
     function fixSelector(sel) {
         sel = trim(sel);
         if (sel.indexOf(':has(') >= 0 && g_manifest !== false) {
             var rewritten = rewriteHas(sel);
             if (rewritten === null) return [];
             sel = rewritten;
+        }
+        if (g_manifest !== false && (/:nth-(last-)?(child|col)\(|\|\|/i.test(sel))) {
+            var structural = rewriteStructural(sel);
+            if (structural === null) return [];
+            sel = structural;
+        }
+        // states this browser knows the answer to: media volume is set by the device buttons on iOS, there is no
+        // picture-in-picture; :open / :closed follow the open attribute and open popovers; :defined through the class the
+        // custom element shim keeps on elements that are not upgraded yet; :host outside a shadow root matches nothing
+        sel = sel.replace(/:volume-locked\b/gi, ':-webkit-any(audio,video)')
+                 .replace(/:picture-in-picture\b/gi, ':not(*)')
+                 .replace(/:open\b/gi, ':-webkit-any([open],.br-popover-open)')
+                 .replace(/:closed\b/gi, ':-webkit-any(details,dialog,[popover]):not([open]):not(.br-popover-open)')
+                 .replace(/:not\(\s*:defined\s*\)|:defined\b/gi, function (m) { manifestAdd('sc', { h: 'defined', k: 'defined' }); return m.charAt(1) === 'n' ? '.br-undefined' : ':not(.br-undefined)'; });
+        // custom states (ElementInternals.states in the shim puts .br-state-<name> on the element), autofilled fields,
+        // and what never matches here: WebXR overlays, slotted content outside a shadow root
+        sel = sel.replace(/:state\(\s*([\w-]+)\s*\)|:--([\w-]+)/gi, function (m, a, b) { return '.br-state-' + (a || b); })
+                 .replace(/:autofill\b/gi, ':-webkit-autofill')
+                 .replace(/:xr-overlay\b/gi, ':not(*)');
+        if (g_hostScope) { sel = hostSelector(sel); if (sel === null) return []; }
+        else {
+            if (/:host\b/i.test(sel)) sel = sel.replace(/:host-context\((?:[^()]|\([^()]*\))*\)|:host(\((?:[^()]|\([^()]*\))*\))?/gi, ':not(*)');
+            if (/::slotted\(|:has-slotted\b/i.test(sel)) sel = sel.replace(/::slotted\((?:[^()]|\([^()]*\))*\)|:has-slotted\b/gi, ':not(*)');
         }
         if (!sel || DROP_SELECTOR.test(sel)) return [];
         sel = sel.replace(/:focus-visible/gi, ':focus')
@@ -3062,6 +3302,53 @@ var CSSFix = (function () {
         return m ? m[1] : null;
     }
 
+    // margin-trim of a rule as the physical sides to trim (horizontal writing), or null
+    function marginTrimSides(decls, ctx) {
+        var v = null;
+        for (var i = 0; i < decls.length; i++) if (decls[i].p === 'margin-trim') v = resolveVars(decls[i].v, null, ctx);
+        if (v === null) return null;
+        var toks = splitWS(trim(v).toLowerCase()), s = { top: false, bottom: false, left: false, right: false }, any = false;
+        for (var k = 0; k < toks.length; k++) {
+            var t = toks[k];
+            if (t === 'block' || t === 'block-start') { s.top = any = true; }
+            if (t === 'block' || t === 'block-end') { s.bottom = any = true; }
+            if (t === 'inline' || t === 'inline-start') { s.left = any = true; }
+            if (t === 'inline' || t === 'inline-end') { s.right = any = true; }
+        }
+        return any ? s : null;
+    }
+
+    // the classes of a selector's subject, its last compound: ".navbar-expand-lg .navbar-nav" -> ["navbar-nav"]
+    function subjectClasses(sel) {
+        var s = trim(sel), depth = 0, start = 0;
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (c === '(' || c === '[') depth++;
+            else if (c === ')' || c === ']') depth--;
+            else if (!depth && (c === ' ' || c === '>' || c === '+' || c === '~')) start = i + 1;
+        }
+        var last = s.slice(start).replace(/:(not|-webkit-any)\([^)]*\)/g, ''), out = [], re = /\.([\w-]+)/g, m;
+        while ((m = re.exec(last)) !== null) out.push(m[1]);
+        return out;
+    }
+    function rememberColumnFlex(ctx, inline) {
+        if (!ctx.curSels) return;
+        if (!ctx.colFlex) ctx.colFlex = {};
+        for (var i = 0; i < ctx.curSels.length; i++) {
+            var cls = subjectClasses(ctx.curSels[i]);
+            for (var k = 0; k < cls.length; k++) ctx.colFlex[cls[k]] = inline ? '-webkit-inline-box' : '-webkit-box';
+        }
+    }
+    // the box display for a rule that turns a remembered column flex container into a row, or null
+    function columnFlexDisplay(ctx) {
+        if (!ctx.colFlex || !ctx.curSels) return null;
+        for (var i = 0; i < ctx.curSels.length; i++) {
+            var cls = subjectClasses(ctx.curSels[i]);
+            for (var k = 0; k < cls.length; k++) if (ctx.colFlex.hasOwnProperty(cls[k])) return ctx.colFlex[cls[k]];
+        }
+        return null;
+    }
+
     // What a flex container rule asks for that the 2009 box model cannot do by itself: wrapping and gaps.
     function flexContainerInfo(decls, ctx) {
         var info = { flex: false, wrap: false, column: false, rowGap: null, colGap: null, justify: null };
@@ -3123,6 +3410,18 @@ var CSSFix = (function () {
                 if (decls.length) out.push({ t: 'q', sel: sels.join(','), decls: decls });
                 if (condRules) for (var cj = 0; cj < condRules.length; cj++) if (condRules[cj]) out.push(condRules[cj]);
                 if (!keyframe) {
+                    // margin-trim: the margins of the first / last child at the container's edges become zero
+                    var mt = marginTrimSides(r.decls, ctx);
+                    if (mt) {
+                        var mtFirst = [], mtLast = [], mtFd = [], mtLd = [];
+                        for (var mts = 0; mts < sels.length; mts++) { mtFirst.push(sels[mts] + ' > :first-child'); mtLast.push(sels[mts] + ' > :last-child'); }
+                        if (mt.top) mtFd.push({ p: 'margin-top', v: '0', imp: true });
+                        if (mt.left) mtFd.push({ p: 'margin-left', v: '0', imp: true });
+                        if (mt.bottom) mtLd.push({ p: 'margin-bottom', v: '0', imp: true });
+                        if (mt.right) mtLd.push({ p: 'margin-right', v: '0', imp: true });
+                        if (mtFd.length) out.push({ t: 'q', sel: mtFirst.join(','), decls: mtFd });
+                        if (mtLd.length) out.push({ t: 'q', sel: mtLast.join(','), decls: mtLd });
+                    }
                     var fi = flexContainerInfo(r.decls, ctx);
                     if (fi.flex) {
                         var childSel = [], gapSel = [], gs;
@@ -3472,13 +3771,16 @@ var CSSFix = (function () {
         g_viewportHeight = (opts && opts.viewportHeight > 0) ? opts.viewportHeight : Math.round(g_viewportWidth * 4 / 3);
         g_dpr = (opts && opts.devicePixelRatio > 0) ? opts.devicePixelRatio : 1;
         g_manifest = null;
-        var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
+        g_hostScope = opts && opts.hostScope ? String(opts.hostScope).replace(/[^\w-]/g, '') : null;
+        var out;
+        try { out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx); } finally { g_hostScope = null; }
         var manifest = null;
-        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length)) {
+        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length || g_manifest.sc.length)) {
             manifest = { has: g_manifest.has, cq: g_manifest.cq };
             if (g_manifest.dv.length) manifest.dv = g_manifest.dv;
             if (g_manifest.pt.length) manifest.pt = g_manifest.pt;
             if (g_manifest.cv.length) manifest.cv = g_manifest.cv;
+            if (g_manifest.sc.length) manifest.sc = g_manifest.sc;
             // the entries ride along in the output (so a cached copy keeps them); "*/" cannot occur inside
             var json = JSON.stringify(manifest).replace(/\*\//g, '*\\/');
             out += kind === 'html' ? '\n<!--br-manifest:' + json.replace(/--/g, '-\\u002d') + '-->' : '\n/*br-manifest:' + json + '*/';

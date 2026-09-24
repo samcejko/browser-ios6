@@ -122,7 +122,7 @@ static CGFloat g_devicePixelRatio = 1;
         NSMutableDictionary *m = _pageManifests[key];
         if (!m) {
             m = [@{ @"has": [NSMutableArray array], @"cq": [NSMutableArray array], @"dv": [NSMutableArray array], @"pt": [NSMutableArray array],
-                    @"cv": [NSMutableArray array], @"sheets": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
+                    @"cv": [NSMutableArray array], @"sc": [NSMutableArray array], @"sheets": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
             _pageManifests[key] = m;
             [_manifestOrder addObject:key];
             while (_manifestOrder.count > BRMaxPagesRemembered) {
@@ -135,7 +135,7 @@ static CGFloat g_devicePixelRatio = 1;
         // document orders its stylesheets (they arrive in network order)
         NSMutableArray *sheets = m[@"sheets"];
         NSUInteger sheetIndex = [sheets indexOfObject:source];
-        for (NSString *kind in @[@"has", @"cq", @"dv", @"pt", @"cv"]) {
+        for (NSString *kind in @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc"]) {
             NSArray *entries = parsed[kind];
             if (![entries isKindOfClass:[NSArray class]]) continue;
             for (NSDictionary *e in entries) {
@@ -165,9 +165,9 @@ static CGFloat g_devicePixelRatio = 1;
         NSMutableDictionary *rootVars = [_pageVars[key] mutableCopy] ?: [NSMutableDictionary dictionary];
         [rootVars removeObjectForKey:@" scoped"];
         if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy], @"dv": [m[@"dv"] copy], @"pt": [m[@"pt"] copy],
-                        @"cv": [m[@"cv"] copy], @"sheets": [m[@"sheets"] copy], @"vars": rootVars };
+                        @"cv": [m[@"cv"] copy], @"sc": [m[@"sc"] copy], @"sheets": [m[@"sheets"] copy], @"vars": rootVars };
     }
-    if (!out) out = @{ @"has": @[], @"cq": @[], @"dv": @[], @"pt": @[], @"cv": @[] };
+    if (!out) out = @{ @"has": @[], @"cq": @[], @"dv": @[], @"pt": @[], @"cv": @[], @"sc": @[] };
     return [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL] ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 

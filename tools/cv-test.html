@@ -38,7 +38,12 @@ var page = [
   '.npchild { width: var(--np); height: 5px; background: #ccc; }',
   '.hsl { --h: 200; --l: 50%; background-color: hsl(var(--h), 100%, var(--l)); height: 5px; }',
   '.hsl.dark { --l: 20%; }',
+  'li:nth-child(odd of .imp) { color: rgb(200, 0, 0); }',
+  'td:nth-col(2) { background-color: rgb(0, 0, 200); }',
+  'col.sel || td { font-weight: 700; }',
   '</style>',
+  '<ul><li id="l1" class="imp">a</li><li id="l2">b</li><li id="l3" class="imp">c</li><li id="l4" class="imp">d</li></ul>',
+  '<table><colgroup><col><col class="sel"></colgroup><tr><td id="c1">1</td><td id="c2">2</td><td id="c3">3</td></tr><tr><td id="c4" colspan="2">4</td><td id="c5">5</td></tr></table>',
   '<div class="card" id="card1">light card</div>',
   '<div data-bs-theme="dark"><div class="card" id="card2">dark card</div></div>',
   '<a class="btn" id="b0">plain</a> <a class="btn btn-primary" id="b1">primary</a> <a class="btn btn-danger" id="b2">danger</a>',
@@ -82,6 +87,11 @@ var run = function () {
   check('var() in a style attribute', inl.offsetWidth === 33 && !!(inl.__brCVSet && inl.__brCVSet.width), inl.offsetWidth + ' ' + JSON.stringify(inl.__brCVSet));
   check('hsl() from two properties', cs('h1').backgroundColor === 'rgb(0, 170, 255)' && cs('h2').backgroundColor === 'rgb(0, 68, 102)', cs('h1').backgroundColor + ' ' + cs('h2').backgroundColor);
   check('getComputedStyle().getPropertyValue(--w)', cs('w1').getPropertyValue('--w') === '123px', JSON.stringify(cs('w1').getPropertyValue('--w')));
+  var red = function (id) { return cs(id).color === 'rgb(200, 0, 0)'; };
+  check(':nth-child(odd of .imp)', red('l1') && !red('l2') && !red('l3') && red('l4'), [red('l1'), red('l2'), red('l3'), red('l4')].join());
+  var blue = function (id) { return cs(id).backgroundColor === 'rgb(0, 0, 200)'; }, bold = function (id) { return cs(id).fontWeight === '700'; };
+  check(':nth-col(2) with colspan', !blue('c1') && blue('c2') && !blue('c3') && blue('c4') && !blue('c5'), ['c1', 'c2', 'c3', 'c4', 'c5'].map(blue).join());
+  check('column combinator col.sel || td', !bold('c1') && bold('c2') && !bold('c3') && bold('c4') && !bold('c5'), ['c1', 'c2', 'c3', 'c4', 'c5'].map(bold).join());
   // dynamic: a class and a script-set custom property
   document.getElementById('b0').className += ' btn-danger';
   document.getElementById('sp1').style.setProperty('--sp', '77px');

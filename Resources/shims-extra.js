@@ -433,6 +433,7 @@
                 if (registry[name]) throw domException('NotSupportedError', 'custom element already defined: ' + name);
                 registry[name] = ctor;
                 upgradeTree(document);
+                if (window.__brUndefinedActive) window.__brMarkUndefined(document);
                 if (waiters[name]) { var w = waiters[name]; delete waiters[name]; for (var i = 0; i < w.length; i++) w[i](ctor); }
             },
             get: function (name) { return registry[String(name).toLowerCase()]; },
@@ -447,6 +448,16 @@
         };
         try { window.customElements = registryAPI; } catch (e) { try { Object.defineProperty(window, 'customElements', { value: registryAPI, configurable: true }); } catch (e2) {} }
         observeAdded(function (el) { if (Object.keys(registry).length) upgradeTree(el); });
+        // :defined (rewritten to :not(.br-undefined)): custom elements without a definition carry the class; only on
+        // pages whose styles use :defined (the manifest block turns this on)
+        window.__brMarkUndefined = function (root) {
+            window.__brUndefinedActive = true;
+            var mark = function (el) { var t = el.tagName ? el.tagName.toLowerCase() : ''; if (t.indexOf('-') > 0) setStateClass(el, 'br-undefined', !registry[t]); };
+            if (root && root.nodeType === 1) mark(root);
+            var all = root && root.getElementsByTagName ? root.getElementsByTagName('*') : [];
+            for (var i = 0; i < all.length; i++) mark(all[i]);
+        };
+        observeAdded(function (el) { if (window.__brUndefinedActive) window.__brMarkUndefined(el); });
         window.CustomElementRegistry = function CustomElementRegistry() {};
         // ES5 subclasses call HTMLElement.call(this): make the base constructor callable
         (function () {
@@ -1162,6 +1173,103 @@
                 for (var k = 0; k < candidates.length && k < 3000; k++) setStateClass(candidates[k], 'br-has-' + entry.h, hasMatch(candidates[k], entry.inner));
             }
         };
+        // ---- structural selectors (manifest "sc"): :nth-child(An+B of S), :nth-col() / :nth-last-col(), the column
+        // combinator (cells in the columns of <col> elements), :defined (custom elements not upgraded yet)
+        var anMatch = function (an, idx) {   // idx is 1-based
+            an = String(an).replace(/\s+/g, '');
+            if (an === 'odd') return idx % 2 === 1;
+            if (an === 'even') return idx % 2 === 0;
+            var m = /^([+-]?\d*)n([+-]\d+)?$/.exec(an);
+            if (!m) return idx === parseInt(an, 10);
+            var a = m[1] === '' || m[1] === '+' ? 1 : m[1] === '-' ? -1 : parseInt(m[1], 10), b = m[2] ? parseInt(m[2], 10) : 0;
+            if (a === 0) return idx === b;
+            var n = (idx - b) / a;
+            return n >= 0 && Math.floor(n) === n;
+        };
+        var matchesSel = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { return !!f.call(el, s); } catch (e) { return false; } };
+        // cells of a table with the columns they cover (colspan / rowspan honoured), and the table's width in columns
+        var tableGrid = function (table) {
+            var taken = [], cells = [], rows = table.rows, width = 0;
+            for (var r = 0; r < rows.length; r++) {
+                var row = rows[r].cells, col = 0;
+                taken[r] = taken[r] || [];
+                for (var c = 0; c < row.length; c++) {
+                    while (taken[r][col]) col++;
+                    var cs = Math.max(1, row[c].colSpan || 1), rs = Math.max(1, row[c].rowSpan || 1);
+                    for (var rr = r; rr < Math.min(rows.length, r + rs); rr++) { taken[rr] = taken[rr] || []; for (var cc = col; cc < col + cs; cc++) taken[rr][cc] = 1; }
+                    cells.push({ el: row[c], from: col + 1, to: col + cs });
+                    col += cs;
+                    if (col > width) width = col;
+                }
+            }
+            return { cells: cells, width: width };
+        };
+        // the columns each <col> / <colgroup> of a table stands for
+        var columnElements = function (table) {
+            var out = [], pos = 1;
+            for (var g = table.firstElementChild || table.firstChild; g; g = g.nextSibling) {
+                if (g.nodeType !== 1 || g.tagName !== 'COLGROUP') continue;
+                var start = pos, cols = g.getElementsByTagName('col');
+                if (!cols.length) pos += parseInt(g.getAttribute('span'), 10) || 1;
+                for (var k = 0; k < cols.length; k++) { var span = parseInt(cols[k].getAttribute('span'), 10) || 1; out.push({ el: cols[k], from: pos, to: pos + span - 1 }); pos += span; }
+                out.push({ el: g, from: start, to: pos - 1 });
+            }
+            return out;
+        };
+        var scStamp = 0, undefinedMarks = false;
+        var applyStructural = function () {
+            if (!manifest || !manifest.sc || !manifest.sc.length) return;
+            var grids = null, i, k;
+            scStamp++;
+            for (i = 0; i < manifest.sc.length; i++) {
+                var e = manifest.sc[i], on = [];
+                if (e.k === 'defined') { undefinedMarks = true; if (window.__brMarkUndefined) window.__brMarkUndefined(document); continue; }
+                try {
+                    if (e.k === 'nth') {
+                        // the element's index among its siblings that match S
+                        var list = document.querySelectorAll(e.of), parents = [];
+                        for (k = 0; k < list.length; k++) {
+                            var par = list[k].parentNode;
+                            if (par.__brScStamp !== scStamp) { par.__brScStamp = scStamp; par.__brScList = []; parents.push(par); }
+                            par.__brScList.push(list[k]);
+                        }
+                        for (var g = 0; g < parents.length; g++) {
+                            var items = parents[g].__brScList;
+                            for (var j = 0; j < items.length; j++) if (anMatch(e.an, e.last ? items.length - j : j + 1)) on.push(items[j]);
+                            parents[g].__brScList = null;
+                        }
+                    } else if (e.k === 'col') {
+                        if (!grids) { grids = []; var ts = document.getElementsByTagName('table'); for (var t = 0; t < ts.length; t++) grids.push(tableGrid(ts[t])); }
+                        for (var gi = 0; gi < grids.length; gi++) {
+                            var gr = grids[gi];
+                            for (k = 0; k < gr.cells.length; k++) {
+                                var cell = gr.cells[k];
+                                for (var col = cell.from; col <= cell.to; col++) if (anMatch(e.an, e.last ? gr.width - col + 1 : col)) { on.push(cell.el); break; }
+                            }
+                        }
+                    } else if (e.k === 'cc') {
+                        var colEls = document.querySelectorAll(e.col);
+                        for (k = 0; k < colEls.length; k++) {
+                            var table = colEls[k];
+                            while (table && table.tagName !== 'TABLE') table = table.parentNode;
+                            if (!table) continue;
+                            var ranges = columnElements(table), range = null;
+                            for (var ri = 0; ri < ranges.length; ri++) if (ranges[ri].el === colEls[k]) range = ranges[ri];
+                            if (!range) continue;
+                            var grid = tableGrid(table);
+                            for (var q = 0; q < grid.cells.length; q++) {
+                                var ce = grid.cells[q];
+                                if (ce.to >= range.from && ce.from <= range.to && matchesSel(ce.el, e.cell)) on.push(ce.el);
+                            }
+                        }
+                    }
+                } catch (x) { continue; }
+                var cls = 'br-sc-' + e.h, had = document.getElementsByClassName(cls), before = [];
+                for (k = 0; k < had.length; k++) before.push(had[k]);
+                for (k = 0; k < on.length; k++) { on[k].__brScOn = scStamp + ':' + e.h; setStateClass(on[k], cls, true); }
+                for (k = 0; k < before.length; k++) if (before[k].__brScOn !== scStamp + ':' + e.h) setStateClass(before[k], cls, false);
+            }
+        };
         // ---- @container: size conditions evaluated against the marked container elements
         var lengthPx = function (tok, el) {
             var m = /^(-?[\d.]+)([a-z%]*)$/i.exec(tok);
@@ -1267,6 +1375,7 @@
         var apply = function () {
             applyTimer = null;
             if (!manifest) return;
+            try { applyStructural(); } catch (e7) {}
             try { applyHas(); } catch (e) {}
             // the marker scan calls applyContainers and collects the inline deferred-value markers
             try { if (manifest.cq.length || (window.__brDeferred && window.__brDeferred.needsMarkers())) applyAspectRatios(); } catch (e2) {}
@@ -1275,7 +1384,7 @@
         };
         var schedule = function () { if (!applyTimer) applyTimer = setTimeout(apply, 120); };
         // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest
-        var extra = { has: [], cq: [], dv: [], pt: [], cv: [] };
+        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
         var mergeExtra = function (m) {
             for (var kind in extra) {
                 if (!extra.hasOwnProperty(kind) || !extra[kind].length) continue;
@@ -1302,7 +1411,7 @@
                 any = true;
             }
             if (!any) return;
-            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [] };
+            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
             for (var k2 in add) if (add.hasOwnProperty(k2) && extra.hasOwnProperty(k2) && add[k2]) manifest[k2] = (manifest[k2] || []).concat(add[k2]);
             try { if (window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e) {}
             try { if (window.__brVars) window.__brVars.setManifest(manifest); } catch (e2) {}
@@ -1326,6 +1435,7 @@
                     if (manifest && !manifest.dv) manifest.dv = [];
                     if (manifest && !manifest.pt) manifest.pt = [];
                     if (manifest && !manifest.cv) manifest.cv = [];
+                    if (manifest && !manifest.sc) manifest.sc = [];
                     if (manifest) { notePageVars(manifest); mergeExtra(manifest); }
                     try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
                     try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}
@@ -1340,6 +1450,7 @@
         onSettled(function () { scheduleLoad(); if (manifest) schedule(); });
         window.addEventListener('resize', function () { if (manifest && (manifest.cq.length || manifest.dv.length)) schedule(); }, false);
         var reevaluate = function () { if (manifest && manifest.has.length) schedule(); };
+        observeAdded(function () { if (manifest && ((manifest.sc && manifest.sc.length) || manifest.has.length)) schedule(); });
         document.addEventListener('input', reevaluate, true);
         document.addEventListener('change', reevaluate, true);
         document.addEventListener('click', reevaluate, true);
@@ -2167,6 +2278,12 @@
                 var v = props[p].v;
                 if (p === 'field-sizing') { fieldSizing(el, trim(v).toLowerCase()); continue; }
                 if (SVG_GEOM[p]) { svgGeometry(el, p, v); continue; }
+                if (p === 'text-decoration-color') {
+                    // decorations are painted in the text stroke colour (see pushDecorationColor in cssfix.js)
+                    var dcv = evalValue(el, p, v, null);
+                    if (dcv !== null) { setProp(el, '-webkit-text-stroke-color', dcv); setProp(el, '-webkit-text-stroke-width', '0.001px'); }
+                    continue;
+                }
                 if (INDIVIDUAL_TRANSFORM[p]) {
                     var tv = evalValue(el, p, v, null);
                     if (tv === null || /^none$/i.test(trim(tv))) continue;
@@ -2588,12 +2705,53 @@
                     var use = rec.u[ukey], raw = substitute(use.v, el, 0);
                     if (raw === null) raw = INHERITED.test(use.p) ? 'inherit' : 'initial';   // invalid at computed-value time
                     if (use.st !== null && use.st !== undefined && norm(raw) === norm(use.st)) continue;   // the stylesheet already has it
-                    pending.push({ el: el, use: use, raw: raw });
+                    pending.push({ el: el, use: use, raw: raw, key: ukey });
                 }
             }
             pending.sort(function (a, c) { return a.use.sp - c.use.sp || a.use.o - c.use.o; });
+            var t1 = Date.now();
             apply(pending);
             writePseudo();
+            stats.tApply = Date.now() - t1;
+            stats.pending = pending.length;
+            dirtyAll = false;
+            dirtyRoots = [];
+        };
+        // ---- decisions of earlier passes stay while nothing that can change an element's rules happened around it
+        // (a class or attribute of the element, an ancestor or a sibling, children added or removed)
+        var dirtyAll = true, dirtyRoots = [];
+        var isDirty = function (el) {
+            if (dirtyAll) return true;
+            for (var i = 0; i < dirtyRoots.length; i++) { var r = dirtyRoots[i]; if (r === el || r.contains(el)) return true; }
+            return false;
+        };
+        var markDirty = function (node) {
+            if (!node || node.nodeType !== 1 || dirtyRoots.length > 40) { dirtyAll = true; return; }
+            for (var i = 0; i < dirtyRoots.length; i++) if (dirtyRoots[i] === node || dirtyRoots[i].contains(node)) return;
+            dirtyRoots.push(node);
+        };
+        // ---- the rule's substituted value as the engine computes it, on a hidden probe (values that depend on the
+        // element - em, %, currentColor, auto, line-height - are measured on the element itself instead)
+        var probe = null, probeCache = {}, probeCacheSize = 0;
+        var CONTEXT_VALUE = /(\d|\.)(em|ex|ch|lh|cap|ic)\b|%|currentcolor|inherit|initial|unset|auto|var\(|attr\(/i;
+        var PROBE_BASE = 'position:absolute;visibility:hidden;left:-9999px;top:0;border-style:solid;outline-style:solid;';
+        var probeValues = function (fb, props) {
+            var key = JSON.stringify(fb) + '|' + props.join(',');
+            if (probeCache.hasOwnProperty(key)) return probeCache[key];
+            var i, vals = [];
+            for (i = 0; i < fb.length; i++) if (CONTEXT_VALUE.test(fb[i][1]) || /line-height|^font$/.test(fb[i][0])) vals = null;
+            if (vals) {
+                if (!probe) { probe = document.createElement('div'); probe.__brOwn = true; }
+                if (!probe.parentNode) (document.body || document.documentElement).appendChild(probe);
+                probe.style.cssText = PROBE_BASE;
+                for (i = 0; i < fb.length; i++) probe.style.setProperty(fb[i][0], fb[i][1], '');
+                var cs = getComputedStyle(probe);
+                for (i = 0; i < props.length; i++) vals.push(cs.getPropertyValue(props[i]));
+            }
+            if (probeCacheSize > 2000) { probeCache = {}; probeCacheSize = 0; }
+            probeCache[key] = vals;
+            probeCacheSize++;
+            return vals;
         };
         // ---- setting the values: another rule may win the property on this element (a site's own override), so the
         // value the rule has in the stylesheet is compared with what the element computes before ours goes in
@@ -2615,23 +2773,31 @@
             frozen = [];
         };
         var apply = function (pending) {
-            var checks = [], i, k, it, cs;
-            for (i = 0; i < pending.length; i++) if (!pending[i].use.ps) freeze(pending[i].el);
+            var work = [], keep = [], slow = [], i, k, it, cs;
             for (i = 0; i < pending.length; i++) {
                 it = pending[i];
                 it.decls = fixDecl(it.use.p, it.raw);
                 if (it.use.ps) { pseudoRule(it); continue; }
+                var cache = it.el.__brCVc && it.el.__brCVc[it.key];
+                if (cache && cache.raw === it.raw && cache.st === it.use.st && !isDirty(it.el)) { it.ok = cache.ok; keep.push(it); continue; }
+                work.push(it);
                 if (it.use.inl || it.use.st === null || it.use.st === undefined) { it.ok = true; continue; }
                 it.fb = fixDecl(it.use.p, it.use.st);
                 it.props = [];
                 for (k = 0; k < it.fb.length; k++) it.props = it.props.concat(LONGHANDS[it.fb[k][0]] || [it.fb[k][0]]);
-                for (k = 0; k < it.fb.length; k++) restoreInline(it.el, it.fb[k][0]);
-                for (k = 0; k < it.decls.length; k++) restoreInline(it.el, it.decls[k][0]);
-                checks.push(it);
+                it.check = true;
             }
-            // what the stylesheets give the element now
-            for (i = 0; i < checks.length; i++) {
-                it = checks[i];
+            // elements whose inline values may change: transitions held, our earlier values taken back
+            for (i = 0; i < work.length; i++) {
+                it = work[i];
+                freeze(it.el);   // the new value appears at once instead of fading in (and a restore does not animate)
+                if (it.fb) for (k = 0; k < it.fb.length; k++) restoreInline(it.el, it.fb[k][0]);
+                for (k = 0; k < it.decls.length; k++) restoreInline(it.el, it.decls[k][0]);
+            }
+            // what the stylesheets give the element now, against what the rule's own value computes to
+            for (i = 0; i < work.length; i++) {
+                it = work[i];
+                if (!it.check) continue;
                 cs = getComputedStyle(it.el);
                 it.before = [];
                 for (k = 0; k < it.props.length; k++) it.before.push(cs.getPropertyValue(it.props[k]));
@@ -2639,7 +2805,46 @@
                 it.own = false;
                 for (k = 0; k < it.fb.length; k++) if (it.el.style.getPropertyValue(it.fb[k][0]) && !it.use.i) it.own = true;
             }
-            // what the rule's substituted value gives it
+            for (i = 0; i < work.length; i++) {
+                it = work[i];
+                if (!it.check) continue;
+                if (it.own) { it.ok = false; continue; }
+                var pv = probeValues(it.fb, it.props);
+                if (pv === null) { slow.push(it); continue; }
+                it.ok = true;
+                for (k = 0; k < pv.length; k++) if (pv[k] !== it.before[k]) { it.ok = false; break; }
+            }
+            if (slow.length) slowCheck(slow);
+            for (i = 0; i < work.length; i++) {
+                it = work[i];
+                if (!it.el.__brCVc) it.el.__brCVc = {};
+                it.el.__brCVc[it.key] = { raw: it.raw, st: it.use.st, ok: it.ok };
+                if (!it.ok) { stats.skipped++; continue; }
+                stats.applied++;
+                for (k = 0; k < it.decls.length; k++) setInline(it.el, it.decls[k][0], it.decls[k][1], it.use.i);
+            }
+            for (i = 0; i < keep.length; i++) {
+                it = keep[i];
+                if (it.ok) for (k = 0; k < it.decls.length; k++) keepInline(it, it.decls[k][0], it.decls[k][1]);
+            }
+            restoreStale();
+            thaw();
+        };
+        // an unchanged decision: our inline value stays (unless a script replaced it meanwhile: then the page's stays)
+        var keepInline = function (it, p, v) {
+            var el = it.el;
+            if (el.__brCVSet && el.__brCVSet.hasOwnProperty(p)) {
+                if (el.style.getPropertyValue(p) === el.__brCVVal[p]) { el.__brCVSet[p] = gen; return; }
+                delete el.__brCVSet[p]; delete el.__brCVOrig[p]; delete el.__brCVVal[p];
+                if (el.__brCVc && el.__brCVc[it.key]) el.__brCVc[it.key].ok = false;
+                return;
+            }
+            freeze(el);
+            setInline(el, p, v, it.use.i);
+        };
+        // values that depend on the element: the rule's value goes on the element for a moment and is measured there
+        var slowCheck = function (checks) {
+            var i, k, it, cs;
             for (i = 0; i < checks.length; i++) {
                 it = checks[i];
                 it.saved = [];
@@ -2661,15 +2866,6 @@
                     else it.el.style.removeProperty(it.saved[k][0]);
                 }
             }
-            for (i = 0; i < pending.length; i++) {
-                it = pending[i];
-                if (it.use.ps) continue;
-                if (!it.ok) { stats.skipped++; continue; }
-                stats.applied++;
-                for (k = 0; k < it.decls.length; k++) setInline(it.el, it.decls[k][0], it.decls[k][1], it.use.i);
-            }
-            restoreStale();
-            thaw();
         };
         // ---- ::before / ::after values: a generated rule for the element, one class more specific than the original
         var pseudoRules = [];
@@ -2723,20 +2919,25 @@
             for (var a in attrNames) if (attrNames.hasOwnProperty(a)) filter.push(a);
             observer = new MutationObserver(function (records) {
                 if (busy) return;
+                var any = false;
                 for (var i = 0; i < records.length; i++) {
                     var t = records[i].target;
-                    if (t && t.id === 'br-cv-pseudo') continue;
-                    schedule();
-                    return;
+                    if (!t || t.id === 'br-cv-pseudo' || t === probe) continue;
+                    any = true;
+                    // an attribute can change what its element, the descendants and the following siblings match
+                    if (records[i].type === 'attributes') markDirty(t.parentNode && t.parentNode.nodeType === 1 ? t.parentNode : t);
+                    else markDirty(t);
                 }
+                if (any) schedule();
             });
             try { observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: filter }); } catch (e) { observer = null; }
+            var everything = function () { dirtyAll = true; schedule(); };
             if (watchStates) {
                 var ev = ['touchstart', 'touchend', 'mouseover', 'mouseout', 'focus', 'blur', 'change', 'input'];
-                for (var k = 0; k < ev.length; k++) document.addEventListener(ev[k], schedule, true);
+                for (var k = 0; k < ev.length; k++) document.addEventListener(ev[k], everything, true);
             }
-            window.addEventListener('resize', schedule, false);
-            window.addEventListener('orientationchange', schedule, false);
+            window.addEventListener('resize', everything, false);
+            window.addEventListener('orientationchange', everything, false);
         };
         // custom properties that scripts set through style.setProperty (the engine drops them)
         var CSDp = window.CSSStyleDeclaration && window.CSSStyleDeclaration.prototype;
@@ -2748,6 +2949,7 @@
                     if (!this.__brCP) this.__brCP = {};
                     this.__brCP[name] = String(value);
                     cpUsed = true;
+                    dirtyAll = true;
                     schedule();
                     return;
                 }
@@ -2765,6 +2967,7 @@
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
                     var old = this.__brCP && this.__brCP.hasOwnProperty(name) ? this.__brCP[name] : '';
                     if (this.__brCP) delete this.__brCP[name];
+                    dirtyAll = true;
                     schedule();
                     return old;
                 }
@@ -2776,7 +2979,7 @@
             var origSetAttr = Ep.setAttribute;
             var wrappedSetAttr = function (name, value) {
                 var r = origSetAttr.apply(this, arguments);
-                if (rules.length && (name === 'style' || name === 'STYLE') && String(value).indexOf('--') >= 0) schedule();
+                if (rules.length && (name === 'style' || name === 'STYLE') && String(value).indexOf('--') >= 0) { markDirty(this); schedule(); }
                 return r;
             };
             wrappedSetAttr.__brCV = true;
@@ -2833,11 +3036,12 @@
                     for (var b = 0; b < e.s.length; b++) e.sel.push(prepareSelector(e.s[b]));
                     rules.push(e);
                 }
+                dirtyAll = true;
                 if (rules.length) watch();
             },
             apply: function () { if (rules.length) pass(); },
             resolve: function (el, name) { return computedVar(el, name); },
-            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost }; }
+            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, applyMs: stats.tApply, pending: stats.pending }; }
         };
     })();
     // ---- Scroll snap, smooth scrolling and balanced text, driven by the rewriter's counter-reset markers
@@ -3902,13 +4106,14 @@
             if (pv.scoped) o[' scoped'] = pv.scoped;
             return o;
         };
-        var fixText = function (css) {
+        var fixText = function (css, hostScope) {
             var lib = loadCSSFix();
             if (!lib || !lib.run) return null;
             var r;
             try {
-                var vw = Math.min(screen.width || 768, screen.height || 1024);
-                r = JSON.parse(lib.run('css', css, pageVars(), { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1 }));
+                var vw = Math.min(screen.width || 768, screen.height || 1024), opts = { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1 };
+                if (hostScope) opts.hostScope = hostScope;   // a stylesheet inside an emulated shadow root (see hostSelector)
+                r = JSON.parse(lib.run('css', css, pageVars(), opts));
             } catch (e) { return null; }
             if (r.manifest && window.__brManifestAdd) { try { window.__brManifestAdd(r.manifest); } catch (e2) {} }
             return String(r.out || '').replace(/\n?\/\*br-manifest:[\s\S]*$/, '');
@@ -3970,12 +4175,25 @@
             if (f && f.nodeType === 3 && /^\s*\/\*br\*\//.test(f.data)) { el.__brNative = true; return true; }
             return false;
         };
+        // the host of the emulated shadow root a style element sits in (it gets a data-br-host id), or null
+        var hostSeq = 0;
+        var shadowHost = function (el) {
+            for (var n = el; n && n.nodeType === 1; n = n.parentNode) {
+                if (n.hasAttribute('data-shadow-root')) {
+                    var host = n.host || n.parentNode;
+                    if (!host || host.nodeType !== 1) return null;
+                    if (!host.getAttribute('data-br-host')) host.setAttribute('data-br-host', 'h' + (++hostSeq));
+                    return host.getAttribute('data-br-host');
+                }
+            }
+            return null;
+        };
         var fixNode = function (node) {
             var data = node.data;
             if (!data || node.__brOut === data || !/[{:]/.test(data)) return;
             if (node.parentNode && nativeStyle(node.parentNode)) return;
             var out = null;
-            try { out = runtimeCSS.fixText(data); } catch (e) { out = null; }
+            try { out = runtimeCSS.fixText(data, node.parentNode ? shadowHost(node.parentNode) : null); } catch (e) { out = null; }
             if (out === null) return;
             node.__brOut = out;
             if (out !== data) node.data = out;
@@ -4005,28 +4223,251 @@
         try { styleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}
     })();
     if (!window.CSSLayerBlockRule) { window.CSSLayerBlockRule = function CSSLayerBlockRule() {}; window.CSSContainerRule = function CSSContainerRule() {}; window.CSSSupportsRule = window.CSSSupportsRule || function CSSSupportsRule() {}; }
-    if (!document.fonts) {
-        document.fonts = { ready: resolved({ status: 'loaded' }), status: 'loaded', check: function () { return true; }, load: function () { return resolved([]); }, add: noop, 'delete': noop, clear: noop, has: function () { return false; }, forEach: noop, addEventListener: noop, removeEventListener: noop, onloadingdone: null, size: 0 };
-        window.FontFace = function FontFace(family, source, descriptors) {
-            this.family = family; this.status = 'unloaded'; this.__source = source; this.__desc = descriptors || {};
+    // ---- CSSOM interfaces the engine lacks, and the interface objects inheriting from their parents as WebIDL has it
+    (function () {
+        var define = function (name, parent) {
+            if (window[name]) return;
+            var C = function () { throw new TypeError('Illegal constructor'); };
+            try { C.prototype = Object.create((window[parent] && window[parent].prototype) || Object.prototype); C.prototype.constructor = C; } catch (e) {}
+            window[name] = C;
+        };
+        define('CSSGroupingRule', 'CSSRule');
+        define('CSSConditionRule', 'CSSGroupingRule');
+        define('CSSMarginRule', 'CSSRule');
+        define('CSSNamespaceRule', 'CSSRule');
+        define('CSSPageDescriptors', 'CSSStyleDeclaration');
+        define('CSSStyleProperties', 'CSSStyleDeclaration');
+        var chain = function (child, parent) {
+            var C = window[child], Pa = window[parent];
+            if (!C || !Pa || C === Pa) return;
+            try { if (Object.getPrototypeOf(C) !== Pa) C.__proto__ = Pa; } catch (e) {}
+        };
+        var pairs = [['CSSStyleSheet', 'StyleSheet'], ['CSSGroupingRule', 'CSSRule'], ['CSSConditionRule', 'CSSGroupingRule'], ['CSSMediaRule', 'CSSConditionRule'],
+            ['CSSSupportsRule', 'CSSConditionRule'], ['CSSContainerRule', 'CSSConditionRule'], ['CSSStyleRule', 'CSSGroupingRule'], ['CSSPageRule', 'CSSGroupingRule'],
+            ['CSSMarginRule', 'CSSRule'], ['CSSNamespaceRule', 'CSSRule'], ['CSSImportRule', 'CSSRule'], ['CSSFontFaceRule', 'CSSRule'], ['CSSKeyframesRule', 'CSSRule'],
+            ['CSSKeyframeRule', 'CSSRule'], ['CSSLayerBlockRule', 'CSSGroupingRule'], ['CSSPageDescriptors', 'CSSStyleDeclaration'], ['CSSStyleProperties', 'CSSStyleDeclaration']];
+        for (var i = 0; i < pairs.length; i++) chain(pairs[i][0], pairs[i][1]);
+        // style rules hold nested rules in the current CSSOM (the rewriter flattens nesting, so the list stays empty)
+        var SRp = window.CSSStyleRule && window.CSSStyleRule.prototype;
+        if (SRp && !('cssRules' in SRp)) try { Object.defineProperty(SRp, 'cssRules', { get: function () { return []; }, configurable: true }); } catch (e2) {}
+    })();
+    // ---- ElementInternals with custom states: states.add('x') puts the class br-state-x on the element, which the
+    // rewriter substitutes for :state(x)
+    if (Ep && !Ep.attachInternals) (function () {
+        var CustomStateSet = function CustomStateSet(el) { this.__el = el; this.__s = []; };
+        CustomStateSet.prototype = {
+            constructor: CustomStateSet,
+            add: function (s) { s = String(s).replace(/^--/, ''); if (this.__s.indexOf(s) < 0) { this.__s.push(s); setStateClass(this.__el, 'br-state-' + s, true); } return this; },
+            'delete': function (s) { s = String(s).replace(/^--/, ''); var i = this.__s.indexOf(s); if (i < 0) return false; this.__s.splice(i, 1); setStateClass(this.__el, 'br-state-' + s, false); return true; },
+            has: function (s) { return this.__s.indexOf(String(s).replace(/^--/, '')) >= 0; },
+            clear: function () { while (this.__s.length) this['delete'](this.__s[0]); },
+            forEach: function (fn, thisArg) { var l = this.__s.slice(); for (var i = 0; i < l.length; i++) fn.call(thisArg, l[i], l[i], this); },
+            values: function () { return this.__s.slice(); }, keys: function () { return this.__s.slice(); }
+        };
+        try { Object.defineProperty(CustomStateSet.prototype, 'size', { get: function () { return this.__s.length; } }); } catch (e) {}
+        var ElementInternals = function ElementInternals(el) {
+            this.__el = el; this.states = new CustomStateSet(el); this.__value = null; this.__validity = { valid: true, customError: false };
+            this.validationMessage = ''; this.role = null;
+        };
+        ElementInternals.prototype = {
+            constructor: ElementInternals,
+            setFormValue: function (value, state) { this.__value = value; this.__state = state; },
+            setValidity: function (flags, message) {
+                var v = { valid: true }, any = false;
+                for (var k in flags) if (flags.hasOwnProperty(k) && flags[k]) { v[k] = true; any = true; }
+                v.valid = !any;
+                this.__validity = v;
+                this.validationMessage = any ? String(message || '') : '';
+            },
+            checkValidity: function () { return this.__validity.valid; },
+            reportValidity: function () { return this.__validity.valid; }
+        };
+        try {
+            Object.defineProperty(ElementInternals.prototype, 'validity', { get: function () { return this.__validity; } });
+            Object.defineProperty(ElementInternals.prototype, 'willValidate', { get: function () { return true; } });
+            Object.defineProperty(ElementInternals.prototype, 'form', { get: function () { for (var n = this.__el.parentNode; n; n = n.parentNode) if (n.tagName === 'FORM') return n; return null; } });
+            Object.defineProperty(ElementInternals.prototype, 'labels', { get: function () { return []; } });
+            Object.defineProperty(ElementInternals.prototype, 'shadowRoot', { get: function () { return this.__el.shadowRoot || null; } });
+        } catch (e2) {}
+        Ep.attachInternals = function () {
+            if (this.__brInternals) throw domException('NotSupportedError', 'ElementInternals already attached');
+            this.__brInternals = new ElementInternals(this);
+            return this.__brInternals;
+        };
+        window.ElementInternals = ElementInternals;
+        window.CustomStateSet = CustomStateSet;
+    })();
+    // ---- element.part: the tokens of the part attribute (what ::part() selects)
+    if (Ep && !('part' in Ep)) try {
+        Object.defineProperty(Ep, 'part', { configurable: true, get: function () {
+            var el = this, tokens = function () { var v = el.getAttribute('part'); return v ? v.replace(/^\s+|\s+$/g, '').split(/\s+/) : []; };
+            var write = function (list) { el.setAttribute('part', list.join(' ')); };
+            return {
+                get length() { return tokens().length; },
+                get value() { return el.getAttribute('part') || ''; },
+                set value(v) { el.setAttribute('part', v); },
+                item: function (i) { var t = tokens(); return i < t.length ? t[i] : null; },
+                contains: function (t) { return tokens().indexOf(t) >= 0; },
+                add: function () { var t = tokens(); for (var i = 0; i < arguments.length; i++) if (t.indexOf(arguments[i]) < 0) t.push(arguments[i]); write(t); },
+                remove: function () { var t = tokens(); for (var i = 0; i < arguments.length; i++) { var k = t.indexOf(arguments[i]); if (k >= 0) t.splice(k, 1); } write(t); },
+                toggle: function (tok, force) { var has = this.contains(tok); if (force === true || (force === undefined && !has)) { this.add(tok); return true; } this.remove(tok); return false; },
+                replace: function (a, b) { var t = tokens(), k = t.indexOf(a); if (k < 0) return false; t[k] = b; write(t); return true; },
+                supports: function () { return true; },
+                toString: function () { return el.getAttribute('part') || ''; }
+            };
+        } });
+    } catch (e) {}
+    // ---- CSS Font Loading: FontFace registers an @font-face rule and finds out when the engine has the font (a probe
+    // string changes width once the web font replaces the fallback); document.fonts is a FontFaceSet of the faces added
+    // by script, and load()/check() also reach the @font-face families of the stylesheets.
+    if (!document.fonts && P) (function () {
+        var FACE_DESCRIPTORS = { style: 'normal', weight: 'normal', stretch: 'normal', unicodeRange: 'U+0-10FFFF', variant: 'normal', featureSettings: 'normal',
+            variationSettings: 'normal', display: 'auto', ascentOverride: 'normal', descentOverride: 'normal', lineGapOverride: 'normal' };
+        var CSS_NAMES = { style: 'font-style', weight: 'font-weight', stretch: 'font-stretch', unicodeRange: 'unicode-range', variant: 'font-variant',
+            featureSettings: 'font-feature-settings', variationSettings: 'font-variation-settings', display: 'font-display', ascentOverride: 'ascent-override',
+            descentOverride: 'descent-override', lineGapOverride: 'line-gap-override' };
+        var quoteFamily = function (f) { return '"' + String(f).replace(/^["']|["']$/g, '').replace(/"/g, '\\"') + '"'; };
+        // resolves when text in `family` measures differently from the fallback (or after the timeout: same metrics)
+        var whenRendered = function (family, style, weight, timeout) {
+            return new P(function (res) {
+                var probe = document.createElement('span'), base = document.createElement('span');
+                var css = 'position:absolute;left:-9999px;top:0;visibility:hidden;font-size:72px;white-space:nowrap;font-style:' + (style || 'normal') + ';font-weight:' + (weight || 'normal') + ';';
+                probe.style.cssText = css + 'font-family:' + quoteFamily(family) + ',monospace';
+                base.style.cssText = css + 'font-family:monospace';
+                probe.textContent = base.textContent = 'BESbswy 0123 WQ@&%';
+                (document.body || document.documentElement).appendChild(probe);
+                (document.body || document.documentElement).appendChild(base);
+                var start = Date.now();
+                var tick = function () {
+                    var differs = probe.offsetWidth !== base.offsetWidth || probe.offsetHeight !== base.offsetHeight;
+                    if (differs || Date.now() - start > (timeout || 3000)) {
+                        probe.parentNode.removeChild(probe);
+                        base.parentNode.removeChild(base);
+                        res(differs);
+                    } else setTimeout(tick, 50);
+                };
+                tick();
+            });
+        };
+        var bytesToDataURL = function (src) {
+            var bytes = src instanceof ArrayBuffer ? new Uint8Array(src) : new Uint8Array(src.buffer, src.byteOffset || 0, src.byteLength);
+            var bin = '';
+            for (var i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, Array.prototype.slice.call(bytes.subarray(i, Math.min(bytes.length, i + 8192))));
+            return 'url(data:font/ttf;base64,' + btoa(bin) + ')';
+        };
+        var faces = null;
+        var FontFace = function FontFace(family, source, descriptors) {
             var self = this;
-            this.loaded = new P(function (res) { self.__resolve = res; });
+            this.family = String(family).replace(/^["']|["']$/g, '');
+            descriptors = descriptors || {};
+            for (var k in FACE_DESCRIPTORS) if (FACE_DESCRIPTORS.hasOwnProperty(k)) this[k] = descriptors[k] !== undefined ? String(descriptors[k]) : FACE_DESCRIPTORS[k];
+            this.status = 'unloaded';
+            this.features = {}; this.variations = {}; this.palettes = [];
+            this.__source = source && typeof source !== 'string' && (source instanceof ArrayBuffer || source.buffer) ? bytesToDataURL(source) : String(source || '');
+            this.loaded = new P(function (res, rej) { self.__resolve = res; self.__reject = rej; });
+            // binary data is there at once: such a face starts loading when it is constructed
+            if (source && typeof source !== 'string') setTimeout(function () { self.load(); }, 0);
         };
-        window.FontFace.prototype.load = function () {
-            // register through @font-face so the engine can actually use the font
-            var self = this, src = typeof self.__source === 'string' ? self.__source : '';
-            if (src) {
-                var css = '@font-face{font-family:"' + self.family + '";src:' + src;
-                if (self.__desc.weight) css += ';font-weight:' + self.__desc.weight;
-                if (self.__desc.style) css += ';font-style:' + self.__desc.style;
-                addStyle(css + '}');
+        FontFace.prototype.load = function () {
+            var self = this;
+            if (faces && !faces.has(self)) faces.__list.push(self);
+            if (self.status !== 'unloaded') return self.loaded;
+            self.status = 'loading';
+            var css = '@font-face{font-family:' + quoteFamily(self.family) + ';src:' + self.__source;
+            for (var k in CSS_NAMES) if (CSS_NAMES.hasOwnProperty(k) && self[k] !== FACE_DESCRIPTORS[k]) css += ';' + CSS_NAMES[k] + ':' + self[k];
+            addStyle(css + '}');
+            whenRendered(self.family, self.style, self.weight, 5000).then(function (ok) {
+                self.status = ok ? 'loaded' : 'error';
+                if (ok) self.__resolve(self); else self.__reject(domException('NetworkError', 'font could not be loaded: ' + self.family));
+                if (faces) faces.__changed();
+            });
+            if (faces) faces.__changed();
+            return self.loaded;
+        };
+        // the families of the page's @font-face rules
+        var cssFamilies = function () {
+            var out = {};
+            try {
+                for (var s = 0; s < document.styleSheets.length; s++) {
+                    var rules = null;
+                    try { rules = document.styleSheets[s].cssRules; } catch (e) { rules = null; }
+                    if (rules) for (var r = 0; r < rules.length; r++) if (rules[r].type === 5) { var f = rules[r].style.getPropertyValue('font-family'); if (f) out[f.replace(/^["']|["']$/g, '').toLowerCase()] = 1; }
+                }
+            } catch (e2) {}
+            return out;
+        };
+        var familiesOf = function (font) {   // "bold 16px 'Foo Bar', serif" -> ['Foo Bar', 'serif']
+            var m = /(?:^|\s)(?:[\d.]+(?:px|pt|em|rem|%|ex|vw|vh)|xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)(?:\s*\/\s*\S+)?\s+(.+)$/i.exec(String(font));
+            var list = m ? m[1] : String(font), out = [], parts = list.split(',');
+            for (var i = 0; i < parts.length; i++) out.push(parts[i].replace(/^\s*["']?|["']?\s*$/g, ''));
+            return out;
+        };
+        var FontFaceSet = function FontFaceSet() { this.__list = []; this.__l = {}; this.status = 'loaded'; this.onloading = null; this.onloadingdone = null; this.onloadingerror = null; this.__ready(); };
+        FontFaceSet.prototype = {
+            constructor: FontFaceSet,
+            onloading: null, onloadingdone: null, onloadingerror: null,
+            __ready: function () { var self = this; this.ready = new P(function (res) { self.__readyResolve = res; }); if (this.status === 'loaded') this.__readyResolve(this); },
+            __fire: function (type, list) {
+                var ev = new window.FontFaceSetLoadEvent(type, { fontfaces: list || [] });
+                if (typeof this['on' + type] === 'function') try { this['on' + type](ev); } catch (e) {}
+                var ls = (this.__l[type] || []).slice();
+                for (var i = 0; i < ls.length; i++) try { ls[i].call(this, ev); } catch (e2) {}
+            },
+            __changed: function () {
+                var loading = false, i;
+                for (i = 0; i < this.__list.length; i++) if (this.__list[i].status === 'loading') loading = true;
+                if (loading && this.status !== 'loading') { this.status = 'loading'; this.__ready(); this.__fire('loading'); }
+                else if (!loading && this.status === 'loading') {
+                    this.status = 'loaded';
+                    var done = [], failed = [];
+                    for (i = 0; i < this.__list.length; i++) (this.__list[i].status === 'error' ? failed : done).push(this.__list[i]);
+                    this.__fire('loadingdone', done);
+                    if (failed.length) this.__fire('loadingerror', failed);
+                    this.__readyResolve(this);
+                }
+            },
+            add: function (face) { if (this.__list.indexOf(face) < 0) this.__list.push(face); if (face.status === 'loading') this.__changed(); return this; },
+            'delete': function (face) { var i = this.__list.indexOf(face); if (i < 0) return false; this.__list.splice(i, 1); return true; },
+            clear: function () { this.__list = []; },
+            has: function (face) { return this.__list.indexOf(face) >= 0; },
+            forEach: function (fn, thisArg) { var l = this.__list.slice(); for (var i = 0; i < l.length; i++) fn.call(thisArg, l[i], l[i], this); },
+            values: function () { return this.__list.slice(); },
+            keys: function () { return this.__list.slice(); },
+            entries: function () { var out = []; for (var i = 0; i < this.__list.length; i++) out.push([this.__list[i], this.__list[i]]); return out; },
+            addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); },
+            removeEventListener: function (t, f) { var l = this.__l[t] || [], i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },
+            dispatchEvent: function (e) { this.__fire(e.type); return true; },
+            // the script faces of the font's families are loaded; @font-face families of the stylesheets load when used,
+            // so they are drawn once off screen and waited for
+            load: function (font) {
+                var fams = familiesOf(font), css = cssFamilies(), waits = [], found = [], self = this;
+                for (var i = 0; i < fams.length; i++) {
+                    var lf = fams[i].toLowerCase();
+                    for (var k = 0; k < self.__list.length; k++) if (self.__list[k].family.toLowerCase() === lf) { found.push(self.__list[k]); waits.push(self.__list[k].load()); }
+                    if (css[lf]) waits.push(whenRendered(fams[i], /italic|oblique/i.test(font) ? 'italic' : 'normal', /\bbold\b|\b[6-9]00\b/.test(font) ? 'bold' : 'normal', 3000));
+                }
+                return P.all(waits).then(function () { return found; });
+            },
+            check: function (font) {
+                var fams = familiesOf(font);
+                for (var i = 0; i < fams.length; i++) for (var k = 0; k < this.__list.length; k++) if (this.__list[k].family.toLowerCase() === fams[i].toLowerCase() && this.__list[k].status !== 'loaded') return false;
+                return true;
             }
-            self.status = 'loaded';
-            if (self.__resolve) self.__resolve(self);
-            return resolved(self);
         };
-        window.FontFaceSet = function FontFaceSet() {};
-    }
+        try { Object.defineProperty(FontFaceSet.prototype, 'size', { get: function () { return this.__list.length; } }); } catch (e) {}
+        window.FontFaceSetLoadEvent = function FontFaceSetLoadEvent(type, init) {
+            var e = document.createEvent('Event');
+            e.initEvent(type, false, false);
+            e.fontfaces = (init && init.fontfaces) || [];
+            return e;
+        };
+        for (var d in FACE_DESCRIPTORS) if (FACE_DESCRIPTORS.hasOwnProperty(d)) FontFace.prototype[d] = FACE_DESCRIPTORS[d];
+        FontFace.prototype.family = ''; FontFace.prototype.status = 'unloaded'; FontFace.prototype.features = null; FontFace.prototype.variations = null; FontFace.prototype.palettes = null;
+        window.FontFace = FontFace;
+        window.FontFaceSet = FontFaceSet;
+        faces = new FontFaceSet();
+        try { Object.defineProperty(document, 'fonts', { value: faces, configurable: true }); } catch (e3) { document.fonts = faces; }
+    })();
     if (!window.ScreenOrientation) window.ScreenOrientation = function ScreenOrientation() {};
     if (window.screen && window.screen.orientation && !window.screen.orientation.lock) { window.screen.orientation.lock = rejectWith('NotSupportedError', 'Orientation lock is not available'); window.screen.orientation.unlock = noop; }
     if (!window.CloseEvent) window.CloseEvent = function CloseEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, false); init = init || {}; e.wasClean = !!init.wasClean; e.code = init.code || 0; e.reason = init.reason || ''; return e; };
@@ -4043,7 +4484,8 @@
     // CSSMathSum ... / CSSTransformValue / CSSRGB / CSSImageValue / CSSUnparsedValue, computedStyleMap() and
     // attributeStyleMap wrap the style declarations, and CSS.px() & co. make unit values.
     if (!window.CSSStyleValue || !window.CSSStyleValue.parse) try { (function () {
-        var extend = function (Child, Parent) { Child.prototype = Object.create(Parent.prototype); Child.prototype.constructor = Child; return Child; };
+        // instances inherit through the prototypes, the interface objects themselves as WebIDL (and class extends) have it
+        var extend = function (Child, Parent) { Child.prototype = Object.create(Parent.prototype); Child.prototype.constructor = Child; try { Child.__proto__ = Parent; } catch (e) {} return Child; };
         var UNIT_SUFFIX = { number: '', percent: '%' };
         var unitText = function (unit) { return UNIT_SUFFIX.hasOwnProperty(unit) ? UNIT_SUFFIX[unit] : unit; };
         var CSSStyleValue = function CSSStyleValue() {};
