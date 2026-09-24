@@ -235,13 +235,16 @@ static CGFloat g_devicePixelRatio = 1;
     return YES;
 }
 
-// the transpiler engine's queue only: the ES5 text of a script, nil when it needs nothing (or cannot be lowered)
-- (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url
+// the transpiler engine's queue only: the ES5 text of a script, nil when it needs nothing (or cannot be lowered);
+// a module always gives its registration for the page's loader (or a stub reporting why it failed)
+- (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url module:(BOOL)module
 {
     BRJSEngine *engine = [BRJSEngine transpiler];
     unsigned long crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
-    NSString *key = [NSString stringWithFormat:@"%08lx-%lx-%@", crc, (unsigned long)data.length, BRTranspileTag()];
+    // (a module's registration names its URL: the key has it too)
+    if (module) { NSData *u = [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding]; if (u.length) crc = crc32(crc, (const Bytef *)u.bytes, (uInt)u.length); }
+    NSString *key = [NSString stringWithFormat:@"%08lx-%lx%@-%@", crc, (unsigned long)data.length, module ? @"m" : @"", BRTranspileTag()];
     NSString *dir = BRTranspiledDirectory();
     NSString *path = [dir stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]];
     BOOL private = [BRSettings privateMode];
@@ -260,15 +263,20 @@ static CGFloat g_devicePixelRatio = 1;
     if (!text) return nil;
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     NSString *optsJSON = @"{}";
-    if (url.absoluteString.length) {
-        NSData *oj = [NSJSONSerialization dataWithJSONObject:@{ @"url": url.absoluteString } options:0 error:NULL];
-        if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
-    }
+    NSMutableDictionary *o = [NSMutableDictionary dictionary];
+    if (url.absoluteString.length) o[@"url"] = url.absoluteString;
+    if (module) o[@"module"] = @YES;
+    NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
+    if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
     long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
     NSData *out = result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
     NSString *name = url.lastPathComponent.length ? url.lastPathComponent : @"script";
-    if (out) BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes", name, ms, (unsigned long)data.length, (unsigned long)out.length);
+    if (out && module) {
+        NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
+        BRLog(@"jsfix module %@: %ld ms, %lu -> %lu bytes%@", name, ms, (unsigned long)data.length, (unsigned long)out.length,
+              [why hasPrefix:@"failed"] ? [@" " stringByAppendingString:why] : @"");
+    } else if (out) BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes", name, ms, (unsigned long)data.length, (unsigned long)out.length);
     else {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
         if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@)", name, ms, why ?: @"?");
@@ -403,11 +411,12 @@ static NSString *BRPageKey(NSURL *url)
           sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion
 {
     if (!completion) return;
-    if ([kind isEqualToString:@"js"]) {
+    if ([kind isEqualToString:@"js"] || [kind isEqualToString:@"jsmodule"]) {
         // scripts on the transpiler engine: stylesheets and documents do not wait behind them
+        BOOL module = [kind isEqualToString:@"jsmodule"];
         [[BRJSEngine transpiler] performAsync:^{
             @autoreleasepool {
-                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL] : nil;
+                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL module:module] : nil;
                 if (lowered) completion(lowered, @"utf-8");
                 else completion(data, charset);
             }

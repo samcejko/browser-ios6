@@ -1,0 +1,16 @@
+import Greeter, { count, inc, PI2, s1, s2, starNS, renamed } from './lib.js';
+import * as lib from './lib.js';
+import { a } from './a.js';
+import { u } from 'utils';
+export const results = {};
+inc(); inc();
+results.count = count;
+results.nsCount = lib.count;
+results.greet = new Greeter('x').hi();
+results.pi = PI2.toFixed(2);
+results.star = [s1, s2(), starNS.default, 'default' in lib].join(',');
+results.renamed = renamed();
+results.cycle = a();
+results.map = u;
+results.meta = import.meta.url.split('/').slice(-2).join('/');
+results.lazy = import('./lazy.js').then(m => m.default());

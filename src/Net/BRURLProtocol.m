@@ -10,6 +10,23 @@
 
 static const NSUInteger BRMaxRewriteBody = 4 * 1024 * 1024;
 
+// The page's ES module loader (shims-extra.js) asks for module files with this query marker: the response is the
+// lowered module (a __brModules.define registration). The marker is removed before the request goes out.
+static NSString * const BRModuleMarker = @"__brmod=1";
+static BOOL BRIsModuleRequest(NSURL *url)
+{
+    return url.query.length && [url.query rangeOfString:BRModuleMarker].location != NSNotFound;
+}
+static NSURL *BRURLWithoutModuleMarker(NSURL *url)
+{
+    if (!BRIsModuleRequest(url)) return url;
+    NSString *s = url.absoluteString;
+    s = [s stringByReplacingOccurrencesOfString:@"&__brmod=1" withString:@""];
+    s = [s stringByReplacingOccurrencesOfString:@"?__brmod=1&" withString:@"?"];
+    s = [s stringByReplacingOccurrencesOfString:@"?__brmod=1" withString:@""];
+    return [NSURL URLWithString:s] ?: url;
+}
+
 static void BRSetHeaderField(NSMutableDictionary *fields, NSString *name, NSString *value)
 {
     NSMutableArray *remove = [NSMutableArray array];
@@ -403,7 +420,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 - (void)sendRequestWithMethod:(NSString *)method headers:(NSDictionary *)headers body:(NSData *)body
 {
     NSURLRequest *request = self.request;
-    NSURL *url = request.URL;
+    NSURL *url = BRURLWithoutModuleMarker(request.URL);   // (the server never sees the module loader's marker)
     self.sentMethod = method;
     self.sentHeaders = headers;
     self.sentBody = body;
@@ -602,6 +619,11 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (declared > (long long)BRMaxRewriteBody) kind = nil;
     }
+    // ES modules requested by the page's module loader (marker ?__brmod=1): registrations for the loader
+    if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && BRIsModuleRequest(url) && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
+        long long declared = [r.responseHeaders[@"content-length"] longLongValue];
+        if (declared <= (long long)BRMaxRewriteBody) kind = @"jsmodule";
+    }
     // scripts: ES2015+ syntax lowered to ES5 (jsfix.js); scripts the engine parses pass through unchanged
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
         NSString *path = [url.path lowercaseString] ?: @"";
@@ -699,7 +721,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSTimeInterval maxAge = self.cacheMaxAge;
     self.cacheBody = nil;
     BOOL mainFrame = !self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL];
-    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:url mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
+    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:BRURLWithoutModuleMarker(url) mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : [kind isEqualToString:@"js"] ? @"text/javascript" : @"text/html");

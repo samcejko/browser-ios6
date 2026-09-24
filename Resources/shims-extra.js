@@ -5905,4 +5905,206 @@
         }
         if (!window.Viewport) { window.Viewport = function Viewport() {}; defaults('Viewport', { segments: null }); if (!window.viewport) window.viewport = new window.Viewport(); }
     } catch (eCSSOM2) {}
+
+    // ---- ES modules. The rewriter turns <script type="module"> into __brModules.entry(src) (inline ones into their
+    // registration followed by an entry) when the page has no nomodule fallback. Module files are fetched with the
+    // internal marker ?__brmod=1 (the network layer strips it, lowers the module and answers with
+    // __brModules.define(url, deps, factory), see jsfix.js). Graphs are fetched in parallel, linked (namespaces with
+    // live getters, `export *`), and run depth-first; entries run in document order once the document is parsed.
+    // import() loads on demand.
+    (function () {
+        if (window.__brModules || !window.Promise) return;
+        var P = window.Promise, records = {}, queue = [], draining = false, mapCache = null, hasOwnP = Object.prototype.hasOwnProperty;
+        var toURL = function (spec, base) {
+            try { return new window.URL(spec, base).href; } catch (e) {}
+            var a = document.createElement('a');
+            a.href = spec;
+            return a.href;
+        };
+        // import maps: <script type="importmap"> (imports and scopes, prefix entries ending in "/")
+        var importMap = function () {
+            if (mapCache) return mapCache;
+            mapCache = { imports: {}, scopes: {} };
+            var list = document.querySelectorAll('script[type="importmap"]');
+            for (var i = 0; i < list.length; i++) {
+                var m = null;
+                try { m = JSON.parse(list[i].textContent); } catch (e) { continue; }
+                var k, s;
+                if (m && m.imports) for (k in m.imports) if (hasOwnP.call(m.imports, k)) mapCache.imports[k] = toURL(m.imports[k], document.baseURI);
+                if (m && m.scopes) for (s in m.scopes) if (hasOwnP.call(m.scopes, s)) {
+                    var scope = toURL(s, document.baseURI), target = mapCache.scopes[scope] || (mapCache.scopes[scope] = {});
+                    for (k in m.scopes[s]) if (hasOwnP.call(m.scopes[s], k)) target[k] = toURL(m.scopes[s][k], document.baseURI);
+                }
+            }
+            return mapCache;
+        };
+        var lookup = function (spec, map) {
+            if (hasOwnP.call(map, spec)) return map[spec];
+            var best = null;
+            for (var k in map) if (hasOwnP.call(map, k) && k.charAt(k.length - 1) === '/' && spec.indexOf(k) === 0 && (!best || k.length > best.length)) best = k;
+            return best !== null ? map[best] + spec.slice(best.length) : null;
+        };
+        var resolve = function (spec, base) {
+            var map = importMap(), asURL = /^(\.{0,2}\/|[a-z][a-z0-9+.\-]*:)/i.test(spec) ? toURL(spec, base) : null, key = asURL || spec, r = null, best = null, s;
+            for (s in map.scopes) if (hasOwnP.call(map.scopes, s) && base.indexOf(s) === 0 && (!best || s.length > best.length)) best = s;
+            if (best !== null) r = lookup(key, map.scopes[best]);
+            if (r === null) r = lookup(key, map.imports);
+            if (r !== null) return r;
+            if (asURL) return asURL;
+            throw new TypeError('Failed to resolve module specifier "' + spec + '"');
+        };
+        var record = function (url) { return records[url] || (records[url] = { url: url, deps: null, factory: null, ns: null, state: 0, error: null }); };
+        var makeNS = function () {
+            var ns = Object.create(null);
+            try { if (window.Symbol && Symbol.toStringTag) Object.defineProperty(ns, Symbol.toStringTag, { value: 'Module' }); } catch (e) {}
+            return ns;
+        };
+        var getter = function (ns, name, fn) { try { Object.defineProperty(ns, name, { get: fn, enumerable: true, configurable: true }); } catch (e) {} };
+        var fetchRecord = function (r) {
+            if (r.factory || r.error) return P.resolve(r);
+            if (r.fetching) return r.fetching;
+            r.fetching = new P(function (done) {
+                var x = new XMLHttpRequest(), hook = window.__brModuleTransform;   // (tests transform in the page)
+                x.open('GET', hook ? r.url : r.url + (r.url.indexOf('?') >= 0 ? '&' : '?') + '__brmod=1', true);
+                x.onreadystatechange = function () {
+                    if (x.readyState !== 4) return;
+                    if ((x.status && (x.status < 200 || x.status >= 300)) || (!x.status && !x.responseText)) {
+                        r.error = new TypeError('Failed to fetch module ' + r.url + (x.status ? ' (HTTP ' + x.status + ')' : ''));
+                        done(r);
+                        return;
+                    }
+                    var code = x.responseText;
+                    try { if (hook) code = hook(code, r.url); (0, eval)(code + '\n//# sourceURL=' + r.url); } catch (e) { r.error = e; }
+                    if (!r.factory && !r.error) r.error = new SyntaxError('Module ' + r.url + ' did not register');
+                    done(r);
+                };
+                x.send(null);
+            });
+            return r.fetching;
+        };
+        // every module reachable from root, fetched in parallel (cycles included)
+        var fetchAll = function (root) {
+            return new P(function (done) {
+                var pending = 0, seen = {};
+                var visit = function (r) {
+                    if (seen[r.url]) return;
+                    seen[r.url] = 1;
+                    pending++;
+                    fetchRecord(r).then(function () {
+                        if (!r.error && !r.depRecs) {
+                            var list = [];
+                            for (var i = 0; i < r.deps.length; i++) {
+                                try { list.push(record(resolve(r.deps[i], r.url))); } catch (e) { r.error = e; break; }
+                            }
+                            if (!r.error) r.depRecs = list;
+                        }
+                        if (!r.error) for (var j = 0; j < r.depRecs.length; j++) visit(r.depRecs[j]);
+                        if (--pending === 0) done(root);
+                    });
+                };
+                visit(root);
+            });
+        };
+        var instantiate = function (r) {
+            if (r.state >= 1 || r.error) return;
+            r.state = 1;
+            var ns = r.ns || (r.ns = makeNS());
+            var ex = function (getters, stars) {
+                for (var k in getters) if (hasOwnP.call(getters, k)) getter(ns, k, getters[k]);
+                r.stars = stars || [];
+            };
+            var res;
+            try { res = r.factory(ex, { url: r.url, resolve: function (s) { return resolve(s, r.url); } }); } catch (e) { r.error = e; return; }
+            r.setters = res[0];
+            r.run = res[1];
+            for (var i = 0; i < r.depRecs.length; i++) instantiate(r.depRecs[i]);
+        };
+        var linkStars = function (r) {
+            if (r.starsDone || r.error || !r.ns) return;
+            r.starsDone = true;
+            for (var i = 0; i < (r.stars || []).length; i++) {
+                var d = r.depRecs[r.stars[i]];
+                if (!d || !d.ns) continue;
+                linkStars(d);
+                var names = Object.getOwnPropertyNames(d.ns);
+                for (var j = 0; j < names.length; j++) {
+                    if (names[j] === 'default' || hasOwnP.call(r.ns, names[j])) continue;
+                    getter(r.ns, names[j], (function (dns, n) { return function () { return dns[n]; }; })(d.ns, names[j]));
+                }
+            }
+        };
+        var linkSetters = function (r) {
+            if (r.linked || r.error || !r.setters) return;
+            r.linked = true;
+            for (var i = 0; i < r.depRecs.length; i++) { linkStars(r.depRecs[i]); r.setters[i](r.depRecs[i].ns || makeNS()); linkSetters(r.depRecs[i]); }
+        };
+        var running = 0;
+        var execute = function (r) {
+            if (r.state >= 2) return r.error;
+            r.state = 2;   // (a dependency cycle meets a running module: it is skipped, as with real modules)
+            for (var i = 0; i < (r.depRecs || []).length; i++) { var err = execute(r.depRecs[i]); if (err && !r.error) r.error = err; }
+            if (!r.error && r.run) {
+                running++;
+                try { r.run(); } catch (e) { r.error = e; }
+                running--;
+            }
+            r.state = 3;
+            return r.error;
+        };
+        var evaluate = function (r) {
+            return fetchAll(r).then(function () {
+                instantiate(r);
+                linkStars(r);
+                linkSetters(r);
+                var err = execute(r);
+                if (err) throw err;
+                return r.ns;
+            });
+        };
+        var report = function (e) { try { if (window.console && console.error) console.error(e); } catch (x) {} };
+        var drain = function () {
+            if (draining || document.readyState === 'loading') return;
+            var item = queue.shift();
+            if (!item) return;
+            draining = true;
+            var next = function () { draining = false; drain(); };
+            item.p.then(function () { return evaluate(item.r); }).then(next, function (e) { report(e); next(); });
+        };
+        // modules run after the document is parsed, often after DOMContentLoaded/load already happened here: listeners
+        // they add for those while they run are called anyway (real modules run before both)
+        var fired = { DOMContentLoaded: false, load: false };
+        document.addEventListener('DOMContentLoaded', function () { fired.DOMContentLoaded = true; drain(); }, false);
+        window.addEventListener('load', function () { fired.load = true; drain(); }, false);
+        if (document.readyState !== 'loading') fired.DOMContentLoaded = true;
+        if (document.readyState === 'complete') fired.load = true;
+        var lateListeners = function (target, orig) {
+            return function (type, fn) {
+                var r = orig.apply(this, arguments);
+                if (running && fired[type] && fn && (type === 'DOMContentLoaded' || type === 'load')) {
+                    setTimeout(function () { try { if (typeof fn === 'function') fn.call(target, { type: type, target: document }); else if (fn.handleEvent) fn.handleEvent({ type: type, target: document }); } catch (e) { report(e); } }, 0);
+                }
+                return r;
+            };
+        };
+        try { document.addEventListener = lateListeners(document, document.addEventListener); } catch (e1) {}
+        try { window.addEventListener = lateListeners(window, window.addEventListener); } catch (e2) {}
+        var api = {
+            define: function (url, deps, factory) { var r = record(url); if (!r.factory) { r.deps = deps; r.factory = factory; r.error = null; } },
+            fail: function (url, message) { record(url).error = new SyntaxError('Module ' + url + ' could not be lowered: ' + message); },
+            // a <script type="module">: src (resolved against the document) or the id of an inline module defined before
+            entry: function (src, id) {
+                var r = record(id || toURL(src, document.baseURI));
+                queue.push({ r: r, p: fetchAll(r) });
+                drain();
+            },
+            'import': function (spec, base) {
+                var url;
+                try { url = resolve(String(spec), base || document.baseURI); } catch (e) { return P.reject(e); }
+                return evaluate(record(url));
+            },
+            records: records
+        };
+        window.__brModules = api;
+        window.__brImport = api['import'];
+    })();
 })(window, document);

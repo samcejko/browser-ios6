@@ -3839,12 +3839,26 @@ var CSSFix = (function () {
             pageBase = String(opts.pageURL).replace(/[#?].*$/, '');
             pageBase = pageBase.slice(0, pageBase.lastIndexOf('/') + 1);
         }
+        // module scripts go to the module loader of the page shim (in the polyfill bundle of main documents), unless the
+        // page ships a nomodule fallback: that one runs as it is (the old engine skips type=module on its own)
+        var modules = !!(opts && opts.transpile && opts.polyfillURL) && !/<script\b[^>]*\bnomodule\b/i.test(html), moduleCount = 0;
+        var pageId = opts && opts.pageURL ? String(opts.pageURL).replace(/#.*$/, '') : 'about:blank';
         html = html.replace(re, function (all, open, attrs, body, close) {
             var type = attrValue(attrs, 'type') || '';
             var ltype = trim(type).toLowerCase();
             if (!opts || !opts.transpile) return all;
-            if (!isJavaScriptType(type) || ltype === 'module') return all;   // (modules: the engine skips them, their nomodule fallbacks run)
-            if (attrValue(attrs, 'src')) return all;                        // external scripts are lowered by the network layer
+            var src = attrValue(attrs, 'src');
+            if (ltype === 'module') {
+                if (!modules) return all;
+                if (src) return '<script>window.__brModules&&__brModules.entry(' + jsString(src.replace(/&amp;/g, '&')) + ');' + close;
+                if (!/[^\s]/.test(body) || typeof JSFix === 'undefined') return all;
+                var id = pageId + '#module-' + (++moduleCount), code = null;
+                try { code = JSFix.run(body, JSON.stringify({ module: true, url: id })); } catch (e) { code = null; }
+                if (!code) return all;
+                return '<script>' + code + '\nwindow.__brModules&&__brModules.entry(null,' + jsString(id) + ');' + close;
+            }
+            if (!isJavaScriptType(type)) return all;
+            if (src) return all;                                            // external scripts are lowered by the network layer
             var fixed = transpileInline(body);
             if (fixed === null) return all;
             return open + fixed + close;

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>module loader test</title>
+<script type="importmap">{ "imports": { "utils": "./modtest/utils.js" } }</script>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+<script src="../Resources/cssfix.js"></script>
+<script>
+// the network layer lowers module files on the device; here the page does it (the loader's test hook)
+window.__brModuleTransform = function (src, url) { return JSFix.run(src, JSON.stringify({ module: true, url: url })); };
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+var expected = { count: 2, nsCount: 2, greet: 'hi x', pi: '6.28', star: 's1,s2,star-default,true', renamed: 'helped', cycle: 'abA', map: 'from-map', meta: 'modtest/main.js', lazy: 'lazy' };
+var fails = [];
+__brModules['import']('./modtest/main.js', location.href).then(function (ns) {
+  var r = ns.results;
+  return r.lazy.then(function (lazy) {
+    r.lazy = lazy;
+    for (var k in expected) if (JSON.stringify(r[k]) !== JSON.stringify(expected[k])) fails.push(k + ': expected ' + JSON.stringify(expected[k]) + ' got ' + JSON.stringify(r[k]));
+    // an inline module converted by the HTML rewriter, and an entry of a module file
+    var html = '<html><head></head><body><script type="module">import { u } from "./modtest/utils.js"; window.__inlineModule = u + "!";<\/script>' +
+               '<script type="module" src="./modtest/star.js"><\/script></body></html>';
+    var out = JSON.parse(CSSFix.run('html', html, '{}', JSON.stringify({ transpile: true, polyfillURL: 'https://x.invalid/p.js', pageURL: location.href }))).out;
+    var converted = /__brModules\.define\(/.test(out) && /__brModules\.entry\("\.\/modtest\/star\.js"\)/.test(out);
+    if (!converted) fails.push('html not converted: ' + out.slice(0, 300));
+    var scripts = out.match(/<script>([\s\S]*?)<\/script>/g) || [];
+    scripts.forEach(function (s) { (0, eval)(s.replace(/^<script>|<\/script>$/g, '')); });
+    return new Promise(function (res) { setTimeout(res, 300); });
+  });
+}).then(function () {
+  if (window.__inlineModule !== 'from-map!') fails.push('inline module: ' + window.__inlineModule);
+  document.getElementById('out').textContent = fails.length ? 'FAIL\n' + fails.join('\n') : 'PASS';
+  document.title = fails.length ? 'modules FAIL ' + fails.length : 'modules PASS';
+}, function (e) {
+  document.getElementById('out').textContent = 'ERROR ' + (e && e.stack || e);
+  document.title = 'modules ERROR';
+});
+</script>
+</body>
+</html>

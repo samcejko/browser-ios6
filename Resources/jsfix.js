@@ -589,7 +589,10 @@
         this.lexicals = [];
         this.fns = [];         // function-like nodes around the current node (arrows carry $arrow)
         this.loops = [];
-        this.module = false;
+        this.module = false;   // import/export met
+        this.mod = null;       // module mode: {deps, depIndex, exports, stars}
+        this.imports = [];     // import bindings
+        this.tla = false;      // await at the top level of a module
     };
     var W = Walker.prototype;
     W.inArrow = function () { var f = this.fns[this.fns.length - 1]; return !!(f && f.$arrow); };
@@ -827,7 +830,9 @@
                 break;
             case 'VariableDeclaration': {
                 var kind = n.kind;
-                if (kind !== 'var' || this.inGen()) d = true;
+                // (in a generator the declarations move out of the state machine; at a module's top level they move
+                // from the run function into the factory, where the export getters see them)
+                if (kind !== 'var' || this.inGen() || (this.mod && !this.fns.length)) d = true;
                 for (i = 0; i < n.declarations.length; i++) {
                     var dc = n.declarations[i];
                     dc.$p = n;
@@ -899,6 +904,7 @@
             case 'AwaitExpression': case 'YieldExpression':
                 if (n.argument) this.v(n.argument, n, s);
                 this.noWrap(s);
+                if (!this.fns.length) this.tla = true;
                 d = true;
                 break;
             case 'ImportExpression': this.v(n.source, n, s); d = true; break;
@@ -906,12 +912,88 @@
             case 'ImportDeclaration': case 'ExportNamedDeclaration': case 'ExportDefaultDeclaration': case 'ExportAllDeclaration':
                 this.module = true;
                 d = true;
+                if (this.mod) this.moduleDecl(n, s);
                 break;
             default:
                 throw new Unsupported(n.type);
         }
         if (d) n.$d = true;
         return d;
+    };
+    // ---- ES modules: imports become bindings that print as members of the dependency's namespace (live bindings),
+    // exports are recorded for the getters of the module's namespace
+    var specName = function (id) { return id.type === 'Identifier' ? id.name : String(id.value); };
+    W.dep = function (spec) {
+        var m = this.mod;
+        if (!hasOwn.call(m.depIndex, '$' + spec)) { m.depIndex['$' + spec] = m.deps.length; m.deps.push(spec); }
+        return m.depIndex['$' + spec];
+    };
+    W.moduleDecl = function (n, s) {
+        var m = this.mod, i, sp, b;
+        switch (n.type) {
+            case 'ImportDeclaration': {
+                var dep = this.dep(n.source.value);
+                for (i = 0; i < n.specifiers.length; i++) {
+                    sp = n.specifiers[i];
+                    sp.$p = n;
+                    sp.local.$p = sp;
+                    b = this.declare(s, sp.local.name, 'import', sp.local);
+                    b.imp = { dep: dep, name: sp.type === 'ImportDefaultSpecifier' ? 'default' : sp.type === 'ImportNamespaceSpecifier' ? null : specName(sp.imported) };
+                    this.imports.push(b);
+                }
+                return;
+            }
+            case 'ExportNamedDeclaration': {
+                var decl = n.declaration;
+                if (decl) {
+                    decl.$p = n;
+                    if (decl.type === 'FunctionDeclaration') { this.declare(s, decl.id.name, 'fn', decl.id); this.fn(decl, n, s); m.exports.push({ name: decl.id.name, id: decl.id }); }
+                    else {
+                        this.v(decl, n, s);
+                        if (decl.type === 'ClassDeclaration') m.exports.push({ name: decl.id.name, id: decl.id });
+                        else {
+                            var ids = [];
+                            var collect = function (p) {
+                                if (!p) return;
+                                if (p.type === 'Identifier') ids.push(p);
+                                else if (p.type === 'ObjectPattern') { for (var k = 0; k < p.properties.length; k++) collect(p.properties[k].type === 'RestElement' ? p.properties[k].argument : p.properties[k].value); }
+                                else if (p.type === 'ArrayPattern') { for (var j = 0; j < p.elements.length; j++) collect(p.elements[j]); }
+                                else if (p.type === 'RestElement') collect(p.argument);
+                                else if (p.type === 'AssignmentPattern') collect(p.left);
+                            };
+                            for (i = 0; i < decl.declarations.length; i++) collect(decl.declarations[i].id);
+                            for (i = 0; i < ids.length; i++) m.exports.push({ name: ids[i].name, id: ids[i] });
+                        }
+                    }
+                } else if (n.source) {
+                    var dep2 = this.dep(n.source.value);
+                    for (i = 0; i < n.specifiers.length; i++) { sp = n.specifiers[i]; m.exports.push({ name: specName(sp.exported), dep: dep2, from: specName(sp.local) }); }
+                } else {
+                    for (i = 0; i < n.specifiers.length; i++) {
+                        sp = n.specifiers[i];
+                        sp.$p = n;
+                        sp.local.$p = sp;
+                        this.ref(sp.local, s, false);
+                        m.exports.push({ name: specName(sp.exported), id: sp.local });
+                    }
+                }
+                return;
+            }
+            case 'ExportDefaultDeclaration': {
+                var dd = n.declaration;
+                dd.$p = n;
+                if (dd.type === 'FunctionDeclaration') { if (dd.id) this.declare(s, dd.id.name, 'fn', dd.id); this.fn(dd, n, s); m.exports.push({ name: 'default', node: n }); }
+                else if (dd.type === 'ClassDeclaration') { if (dd.id) this.declare(s, dd.id.name, 'class', dd.id); this.cls(dd, n, s); m.exports.push({ name: 'default', node: n }); }
+                else { this.v(dd, n, s); m.exports.push({ name: 'default', node: n }); }
+                return;
+            }
+            case 'ExportAllDeclaration': {
+                var dep3 = this.dep(n.source.value);
+                if (n.exported) m.exports.push({ name: specName(n.exported), dep: dep3, ns: true });
+                else m.stars.push(dep3);
+                return;
+            }
+        }
     };
     // references to bindings, then the decisions: renames, loops that need a function per iteration
     W.resolve = function (program) {
@@ -935,7 +1017,7 @@
             key = '$' + b.name;
             var need;
             if (b.scope !== f) need = f.declCount[key] > 1 || f.free[key] === 1;
-            else need = f.kind === 'program' && hasOwn.call(DANGEROUS_GLOBALS, b.name);
+            else need = f.kind === 'program' && !this.mod && hasOwn.call(DANGEROUS_GLOBALS, b.name);   // (a module's top level is not global)
             if (!need) continue;
             var nn, k = 1;
             do { nn = b.name + '$' + k++; } while (this.names['$' + nn]);
@@ -947,6 +1029,11 @@
         for (i = 0; i < this.loops.length; i++) {
             var l = this.loops[i];
             if (l.$wrap && !l.$noWrap) { markDirty(l); markWrapped(l.body); }
+        }
+        // imported names print as members of the dependency's namespace
+        for (i = 0; i < this.imports.length; i++) {
+            b = this.imports[i];
+            for (j = 0; j < b.refs.length; j++) markDirty(b.refs[j]);
         }
     };
     // inside a loop body that becomes a function: this/arguments, jumps out, returns and var declarations change
@@ -984,7 +1071,7 @@
         this.temps = [];
         this.tempSet = {};
         this.gen = null;
-        var inherits = kind === 'arrow' || kind === 'loop' || kind === 'gen';
+        var inherits = kind === 'arrow' || kind === 'loop' || kind === 'gen' || kind === 'modrun';
         this.thisCtx = inherits ? parent.thisCtx : this;
         this.thisAlias = null;
         this.argsAlias = null;
@@ -999,7 +1086,7 @@
     };
     // (the variables of a state machine live in the function around it: they survive the yields)
     Ctx.prototype.declare = function (name) {
-        if (this.kind === 'gen') return this.parent.declare(name);
+        if (this.kind === 'gen' || this.kind === 'modrun') return this.parent.declare(name);
         if (!this.tempSet['$' + name]) { this.tempSet['$' + name] = 1; this.temps.push(name); }
     };
 
@@ -1048,9 +1135,10 @@
     P.push = function (kind, node) { this.ctx = new Ctx(kind, this.ctx, node); return this.ctx; };
     P.pop = function () { this.ctx = this.ctx.parent; };
     // a var hoisted out of a loop function to the function around it
-    P.hoistVar = function (name) { var c = this.ctx; while (c.kind === 'loop' || c.kind === 'gen') c = c.parent; c.declare(name); };
+    P.hoistVar = function (name) { var c = this.ctx; while (c.kind === 'loop' || c.kind === 'gen' || c.kind === 'modrun') c = c.parent; c.declare(name); };
     // declarations that become assignments: `var` inside a loop function, every declaration inside a state machine
-    P.hoisting = function (kind) { return (this.ctx.kind === 'loop' && kind === 'var') || this.ctx.kind === 'gen'; };
+    // or the run function of a module (its variables live in the module's factory, where the export getters see them)
+    P.hoisting = function (kind) { return (this.ctx.kind === 'loop' && kind === 'var') || this.ctx.kind === 'gen' || this.ctx.kind === 'modrun'; };
     P.declLine = function (c) {
         var parts = [];
         if (c.thisAlias) parts.push(c.thisAlias + '=this');
@@ -1090,7 +1178,11 @@
     P.X = function (n) {
         var code;
         switch (n.type) {
-            case 'Identifier': code = n.$b ? (n.$b.newName || n.name) : n.name === 'arguments' ? this.argsCode() : n.name; this.prec = P_PRIMARY; return code;
+            case 'Identifier':
+                if (n.$b && n.$b.kind === 'import') { code = this.importRef(n.$b); this.prec = n.$b.imp.name === null ? P_PRIMARY : P_CALL; return code; }
+                code = n.$b ? (n.$b.newName || n.name) : n.name === 'arguments' ? this.argsCode() : n.name;
+                this.prec = P_PRIMARY;
+                return code;
             case 'Literal': code = this.literal(n); return code;
             case 'ThisExpression': code = this.thisCode(); this.prec = P_PRIMARY; return code;
             case 'Raw': this.prec = n.prec || P_PRIMARY; return n.code;
@@ -1388,9 +1480,18 @@
             this.prec = P_CALL;
             return code;
         }
-        code = this.E(callee, P_CALL) + '(' + this.args(n.arguments) + ')';
+        code = this.E(callee, P_CALL);
+        // an imported function is called without the namespace as its `this`
+        if (callee.type === 'Identifier' && callee.$b && callee.$b.kind === 'import' && callee.$b.imp.name !== null) code = '(0,' + code + ')';
+        code += '(' + this.args(n.arguments) + ')';
         this.prec = P_CALL;
         return code;
+    };
+    // a reference to an imported binding: a member of the dependency's namespace (so it stays live)
+    P.importRef = function (b) {
+        var ns = this.modVars[b.imp.dep], name = b.imp.name;
+        if (name === null) return ns;
+        return ns + (IDENT.test(name) ? '.' + name : '[' + quote(name) + ']');
     };
     // optional chains: every "?." tests what is left of it once, the whole chain gives undefined when one is nullish
     P.chain = function (node, mode, baseCode) {
@@ -1432,6 +1533,7 @@
             this.prec = P_PRIMARY;
             return t.ntAlias;
         }
+        if (this.metaName) { this.prec = P_PRIMARY; return this.metaName; }
         throw new Unsupported('import.meta');
     };
 
@@ -1639,7 +1741,7 @@
             case 'FunctionDeclaration': return n.$lexfn ? this.lexFn(n) : this.func(n, 'fn', n.id.name, null);
             case 'ClassDeclaration': {
                 var cn = this.bname(n.id);
-                if (this.ctx.kind === 'gen') { this.hoistVar(cn); return cn + '=' + this.classExpr(n, null) + ';'; }
+                if (this.ctx.kind === 'gen' || this.ctx.kind === 'modrun') { this.hoistVar(cn); return cn + '=' + this.classExpr(n, null) + ';'; }
                 return 'var ' + cn + '=' + this.classExpr(n, null) + ';';
             }
             case 'ReturnStatement': return this.ret(n);
@@ -1932,6 +2034,62 @@
         var body = this.block(k ? st.slice(k) : st, false);
         this.pop();
         return dirs + this.helperCode() + this.declLine(ctx) + this.progInit + body;
+    };
+    // An ES module as __brModules.define(url, [dependency specifiers], factory). The factory holds the module's
+    // variables and function declarations (functions are callable before the module runs, as with real modules),
+    // registers live getters for the exports and returns [setters for the dependencies' namespaces, run]; the loader
+    // in shims-extra.js fetches the graph, links it and calls run in dependency order.
+    P.moduleCode = function (ast, w) {
+        var mod = w.mod, st = ast.body, i, n, e, b;
+        var ctx = this.push('program', ast);
+        this.program = ctx;
+        this.progInit = '';
+        this.modVars = [];
+        for (i = 0; i < mod.deps.length; i++) { this.modVars.push(this.fresh('_m')); ctx.declare(this.modVars[i]); }
+        this.metaName = this.fresh('_meta');
+        var exName = this.fresh('_ex'), fdecls = '', getters = [], fname;
+        var getter = function (name, code) { getters.push(quote(name) + ':function(){return ' + code + ';}'); };
+        for (i = 0; i < st.length; i++) {
+            n = st[i];
+            var fd = n.type === 'FunctionDeclaration' ? n : (n.type === 'ExportNamedDeclaration' || n.type === 'ExportDefaultDeclaration') && n.declaration && n.declaration.type === 'FunctionDeclaration' ? n.declaration : null;
+            if (!fd) continue;
+            fname = fd.id ? fd.id.name : this.fresh('_default');
+            fdecls += this.func(fd, 'fn', fname, null);
+            if (n.type === 'ExportDefaultDeclaration') getter('default', fname);
+        }
+        var run = this.push('modrun', ast), body = '';
+        for (i = 0; i < st.length; i++) {
+            n = st[i];
+            if (n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'FunctionDeclaration') continue;
+            if (n.type === 'ExportNamedDeclaration') { if (n.declaration && n.declaration.type !== 'FunctionDeclaration') body += this.S(n.declaration); continue; }
+            if (n.type === 'ExportDefaultDeclaration') {
+                var dd = n.declaration;
+                if (dd.type === 'FunctionDeclaration') continue;
+                if (dd.type === 'ClassDeclaration' && dd.id) { body += this.S(dd); getter('default', this.bname(dd.id)); continue; }
+                var dn = this.fresh('_default');
+                this.hoistVar(dn);
+                body += dn + '=' + (dd.type === 'ClassDeclaration' ? this.classExpr(dd, null) : this.E(dd, P_ASSIGN)) + ';';
+                getter('default', dn);
+                continue;
+            }
+            body += this.S(n);
+        }
+        this.pop();
+        for (i = 0; i < mod.exports.length; i++) {
+            e = mod.exports[i];
+            if (e.node) continue;   // (export default: above)
+            if (e.id) {
+                b = e.id.$b;
+                getter(e.name, b ? (b.kind === 'import' ? this.importRef(b) : b.newName || b.name) : e.id.name);
+            } else if (e.ns) getter(e.name, this.modVars[e.dep]);
+            else getter(e.name, this.modVars[e.dep] + (IDENT.test(e.from) ? '.' + e.from : '[' + quote(e.from) + ']'));
+        }
+        var setters = [], deps = [];
+        for (i = 0; i < mod.deps.length; i++) { setters.push('function(n){' + this.modVars[i] + '=n;}'); deps.push(quote(mod.deps[i])); }
+        this.pop();
+        var factory = 'function(' + exName + ',' + this.metaName + '){"use strict";' + this.declLine(ctx) + this.progInit + fdecls +
+                      exName + '({' + getters.join(',') + '},[' + mod.stars.join(',') + ']);return[[' + setters.join(',') + '],function(){' + body + '}];}';
+        return this.helperCode() + '__brModules.define(' + quote(this.opts.url || '') + ',[' + deps.join(',') + '],' + factory + ');';
     };
 
     // ------------------------------------------------------------------------------------------------ generators
@@ -2353,20 +2511,26 @@
     };
 
     // ------------------------------------------------------------------------------------------------ entry points
-    var parse = function (src) {
+    var parse = function (src, module) {
         var acorn = root.acorn;
         if (!acorn || !acorn.parse) throw new Unsupported('acorn missing');
-        return acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, allowReturnOutsideFunction: true,
+        return acorn.parse(src, { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                                   allowReserved: true, locations: false });
     };
     // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
+    // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
     var transpile = function (src, opts) {
-        var ast = parse(src);
+        opts = opts || {};
+        var module = !!opts.module;
+        var ast = parse(src, module);
         var w = new Walker(src);
-        var ps = new Scope('program', null, ast, hasUseStrict(ast.body));
+        if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
+        var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body));
         w.stmts(ast.body, ast, ps, false);
-        if (w.module) throw new Unsupported('module');
+        if (w.module && !module) throw new Unsupported('module');
+        if (module && w.tla) throw new Unsupported('top-level await');
         w.resolve(ast);
+        if (module) return new Printer(src, w, opts).moduleCode(ast, w);
         var dirty = false;
         for (var i = 0; i < ast.body.length; i++) if (ast.body[i].$d) { dirty = true; break; }
         if (!dirty) return null;
@@ -2382,6 +2546,20 @@
         var opts = null;
         try { opts = optsJSON ? JSON.parse(optsJSON) : {}; } catch (e) { opts = {}; }
         stats.runs++;
+        if (opts.module) {
+            // a module always becomes a registration; when it cannot, the loader is told why
+            var mout = null, merr = '';
+            try { mout = transpile(src, opts); } catch (em) { merr = (em && (em.message || em.what)) || String(em); }
+            if (mout !== null && !engineParses(mout)) { try { new Function(mout); } catch (ep) { merr = 'output does not parse (' + ep.message + ')'; } mout = null; }   // eslint-disable-line no-new-func
+            if (mout === null) {
+                stats.failed++;
+                stats.last = 'failed: ' + merr;
+                return 'window.__brModules&&__brModules.fail(' + quote(opts.url || '') + ',' + quote(merr) + ');';
+            }
+            stats.lowered++;
+            stats.last = 'module';
+            return mout;
+        }
         if (!opts.force && engineParses(src)) { stats.skipped++; stats.last = 'es5'; return ''; }
         var t0 = new Date().getTime(), out = null;
         try { out = transpile(src, opts); } catch (e2) {
