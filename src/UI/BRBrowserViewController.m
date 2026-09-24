@@ -2320,14 +2320,40 @@ static void BRWebThreadLock(void)
             BRLog(@"Home page: %@", info ?: @"");
         }
         [self checkForBrowserChallenge:title url:url];
+        [self checkForUnsupportedBrowserPage:title url:url];
     }
+}
+
+// "Your browser is no longer supported": once per host, the page is fetched again as a current iPad
+- (void)checkForUnsupportedBrowserPage:(NSString *)title url:(NSURL *)url
+{
+    if (![[url.scheme lowercaseString] hasPrefix:@"http"] || !url.host.length) return;
+    if ([BRSettings userAgentModeForHost:url.host] != 0) return;
+    NSInteger nodes = [[self.webView stringByEvaluatingJavaScriptFromString:@"document.getElementsByTagName('*').length"] integerValue];
+    if (nodes > 400) return;   // real pages are bigger than a refusal notice
+    NSString *text = [NSString stringWithFormat:@"%@ %@", title ?: @"", [self.webView stringByEvaluatingJavaScriptFromString:@"(document.body?document.body.innerText:'').slice(0,800)"] ?: @""];
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:
+        @"nov[ěe]j[šs][íi]m? prohl[íi][žz]e[čc]|prohl[íi][žz]e[čc] (u[žz] )?nen[íi] podporov|nepodporovan[ýy] prohl[íi][žz]e[čc]|aktualizujte (sv[ůu]j )?prohl[íi][žz]e[čc]|"
+         "browser (is )?(no longer|not) supported|unsupported browser|update your browser|upgrade your browser|browser is out of date|outdated browser"
+        options:NSRegularExpressionCaseInsensitive error:NULL];
+    if (![re firstMatchInString:text options:0 range:NSMakeRange(0, text.length)]) return;
+    static NSMutableSet *retried;
+    if (!retried) retried = [NSMutableSet set];
+    NSString *host = [url.host lowercaseString];
+    if ([retried containsObject:host]) return;
+    [retried addObject:host];
+    BRLog(@"Unsupported-browser page on %@: retrying as a current iPad", host);
+    [BRSettings setUserAgentMode:2 forHost:host];
+    [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    [self reloadIgnoringCache];
 }
 
 // Cloudflare-style "verifying your browser" pages never pass on this engine: offer Safari once per host
 - (void)checkForBrowserChallenge:(NSString *)title url:(NSURL *)url
 {
     if (![[url.scheme lowercaseString] hasPrefix:@"http"] || !title.length) return;
-    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"just a moment|verifying your browser|checking your browser|attention required|access denied" options:NSRegularExpressionCaseInsensitive error:NULL];
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"just a moment|verifying your browser|checking your browser|attention required|access denied|verify you are human|jste člověk|ověření prohlížeče"
+                                                                         options:NSRegularExpressionCaseInsensitive error:NULL];
     if (![re firstMatchInString:title options:0 range:NSMakeRange(0, title.length)]) return;
     static NSMutableSet *asked;
     if (!asked) asked = [NSMutableSet set];

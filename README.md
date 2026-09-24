@@ -65,7 +65,10 @@ the app around it:
   "Download link" in the link menu, "Open" in the selection menu when the selected text is an
   address, "Paste and Go" in the address field, search suggestions from the chosen engine, and
   keyword searches typed into the address field (`g dotaz` Google, `b` Bing, `s` Seznam, `d`
-  DuckDuckGo, `w` / `we` Czech / English Wikipedia).
+  DuckDuckGo, `w` / `we` Czech / English Wikipedia), a page screenshot into Photos, "Open in
+  Safari" in the share sheet and on the error page, an offer to open Cloudflare-style "verifying
+  your browser" pages in Safari, a bundled help page (Settings > Help and gestures, also on the
+  start page) and "Reset settings".
 - **Privacy settings**: third-party cookies blocked (like Safari), Do Not Track / Global Privacy
   Control headers, cookie banners of the common consent services hidden by injected CSS, an image
   switch for slow connections, per-site "allow ads on this site", and a forced dark stylesheet for
