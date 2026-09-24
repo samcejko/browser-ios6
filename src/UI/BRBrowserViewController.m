@@ -1,5 +1,6 @@
 #import "BRBrowserViewController.h"
 #import <QuartzCore/QuartzCore.h>
+#import <objc/message.h>
 #import "BRSettingsViewController.h"
 #import "BRLibraryViewController.h"
 #import "BRTabsViewController.h"
@@ -181,6 +182,7 @@ static const CGFloat BRControlHeight = 30;
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
     [self.webView.scrollView addSubview:self.refreshControl];
+    [self enableWebGL];
     [self.view addSubview:self.webView];
 
     // top bar
@@ -281,6 +283,37 @@ static const CGFloat BRControlHeight = 30;
 - (void)dealloc
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// WebGL exists in the iOS 6 engine but is switched off for apps; the WebKit preferences object of the
+// web view (private API, guarded) turns it on. Fails silently on engines without these selectors.
+- (void)enableWebGL
+{
+    SEL setter = NSSelectorFromString(@"setWebGLEnabled:");
+    NSMutableArray *targets = [NSMutableArray array];
+    Class prefsClass = NSClassFromString(@"WebPreferences");
+    SEL standard = NSSelectorFromString(@"standardPreferences");
+    if (prefsClass && [prefsClass respondsToSelector:standard]) {
+        id p = ((id (*)(id, SEL))objc_msgSend)(prefsClass, standard);
+        if (p) [targets addObject:p];
+    }
+    SEL docViewSel = NSSelectorFromString(@"_documentView");
+    if ([self.webView respondsToSelector:docViewSel]) {
+        id docView = ((id (*)(id, SEL))objc_msgSend)(self.webView, docViewSel);
+        SEL webViewSel = NSSelectorFromString(@"webView");
+        id inner = (docView && [docView respondsToSelector:webViewSel]) ? ((id (*)(id, SEL))objc_msgSend)(docView, webViewSel) : nil;
+        SEL prefsSel = NSSelectorFromString(@"preferences");
+        id p = (inner && [inner respondsToSelector:prefsSel]) ? ((id (*)(id, SEL))objc_msgSend)(inner, prefsSel) : nil;
+        if (p && ![targets containsObject:p]) [targets addObject:p];
+    }
+    NSInteger done = 0;
+    for (id p in targets) {
+        if ([p respondsToSelector:setter]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(p, setter, YES);
+            done++;
+        }
+    }
+    BRLog(@"WebGL switch: %ld preference object(s) updated", (long)done);
 }
 
 - (void)themeChanged:(NSNotification *)note
