@@ -37,10 +37,14 @@
         for (var j = 0; j < cssPrefixes.length; j++) {
             try {
                 probeStyle.setProperty(okProp, '');
+                var lenBefore = probeStyle.length;
                 probeStyle.setProperty(okProp, cssPrefixes[j] + v);
                 var got = probeStyle.getPropertyValue(okProp);
+                // this engine accepts and applies -webkit-calc() but serialises it as an empty value ("width: ;"): the
+                // declaration being there is what counts
+                var added = probeStyle.length > lenBefore;
                 probeStyle.setProperty(okProp, '');
-                if (got) return true;
+                if (got || added) return true;
             } catch (e) {}
         }
         return false;

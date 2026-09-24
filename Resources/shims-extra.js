@@ -1681,6 +1681,20 @@
             }
             var len = evalLength(basis, el, pctBaseFor(el, prop, null));
             if (len) return len.n;
+            var cs0 = getComputedStyle(el);
+            if (basis === 'stretch') {
+                // the containing block's content size minus this box's margins (and padding and border unless border-box)
+                var cb = el.offsetParent || el.parentNode;
+                if (!cb || cb.nodeType !== 1) cb = document.documentElement;
+                var cbs = getComputedStyle(cb);
+                var avail = isX ? cb.clientWidth - num(cbs.paddingLeft) - num(cbs.paddingRight) - num(cs0.marginLeft) - num(cs0.marginRight)
+                                : cb.clientHeight - num(cbs.paddingTop) - num(cbs.paddingBottom) - num(cs0.marginTop) - num(cs0.marginBottom);
+                if (cs0.boxSizing !== 'border-box' && cs0.webkitBoxSizing !== 'border-box') {
+                    avail -= isX ? num(cs0.paddingLeft) + num(cs0.paddingRight) + num(cs0.borderLeftWidth) + num(cs0.borderRightWidth)
+                                 : num(cs0.paddingTop) + num(cs0.paddingBottom) + num(cs0.borderTopWidth) + num(cs0.borderBottomWidth);
+                }
+                return Math.max(0, avail);
+            }
             var style = el.style, keys = ['width', 'height', 'display', 'white-space', 'min-width', 'max-width', 'min-height', 'max-height'], saved = [], k;
             for (k = 0; k < keys.length; k++) saved.push([style.getPropertyValue(keys[k]), style.getPropertyPriority(keys[k])]);
             style.setProperty('min-' + dim, '0px', 'important');
@@ -2397,8 +2411,10 @@
                 var el = marked[i].el, cr = marked[i].cr;
                 if (cr.indexOf('br-smooth') >= 0 && (el === document.documentElement || el === document.body)) rootSmooth = true;
                 if (cr.indexOf('br-snap-x') >= 0 || cr.indexOf('br-snap-y') >= 0) {
-                    var pad = /br-snap-pad\s+(-?\d+)/.exec(cr);
+                    var pad = /br-snap-pad\s+(-?\d+)/.exec(cr), padp = /br-snap-padp\s+(-?\d+)/.exec(cr);
                     var c = { el: el, x: cr.indexOf('br-snap-x') >= 0, y: cr.indexOf('br-snap-y') >= 0, mandatory: cr.indexOf('br-snap-m') >= 0, pad: pad ? parseInt(pad[1], 10) : 0 };
+                    // a percentage padding is taken of the scrollport along the snapping axis
+                    if (padp) c.pad = Math.round(parseInt(padp[1], 10) / 10000 * (c.x && !c.y ? el.clientWidth : el.clientHeight));
                     el.__brSnapConfig = c;
                     snapContainers.push(c);
                     attachSnap(c);

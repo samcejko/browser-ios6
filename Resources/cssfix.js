@@ -580,6 +580,147 @@ var CSSFix = (function () {
         return convertColorFunction(name, assembled);
     }
 
+    // ---- colour spaces of color(): matrices to and from CIE XYZ (D65), transfer functions (CSS Color 4 and HDR)
+    function xyzToLinearSRGB(v) {
+        return [3.2409699419045226 * v[0] - 1.537383177570094 * v[1] - 0.4986107602930034 * v[2],
+                -0.9692436362808796 * v[0] + 1.8759675015077202 * v[1] + 0.04155505740717559 * v[2],
+                0.05563007969699366 * v[0] - 0.20397695888897652 * v[1] + 1.0569715142428786 * v[2]];
+    }
+    function d50ToD65(v) {
+        return [0.955473421488075 * v[0] - 0.02309845494876471 * v[1] + 0.06325924320057072 * v[2],
+                -0.0283697093338637 * v[0] + 1.0099953980813041 * v[1] + 0.021041441191917323 * v[2],
+                0.012314014864481998 * v[0] - 0.020507649298898964 * v[1] + 1.330365926242124 * v[2]];
+    }
+    function d65ToD50(v) {
+        return [1.0479298208405488 * v[0] + 0.022946793341019088 * v[1] - 0.05019222954313557 * v[2],
+                0.029627815688159344 * v[0] + 0.990434484573249 * v[1] - 0.01707382502938514 * v[2],
+                -0.009243058152591178 * v[0] + 0.015055144896577895 * v[1] + 0.7518742899580008 * v[2]];
+    }
+    function rec2020ToXYZ(r, g, b) {
+        return [0.6369580483012914 * r + 0.14461690358620832 * g + 0.1688809751641721 * b,
+                0.2627002120112671 * r + 0.6779980715188708 * g + 0.05930171646986196 * b,
+                0.028072693049087428 * g + 1.060985057710791 * b];
+    }
+    var REC2020_A = 1.09929682680944, REC2020_B = 0.018053968510807;
+    function signedPow(x, e) { return x < 0 ? -Math.pow(-x, e) : Math.pow(x, e); }
+    // encoded channels of a colour space -> linear-light sRGB
+    function spaceToLinearSRGB(space, r, g, b) {
+        var lin = function (c) { var a = Math.abs(c), v = a <= 0.04045 ? a / 12.92 : Math.pow((a + 0.055) / 1.055, 2.4); return c < 0 ? -v : v; };
+        switch (space) {
+            case 'srgb': return [lin(r), lin(g), lin(b)];
+            case 'srgb-linear': return [r, g, b];
+            case 'display-p3': {
+                var pr = lin(r), pg = lin(g), pb = lin(b);
+                return xyzToLinearSRGB([0.4865709486482162 * pr + 0.26566769316909306 * pg + 0.1982172852343625 * pb,
+                    0.2289745640697488 * pr + 0.6917385218365064 * pg + 0.079286914093745 * pb, 0.04511338185890264 * pg + 1.043944368900976 * pb]);
+            }
+            case 'a98-rgb': {
+                var ar = signedPow(r, 563 / 256), ag = signedPow(g, 563 / 256), ab = signedPow(b, 563 / 256);
+                return xyzToLinearSRGB([0.5766690429101305 * ar + 0.1855582379065463 * ag + 0.1882286462349947 * ab,
+                    0.29734497525053605 * ar + 0.6273635662554661 * ag + 0.07529145849399788 * ab, 0.02703136138641234 * ar + 0.07068885253582723 * ag + 0.9913375368376388 * ab]);
+            }
+            case 'prophoto-rgb': {
+                var pl = function (c) { var a = Math.abs(c); return a <= 16 / 512 ? c / 16 : signedPow(c, 1.8); };
+                var qr = pl(r), qg = pl(g), qb = pl(b);
+                return xyzToLinearSRGB(d50ToD65([0.7977604896723027 * qr + 0.13518583717574031 * qg + 0.0313493495815248 * qb,
+                    0.2880711282292934 * qr + 0.7118432178101014 * qg + 0.00008565396060525902 * qb, 0.8251046025104601 * qb]));
+            }
+            case 'rec2020': {
+                var rl = function (c) { var a = Math.abs(c), v = a < REC2020_B * 4.5 ? a / 4.5 : Math.pow((a + REC2020_A - 1) / REC2020_A, 1 / 0.45); return c < 0 ? -v : v; };
+                return xyzToLinearSRGB(rec2020ToXYZ(rl(r), rl(g), rl(b)));
+            }
+            case 'xyz': case 'xyz-d65': return xyzToLinearSRGB([r, g, b]);
+            case 'xyz-d50': return xyzToLinearSRGB(d50ToD65([r, g, b]));
+        }
+        return null;
+    }
+    // XYZ (D65) -> encoded channels of a colour space (for relative colour syntax)
+    function spaceFromXYZ(space, v) {
+        var enc = function (c) { var a = Math.abs(c), e = a <= 0.0031308 ? a * 12.92 : 1.055 * Math.pow(a, 1 / 2.4) - 0.055; return c < 0 ? -e : e; };
+        var m;
+        switch (space) {
+            case 'srgb-linear': return xyzToLinearSRGB(v);
+            case 'display-p3':
+                m = [2.493496911941425 * v[0] - 0.9313836179191239 * v[1] - 0.40271078445071684 * v[2], -0.8294889695615747 * v[0] + 1.7626640603183463 * v[1] + 0.023624685841943577 * v[2],
+                     0.03584583024378447 * v[0] - 0.07617238926804182 * v[1] + 0.9568845240076872 * v[2]];
+                return [enc(m[0]), enc(m[1]), enc(m[2])];
+            case 'a98-rgb':
+                m = [2.0415879038107465 * v[0] - 0.5650069742788596 * v[1] - 0.34473135077832956 * v[2], -0.9692436362808795 * v[0] + 1.8759675015077202 * v[1] + 0.04155505740717557 * v[2],
+                     0.013444280632031142 * v[0] - 0.11836239223101838 * v[1] + 1.0151749943912054 * v[2]];
+                return [signedPow(m[0], 256 / 563), signedPow(m[1], 256 / 563), signedPow(m[2], 256 / 563)];
+            case 'prophoto-rgb': {
+                var d = d65ToD50(v), pe = function (c) { var a = Math.abs(c), e = a < 1 / 512 ? a * 16 : Math.pow(a, 1 / 1.8); return c < 0 ? -e : e; };
+                m = [1.3457989731028281 * d[0] - 0.25558010007997534 * d[1] - 0.05110628506753401 * d[2], -0.5446224939028347 * d[0] + 1.5082327413132781 * d[1] + 0.02053603239147973 * d[2], 1.2119675456389454 * d[2]];
+                return [pe(m[0]), pe(m[1]), pe(m[2])];
+            }
+            case 'rec2020': {
+                var re = function (c) { var a = Math.abs(c), e = a < REC2020_B ? 4.5 * a : REC2020_A * Math.pow(a, 0.45) - (REC2020_A - 1); return c < 0 ? -e : e; };
+                m = [1.7166511879712674 * v[0] - 0.35567078377639233 * v[1] - 0.25336628137365974 * v[2], -0.6666843518324892 * v[0] + 1.6164812366349395 * v[1] + 0.01576854581391113 * v[2],
+                     0.017639857445310783 * v[0] - 0.042770613257808524 * v[1] + 0.9421031212354738 * v[2]];
+                return [re(m[0]), re(m[1]), re(m[2])];
+            }
+        }
+        return v;
+    }
+    // ---- HDR (CSS Color HDR): PQ, HLG, linear Rec. 2100, ICtCp, Jzazbz, JzCzHz; media white is 203 cd/m2 and what
+    // lies above it clips on this SDR display
+    var HDR_SPACES = { 'rec2100-pq': 1, 'rec2100-hlg': 1, 'rec2100-linear': 1, jzazbz: 1, jzczhz: 1, ictcp: 1 };
+    var SDR_WHITE = 203;
+    var PQ_M1 = 2610 / 16384, PQ_M2 = 2523 / 4096 * 128, PQ_C1 = 3424 / 4096, PQ_C2 = 2413 / 4096 * 32, PQ_C3 = 2392 / 4096 * 32;
+    function pqToLinear(e) {   // PQ signal -> luminance in units of 10000 cd/m2
+        var p = Math.pow(Math.max(e, 0), 1 / PQ_M2);
+        return Math.pow(Math.max(p - PQ_C1, 0) / (PQ_C2 - PQ_C3 * p), 1 / PQ_M1);
+    }
+    function hlgToLinear(e) {   // HLG signal -> display light relative to 1000 cd/m2 (system gamma 1.2)
+        var a = 0.17883277, b = 0.28466892, c = 0.55991073;
+        var s = e <= 0.5 ? e * e / 3 : (Math.exp((e - c) / a) + b) / 12;
+        return Math.pow(Math.max(s, 0), 1.2);
+    }
+    function hdrChannel(tok, pctRef) {
+        if (tok === undefined || tok === 'none') return 0;
+        if (tok.charAt(tok.length - 1) === '%') return parseFloat(tok) / 100 * pctRef;
+        var n = parseFloat(tok);
+        return isNaN(n) ? 0 : n;
+    }
+    function hdrColor(space, t1, t2, t3, alpha) {
+        var lin, xyz;
+        if (space === 'rec2100-pq' || space === 'rec2100-hlg' || space === 'rec2100-linear') {
+            var ch = [hdrChannel(t1, 1), hdrChannel(t2, 1), hdrChannel(t3, 1)];
+            for (var i = 0; i < 3; i++) {
+                if (space === 'rec2100-pq') ch[i] = pqToLinear(ch[i]) * 10000 / SDR_WHITE;
+                else if (space === 'rec2100-hlg') ch[i] = hlgToLinear(ch[i]) * 1000 / SDR_WHITE;
+            }
+            lin = xyzToLinearSRGB(rec2020ToXYZ(ch[0], ch[1], ch[2]));
+        } else if (space === 'ictcp') {
+            var I = hdrChannel(t1, 1), Ct = hdrChannel(t2, 0.5), Cp = hdrChannel(t3, 0.5);
+            var l = pqToLinear(I + 0.008609037037932761 * Ct + 0.11102962500302593 * Cp) * 10000 / SDR_WHITE;
+            var m = pqToLinear(I - 0.00860903703793275 * Ct - 0.11102962500302599 * Cp) * 10000 / SDR_WHITE;
+            var s = pqToLinear(I + 0.5600313357106791 * Ct - 0.32062717498731885 * Cp) * 10000 / SDR_WHITE;
+            lin = xyzToLinearSRGB(rec2020ToXYZ(3.4366066943330784 * l - 2.5064521186562698 * m + 0.0698454243231915 * s,
+                -0.7913295555989289 * l + 1.9836004517922909 * m - 0.1922708961933620 * s, -0.0259498996905927 * l - 0.0989137147117265 * m + 1.1248636144023192 * s));
+        } else {
+            var Jz = hdrChannel(t1, 1), az, bz;
+            if (space === 'jzczhz') { var Cz = hdrChannel(t2, 0.5), hz = hueDeg(t3) * Math.PI / 180; az = Cz * Math.cos(hz); bz = Cz * Math.sin(hz); }
+            else { az = hdrChannel(t2, 0.5); bz = hdrChannel(t3, 0.5); }
+            var d = -0.56, d0 = 1.6295499532821566e-11;
+            var Iz = (Jz + d0) / (1 + d - d * (Jz + d0));
+            var jpq = function (v) {   // Jzazbz's PQ curve, inverted: -> cd/m2
+                var p = Math.pow(Math.max(v, 0), 1 / (1.7 * 2523 / 32));
+                return 10000 * Math.pow(Math.max((3424 / 4096 - p) / (2392 / 128 * p - 2413 / 128), 0), 16384 / 2610);
+            };
+            var L = jpq(Iz + 0.1386050432715393 * az + 0.05804731615611886 * bz);
+            var M = jpq(Iz - 0.1386050432715393 * az - 0.05804731615611886 * bz);
+            var S = jpq(Iz - 0.09601924202631895 * az - 0.8118918960560388 * bz);
+            var Xp = 1.9242264357876067 * L - 1.0047923125953657 * M + 0.037651404030618 * S;
+            var Yp = 0.35031676209499907 * L + 0.7264811939316552 * M - 0.06538442294808501 * S;
+            var Zp = -0.09098281098284752 * L - 0.3127282905230739 * M + 1.5227665613052603 * S;
+            var X = (Xp + 0.15 * Zp) / 1.15, Y = (Yp - 0.34 * X) / 0.66;
+            xyz = [X / SDR_WHITE, Y / SDR_WHITE, Zp / SDR_WHITE];
+            lin = xyzToLinearSRGB(xyz);
+        }
+        return rgbString(to255(gamma(lin[0])), to255(gamma(lin[1])), to255(gamma(lin[2])), alpha);
+    }
+
     function relativeLuminance(c) {
         return 0.2126 * linearChannel(c[0]) + 0.7152 * linearChannel(c[1]) + 0.0722 * linearChannel(c[2]);
     }
@@ -635,7 +776,7 @@ var CSSFix = (function () {
 
     function convertColorFunction(name, inner) {
         var cc, a;
-        if (/^from\s/i.test(inner)) return relativeColor(name, inner);
+        if (/^from\s/i.test(inner) && name !== 'ictcp' && name !== 'jzazbz' && name !== 'jzczhz') return relativeColor(name, inner);
         if (name === 'rgb' || name === 'rgba') {
             if (inner.indexOf(',') >= 0 && inner.indexOf('/') < 0) return null;   // legacy syntax already
             cc = colorComponents(inner);
@@ -692,7 +833,34 @@ var CSSFix = (function () {
             if (toks.length < 4) return null;
             var alphaTok = null, sl = toks.indexOf('/');
             if (sl >= 0) { alphaTok = toks[sl + 1]; toks = toks.slice(0, sl); }
-            return rgbString(to255(numOrPct(toks[1], 1)), to255(numOrPct(toks[2], 1)), to255(numOrPct(toks[3], 1)), alphaOf(alphaTok));
+            var cspace = toks[0].toLowerCase();
+            if (HDR_SPACES[cspace]) return hdrColor(cspace, toks[1], toks[2], toks[3], alphaOf(alphaTok));
+            var lin = spaceToLinearSRGB(cspace, numOrPct(toks[1], 1), numOrPct(toks[2], 1), numOrPct(toks[3], 1));
+            if (!lin) return rgbString(to255(numOrPct(toks[1], 1)), to255(numOrPct(toks[2], 1)), to255(numOrPct(toks[3], 1)), alphaOf(alphaTok));
+            return rgbString(to255(gamma(lin[0])), to255(gamma(lin[1])), to255(gamma(lin[2])), alphaOf(alphaTok));
+        }
+        if (name === 'ictcp' || name === 'jzazbz' || name === 'jzczhz') {
+            var hin = inner;
+            if (/^from\s/i.test(hin)) {
+                // relative forms whose channels are all literal do not depend on the base colour
+                var fm = /^from\s+([a-z]+\([^)]*\)|#[0-9a-f]+|[a-z-]+)\s+([\s\S]*)$/i.exec(hin);
+                if (!fm || /(^|[\s(])(i|ct|cp|jz|az|bz|cz|hz|alpha)(?=[\s)*+\/-]|$)/i.test(fm[2])) return null;
+                hin = fm[2];
+            }
+            cc = colorComponents(hin);
+            if (cc.c.length < 3) return null;
+            return hdrColor(name, cc.c[0], cc.c[1], cc.c[2], alphaOf(cc.a));
+        }
+        if (name === 'color-hdr') {
+            // one colour per display headroom: this display is SDR, so the entry with the smallest headroom
+            var entries = splitTop(inner, ','), pick = null, pickH = Infinity;
+            for (var ei = 0; ei < entries.length; ei++) {
+                var en = trim(entries[ei]);
+                if (!en) continue;
+                var eh = /^([\s\S]*?)\s+(-?[\d.]+)$/.exec(en), ecol = eh ? eh[1] : en, head = eh ? parseFloat(eh[2]) : 0;
+                if (head < pickH) { pickH = head; pick = trim(ecol); }
+            }
+            return pick;
         }
         if (name === 'color-mix') {
             var args = splitTop(inner, ',');
@@ -1055,7 +1223,7 @@ var CSSFix = (function () {
 
     // ---- calc-style expressions evaluated statically: numbers with absolute, font or viewport units, + - * /, parentheses.
     // Returns {n, u} with u '' (number), 'px' or 'deg', or null when something (%, ch, unknown idents) cannot be resolved.
-    var MATH_CONSTANTS = { e: Math.E, pi: Math.PI };
+    var MATH_CONSTANTS = { e: Math.E, pi: Math.PI, infinity: Infinity, nan: NaN };
     function unitValue(num, unit) {
         var n = parseFloat(num);
         if (isNaN(n)) return null;
@@ -1133,7 +1301,10 @@ var CSSFix = (function () {
         }
         var result = sum();
         skip();
-        if (failed || !result || pos < s.length || isNaN(result.n) || !isFinite(result.n)) return null;
+        if (failed || !result || pos < s.length) return null;
+        // a NaN result is censored to 0, infinities to a very large value (CSS Values 4)
+        if (isNaN(result.n)) result.n = 0;
+        else if (!isFinite(result.n)) result.n = result.n > 0 ? 1e7 : -1e7;
         return result;
     }
     function fmtValue(v) {
@@ -1258,9 +1429,31 @@ var CSSFix = (function () {
             case 'paint': case 'element':
                 return 'none';
             case 'image-set': {
-                // type() hints go, bare strings become url(), gradients stay as they are
-                var isv = inner.replace(/\s*type\([^)]*\)/g, '').replace(/(^|,)\s*("[^"]*"|'[^']*')/g, function (m, pre, str) { return pre + ' url(' + str + ')'; });
-                return '-webkit-image-set(' + trim(isv) + ')';
+                // type() hints go, bare strings become url(), resolutions become x; the engine's -webkit-image-set takes
+                // url() images only, so a set with gradients resolves to the candidate meant for this display
+                var cands = splitTop(inner.replace(/\s*type\([^)]*\)/g, ''), ','), parsedSet = [], allUrls = true;
+                for (var ci2 = 0; ci2 < cands.length; ci2++) {
+                    var ctoks = splitWS(trim(cands[ci2]));
+                    if (!ctoks.length) continue;
+                    var img = ctoks[0], res = 1, rm = ctoks.length > 1 ? /^([\d.]+)(x|dppx|dpi|dpcm)$/i.exec(ctoks[ctoks.length - 1]) : null;
+                    if (rm) { var rn = parseFloat(rm[1]), ru = rm[2].toLowerCase(); res = ru === 'dpi' ? rn / 96 : ru === 'dpcm' ? rn * 2.54 / 96 : rn; if (ctoks.length > 2) img = ctoks.slice(0, -1).join(' '); }
+                    else if (ctoks.length > 1) img = ctoks.join(' ');
+                    if (/^["']/.test(img)) img = 'url(' + img + ')';
+                    if (!/^url\(/i.test(img)) allUrls = false;
+                    parsedSet.push({ img: img, res: res });
+                }
+                if (!parsedSet.length) return 'none';
+                if (allUrls) {
+                    var setParts = [];
+                    for (var sp2 = 0; sp2 < parsedSet.length; sp2++) setParts.push(parsedSet[sp2].img + ' ' + (Math.round(parsedSet[sp2].res * 1000) / 1000) + 'x');
+                    return '-webkit-image-set(' + setParts.join(', ') + ')';
+                }
+                var bestC = parsedSet[0];
+                for (var bc = 1; bc < parsedSet.length; bc++) {
+                    var cand = parsedSet[bc];
+                    if ((cand.res >= g_dpr && (bestC.res < g_dpr || cand.res < bestC.res)) || (bestC.res < g_dpr && cand.res > bestC.res)) bestC = cand;
+                }
+                return bestC.img;
             }
             case 'fit-content': return inner;
             case 'progress': {
@@ -1320,6 +1513,7 @@ var CSSFix = (function () {
                 var csArgs = splitTop(inner, ',');
                 if (csArgs.length !== 2) return null;
                 var csBasis = trim(csArgs[0]), csExpr = trim(csArgs[1]).toLowerCase();
+                if (/^stretch$/i.test(csBasis)) return null;   // the engine has no stretch keyword: measured by the page shim
                 if (csExpr === 'size') return csBasis;
                 if (csExpr.indexOf('size') < 0) { var csPlain = evalExpr(csExpr); return csPlain ? fmtValue(csPlain) : '-webkit-calc(' + csExpr + ')'; }
                 var csBase = evalExpr(csBasis);
@@ -1328,7 +1522,7 @@ var CSSFix = (function () {
                 return csVal ? fmtValue(csVal) : null;
             }
             case 'rgb': case 'rgba': case 'hsl': case 'hsla': case 'hwb': case 'oklch': case 'oklab': case 'lab': case 'lch': case 'color': case 'color-mix': case 'light-dark':
-            case 'contrast-color': case 'device-cmyk':
+            case 'contrast-color': case 'device-cmyk': case 'ictcp': case 'jzazbz': case 'jzczhz': case 'color-hdr':
                 return convertColorFunction(name, inner);
             case 'env': { var e = splitTop(inner, ','); return e.length > 1 ? trim(e[1]) : '0px'; }
         }
@@ -1336,7 +1530,7 @@ var CSSFix = (function () {
     }
 
     // values that contain none of the functions we rewrite skip the walker entirely (url(), translate(), ... are common)
-    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade|progress|mix|calc-mix|random|calc-size|ident|random-item|media-progress)\(/i;
+    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade|progress|mix|calc-mix|random|calc-size|ident|random-item|media-progress|ictcp|jzazbz|jzczhz|color-hdr)\(/i;
 
     var g_dpr = 1;   // device pixel ratio of the page being rewritten (set by run())
 
@@ -1400,6 +1594,8 @@ var CSSFix = (function () {
             v = v.replace(/(\d)(dvh|svh|lvh|cqh|cqb|vb|svb|lvb|dvb)\b/g, '$1vh').replace(/(\d)(dvw|svw|lvw|cqw|cqi|vi|svi|lvi|dvi)\b/g, '$1vw')
                  .replace(/(\d)(cqmin|svmin|lvmin|dvmin)\b/g, '$1vmin').replace(/(\d)(cqmax|svmax|lvmax|dvmax)\b/g, '$1vmax');
         }
+        // vmax is missing in this engine: the larger viewport side does not change with the orientation
+        if (/\dvmax\b/.test(v)) v = v.replace(/(-?\d*\.?\d+)vmax\b/g, function (m, n) { return (Math.round(parseFloat(n) * Math.max(g_viewportWidth, g_viewportHeight)) / 100) + 'px'; });
         // font-relative units the engine lacks, as their typical em/rem equivalents
         if (/\d(lh|rlh|cap|rcap|ic|ric|rex|rch)\b/.test(v)) v = v.replace(/(-?\d*\.?\d+)(lh|rlh|cap|rcap|ic|ric|rex|rch)\b/g, function (m, num, unit) {
             var f = FONT_UNITS[unit];
@@ -1436,6 +1632,9 @@ var CSSFix = (function () {
 
     function isGlobalKeyword(lv) { return lv === 'inherit' || lv === 'initial'; }
 
+    var NON_NEGATIVE = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, padding: 1, 'padding-top': 1,
+        'padding-right': 1, 'padding-bottom': 1, 'padding-left': 1, 'inline-size': 1, 'block-size': 1, 'border-width': 1, 'font-size': 1, 'line-height': 1 };
+
     // animation-range "entry 0% cover 100%" -> [startCode, endCode]; a code is <range index> * 1000 + <percent>
     var RANGE_NAMES = ['cover', 'contain', 'entry', 'exit', 'entry-crossing', 'exit-crossing'];
     function animationRangeCodes(p, lv) {
@@ -1458,6 +1657,15 @@ var CSSFix = (function () {
     // px values onto an unscaled SVG the size of the box; a shape mixing the two cannot be expressed.
     var POS_KEYWORDS = { left: 0, top: 0, center: 50, right: 100, bottom: 100 };
     function clipPathToMask(v) {
+        // a box alone clips to that box (with its rounded corners): a solid mask painted in it; SVG boxes of an
+        // HTML element are its content box (fill-box) or border box (stroke-box, view-box); the margin box clips nothing
+        var boxOnly = /^(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/i.exec(trim(v));
+        if (boxOnly) {
+            var bx = boxOnly[1].toLowerCase();
+            if (bx === 'margin-box') return [['-webkit-mask-image', 'none']];
+            bx = bx === 'fill-box' ? 'content-box' : bx === 'stroke-box' || bx === 'view-box' ? 'border-box' : bx;
+            return [['-webkit-mask-image', '-webkit-linear-gradient(#000, #000)'], ['-webkit-mask-clip', bx], ['-webkit-mask-origin', bx]];
+        }
         var m = /^(inset|circle|ellipse|polygon|path|rect|xywh)\(/i.exec(trim(v));
         if (!m) return null;
         var open = v.indexOf('('), close = matchParen(v, open);
@@ -1625,6 +1833,8 @@ var CSSFix = (function () {
         'border-inline-start-width': 'border-left-width', 'border-inline-end-width': 'border-right-width', 'border-inline-start-color': 'border-left-color',
         'border-inline-end-color': 'border-right-color', 'border-inline-start-style': 'border-left-style', 'border-inline-end-style': 'border-right-style',
         'border-block-start-width': 'border-top-width', 'border-block-end-width': 'border-bottom-width',
+        'border-block-start-color': 'border-top-color', 'border-block-end-color': 'border-bottom-color',
+        'border-block-start-style': 'border-top-style', 'border-block-end-style': 'border-bottom-style',
         'inset-inline-start': 'left', 'inset-inline-end': 'right', 'inset-block-start': 'top', 'inset-block-end': 'bottom',
         'inline-size': 'width', 'block-size': 'height', 'min-inline-size': 'min-width', 'max-inline-size': 'max-width', 'min-block-size': 'min-height', 'max-block-size': 'max-height',
         'border-start-start-radius': 'border-top-left-radius', 'border-start-end-radius': 'border-top-right-radius',
@@ -1635,6 +1845,7 @@ var CSSFix = (function () {
         'border-inline': ['border-left', 'border-right'], 'border-block': ['border-top', 'border-bottom'],
         'border-inline-width': ['border-left-width', 'border-right-width'], 'border-block-width': ['border-top-width', 'border-bottom-width'],
         'border-inline-color': ['border-left-color', 'border-right-color'], 'border-inline-style': ['border-left-style', 'border-right-style'],
+        'border-block-color': ['border-top-color', 'border-bottom-color'], 'border-block-style': ['border-top-style', 'border-bottom-style'],
         'inset-inline': ['left', 'right'], 'inset-block': ['top', 'bottom'], 'scroll-margin-inline': ['scroll-margin-left', 'scroll-margin-right'] };
 
     function parseFlexShorthand(v) {   // returns {grow, basis}
@@ -1722,7 +1933,63 @@ var CSSFix = (function () {
             }
             v = fixValue(p, v);
             var lv = v.toLowerCase();
+            // a math function whose result is negative is clamped to the property's range (a literal stays invalid)
+            if (NON_NEGATIVE[p] && d.v.indexOf('(') >= 0 && /^-\d*\.?\d+[a-z%]*$/.test(lv)) { v = '0' + lv.replace(/^-\d*\.?\d+/, ''); lv = v; }
+            // "logical" order in the box shorthands: block-start inline-start block-end inline-end
+            if (/^logical\s/.test(lv) && /^(margin|padding|border-color|border-style|border-width|inset)$/.test(p)) {
+                var lg = splitWS(v).slice(1);
+                if (lg.length) { var bs = lg[0], is0 = lg.length > 1 ? lg[1] : bs, be = lg.length > 2 ? lg[2] : bs, ie = lg.length > 3 ? lg[3] : is0; v = bs + ' ' + ie + ' ' + be + ' ' + is0; lv = v.toLowerCase(); }
+            }
             switch (p) {
+                case 'float': case 'clear':
+                    push(out, p, lv === 'inline-start' ? 'left' : lv === 'inline-end' ? 'right' : v, imp);
+                    continue;
+                case 'caption-side':
+                    push(out, p, lv === 'inline-start' ? 'left' : lv === 'inline-end' ? 'right' : lv === 'block-start' ? 'top' : lv === 'block-end' ? 'bottom' : v, imp);
+                    continue;
+                case 'mask-composite': case '-webkit-mask-composite': {
+                    var comp = { add: 'source-over', subtract: 'source-out', intersect: 'source-in', exclude: 'xor' }, cparts = splitTop(lv, ','), cout = [];
+                    for (var cpi = 0; cpi < cparts.length; cpi++) cout.push(comp[trim(cparts[cpi])] || trim(cparts[cpi]));
+                    push(out, '-webkit-mask-composite', cout.join(', '), imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'mask-clip': case 'mask-origin': {
+                    // SVG boxes of an HTML element: fill-box is its content box, stroke-box and view-box its border box
+                    var boxes = { 'fill-box': 'content-box', 'stroke-box': 'border-box', 'view-box': 'border-box', 'no-clip': 'border-box' }, bparts = splitTop(lv, ','), bout = [];
+                    for (var bpi = 0; bpi < bparts.length; bpi++) bout.push(boxes[trim(bparts[bpi])] || trim(bparts[bpi]));
+                    push(out, '-webkit-' + p, bout.join(', '), imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'mask-border': case 'mask-border-source': case 'mask-border-slice': case 'mask-border-width': case 'mask-border-outset': case 'mask-border-repeat':
+                    push(out, '-webkit-mask-box-image' + p.slice(11), v, imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'background-position-inline': case 'background-position-block': {
+                    var bpx = p === 'background-position-inline', bpl = splitTop(v, ','), bpo = [];
+                    for (var bpk = 0; bpk < bpl.length; bpk++) bpo.push(trim(bpl[bpk]).replace(/\bstart\b/g, bpx ? 'left' : 'top').replace(/\bend\b/g, bpx ? 'right' : 'bottom'));
+                    push(out, bpx ? 'background-position-x' : 'background-position-y', bpo.join(', '), imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'max-lines':
+                    if (/^\d+$/.test(lv)) { push(out, '-webkit-line-clamp', v, imp); if (!hasDisplay) push(out, 'display', '-webkit-box', imp); push(out, '-webkit-box-orient', 'vertical', imp); }
+                    else if (lv === 'none') push(out, '-webkit-line-clamp', 'none', imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'initial-letter': {
+                    // a drop cap: the first letter floats and grows to span about that many lines
+                    var il = /^(-?[\d.]+)(?:\s+(\d+|drop|raise))?$/.exec(lv);
+                    if (il && parseFloat(il[1]) > 0) {
+                        push(out, 'float', 'left', imp);
+                        push(out, 'font-size', (Math.round(parseFloat(il[1]) * 1.15 * 100) / 100) + 'em', imp);
+                        push(out, 'line-height', '1', imp);
+                        push(out, 'margin-right', '0.08em', imp);
+                    }
+                    push(out, p, v, imp);
+                    continue;
+                }
                 case 'display':
                     if (lv.indexOf(' ') > 0 || lv === 'flow') { lv = normalizeDisplay(lv); v = lv; }
                     if (lv === 'flex') push(out, 'display', (wrap || columnFlex) ? 'block' : '-webkit-box', imp);
@@ -2045,7 +2312,7 @@ var CSSFix = (function () {
                         if (snapAxis !== 'y') markers.push('br-snap-x 1');
                         if (snapAxis !== 'x') markers.push('br-snap-y 1');
                         if (/\bmandatory\b/.test(lv)) markers.push('br-snap-m 1');
-                    }
+                    } else if (lv === 'none') markerKeyword = 'none';   // no markers: this container does not snap
                     push(out, p, v, imp);
                     continue;
                 }
@@ -2054,6 +2321,7 @@ var CSSFix = (function () {
                     if (p === 'scroll-snap-align') {
                         var snapAlign = /\bcenter\b/.test(lv) ? 2 : /\bend\b/.test(lv) ? 3 : /\bstart\b/.test(lv) ? 1 : 0;
                         if (snapAlign) markers.push('br-snap-align ' + snapAlign);
+                        else if (lv === 'none') markerKeyword = 'none';   // not a snap position
                     } else if (lv === 'always') markers.push('br-snap-stop 1');
                     push(out, p, v, imp);
                     continue;
@@ -2068,8 +2336,11 @@ var CSSFix = (function () {
                     if ((p === 'scroll-padding' || p === 'scroll-margin') && spToks.length === 2) spTok = spToks[1];
                     if ((p === 'scroll-padding' || p === 'scroll-margin') && spToks.length === 3) spTok = spToks[1];
                     var spv = /^(-?[\d.]+)(px|em|rem)$/.exec(spTok);
+                    var sppct = /^(-?[\d.]+)%$/.exec(spTok);
+                    if (!spv && !sppct) { var spc = evalExpr(spTok); if (spc && spc.u === 'px') spv = [null, String(spc.n), 'px']; }   // calc(3 * 25px)
                     if (spv && !/-(right|bottom|inline-end|block-end)$/.test(p)) markers.push((p.indexOf('scroll-padding') === 0 ? 'br-snap-pad ' : 'br-snap-margin ') + Math.round(parseFloat(spv[1]) * (spv[2] === 'px' ? 1 : 16)));
-                    else if (spv || /^(auto|0)$/.test(spTok)) markers.push('br-snap-end 1');   // end-side values only mark the element as snap-aware
+                    else if (sppct && p.indexOf('scroll-padding') === 0 && !/-(right|bottom|inline-end|block-end)$/.test(p)) markers.push('br-snap-padp ' + Math.round(parseFloat(sppct[1]) * 100));   // percent of the scrollport
+                    else if (spv || sppct || /^(auto|0|calc\()/.test(spTok)) markers.push('br-snap-end 1');   // end-side values only mark the element as snap-aware
                     push(out, p, v, imp);
                     continue;
                 }
@@ -2140,9 +2411,12 @@ var CSSFix = (function () {
                     continue;
                 }
                 case 'line-clamp':
-                    // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box)
-                    if (/^\d+$/.test(lv)) {
-                        push(out, '-webkit-line-clamp', v, imp);
+                    // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box); the old
+                    // engine always ends with an ellipsis, whatever the second value asks for
+                    if (lv === 'none') push(out, '-webkit-line-clamp', 'none', imp);
+                    var lcm = /^(\d+)(\s+(clip|ellipsis|"[^"]*"|'[^']*'))?$/.exec(lv);
+                    if (lcm) {
+                        push(out, '-webkit-line-clamp', lcm[1], imp);
                         if (!hasDisplay) push(out, 'display', '-webkit-box', imp);
                         push(out, '-webkit-box-orient', 'vertical', imp);
                         push(out, 'overflow', 'hidden', imp);
