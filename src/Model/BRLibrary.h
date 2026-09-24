@@ -14,6 +14,7 @@
 - (void)removeBookmark:(NSURL *)url;
 - (void)removeBookmarkAtIndex:(NSUInteger)index;
 - (void)moveBookmarkFromIndex:(NSUInteger)from toIndex:(NSUInteger)to;
+- (void)updateBookmarkAtIndex:(NSUInteger)index title:(NSString *)title url:(NSString *)url;   // nil keeps the old value
 
 - (void)recordVisit:(NSURL *)url title:(NSString *)title;
 - (void)removeHistoryAtIndex:(NSUInteger)index;

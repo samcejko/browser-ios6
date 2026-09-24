@@ -54,11 +54,20 @@ the app around it:
   long press on a tab (close others, duplicate, reopen a closed tab), pull to refresh, swipe in
   from the screen edge for back/forward, long press on the arrows for the history behind them,
   "Search" and "Share" in the text selection menu, `javascript:` bookmarklets in the address bar,
-  international domain names (punycode), HTTP Basic authentication dialogs, printing (AirPrint) and
-  "Save as PDF" from the share sheet, "Find on page" in the share sheet.
+  international domain names (punycode), HTTP Basic authentication dialogs, printing (AirPrint, also
+  from a page's own `window.print()`) and "Save as PDF" from the share sheet, "Find on page",
+  "View source" and "Translate page" (Google Translate's website proxy, which serves pages already
+  translated) in the share sheet, a reader button in the address field when a page looks like an
+  article, popup blocking (`window.open` only after a tap), `navigator.clipboard.writeText` and
+  `execCommand('copy')` into the system pasteboard, "Open in background" for links, recently closed
+  tabs on a long press of the plus button, a chosen home page, bookmark editing (rename, address,
+  reorder).
 - **Privacy settings**: third-party cookies blocked (like Safari), Do Not Track / Global Privacy
   Control headers, cookie banners of the common consent services hidden by injected CSS, an image
-  switch for slow connections, and an inverted "dark pages" mode.
+  switch for slow connections, per-site "allow ads on this site", and a forced dark stylesheet for
+  pages (the engine skips CSS filters on areas as large as a page, so inverting was not an option).
+- Google search refuses the Safari 6 identity ("browser no longer supported"), so google.* hosts are
+  fetched as a current iPad unless the user chooses otherwise.
 - Planned: tab strip on iPhone.
 
 ## Building (GitHub Actions)
@@ -99,5 +108,5 @@ Debugging over SSH: `uiopen browser:https://example.com` opens a page, `uiopen b
 writes the current screen to the app's `tmp/screen.png`, and `/var/log/syslog` carries the app's log
 lines (`[Browser]`: main documents, DNS fallbacks, connect timeouts, load times, memory). More
 commands: `browser:eval?js=`, `browser:evalfile?path=`, `browser:dump`, `browser:set?key=&value=&type=`,
-`browser:reader`, `browser:pdf`, `browser:history`, `browser:goback?n=`, `browser:type?text=`,
-`browser:auth?user=&password=`.
+`browser:reader`, `browser:pdf`, `browser:source`, `browser:translate`, `browser:history`,
+`browser:goback?n=`, `browser:type?text=`, `browser:auth?user=&password=`, `browser:pasteboard`.

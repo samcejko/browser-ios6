@@ -1155,6 +1155,9 @@ var CSSFix = (function () {
             count = splitWS(t).length;
         }
         if (count < 2) return 0;
+        // 6+ explicit tracks (12-column systems) are used with spans: stacking the children beats twelve narrow columns
+        var autoRepeat = rep && !/^\d+$/.test(rep[1]);
+        if (!autoRepeat && count >= 6) return 0;
         return Math.min(count, 8);
     }
 

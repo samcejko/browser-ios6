@@ -126,6 +126,16 @@ static const NSUInteger BRMaxHistoryEntries = 500;
     [self scheduleSave];
 }
 
+- (void)updateBookmarkAtIndex:(NSUInteger)index title:(NSString *)title url:(NSString *)url
+{
+    if (index >= _bookmarks.count) return;
+    NSDictionary *old = _bookmarks[index];
+    NSString *newTitle = title.length ? title : old[@"title"];
+    NSString *newURL = url.length ? url : old[@"url"];
+    _bookmarks[index] = @{ @"url": newURL ?: @"", @"title": newTitle ?: @"" };
+    [self scheduleSave];
+}
+
 #pragma mark - History
 
 - (NSArray *)history

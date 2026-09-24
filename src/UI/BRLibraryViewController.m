@@ -4,11 +4,12 @@
 #import "BRTheme.h"
 #import "BRCommon.h"
 
-@interface BRLibraryViewController ()
+@interface BRLibraryViewController () <UIActionSheetDelegate, UIAlertViewDelegate>
 @property (nonatomic, strong) UISegmentedControl *segment;
 @property (nonatomic, strong) UIBarButtonItem *addItem;
 @property (nonatomic, strong) UIBarButtonItem *clearItem;
 @property (nonatomic, strong) NSArray *items;
+@property (nonatomic) NSInteger editedRow;              // bookmark behind the rename / edit address dialog
 @end
 
 @implementation BRLibraryViewController
@@ -49,6 +50,17 @@
     self.addItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(addCurrent)];
     self.clearItem = [[UIBarButtonItem alloc] initWithTitle:L(@"Clear") style:UIBarButtonItemStylePlain target:self action:@selector(clearHistory)];
     [[BRTheme shared] applyToTableView:self.tableView];
+    self.tableView.allowsSelectionDuringEditing = YES;   // tapping a bookmark while editing renames it
+    UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowPressed:)];
+    press.minimumPressDuration = 0.5;
+    [self.tableView addGestureRecognizer:press];
+    self.editedRow = -1;
+    [self reload];
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated
+{
+    [super setEditing:editing animated:animated];
     [self reload];
 }
 
@@ -65,10 +77,66 @@
         self.navigationItem.rightBarButtonItem = nil;
     } else {
         self.items = [self showingHistory] ? lib.history : lib.bookmarks;
-        self.navigationItem.rightBarButtonItem = [self showingHistory] ? self.clearItem : self.addItem;
+        if ([self showingHistory]) self.navigationItem.rightBarButtonItems = @[self.clearItem];
+        else self.navigationItem.rightBarButtonItems = @[self.addItem, self.editButtonItem];   // edit: reorder, delete, rename
     }
     self.addItem.enabled = self.currentURL != nil && ![lib isBookmarked:self.currentURL];
     [self.tableView reloadData];
+}
+
+#pragma mark - Editing bookmarks
+
+- (void)rowPressed:(UILongPressGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateBegan || [self showingHistory] || [self showingDownloads]) return;
+    NSIndexPath *path = [self.tableView indexPathForRowAtPoint:[recognizer locationInView:self.tableView]];
+    if (!path) return;
+    [self showEditMenuForRow:path.row];
+}
+
+- (void)showEditMenuForRow:(NSInteger)row
+{
+    if (row < 0 || (NSUInteger)row >= self.items.count) return;
+    self.editedRow = row;
+    NSDictionary *e = self.items[(NSUInteger)row];
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:e[@"title"] ?: e[@"url"] delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    [sheet addButtonWithTitle:L(@"Rename")];
+    [sheet addButtonWithTitle:L(@"Edit address")];
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    CGRect rect = [self.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
+    if (BRIsPad()) [sheet showFromRect:rect inView:self.tableView animated:YES];
+    else [sheet showInView:self.view];
+}
+
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
+{
+    if (buttonIndex < 0 || buttonIndex == actionSheet.cancelButtonIndex || self.editedRow < 0 || (NSUInteger)self.editedRow >= self.items.count) return;
+    NSDictionary *e = self.items[(NSUInteger)self.editedRow];
+    BOOL address = [[actionSheet buttonTitleAtIndex:buttonIndex] isEqualToString:L(@"Edit address")];
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:address ? L(@"Edit address") : L(@"Rename") message:nil delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Save"), nil];
+    alert.alertViewStyle = UIAlertViewStylePlainTextInput;
+    UITextField *field = [alert textFieldAtIndex:0];
+    field.text = address ? e[@"url"] : e[@"title"];
+    field.autocorrectionType = UITextAutocorrectionTypeNo;
+    field.autocapitalizationType = address ? UITextAutocapitalizationTypeNone : UITextAutocapitalizationTypeSentences;
+    field.keyboardType = address ? UIKeyboardTypeURL : UIKeyboardTypeDefault;
+    alert.tag = address ? 2 : 1;
+    [alert show];
+}
+
+- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
+{
+    if (buttonIndex == alertView.cancelButtonIndex || self.editedRow < 0) return;
+    NSString *text = [[alertView textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!text.length) return;
+    if (alertView.tag == 2) {
+        if ([text rangeOfString:@"://"].location == NSNotFound && ![[text lowercaseString] hasPrefix:@"javascript:"]) text = [@"https://" stringByAppendingString:text];
+        [[BRLibrary shared] updateBookmarkAtIndex:(NSUInteger)self.editedRow title:nil url:text];
+    } else {
+        [[BRLibrary shared] updateBookmarkAtIndex:(NSUInteger)self.editedRow title:text url:nil];
+    }
+    self.editedRow = -1;
+    [self reload];
 }
 
 - (void)segmentChanged
@@ -142,6 +210,11 @@
         [self dismissViewControllerAnimated:YES completion:^{
             if (path && [self.delegate respondsToSelector:@selector(libraryViewController:didSelectDownloadAtPath:)]) [self.delegate libraryViewController:self didSelectDownloadAtPath:path];
         }];
+        return;
+    }
+    if (self.editing && ![self showingHistory]) {
+        [tableView deselectRowAtIndexPath:indexPath animated:YES];
+        [self showEditMenuForRow:indexPath.row];
         return;
     }
     NSURL *url = [NSURL URLWithString:e[@"url"] ?: @""];
