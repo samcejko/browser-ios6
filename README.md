@@ -63,7 +63,9 @@ the app around it:
   tabs on a long press of the plus button, a chosen home page, bookmark editing (rename, address,
   reorder), a search box over bookmarks and history, a custom search engine (address with `%s`),
   "Download link" in the link menu, "Open" in the selection menu when the selected text is an
-  address.
+  address, "Paste and Go" in the address field, search suggestions from the chosen engine, and
+  keyword searches typed into the address field (`g dotaz` Google, `b` Bing, `s` Seznam, `d`
+  DuckDuckGo, `w` / `we` Czech / English Wikipedia).
 - **Privacy settings**: third-party cookies blocked (like Safari), Do Not Track / Global Privacy
   Control headers, cookie banners of the common consent services hidden by injected CSS, an image
   switch for slow connections, per-site "allow ads on this site", and a forced dark stylesheet for

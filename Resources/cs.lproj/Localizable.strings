@@ -128,6 +128,7 @@
 "Address with %s in place of the search text" = "Adresa s %s místo hledaného textu";
 "The address must contain %s." = "Adresa musí obsahovat %s.";
 "Download link" = "Stáhnout odkaz";
+"Paste and Go" = "Vložit a přejít";
 "Rename" = "Přejmenovat";
 "Edit address" = "Upravit adresu";
 "Save" = "Uložit";

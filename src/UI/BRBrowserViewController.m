@@ -192,6 +192,29 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
 - (void)performActivity { if (self.action) self.action(); [self activityDidFinish:YES]; }
 @end
 
+// Address field with "Paste and Go" in its editing menu
+@interface BRAddressField : UITextField
+@property (nonatomic, copy) void (^onPasteAndGo)(NSString *text);
+@end
+
+@implementation BRAddressField
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender
+{
+    if (action == @selector(brPasteAndGo:)) return self.onPasteAndGo != nil && [UIPasteboard generalPasteboard].string.length > 0;
+    return [super canPerformAction:action withSender:sender];
+}
+- (void)brPasteAndGo:(id)sender
+{
+    NSString *text = [UIPasteboard generalPasteboard].string;
+    if (text.length && self.onPasteAndGo) self.onPasteAndGo(text);
+}
+@end
+
+static NSString *BRQueryEscape(NSString *s)
+{
+    return (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, (__bridge CFStringRef)(s ?: @""), NULL, CFSTR("!*'();:@&=+$,/?%#[]"), kCFStringEncodingUTF8);
+}
+
 @implementation BRBrowserViewController
 
 #pragma mark - Building the UI
@@ -255,7 +278,17 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
     [self.topBar addSubview:self.topBarBackground];
     [self.view addSubview:self.topBar];
 
-    self.urlField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 300, BRControlHeight)];
+    BRAddressField *addressField = [[BRAddressField alloc] initWithFrame:CGRectMake(0, 0, 300, BRControlHeight)];
+    addressField.onPasteAndGo = ^(NSString *text) {
+        BRBrowserViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.urlField resignFirstResponder];
+        [strongSelf navigateToTypedText:text];
+    };
+    NSMutableArray *menuItems = [[UIMenuController sharedMenuController].menuItems mutableCopy] ?: [NSMutableArray array];
+    [menuItems addObject:[[UIMenuItem alloc] initWithTitle:L(@"Paste and Go") action:@selector(brPasteAndGo:)]];
+    [UIMenuController sharedMenuController].menuItems = menuItems;
+    self.urlField = addressField;
     self.urlField.borderStyle = UITextBorderStyleNone;
     self.urlField.font = [UIFont systemFontOfSize:15];
     self.urlField.placeholder = L(@"Search or enter address");
@@ -1072,6 +1105,19 @@ static void BRWebThreadLock(void)
         [self runBookmarklet:t];
         return;
     }
+    // search keywords: "g dotaz" (Google), "b" Bing, "s" Seznam, "d" DuckDuckGo, "w" / "we" Wikipedia
+    NSRange firstSpace = [t rangeOfString:@" "];
+    if (firstSpace.location != NSNotFound && firstSpace.location >= 1 && firstSpace.location <= 2) {
+        NSString *key = [[t substringToIndex:firstSpace.location] lowercaseString];
+        NSString *rest = [[t substringFromIndex:firstSpace.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSDictionary *engines = @{ @"g": @"https://www.google.com/search?q=", @"b": @"https://www.bing.com/search?q=", @"s": @"https://search.seznam.cz/?q=",
+                                   @"d": @"https://lite.duckduckgo.com/lite/?q=", @"w": @"https://cs.wikipedia.org/w/index.php?search=", @"we": @"https://en.wikipedia.org/w/index.php?search=" };
+        NSString *base = engines[key];
+        if (base && rest.length) {
+            [self loadURL:[NSURL URLWithString:[base stringByAppendingString:BRQueryEscape(rest)]]];
+            return;
+        }
+    }
     NSURL *url = nil;
     BOOL hasSpace = [t rangeOfString:@" "].location != NSNotFound;
     BOOL hasScheme = [t rangeOfString:@"://"].location != NSNotFound;
@@ -1364,8 +1410,13 @@ static void BRWebThreadLock(void)
 {
     NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (t.length < 2 || [BRSettings privateMode]) return;
-    NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, (__bridge CFStringRef)t, NULL, CFSTR("!*'();:@&=+$,/?%#[]"), kCFStringEncodingUTF8);
-    NSURL *url = [NSURL URLWithString:[@"https://duckduckgo.com/ac/?type=list&q=" stringByAppendingString:q ?: @""]];
+    NSString *q = BRQueryEscape(t);
+    // the chosen engine's own suggestions (Google and Bing answer in the same OpenSearch JSON shape as DuckDuckGo)
+    NSInteger engine = [BRSettings searchEngine];
+    NSString *language = [[[NSLocale preferredLanguages] firstObject] componentsSeparatedByString:@"-"].firstObject ?: @"en";
+    NSString *base = engine == 1 ? [NSString stringWithFormat:@"https://suggestqueries.google.com/complete/search?client=firefox&hl=%@&q=", language] :
+                     engine == 2 ? @"https://api.bing.com/osjson.aspx?query=" : @"https://duckduckgo.com/ac/?type=list&q=";
+    NSURL *url = [NSURL URLWithString:[base stringByAppendingString:q ?: @""]];
     BRHTTPRequest *r = [[BRHTTPRequest alloc] initWithMethod:@"GET" URL:url];
     r.verifyTLS = [BRSettings verifyTLS];
     r.highPriority = YES;
