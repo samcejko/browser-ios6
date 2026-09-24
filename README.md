@@ -77,7 +77,9 @@ the app around it:
   a working subset of the CSS Typed OM (`computedStyleMap()`, `attributeStyleMap`, `CSS.px()` and the
   other unit functions, numeric math, transform and colour values), `document.startViewTransition`
   (the callback runs at once), `ontransitionend`/`onanimationend` handler attributes wired to the
-  prefixed events, and the CSSOM rule classes newer specs expect.
+  prefixed events, the CSSOM rule classes newer specs expect, the Popover API, and an `Intl`
+  implementation for Czech, Slovak, English, German and Polish (numbers, currencies, dates, plural
+  rules, relative times, lists, collation) that `toLocaleDateString()` and friends use as well.
   html5test.com went from 290 to 458 of 555 points with these (the remaining points are ES2015
   syntax, codecs and other things an old engine cannot fake).
 - **Everyday browser features**: address suggestions from history and bookmarks, find on page,
