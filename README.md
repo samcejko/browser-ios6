@@ -65,7 +65,11 @@ the app around it:
   visibility, fullscreen, streams, shadow DOM emulated in the light DOM, custom elements (v0 and v1),
   `<dialog>`, `<picture>`/srcset, `<progress>`/`<meter>`, WebRTC/speech/payment/credential stubs that
   fail cleanly, SHA-1/SHA-256 for `crypto.subtle.digest`, canvas helpers, a lazily loaded
-  WebSQL-backed IndexedDB, `window.open` and `target="_blank"` into new tabs, `navigator.share`.
+  WebSQL-backed IndexedDB, `window.open` and `target="_blank"` into new tabs, `navigator.share`,
+  a working subset of the CSS Typed OM (`computedStyleMap()`, `attributeStyleMap`, `CSS.px()` and the
+  other unit functions, numeric math, transform and colour values), `document.startViewTransition`
+  (the callback runs at once), `ontransitionend`/`onanimationend` handler attributes wired to the
+  prefixed events, and the CSSOM rule classes newer specs expect.
   html5test.com went from 290 to 458 of 555 points with these (the remaining points are ES2015
   syntax, codecs and other things an old engine cannot fake).
 - **Everyday browser features**: address suggestions from history and bookmarks, find on page,

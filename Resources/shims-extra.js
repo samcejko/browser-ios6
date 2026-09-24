@@ -1777,11 +1777,13 @@
     if (!window.TransitionEvent && window.WebKitTransitionEvent) window.TransitionEvent = window.WebKitTransitionEvent;
     if (!window.AnimationEvent && window.WebKitAnimationEvent) window.AnimationEvent = window.WebKitAnimationEvent;
     if (!window.Animation) { window.Animation = function Animation() {}; window.KeyframeEffect = function KeyframeEffect() {}; window.DocumentTimeline = function DocumentTimeline() { this.currentTime = 0; }; document.timeline = document.timeline || new window.DocumentTimeline(); document.getAnimations = document.getAnimations || function () { return []; }; }
-    if (!window.CSSUnitValue) window.CSSUnitValue = function CSSUnitValue(value, unit) { this.value = value; this.unit = unit; this.toString = function () { return value + (unit === 'number' ? '' : unit === 'percent' ? '%' : unit); }; };
-    if (!window.CSS.px) { window.CSS.px = function (v) { return new window.CSSUnitValue(v, 'px'); }; window.CSS.percent = function (v) { return new window.CSSUnitValue(v, 'percent'); }; window.CSS.number = function (v) { return new window.CSSUnitValue(v, 'number'); }; window.CSS.em = function (v) { return new window.CSSUnitValue(v, 'em'); }; window.CSS.vw = function (v) { return new window.CSSUnitValue(v, 'vw'); }; window.CSS.vh = function (v) { return new window.CSSUnitValue(v, 'vh'); }; }
-    if (!window.CSS.paintWorklet) window.CSS.paintWorklet = { addModule: function () { return resolved(); } };
+    if (!window.Worklet) { window.Worklet = function Worklet() {}; window.Worklet.prototype.addModule = function () { return resolved(); }; }
+    var makeWorklet = function () { try { return new window.Worklet(); } catch (e) { return { addModule: function () { return resolved(); } }; } };   // a native Worklet cannot be constructed
+    try { if (!window.CSS.paintWorklet) window.CSS.paintWorklet = makeWorklet(); } catch (e0) {}
+    try { if (!window.CSS.animationWorklet) window.CSS.animationWorklet = makeWorklet(); } catch (e1) {}
+    try { if (!window.CSS.layoutWorklet) window.CSS.layoutWorklet = makeWorklet(); } catch (e2) {}
     if (!window.CSS.highlights) { window.CSS.highlights = { set: noop, get: function () { return undefined; }, has: function () { return false; }, 'delete': function () { return false; }, clear: noop, size: 0 }; window.Highlight = function Highlight() {}; }
-    if (!window.CSS.number) window.CSS.number = function (v) { return { value: v, unit: 'number' }; };
+    if (!window.CSS.elementSources) window.CSS.elementSources = {};
     if (window.CSSStyleSheet && window.CSSStyleSheet.prototype.insertRule && !window.CSSStyleSheet.prototype.__brWrapped) {
         // the old engine requires the index argument; modern code omits it (append)
         window.CSSStyleSheet.prototype.__brWrapped = true;
@@ -1823,4 +1825,427 @@
         };
         window.MessageChannel = function MessageChannel() { this.port1 = new window.MessagePort(); this.port2 = new window.MessagePort(); this.port1.__peer = this.port2; this.port2.__peer = this.port1; };
     }
+
+    // ---- CSS Typed OM (css-typed-om-1): a working subset. Values parse into CSSUnitValue / CSSKeywordValue /
+    // CSSMathSum ... / CSSTransformValue / CSSRGB / CSSImageValue / CSSUnparsedValue, computedStyleMap() and
+    // attributeStyleMap wrap the style declarations, and CSS.px() & co. make unit values.
+    if (!window.CSSStyleValue || !window.CSSStyleValue.parse) try { (function () {
+        var extend = function (Child, Parent) { Child.prototype = Object.create(Parent.prototype); Child.prototype.constructor = Child; return Child; };
+        var UNIT_SUFFIX = { number: '', percent: '%' };
+        var unitText = function (unit) { return UNIT_SUFFIX.hasOwnProperty(unit) ? UNIT_SUFFIX[unit] : unit; };
+        var CSSStyleValue = function CSSStyleValue() {};
+        CSSStyleValue.prototype.toString = function () { return this.__css || ''; };
+        var CSSKeywordValue = extend(function CSSKeywordValue(value) { this.value = String(value); }, CSSStyleValue);
+        CSSKeywordValue.prototype.value = '';
+        CSSKeywordValue.prototype.toString = function () { return this.value; };
+        var CSSVariableReferenceValue = extend(function CSSVariableReferenceValue(variable, fallback) { this.variable = String(variable); this.fallback = fallback || null; }, CSSStyleValue);
+        CSSVariableReferenceValue.prototype.variable = ''; CSSVariableReferenceValue.prototype.fallback = null;
+        CSSVariableReferenceValue.prototype.toString = function () { return 'var(' + this.variable + (this.fallback ? ',' + this.fallback : '') + ')'; };
+        var listMethods = function (proto) {
+            proto.length = 0;
+            proto.forEach = function (fn, thisArg) { for (var i = 0; i < this.length; i++) fn.call(thisArg, this[i], i, this); };
+            proto.entries = function () { var a = []; for (var i = 0; i < this.length; i++) a.push([i, this[i]]); return a; };
+            proto.keys = function () { var a = []; for (var i = 0; i < this.length; i++) a.push(i); return a; };
+            proto.values = function () { var a = []; for (var i = 0; i < this.length; i++) a.push(this[i]); return a; };
+        };
+        var fillList = function (self, items) { for (var i = 0; i < items.length; i++) self[i] = items[i]; self.length = items.length; };
+        var CSSUnparsedValue = extend(function CSSUnparsedValue(members) { fillList(this, members || []); }, CSSStyleValue);
+        listMethods(CSSUnparsedValue.prototype);
+        CSSUnparsedValue.prototype.toString = function () { return this.values().join(''); };
+        var CSSNumericArray = function CSSNumericArray(items) { fillList(this, items || []); };
+        listMethods(CSSNumericArray.prototype);
+        // numeric values
+        var CSSNumericValue = extend(function CSSNumericValue() {}, CSSStyleValue);
+        var toNumeric = function (v) { return typeof v === 'number' ? new CSSUnitValue(v, 'number') : v; };
+        var numericArgs = function (args) { var out = []; for (var i = 0; i < args.length; i++) out.push(toNumeric(args[i])); return out; };
+        CSSNumericValue.prototype.add = function () { var a = numericArgs(arguments); if (this instanceof CSSUnitValue && a.length === 1 && a[0] instanceof CSSUnitValue && a[0].unit === this.unit) return new CSSUnitValue(this.value + a[0].value, this.unit); return new CSSMathSum([this].concat(a)); };
+        CSSNumericValue.prototype.sub = function () { var a = numericArgs(arguments); if (this instanceof CSSUnitValue && a.length === 1 && a[0] instanceof CSSUnitValue && a[0].unit === this.unit) return new CSSUnitValue(this.value - a[0].value, this.unit); var neg = []; for (var i = 0; i < a.length; i++) neg.push(new CSSMathNegate(a[i])); return new CSSMathSum([this].concat(neg)); };
+        CSSNumericValue.prototype.mul = function () { var a = numericArgs(arguments); if (this instanceof CSSUnitValue && a.length === 1 && a[0] instanceof CSSUnitValue && (a[0].unit === 'number' || this.unit === 'number')) return new CSSUnitValue(this.value * a[0].value, this.unit === 'number' ? a[0].unit : this.unit); return new CSSMathProduct([this].concat(a)); };
+        CSSNumericValue.prototype.div = function () { var a = numericArgs(arguments); if (this instanceof CSSUnitValue && a.length === 1 && a[0] instanceof CSSUnitValue && a[0].unit === 'number' && a[0].value !== 0) return new CSSUnitValue(this.value / a[0].value, this.unit); var inv = []; for (var i = 0; i < a.length; i++) inv.push(new CSSMathInvert(a[i])); return new CSSMathProduct([this].concat(inv)); };
+        CSSNumericValue.prototype.min = function () { return new CSSMathMin([this].concat(numericArgs(arguments))); };
+        CSSNumericValue.prototype.max = function () { return new CSSMathMax([this].concat(numericArgs(arguments))); };
+        CSSNumericValue.prototype.equals = function () { for (var i = 0; i < arguments.length; i++) if (String(toNumeric(arguments[i])) !== String(this)) return false; return true; };
+        var ABS = { px: 1, cm: 96 / 2.54, mm: 96 / 25.4, q: 96 / 101.6, 'in': 96, pt: 4 / 3, pc: 16, deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360, s: 1000, ms: 1, hz: 1, khz: 1000, dpi: 1, dpcm: 2.54, dppx: 96 };
+        var CANON = { px: 'px', cm: 'px', mm: 'px', q: 'px', 'in': 'px', pt: 'px', pc: 'px', deg: 'deg', grad: 'deg', rad: 'deg', turn: 'deg', s: 'ms', ms: 'ms', hz: 'hz', khz: 'hz', dpi: 'dpi', dpcm: 'dpi', dppx: 'dpi' };
+        CSSNumericValue.prototype.to = function (unit) {
+            if (!(this instanceof CSSUnitValue)) throw new TypeError('Cannot convert a math value');
+            var from = this.unit.toLowerCase(), to = String(unit).toLowerCase();
+            if (from === to) return new CSSUnitValue(this.value, unit);
+            if (!ABS.hasOwnProperty(from) || !ABS.hasOwnProperty(to) || CANON[from] !== CANON[to]) throw new TypeError('Incompatible units');
+            return new CSSUnitValue(this.value * ABS[from] / ABS[to], unit);
+        };
+        CSSNumericValue.prototype.toSum = function () { var s = new CSSMathSum([this]); if (arguments.length) { var vals = []; for (var i = 0; i < arguments.length; i++) vals.push(this.to(arguments[i])); s = new CSSMathSum(vals); } return s; };
+        var TYPE_OF = { px: 'length', em: 'length', rem: 'length', vw: 'length', vh: 'length', cm: 'length', mm: 'length', 'in': 'length', pt: 'length', pc: 'length', percent: 'percent', deg: 'angle', rad: 'angle', turn: 'angle', grad: 'angle', s: 'time', ms: 'time', hz: 'frequency', khz: 'frequency', dpi: 'resolution', dppx: 'resolution', fr: 'flex' };
+        CSSNumericValue.prototype.type = function () { var t = {}; if (this instanceof CSSUnitValue && TYPE_OF[this.unit.toLowerCase()]) t[TYPE_OF[this.unit.toLowerCase()]] = 1; return t; };
+        CSSNumericValue.parse = function (text) { var v = parseValue(String(text)); if (!(v instanceof CSSNumericValue)) throw new SyntaxError('Not a numeric value'); return v; };
+        var CSSUnitValue = extend(function CSSUnitValue(value, unit) { this.value = Number(value); this.unit = String(unit); }, CSSNumericValue);
+        CSSUnitValue.prototype.value = 0; CSSUnitValue.prototype.unit = '';
+        CSSUnitValue.prototype.toString = function () { return this.value + unitText(this.unit); };
+        var CSSMathValue = extend(function CSSMathValue() {}, CSSNumericValue);
+        CSSMathValue.prototype.operator = '';
+        // "calc(100% - 20px)": negated terms and inverted factors serialise with - and /, nested sums in parentheses
+        var mathBody = function (m) {
+            var parts = m.values.values(), s = '';
+            for (var i = 0; i < parts.length; i++) {
+                var v = parts[i];
+                if (m.operator === 'sum') s += (v instanceof CSSMathNegate ? (i ? ' - ' : '-') + mathTerm(v.value) : (i ? ' + ' : '') + mathTerm(v));
+                else s += (v instanceof CSSMathInvert ? (i ? ' / ' : '1 / ') + mathTerm(v.value) : (i ? ' * ' : '') + mathTerm(v));
+            }
+            return s;
+        };
+        var mathTerm = function (v) { return (v instanceof CSSMathSum || v instanceof CSSMathProduct) ? '(' + mathBody(v) + ')' : String(v); };
+        var mathList = function (name, operator, joiner) {
+            var C = extend(function (values) { this.values = new CSSNumericArray(numericArgs(values && values.length !== undefined && !(values instanceof CSSStyleValue) ? values : arguments)); }, CSSMathValue);
+            C.prototype.operator = operator; C.prototype.values = null;
+            C.prototype.toString = function () { return joiner ? 'calc(' + mathBody(this) + ')' : operator + '(' + this.values.values().join(', ') + ')'; };
+            try { Object.defineProperty(C, 'name', { value: name }); } catch (e) {}
+            return C;
+        };
+        var CSSMathSum = mathList('CSSMathSum', 'sum', ' + ');
+        var CSSMathProduct = mathList('CSSMathProduct', 'product', ' * ');
+        var CSSMathMin = mathList('CSSMathMin', 'min', null);
+        var CSSMathMax = mathList('CSSMathMax', 'max', null);
+        var CSSMathNegate = extend(function CSSMathNegate(value) { this.value = toNumeric(value); }, CSSMathValue);
+        CSSMathNegate.prototype.operator = 'negate'; CSSMathNegate.prototype.value = null;
+        CSSMathNegate.prototype.toString = function () { return '-' + this.value; };
+        var CSSMathInvert = extend(function CSSMathInvert(value) { this.value = toNumeric(value); }, CSSMathValue);
+        CSSMathInvert.prototype.operator = 'invert'; CSSMathInvert.prototype.value = null;
+        CSSMathInvert.prototype.toString = function () { return '1 / ' + this.value; };
+        var CSSMathClamp = extend(function CSSMathClamp(lower, value, upper) { this.lower = toNumeric(lower); this.value = toNumeric(value); this.upper = toNumeric(upper); }, CSSMathValue);
+        CSSMathClamp.prototype.operator = 'clamp'; CSSMathClamp.prototype.lower = null; CSSMathClamp.prototype.value = null; CSSMathClamp.prototype.upper = null;
+        CSSMathClamp.prototype.toString = function () { return 'clamp(' + this.lower + ', ' + this.value + ', ' + this.upper + ')'; };
+        // transforms
+        var CSSTransformComponent = function CSSTransformComponent() {};
+        CSSTransformComponent.prototype.is2D = true;
+        CSSTransformComponent.prototype.toMatrix = function () { var M = window.DOMMatrix; try { return new M(this.toString()); } catch (e) { return new M(); } };
+        var component = function (name, fields, build) {
+            var C = extend(function () { for (var i = 0; i < fields.length; i++) this[fields[i]] = arguments[i] === undefined ? null : arguments[i]; if (build.init) build.init.apply(this, arguments); }, CSSTransformComponent);
+            for (var f = 0; f < fields.length; f++) C.prototype[fields[f]] = null;
+            C.prototype.toString = build.text;
+            try { Object.defineProperty(C, 'name', { value: name }); } catch (e) {}
+            return C;
+        };
+        var num0 = function (v) { return v === null || v === undefined ? new CSSUnitValue(0, 'px') : toNumeric(v); };
+        var CSSTranslate = component('CSSTranslate', ['x', 'y', 'z'], { init: function () { this.z = this.z === null ? new CSSUnitValue(0, 'px') : this.z; this.is2D = String(this.z) === '0px'; }, text: function () { return this.is2D ? 'translate(' + num0(this.x) + ', ' + num0(this.y) + ')' : 'translate3d(' + num0(this.x) + ', ' + num0(this.y) + ', ' + this.z + ')'; } });
+        var CSSRotate = component('CSSRotate', ['x', 'y', 'z', 'angle'], { init: function () { if (arguments.length === 1) { this.angle = arguments[0]; this.x = 0; this.y = 0; this.z = 1; this.is2D = true; } else this.is2D = false; }, text: function () { return this.is2D ? 'rotate(' + this.angle + ')' : 'rotate3d(' + this.x + ', ' + this.y + ', ' + this.z + ', ' + this.angle + ')'; } });
+        var CSSScale = component('CSSScale', ['x', 'y', 'z'], { init: function () { if (this.z === null) { this.z = 1; this.is2D = true; } else this.is2D = false; }, text: function () { return this.is2D ? 'scale(' + this.x + ', ' + this.y + ')' : 'scale3d(' + this.x + ', ' + this.y + ', ' + this.z + ')'; } });
+        var CSSSkew = component('CSSSkew', ['ax', 'ay'], { text: function () { return 'skew(' + this.ax + ', ' + this.ay + ')'; } });
+        var CSSSkewX = component('CSSSkewX', ['ax'], { text: function () { return 'skewX(' + this.ax + ')'; } });
+        var CSSSkewY = component('CSSSkewY', ['ay'], { text: function () { return 'skewY(' + this.ay + ')'; } });
+        var CSSPerspective = component('CSSPerspective', ['length'], { init: function () { this.is2D = false; }, text: function () { return 'perspective(' + this.length + ')'; } });
+        var CSSMatrixComponent = component('CSSMatrixComponent', ['matrix'], { init: function (m, options) { this.is2D = options && options.is2D !== undefined ? !!options.is2D : !(m && m.is2D === false); }, text: function () { var m = this.matrix; if (!m) return 'matrix(1, 0, 0, 1, 0, 0)'; return this.is2D ? 'matrix(' + [m.a, m.b, m.c, m.d, m.e, m.f].join(', ') + ')' : 'matrix3d(' + [m.m11, m.m12, m.m13, m.m14, m.m21, m.m22, m.m23, m.m24, m.m31, m.m32, m.m33, m.m34, m.m41, m.m42, m.m43, m.m44].join(', ') + ')'; } });
+        CSSMatrixComponent.prototype.toMatrix = function () { return this.matrix; };
+        var CSSTransformValue = extend(function CSSTransformValue(components) { fillList(this, components || []); }, CSSStyleValue);
+        listMethods(CSSTransformValue.prototype);
+        CSSTransformValue.prototype.is2D = true;
+        try { Object.defineProperty(CSSTransformValue.prototype, 'is2D', { get: function () { for (var i = 0; i < this.length; i++) if (!this[i].is2D) return false; return true; }, configurable: true }); } catch (e) {}
+        CSSTransformValue.prototype.toMatrix = function () { var M = window.DOMMatrix; try { return new M(this.toString()); } catch (e) { return new M(); } };
+        CSSTransformValue.prototype.toString = function () { return this.values().join(' '); };
+        // colours and images
+        var CSSColorValue = extend(function CSSColorValue() {}, CSSStyleValue);
+        CSSColorValue.prototype.alpha = null;
+        var colorClass = function (name, fields, fn) {
+            var C = extend(function () { for (var i = 0; i < fields.length; i++) this[fields[i]] = arguments[i] === undefined ? (fields[i] === 'alpha' ? new CSSUnitValue(1, 'number') : null) : toNumeric(arguments[i]); }, CSSColorValue);
+            for (var f = 0; f < fields.length; f++) C.prototype[fields[f]] = null;
+            C.prototype.toString = function () { var parts = []; for (var i = 0; i < fields.length - 1; i++) parts.push(String(this[fields[i]])); return fn + '(' + parts.join(' ') + ' / ' + this.alpha + ')'; };
+            try { Object.defineProperty(C, 'name', { value: name }); } catch (e) {}
+            return C;
+        };
+        var CSSRGB = colorClass('CSSRGB', ['r', 'g', 'b', 'alpha'], 'rgb');
+        var CSSHSL = colorClass('CSSHSL', ['h', 's', 'l', 'alpha'], 'hsl');
+        var CSSHWB = colorClass('CSSHWB', ['h', 'w', 'b', 'alpha'], 'hwb');
+        var CSSLab = colorClass('CSSLab', ['l', 'a', 'b', 'alpha'], 'lab');
+        var CSSLCH = colorClass('CSSLCH', ['l', 'c', 'h', 'alpha'], 'lch');
+        var CSSOKLab = colorClass('CSSOKLab', ['l', 'a', 'b', 'alpha'], 'oklab');
+        var CSSOKLCH = colorClass('CSSOKLCH', ['l', 'c', 'h', 'alpha'], 'oklch');
+        var CSSColor = extend(function CSSColor(colorSpace, channels, alpha) { this.colorSpace = colorSpace; this.channels = channels || []; this.alpha = alpha === undefined ? new CSSUnitValue(1, 'number') : toNumeric(alpha); }, CSSColorValue);
+        CSSColor.prototype.colorSpace = ''; CSSColor.prototype.channels = null;
+        CSSColor.prototype.toString = function () { return 'color(' + this.colorSpace + ' ' + this.channels.join(' ') + ' / ' + this.alpha + ')'; };
+        CSSColorValue.parse = function (text) { var v = parseValue(String(text)); return v instanceof CSSColorValue ? v : new CSSKeywordValue(text); };
+        var CSSImageValue = extend(function CSSImageValue(css) { this.__css = css; }, CSSStyleValue);
+        // parsing
+        var NUM_RE = /^([-+]?(?:\d*\.\d+|\d+)(?:e[-+]?\d+)?)([a-z%]*)$/i;
+        var splitTop = function (s, sep) { var parts = [], depth = 0, start = 0, q = null; for (var i = 0; i < s.length; i++) { var c = s.charAt(i); if (q) { if (c === q) q = null; continue; } if (c === '"' || c === "'") q = c; else if (c === '(') depth++; else if (c === ')') depth--; else if (depth === 0 && c === sep) { parts.push(s.slice(start, i)); start = i + 1; } } parts.push(s.slice(start)); return parts; };
+        var trim = function (s) { return s.replace(/^\s+|\s+$/g, ''); };
+        var parseNumeric = function (s) {
+            s = trim(s);
+            var m = NUM_RE.exec(s);
+            if (m) return new CSSUnitValue(parseFloat(m[1]), m[2] === '' ? 'number' : m[2] === '%' ? 'percent' : m[2].toLowerCase());
+            var fm = /^(calc|min|max|clamp)\((.*)\)$/i.exec(s);
+            if (!fm) return null;
+            var name = fm[1].toLowerCase(), inner = fm[2];
+            if (name === 'min' || name === 'max' || name === 'clamp') {
+                var args = splitTop(inner, ','), vals = [];
+                for (var i = 0; i < args.length; i++) { var pv = parseNumeric(args[i]); if (!pv) return null; vals.push(pv); }
+                return name === 'min' ? new CSSMathMin(vals) : name === 'max' ? new CSSMathMax(vals) : new CSSMathClamp(vals[0], vals[1], vals[2]);
+            }
+            // calc: sums of products
+            var terms = [], depth = 0, cur = '', sign = 1, i2;
+            var flush = function () { var t = trim(cur); if (!t) return true; var pv = parseProduct(t); if (!pv) return false; terms.push(sign < 0 ? new CSSMathNegate(pv) : pv); cur = ''; return true; };
+            for (i2 = 0; i2 < inner.length; i2++) {
+                var ch = inner.charAt(i2);
+                if (ch === '(') depth++; else if (ch === ')') depth--;
+                if (depth === 0 && (ch === '+' || ch === '-') && /\s$/.test(cur) && cur.replace(/\s+$/, '')) { if (!flush()) return null; sign = ch === '-' ? -1 : 1; continue; }
+                cur += ch;
+            }
+            if (!flush()) return null;
+            return terms.length === 1 && !(terms[0] instanceof CSSMathNegate) ? terms[0] : new CSSMathSum(terms);
+        };
+        var parseProduct = function (t) {
+            var parts = [], depth = 0, cur = '', op = '*';
+            var ops = [];
+            for (var i = 0; i < t.length; i++) {
+                var ch = t.charAt(i);
+                if (ch === '(') depth++; else if (ch === ')') depth--;
+                if (depth === 0 && (ch === '*' || ch === '/')) { parts.push(cur); ops.push(ch); cur = ''; continue; }
+                cur += ch;
+            }
+            parts.push(cur);
+            var vals = [];
+            for (var k = 0; k < parts.length; k++) {
+                var p = trim(parts[k]);
+                if (/^\(.*\)$/.test(p)) p = 'calc' + p;
+                var pv = parseNumeric(p);
+                if (!pv) return null;
+                vals.push(k > 0 && ops[k - 1] === '/' ? new CSSMathInvert(pv) : pv);
+            }
+            return vals.length === 1 ? vals[0] : new CSSMathProduct(vals);
+        };
+        var TRANSFORM_FN = /^(translate|translate3d|translatex|translatey|translatez|rotate|rotate3d|rotatex|rotatey|rotatez|scale|scale3d|scalex|scaley|scalez|skew|skewx|skewy|perspective|matrix|matrix3d)\((.*)\)$/i;
+        var parseTransform = function (s) {
+            var fns = s.match(/[a-z0-9]+\([^)]*\)/gi);
+            if (!fns) return null;
+            var comps = [];
+            for (var i = 0; i < fns.length; i++) {
+                var m = TRANSFORM_FN.exec(trim(fns[i]));
+                if (!m) return null;
+                var name = m[1].toLowerCase(), args = splitTop(m[2], ','), a = [];
+                for (var k = 0; k < args.length; k++) { var av = parseNumeric(args[k]); if (!av) return null; a.push(av); }
+                var zero = new CSSUnitValue(0, 'px'), one = new CSSUnitValue(1, 'number');
+                switch (name) {
+                    case 'translate': comps.push(new CSSTranslate(a[0], a[1] || zero)); break;
+                    case 'translatex': comps.push(new CSSTranslate(a[0], zero)); break;
+                    case 'translatey': comps.push(new CSSTranslate(zero, a[0])); break;
+                    case 'translatez': comps.push(new CSSTranslate(zero, zero, a[0])); break;
+                    case 'translate3d': comps.push(new CSSTranslate(a[0], a[1], a[2])); break;
+                    case 'rotate': case 'rotatez': comps.push(new CSSRotate(a[0])); break;
+                    case 'rotatex': comps.push(new CSSRotate(1, 0, 0, a[0])); break;
+                    case 'rotatey': comps.push(new CSSRotate(0, 1, 0, a[0])); break;
+                    case 'rotate3d': comps.push(new CSSRotate(a[0], a[1], a[2], a[3])); break;
+                    case 'scale': comps.push(new CSSScale(a[0], a.length > 1 ? a[1] : a[0])); break;
+                    case 'scalex': comps.push(new CSSScale(a[0], one)); break;
+                    case 'scaley': comps.push(new CSSScale(one, a[0])); break;
+                    case 'scalez': comps.push(new CSSScale(one, one, a[0])); break;
+                    case 'scale3d': comps.push(new CSSScale(a[0], a[1], a[2])); break;
+                    case 'skew': comps.push(new CSSSkew(a[0], a[1] || new CSSUnitValue(0, 'deg'))); break;
+                    case 'skewx': comps.push(new CSSSkewX(a[0])); break;
+                    case 'skewy': comps.push(new CSSSkewY(a[0])); break;
+                    case 'perspective': comps.push(new CSSPerspective(a[0])); break;
+                    default: { var M = window.DOMMatrix, mx; try { mx = new M(trim(fns[i])); } catch (e) { mx = null; } comps.push(new CSSMatrixComponent(mx, { is2D: name === 'matrix' })); }
+                }
+            }
+            return new CSSTransformValue(comps);
+        };
+        var parseColor = function (s) {
+            var m = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch)\((.*)\)$/i.exec(s);
+            if (m) {
+                var inner = m[2].replace('/', ' ').replace(/,/g, ' '), toks = inner.split(/\s+/).filter(function (x) { return x; }), vals = [];
+                for (var i = 0; i < toks.length; i++) { var pv = parseNumeric(toks[i]); vals.push(pv || new CSSKeywordValue(toks[i])); }
+                var fn = m[1].toLowerCase();
+                var C = fn === 'rgb' || fn === 'rgba' ? CSSRGB : fn === 'hsl' || fn === 'hsla' ? CSSHSL : fn === 'hwb' ? CSSHWB : fn === 'lab' ? CSSLab : fn === 'lch' ? CSSLCH : fn === 'oklab' ? CSSOKLab : CSSOKLCH;
+                return new C(vals[0], vals[1], vals[2], vals.length > 3 ? vals[3] : undefined);
+            }
+            var hex = /^#([0-9a-f]{3,8})$/i.exec(s);
+            if (hex) {
+                var h = hex[1];
+                if (h.length === 3 || h.length === 4) h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2) + (h.length === 4 ? h.charAt(3) + h.charAt(3) : '');
+                var n = function (i) { return parseInt(h.substr(i, 2), 16); };
+                return new CSSRGB(n(0), n(2), n(4), h.length === 8 ? n(6) / 255 : undefined);
+            }
+            var cm = /^color\(\s*([a-z0-9-]+)\s+(.*)\)$/i.exec(s);
+            if (cm) { var ct = cm[2].replace('/', ' ').split(/\s+/).filter(function (x) { return x; }), cv = []; for (var ci = 0; ci < ct.length; ci++) cv.push(parseNumeric(ct[ci]) || new CSSKeywordValue(ct[ci])); return new CSSColor(cm[1], cv.slice(0, 3), cv.length > 3 ? cv[3] : undefined); }
+            return null;
+        };
+        var parseValue = function (text) {
+            var s = trim(text);
+            if (!s) return undefined;
+            if (/var\(/i.test(s)) {
+                var members = [], re = /var\(\s*(--[^,)]+)\s*(?:,\s*([^)]*))?\)/gi, last = 0, mm;
+                while ((mm = re.exec(s)) !== null) { if (mm.index > last) members.push(s.slice(last, mm.index)); members.push(new CSSVariableReferenceValue(trim(mm[1]), mm[2] !== undefined ? new CSSUnparsedValue([trim(mm[2])]) : null)); last = mm.index + mm[0].length; }
+                if (last < s.length) members.push(s.slice(last));
+                return new CSSUnparsedValue(members);
+            }
+            var num = parseNumeric(s);
+            if (num) return num;
+            if (/^[a-z-]+$/i.test(s)) return new CSSKeywordValue(s);
+            var col = parseColor(s);
+            if (col) return col;
+            if (/^url\(/i.test(s) || /^(-webkit-)?(linear|radial|conic|repeating-linear|repeating-radial|repeating-conic)-gradient\(/i.test(s) || /^image(-set)?\(/i.test(s)) return new CSSImageValue(s);
+            if (TRANSFORM_FN.test(trim(s.split(/\)\s+/)[0] + (s.indexOf(') ') > 0 ? ')' : '')))) { var tv = parseTransform(s); if (tv) return tv; }
+            return new CSSUnparsedValue([s]);
+        };
+        CSSStyleValue.parse = function (property, text) { var v = parseValue(String(text)); if (v === undefined) throw new TypeError('Empty value'); return v; };
+        CSSStyleValue.parseAll = function (property, text) { var parts = splitTop(String(text), ','), out = []; for (var i = 0; i < parts.length; i++) { var v = parseValue(parts[i]); if (v !== undefined) out.push(v); } return out; };
+        // property maps
+        var StylePropertyMapReadOnly = function StylePropertyMapReadOnly(decl) { this.__d = decl; };
+        StylePropertyMapReadOnly.prototype.get = function (p) { var v = this.__d.getPropertyValue(String(p)); return v ? parseValue(v) : undefined; };
+        StylePropertyMapReadOnly.prototype.getAll = function (p) { var v = this.__d.getPropertyValue(String(p)); if (!v) return []; return /^(transition|animation|background|font-family|will-change|mask|box-shadow|text-shadow)/.test(p) ? CSSStyleValue.parseAll(p, v) : [parseValue(v)]; };
+        StylePropertyMapReadOnly.prototype.has = function (p) { return !!this.__d.getPropertyValue(String(p)); };
+        StylePropertyMapReadOnly.prototype.size = 0;
+        try { Object.defineProperty(StylePropertyMapReadOnly.prototype, 'size', { get: function () { return this.__d.length; }, configurable: true }); } catch (e) {}
+        StylePropertyMapReadOnly.prototype.entries = function () { var a = []; for (var i = 0; i < this.__d.length; i++) { var p = this.__d[i] || this.__d.item(i); a.push([p, this.getAll(p)]); } return a; };
+        StylePropertyMapReadOnly.prototype.keys = function () { var a = []; for (var i = 0; i < this.__d.length; i++) a.push(this.__d[i] || this.__d.item(i)); return a; };
+        StylePropertyMapReadOnly.prototype.values = function () { var e = this.entries(), a = []; for (var i = 0; i < e.length; i++) a.push(e[i][1]); return a; };
+        StylePropertyMapReadOnly.prototype.forEach = function (fn, thisArg) { var e = this.entries(); for (var i = 0; i < e.length; i++) fn.call(thisArg, e[i][1], e[i][0], this); };
+        var StylePropertyMap = extend(function StylePropertyMap(decl) { this.__d = decl; }, StylePropertyMapReadOnly);
+        StylePropertyMap.prototype.set = function (p) { var vals = []; for (var i = 1; i < arguments.length; i++) vals.push(String(arguments[i])); this.__d.setProperty(String(p), vals.join(', ')); };
+        StylePropertyMap.prototype.append = function (p) { var cur = this.__d.getPropertyValue(String(p)), vals = cur ? [cur] : []; for (var i = 1; i < arguments.length; i++) vals.push(String(arguments[i])); this.__d.setProperty(String(p), vals.join(', ')); };
+        StylePropertyMap.prototype['delete'] = function (p) { this.__d.removeProperty(String(p)); };
+        StylePropertyMap.prototype.clear = function () { var names = this.keys(); for (var i = 0; i < names.length; i++) this.__d.removeProperty(names[i]); };
+        if (Ep) {
+            Ep.computedStyleMap = function () { return new StylePropertyMapReadOnly(window.getComputedStyle(this)); };
+            try { Object.defineProperty(Ep, 'attributeStyleMap', { get: function () { if (!this.__brStyleMap) this.__brStyleMap = new StylePropertyMap(this.style); return this.__brStyleMap; }, configurable: true }); } catch (e) {}
+        }
+        var units = ['number', 'percent', 'em', 'ex', 'ch', 'ic', 'rem', 'lh', 'rlh', 'vw', 'vh', 'vi', 'vb', 'vmin', 'vmax', 'svw', 'svh', 'svi', 'svb', 'svmin', 'svmax', 'lvw', 'lvh', 'lvi', 'lvb', 'lvmin', 'lvmax', 'dvw', 'dvh', 'dvi', 'dvb', 'dvmin', 'dvmax', 'cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax', 'cm', 'mm', 'Q', 'in', 'pt', 'pc', 'px', 'deg', 'grad', 'rad', 'turn', 's', 'ms', 'Hz', 'kHz', 'dpi', 'dpcm', 'dppx', 'fr', 'cap', 'rcap', 'rex', 'rch', 'ric'];
+        for (var ui = 0; ui < units.length; ui++) (function (u) { window.CSS[u] = function (v) { return new CSSUnitValue(v, u); }; })(units[ui]);
+        var expose = { CSSStyleValue: CSSStyleValue, CSSKeywordValue: CSSKeywordValue, CSSUnparsedValue: CSSUnparsedValue, CSSVariableReferenceValue: CSSVariableReferenceValue, CSSNumericValue: CSSNumericValue, CSSUnitValue: CSSUnitValue,
+            CSSMathValue: CSSMathValue, CSSMathSum: CSSMathSum, CSSMathProduct: CSSMathProduct, CSSMathNegate: CSSMathNegate, CSSMathInvert: CSSMathInvert, CSSMathMin: CSSMathMin, CSSMathMax: CSSMathMax, CSSMathClamp: CSSMathClamp,
+            CSSNumericArray: CSSNumericArray, CSSTransformValue: CSSTransformValue, CSSTransformComponent: CSSTransformComponent, CSSTranslate: CSSTranslate, CSSRotate: CSSRotate, CSSScale: CSSScale, CSSSkew: CSSSkew, CSSSkewX: CSSSkewX,
+            CSSSkewY: CSSSkewY, CSSPerspective: CSSPerspective, CSSMatrixComponent: CSSMatrixComponent, CSSImageValue: CSSImageValue, CSSColorValue: CSSColorValue, CSSRGB: CSSRGB, CSSHSL: CSSHSL, CSSHWB: CSSHWB, CSSLab: CSSLab, CSSLCH: CSSLCH,
+            CSSOKLab: CSSOKLab, CSSOKLCH: CSSOKLCH, CSSColor: CSSColor, StylePropertyMapReadOnly: StylePropertyMapReadOnly, StylePropertyMap: StylePropertyMap };
+        for (var ek in expose) if (expose.hasOwnProperty(ek)) window[ek] = expose[ek];
+    })(); } catch (eTypedOM) {}
+
+    // ---- CSSOM rule classes with their members, view extras, event handler attributes, view transitions
+    try {
+        var proto = function (name) { return window[name] && window[name].prototype; };
+        var defaults = function (name, members) { var p = proto(name); if (!p) return; for (var k in members) if (members.hasOwnProperty(k) && !(k in p)) p[k] = members[k]; };
+        var emptyRules = function () { return []; };
+        defaults('CSSGroupingRule', { cssRules: emptyRules(), insertRule: function () { return 0; }, deleteRule: noop });
+        defaults('CSSConditionRule', { conditionText: '' });
+        defaults('CSSSupportsRule', { conditionText: '', matches: false });
+        if (proto('CSSMediaRule') && !('matches' in proto('CSSMediaRule'))) try { Object.defineProperty(proto('CSSMediaRule'), 'matches', { get: function () { try { return window.matchMedia(this.media.mediaText).matches; } catch (e) { return false; } }, configurable: true }); } catch (e0) {}
+        defaults('CSSMediaRule', { conditionText: '' });
+        defaults('CSSImportRule', { layerName: null, supportsText: null });
+        defaults('CSSLayerBlockRule', { name: '' });
+        defaults('CSSLayerStatementRule', { nameList: [] });
+        defaults('CSSScopeRule', { start: null, end: null });
+        defaults('CSSContainerRule', { containerName: '', containerQuery: '' });
+        defaults('CSSPropertyRule', { name: '', syntax: '*', inherits: false, initialValue: null });
+        defaults('CSSCounterStyleRule', { name: '', system: '', symbols: '', additiveSymbols: '', negative: '', prefix: '', suffix: '', range: '', pad: '', speakAs: '', fallback: '' });
+        defaults('CSSFontFeatureValuesRule', { fontFamily: '', annotation: {}, ornaments: {}, stylistic: {}, swash: {}, characterVariant: {}, styleset: {} });
+        defaults('CSSFontPaletteValuesRule', { name: '', fontFamily: '', basePalette: '', overrideColors: '' });
+        defaults('CSSPositionTryRule', { name: '', style: null });
+        defaults('CSSNestedDeclarations', { style: null });
+        var moreStubs = { CSSMarginRule: { name: '', style: null }, CSSNamespaceRule: { namespaceURI: '', prefix: '' }, CSSFunctionRule: { name: '', returnType: '', getParameters: emptyRules, cssRules: [] }, CSSFunctionDeclarations: { style: null },
+            CSSColorProfileRule: { name: '', src: '', renderingIntent: '', components: [] }, CSSFontFeatureValuesMap: { set: noop, get: function () { return undefined; }, has: function () { return false; }, 'delete': function () { return false; }, clear: noop, size: 0 } };
+        for (var ms in moreStubs) if (moreStubs.hasOwnProperty(ms) && !window[ms]) { window[ms] = (function () { var F = function () {}; try { F.prototype = Object.create(window.CSSRule ? window.CSSRule.prototype : Object.prototype); } catch (e) {} F.prototype.constructor = F; return F; })(); defaults(ms, moreStubs[ms]); }
+        if (window.CSSStyleDeclaration) {
+            if (!window.CSSStyleProperties) { window.CSSStyleProperties = function CSSStyleProperties() {}; window.CSSStyleProperties.prototype = Object.create(window.CSSStyleDeclaration.prototype); defaults('CSSStyleProperties', { cssFloat: '' }); }
+            if (!window.CSSPageDescriptors) { window.CSSPageDescriptors = function CSSPageDescriptors() {}; window.CSSPageDescriptors.prototype = Object.create(window.CSSStyleDeclaration.prototype); defaults('CSSPageDescriptors', { margin: '', marginTop: '', marginRight: '', marginBottom: '', marginLeft: '', 'margin-top': '', 'margin-right': '', 'margin-bottom': '', 'margin-left': '', size: '', pageOrientation: '', 'page-orientation': '', marks: '', bleed: '' }); }
+        }
+        if (!window.CSSPseudoElement) {
+            window.CSSPseudoElement = function CSSPseudoElement() {};
+            defaults('CSSPseudoElement', { type: '', element: null, parent: null, pseudo: function () { return null; }, getBoxQuads: emptyRules, convertQuadFromNode: function (q) { return q; }, convertRectFromNode: function (r) { return r; }, convertPointFromNode: function (p) { return p; }, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } });
+            if (Ep && !Ep.pseudo) Ep.pseudo = function () { return null; };
+        }
+        if (window.Text && window.Text.prototype && !window.Text.prototype.getBoxQuads) {
+            var geometry = { getBoxQuads: emptyRules, convertQuadFromNode: function (q) { return q; }, convertRectFromNode: function (r) { return r; }, convertPointFromNode: function (p) { return p; } };
+            defaults('Text', geometry); defaults('Element', geometry); defaults('Document', geometry);
+        }
+        if (Ep && !('regionOverset' in Ep)) { Ep.regionOverset = 'empty'; Ep.getRegionFlowRanges = emptyRules; }
+        // window / document / element view extras
+        if (window.HTMLImageElement && window.HTMLImageElement.prototype && !('x' in window.HTMLImageElement.prototype)) {
+            try {
+                Object.defineProperty(window.HTMLImageElement.prototype, 'x', { get: function () { return Math.round(this.getBoundingClientRect().left + window.pageXOffset); }, configurable: true });
+                Object.defineProperty(window.HTMLImageElement.prototype, 'y', { get: function () { return Math.round(this.getBoundingClientRect().top + window.pageYOffset); }, configurable: true });
+            } catch (e1) {}
+        }
+        if (window.MouseEvent && window.MouseEvent.prototype && !('x' in window.MouseEvent.prototype)) {
+            try {
+                Object.defineProperty(window.MouseEvent.prototype, 'x', { get: function () { return this.clientX; }, configurable: true });
+                Object.defineProperty(window.MouseEvent.prototype, 'y', { get: function () { return this.clientY; }, configurable: true });
+            } catch (e2) {}
+        }
+        if (!window.moveTo) { window.moveTo = noop; window.moveBy = noop; window.resizeTo = noop; window.resizeBy = noop; }
+        if (!window.scroll) window.scroll = window.scrollTo;
+        // handler attributes for the prefixed animation and transition events
+        var wireHandler = function (attr, eventName) {
+            var Hp = window.HTMLElement && window.HTMLElement.prototype;
+            if (!Hp || (attr in Hp)) return;
+            try {
+                Object.defineProperty(Hp, attr, {
+                    get: function () { return this['__' + attr] || null; },
+                    set: function (fn) { var old = this['__' + attr]; if (old && eventName) this.removeEventListener(eventName, old, false); this['__' + attr] = typeof fn === 'function' ? fn : null; if (fn && eventName) this.addEventListener(eventName, fn, false); },
+                    configurable: true
+                });
+            } catch (e3) {}
+        };
+        wireHandler('ontransitionend', 'webkitTransitionEnd'); wireHandler('ontransitionstart', null); wireHandler('ontransitionrun', null); wireHandler('ontransitioncancel', null);
+        wireHandler('onanimationstart', 'webkitAnimationStart'); wireHandler('onanimationiteration', 'webkitAnimationIteration'); wireHandler('onanimationend', 'webkitAnimationEnd'); wireHandler('onanimationcancel', null);
+        wireHandler('onsnapchanged', null); wireHandler('onsnapchanging', null);
+        var evProto = function (name) { return window[name] && window[name].prototype; };
+        if (evProto('TransitionEvent') && !('pseudoElement' in evProto('TransitionEvent'))) evProto('TransitionEvent').pseudoElement = '';
+        if (evProto('AnimationEvent') && !('pseudoElement' in evProto('AnimationEvent'))) evProto('AnimationEvent').pseudoElement = '';
+        var simpleEvent = function (name, fields) {
+            if (window[name]) return;
+            window[name] = function (type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); for (var k in fields) if (fields.hasOwnProperty(k)) e[k] = init && init[k] !== undefined ? init[k] : fields[k]; return e; };
+            try { window[name].prototype = Object.create(window.Event.prototype); window[name].prototype.constructor = window[name]; for (var f in fields) if (fields.hasOwnProperty(f)) window[name].prototype[f] = fields[f]; } catch (e4) {}
+        };
+        simpleEvent('SnapEvent', { snapTargetBlock: null, snapTargetInline: null });
+        simpleEvent('ContentVisibilityAutoStateChangeEvent', { skipped: false });
+        simpleEvent('PageRevealEvent', { viewTransition: null });
+        simpleEvent('AnimationPlaybackEvent', { currentTime: null, timelineTime: null });
+        simpleEvent('NavigationEvent', { dir: '', relatedTarget: null });
+        // view transitions: the callback runs at once, the promises resolve (the spec's own fallback)
+        if (!document.startViewTransition) {
+            window.ViewTransition = window.ViewTransition || function ViewTransition() { this.updateCallbackDone = resolved(); this.ready = resolved(); this.finished = resolved(); };
+            window.ViewTransition.prototype.skipTransition = noop;
+            document.startViewTransition = function (cb) {
+                var t = new window.ViewTransition(), fn = typeof cb === 'function' ? cb : cb && typeof cb.update === 'function' ? cb.update : null;
+                var done = P ? new P(function (res, rej) { try { res(fn ? fn() : undefined); } catch (e) { rej(e); } }) : null;
+                if (done) { t.updateCallbackDone = done; t.ready = done; t.finished = done; }
+                return t;
+            };
+        }
+        // animation timelines and effects (web-animations-2, scroll-animations-1)
+        if (window.AnimationTimeline) {
+            defaults('AnimationTimeline', { currentTime: 0, duration: null, play: function () { return new window.Animation(); } });
+            if (!window.ScrollTimeline) { window.ScrollTimeline = function ScrollTimeline(options) { this.source = options && options.source || null; this.axis = options && options.axis || 'block'; }; window.ScrollTimeline.prototype = Object.create(window.AnimationTimeline.prototype); defaults('ScrollTimeline', { source: null, axis: 'block' }); }
+            if (!window.ViewTimeline) { window.ViewTimeline = function ViewTimeline(options) { try { window.ScrollTimeline.call(this, options); } catch (e) {} this.subject = options && options.subject || null; this.startOffset = null; this.endOffset = null; }; window.ViewTimeline.prototype = Object.create(window.ScrollTimeline.prototype); defaults('ViewTimeline', { subject: null, startOffset: null, endOffset: null }); }
+        }
+        if (window.AnimationEffect) {
+            defaults('AnimationEffect', { parent: null, previousSibling: null, nextSibling: null, before: noop, after: noop, replace: noop, remove: noop, getTiming: function () { return {}; }, getComputedTiming: function () { return {}; }, updateTiming: noop });
+            defaults('KeyframeEffect', { iterationComposite: 'replace', iteratonComposite: 'replace' });
+            if (!window.GroupEffect) {
+                window.AnimationNodeList = function AnimationNodeList() { this.length = 0; }; window.AnimationNodeList.prototype.item = function () { return null; }; window.AnimationNodeList.prototype.length = 0;
+                window.GroupEffect = function GroupEffect(children) { this.children = new window.AnimationNodeList(); this.firstChild = children && children[0] || null; this.lastChild = children && children[children.length - 1] || null; };
+                window.GroupEffect.prototype = Object.create(window.AnimationEffect.prototype);
+                defaults('GroupEffect', { children: null, firstChild: null, lastChild: null, clone: function () { return new window.GroupEffect(); }, prepend: noop, append: noop });
+                window.SequenceEffect = function SequenceEffect(children) { window.GroupEffect.call(this, children); };
+                window.SequenceEffect.prototype = Object.create(window.GroupEffect.prototype);
+                defaults('SequenceEffect', { clone: function () { return new window.SequenceEffect(); } });
+            }
+        }
+        if (window.Animation && !window.WorkletAnimation) { window.WorkletAnimation = function WorkletAnimation(name) { try { window.Animation.call(this); } catch (e) {} this.animatorName = name || ''; }; window.WorkletAnimation.prototype = Object.create(window.Animation.prototype); defaults('WorkletAnimation', { animatorName: '' }); }
+        // resize observer entries with box sizes
+        if (window.ResizeObserverEntry && window.ResizeObserverEntry.prototype && !('borderBoxSize' in window.ResizeObserverEntry.prototype)) {
+            window.ResizeObserverSize = window.ResizeObserverSize || function ResizeObserverSize(inlineSize, blockSize) { this.inlineSize = inlineSize; this.blockSize = blockSize; };
+            defaults('ResizeObserverSize', { inlineSize: 0, blockSize: 0 });
+            var sizeOf = function (entry, border) { var t = entry.target, w = border ? t.offsetWidth : t.clientWidth, h = border ? t.offsetHeight : t.clientHeight; return [new window.ResizeObserverSize(w || 0, h || 0)]; };
+            try {
+                Object.defineProperty(window.ResizeObserverEntry.prototype, 'borderBoxSize', { get: function () { return sizeOf(this, true); }, configurable: true });
+                Object.defineProperty(window.ResizeObserverEntry.prototype, 'contentBoxSize', { get: function () { return sizeOf(this, false); }, configurable: true });
+                Object.defineProperty(window.ResizeObserverEntry.prototype, 'devicePixelContentBoxSize', { get: function () { var s = sizeOf(this, false)[0], r = window.devicePixelRatio || 1; return [new window.ResizeObserverSize(s.inlineSize * r, s.blockSize * r)]; }, configurable: true });
+            } catch (e5) {}
+        }
+        // font loading extras
+        if (window.FontFace) {
+            if (!window.FontFaceFeatures) window.FontFaceFeatures = function FontFaceFeatures() {};
+            if (!window.FontFaceVariationAxis) { window.FontFaceVariationAxis = function FontFaceVariationAxis() {}; defaults('FontFaceVariationAxis', { name: '', axisTag: '', minimumValue: 0, maximumValue: 0, defaultValue: 0 }); }
+            if (!window.FontFacePalettes) { window.FontFacePalettes = function FontFacePalettes() {}; defaults('FontFacePalettes', { length: 0 }); }
+            if (!window.FontFacePalette) { window.FontFacePalette = function FontFacePalette() {}; defaults('FontFacePalette', { length: 0, usableWithLightBackground: false, usableWithDarkBackground: false }); }
+        }
+        if (!window.Viewport) { window.Viewport = function Viewport() {}; defaults('Viewport', { segments: null }); if (!window.viewport) window.viewport = new window.Viewport(); }
+    } catch (eCSSOM2) {}
 })(window, document);

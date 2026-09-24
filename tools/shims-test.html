@@ -6,6 +6,19 @@
 <script>
 window.__errors = [];
 window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+// ?strip removes the desktop browser's own implementations first, so the shims (Typed OM, CSSOM extras, view
+// transitions, worklets) are the ones exercised here
+if (/[?&]strip/.test(location.search)) {
+    var names = ['CSSStyleValue', 'CSSKeywordValue', 'CSSUnparsedValue', 'CSSVariableReferenceValue', 'CSSNumericValue', 'CSSUnitValue', 'CSSMathValue', 'CSSMathSum', 'CSSMathProduct',
+        'CSSMathNegate', 'CSSMathInvert', 'CSSMathMin', 'CSSMathMax', 'CSSMathClamp', 'CSSNumericArray', 'CSSTransformValue', 'CSSTransformComponent', 'CSSTranslate', 'CSSRotate', 'CSSScale',
+        'CSSSkew', 'CSSSkewX', 'CSSSkewY', 'CSSPerspective', 'CSSMatrixComponent', 'CSSImageValue', 'CSSColorValue', 'CSSRGB', 'CSSHSL', 'CSSHWB', 'CSSLab', 'CSSLCH', 'CSSOKLab', 'CSSOKLCH',
+        'CSSColor', 'StylePropertyMapReadOnly', 'StylePropertyMap', 'Worklet', 'ViewTransition', 'ScrollTimeline', 'ViewTimeline', 'GroupEffect', 'SequenceEffect', 'CSSMarginRule',
+        'CSSNamespaceRule', 'CSSStyleProperties', 'CSSPageDescriptors', 'CSSPseudoElement', 'SnapEvent', 'ResizeObserverSize', 'AnimationPlaybackEvent', 'PageRevealEvent'];
+    for (var i = 0; i < names.length; i++) try { delete window[names[i]]; } catch (e) {}
+    try { delete Element.prototype.computedStyleMap; delete Element.prototype.attributeStyleMap; delete HTMLElement.prototype.attributeStyleMap; delete document.startViewTransition; delete Document.prototype.startViewTransition; } catch (e2) {}
+    try { delete HTMLElement.prototype.ontransitionend; delete HTMLElement.prototype.onanimationend; } catch (e3) {}
+    try { for (var k in window.CSS) if (typeof window.CSS[k] === 'function' && k !== 'supports' && k !== 'escape') delete window.CSS[k]; } catch (e4) {}
+}
 </script>
 <script src="../Resources/shims.js"></script>
 <script src="../Resources/shims-extra.js"></script>
