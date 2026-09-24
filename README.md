@@ -21,7 +21,11 @@ the app around it:
   (conic gradients become linear ones with the same stops), modern colours (`oklch()`, `color-mix()`,
   relative colour syntax `rgb(from …)`, `contrast-color()`, `light-dark()`), `image()` and
   `cross-fade()`, two-value `display`, `line-clamp`, `:is()`/`:where()`, `@supports`, `@layer`,
-  logical properties and more, so that 2012 WebKit renders modern stylesheets.
+  logical properties, css-text-4 `white-space`/`text-wrap` keywords, `lh`/`cap`/`ic` units, alignment
+  qualifiers (`safe`, `first baseline`) and more, so that 2012 WebKit renders modern stylesheets.
+  Pseudo-classes the engine lacks (`:focus-within`, `:placeholder-shown`, `:user-invalid`/`:user-valid`,
+  `:blank`, `:target-within`, `:playing`/`:paused`/`:muted`, `:local-link`, `:modal`, `:fullscreen`)
+  become classes that a shim keeps up to date on the elements.
 - **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
   **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
   very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's
@@ -42,7 +46,9 @@ the app around it:
   definitions of browserscore.dev (the css3test successor; `browserscore/features`, MIT, flattened at
   build time by `tools/browserscore-convert.mjs`) with an ES5 runner that reports three states per
   test: accepted natively, accepted after the CSS rewriter, missing. `tools/browserscore-dev.html`
-  runs the same thing in a desktop browser against a checkout served as `/repo/`.
+  runs the same thing in a desktop browser against a checkout served as `/repo/`, and
+  `tools/browserscore-estimate.html` takes a result JSON from the device and estimates what the current
+  rewriter would add to it, grouping what is still missing.
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
   shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
   TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship

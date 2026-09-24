@@ -54,6 +54,16 @@
         if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(fn, 0);
         else document.addEventListener('DOMContentLoaded', fn, false);
     }
+    // adds or removes one of the state classes cssfix substitutes for pseudo-classes the engine lacks
+    function setStateClass(el, cls, on) {
+        if (!el || el.nodeType !== 1) return;
+        try {
+            var cur = ' ' + (el.className && typeof el.className === 'string' ? el.className : '') + ' ';
+            var has = cur.indexOf(' ' + cls + ' ') >= 0;
+            if (on && !has) el.className = (el.className ? el.className + ' ' : '') + cls;
+            else if (!on && has) el.className = cur.replace(' ' + cls + ' ', ' ').replace(/^\s+|\s+$/g, '');
+        } catch (e) {}
+    }
     // One observer for everything that reacts to new DOM nodes
     var addedCallbacks = [], settledCallbacks = [], settleTimer = null;
     function observeAdded(fn) { addedCallbacks.push(fn); }
@@ -158,13 +168,15 @@
         navigator.canShare = function (data) { return !!(data && (data.url || data.text || data.title)); };
     }
     // Clipboard writes go to the system pasteboard through the app; window.print() opens the print dialog
-    navigator.clipboard = {
-        writeText: function (text) { return sendToApp('brcopy', String(text)) ? resolved() : rejectWith('NotAllowedError', 'copy failed')(); },
-        write: function () { return rejectWith('NotAllowedError', 'only text can be copied')(); },
-        readText: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); },
-        read: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); }
-    };
-    window.print = function () { sendToApp('brprint', '1'); };
+    try {
+        navigator.clipboard = {
+            writeText: function (text) { return sendToApp('brcopy', String(text)) ? resolved() : rejectWith('NotAllowedError', 'copy failed')(); },
+            write: function () { return rejectWith('NotAllowedError', 'only text can be copied')(); },
+            readText: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); },
+            read: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); }
+        };
+        window.print = function () { sendToApp('brprint', '1'); };
+    } catch (e) {}   // a desktop browser (the smoke test) has a read-only navigator.clipboard
     try {
         var execCommandOrig = document.execCommand;
         document.execCommand = function (cmd) {
@@ -298,6 +310,7 @@
             var el = fsElement;
             fsElement = null;
             if (!el) return resolved();
+            setStateClass(el, 'br-fullscreen', false);
             if (el.tagName === 'VIDEO' && el.webkitExitFullscreen) { try { el.webkitExitFullscreen(); } catch (e) {} }
             else {
                 el.style.cssText = el.__brFsStyle || '';
@@ -314,6 +327,7 @@
             var el = this;
             if (fsElement && fsElement !== el) leaveFullscreen();
             fsElement = el;
+            setStateClass(el, 'br-fullscreen', true);
             if (el.tagName === 'VIDEO' && el.webkitEnterFullscreen) {
                 try { el.webkitEnterFullscreen(); } catch (e) {}
                 el.addEventListener('webkitendfullscreen', function onEnd() { el.removeEventListener('webkitendfullscreen', onEnd, false); if (fsElement === el) leaveFullscreen(); }, false);
@@ -445,15 +459,24 @@
         addStyle('dialog{position:absolute;left:0;right:0;width:-webkit-fit-content;width:fit-content;height:-webkit-fit-content;height:fit-content;margin:auto;border:solid;padding:1em;background:white;color:black;display:block}' +
                  'dialog:not([open]){display:none}dialog+.backdrop{position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,0.1)}' +
                  '._dialog_overlay{position:fixed;top:0;right:0;bottom:0;left:0}dialog.fixed{position:fixed;top:50%;-webkit-transform:translate(0,-50%);transform:translate(0,-50%)}');
+        // :modal (cssfix rewrites it to .br-modal) follows showModal()/close()
+        var registerDialog = function (el) {
+            try { dp.registerDialog(el); } catch (e) { return; }
+            if (el.__brModalWrapped || typeof el.showModal !== 'function') return;
+            el.__brModalWrapped = true;
+            var origShowModal = el.showModal, origClose = el.close;
+            el.showModal = function () { var r = origShowModal.apply(this, arguments); setStateClass(this, 'br-modal', true); return r; };
+            el.close = function () { setStateClass(this, 'br-modal', false); return origClose.apply(this, arguments); };
+        };
         var registerDialogs = function registerDialogs(root) {
-            if (root.nodeType === 1 && root.tagName === 'DIALOG') try { dp.registerDialog(root); } catch (e) {}
+            if (root.nodeType === 1 && root.tagName === 'DIALOG') registerDialog(root);
             var list = root.querySelectorAll ? root.querySelectorAll('dialog') : [];
-            for (var i = 0; i < list.length; i++) try { dp.registerDialog(list[i]); } catch (e2) {}
+            for (var i = 0; i < list.length; i++) registerDialog(list[i]);
         };
         var origCreateElement = document.createElement;
         document.createElement = function (name) {
             var el = origCreateElement.apply(document, arguments);
-            if (String(name).toLowerCase() === 'dialog') try { dp.registerDialog(el); } catch (e) {}
+            if (String(name).toLowerCase() === 'dialog') registerDialog(el);
             return el;
         };
         onReady(function () { registerDialogs(document); });
@@ -986,6 +1009,92 @@
     };
     onReady(unboxControls);
     onSettled(unboxControls);
+    // ---- Pseudo-classes as classes: cssfix rewrites :focus-within, :placeholder-shown, :user-invalid/:user-valid,
+    // :blank, :target-within, :playing/:paused/:muted and :local-link to .br-* classes that are kept up to date here.
+    (function () {
+        var focusChain = [];
+        var setChain = function (el, on) { for (var n = el; n && n.nodeType === 1; n = n.parentNode) setStateClass(n, 'br-focus-within', on); };
+        var onFocus = function (e) {
+            var t = e.target;
+            if (!t || t.nodeType !== 1) return;
+            for (var i = 0; i < focusChain.length; i++) setStateClass(focusChain[i], 'br-focus-within', false);
+            focusChain = [];
+            for (var n = t; n && n.nodeType === 1; n = n.parentNode) { setStateClass(n, 'br-focus-within', true); focusChain.push(n); }
+        };
+        var onBlur = function () {
+            setTimeout(function () {
+                var active = document.activeElement;
+                if (active && active !== document.body && active !== document.documentElement) return;   // focus moved elsewhere: onFocus handled it
+                for (var i = 0; i < focusChain.length; i++) setStateClass(focusChain[i], 'br-focus-within', false);
+                focusChain = [];
+            }, 0);
+        };
+        document.addEventListener('focus', onFocus, true);
+        document.addEventListener('blur', onBlur, true);
+        // text fields: placeholder-shown / blank, user-invalid / user-valid after the user has touched the field
+        var isField = function (el) { return el && el.nodeType === 1 && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'); };
+        var updateField = function (el, touched) {
+            if (!isField(el)) return;
+            var empty = el.tagName === 'SELECT' ? false : !el.value;
+            setStateClass(el, 'br-blank', empty);
+            setStateClass(el, 'br-placeholder-shown', empty && !!el.getAttribute('placeholder'));
+            if (touched) el.__brTouched = true;
+            if (el.__brTouched && typeof el.checkValidity === 'function') {
+                var valid = true;
+                try { valid = el.checkValidity(); } catch (e) {}
+                setStateClass(el, 'br-user-invalid', !valid);
+                setStateClass(el, 'br-user-valid', valid && !!el.value);
+            }
+        };
+        var scanFields = function () {
+            try { var all = document.querySelectorAll('input, textarea'); for (var i = 0; i < all.length; i++) updateField(all[i], false); } catch (e) {}
+        };
+        document.addEventListener('input', function (e) { updateField(e.target, false); }, true);
+        document.addEventListener('change', function (e) { updateField(e.target, true); }, true);
+        document.addEventListener('blur', function (e) { if (isField(e.target) && e.target.value) updateField(e.target, true); }, true);
+        document.addEventListener('invalid', function (e) { updateField(e.target, true); }, true);
+        document.addEventListener('reset', function () { setTimeout(scanFields, 0); }, true);
+        onReady(scanFields);
+        onSettled(scanFields);
+        setInterval(scanFields, 1500);   // programmatic value changes
+        // media
+        var mediaState = function (e) {
+            var m = e.target;
+            if (!m || (m.tagName !== 'VIDEO' && m.tagName !== 'AUDIO')) return;
+            setStateClass(m, 'br-playing', !m.paused && !m.ended);
+            setStateClass(m, 'br-paused', m.paused || m.ended);
+            setStateClass(m, 'br-muted', !!m.muted || m.volume === 0);
+        };
+        var mediaEvents = ['play', 'playing', 'pause', 'ended', 'volumechange', 'loadedmetadata', 'emptied'];
+        for (var me = 0; me < mediaEvents.length; me++) document.addEventListener(mediaEvents[me], mediaState, true);
+        // :target-within
+        var targetChain = [];
+        var updateTarget = function () {
+            for (var i = 0; i < targetChain.length; i++) setStateClass(targetChain[i], 'br-target-within', false);
+            targetChain = [];
+            var id = location.hash ? decodeURIComponent(location.hash.slice(1)) : '';
+            if (!id) return;
+            var t = null;
+            try { t = document.getElementById(id); } catch (e) {}
+            for (var n = t; n && n.nodeType === 1; n = n.parentNode) { setStateClass(n, 'br-target-within', true); targetChain.push(n); }
+        };
+        window.addEventListener('hashchange', updateTarget, false);
+        onReady(updateTarget);
+        // :local-link: links to the current site
+        var markLocalLinks = function (root) {
+            try {
+                var links = (root && root.querySelectorAll ? root : document).querySelectorAll('a[href]');
+                for (var i = 0; i < links.length; i++) {
+                    var a = links[i];
+                    if (a.__brLocalChecked) continue;
+                    a.__brLocalChecked = true;
+                    if (a.host === location.host && a.protocol === location.protocol) setStateClass(a, 'br-local-link', true);
+                }
+            } catch (e) {}
+        };
+        onReady(function () { markLocalLinks(document); });
+        onSettled(function () { markLocalLinks(document); });
+    })();
     // The engine knows WebGL only under its experimental name; pages ask for 'webgl' (and 'webgl2', which does not exist here)
     if (HCp && HCp.getContext && !HCp.__brGLAlias) {
         HCp.__brGLAlias = true;

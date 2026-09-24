@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Browserscore estimate</title>
+<style>
+body { font-family: sans-serif; margin: 16px; font-size: 14px; }
+pre { font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Browserscore estimate</h1>
+<p>Takes a result JSON from the device (<code>?result=/samples/browserscore-71.json</code>), re-runs the current
+<code>cssfix.js</code> on every test the device reported missing and estimates which ones the rewriter would now
+turn into something the engine accepts ("changed" output). JS API tests cannot be estimated here.
+Serve the folder like <code>browserscore-dev.html</code> (checkout under <code>/repo/</code>).</p>
+<pre id="out">…</pre>
+<script src="../Resources/cssfix.js"></script>
+<script type="module">
+import { convertAll } from './browserscore-convert.mjs';
+import * as specs from '/repo/specs.js';
+const params = new URLSearchParams(location.search);
+const resultURL = params.get('result') || '/samples/browserscore-71.json';
+const data = convertAll(specs);
+const result = await (await fetch(resultURL)).json();
+const byId = {};
+for (const s of result.specs) byId[s.id] = s;
+const fix = window.CSSFix;
+const ctx = () => fix.makeContext();
+const CONTEXT_PROPS = /^(gap|row-gap|column-gap|justify-content|justify-items|justify-self|align-items|align-content|align-self|place-(content|items|self)|order|flex.*|grid.*)$/;
+const norm = s => s.replace(/\s+/g, '').toLowerCase();
+
+function describe (t) {
+	switch (t.k) {
+		case 'prop': return t.p;
+		case 'val': return t.p + ': ' + t.v;
+		case 'sel': return t.s;
+		case 'at': return t.code + (t.parent ? ' (v ' + t.parent + ')' : '');
+		case 'desc': return t.at + ' { ' + t.d + ' }';
+		case 'descval': return t.at + ' { ' + t.d + ': ' + t.v + ' }';
+		case 'mq': return '@media ' + t.q;
+		case 'global': return t.g;
+		case 'member': return t.g + (t.path ? '.prototype.' : '.') + t.m + (t.fn ? '()' : '');
+		case 'extends': return t.g + ' extends ' + t.s;
+		case 'instanceof': return t.g + ' instanceof ' + t.c;
+	}
+	return JSON.stringify(t);
+}
+function rewrite (css) { try { return fix.fixCSS(css, ctx()) || ''; } catch (e) { return ''; } }
+function parseRewritten (css) {   // "sel{p:v;p:v}\nsel2{...}" -> [{sel, decls:[[p,v]]}]
+	const rules = [], re = /([^{}]+)\{([^{}]*)\}/g;
+	let m;
+	while ((m = re.exec(css)) !== null) {
+		const decls = [];
+		for (const part of m[2].split(';')) {
+			const colon = part.indexOf(':');
+			if (colon < 0) continue;
+			decls.push([part.slice(0, colon).trim(), part.slice(colon + 1).trim().replace(/\s*!important$/, '')]);
+		}
+		rules.push({ sel: m[1].trim(), decls });
+	}
+	return rules;
+}
+
+// ---- what the device accepts natively: every "prop: value" it passed without the rewriter, plus simple values
+// on properties it knows (the old engine's own prefixed properties included)
+const nativeLabels = new Set(), knownProps = new Set(), knownValues = {};
+for (const spec of data) {
+	const dev = byId[spec.id];
+	if (!dev) continue;
+	const missing = new Set(dev.missing), emulated = new Set(dev.emulated_list || []);
+	for (const f of spec.features) {
+		const gateLabel = f.gate ? describe(f.gate) : null;
+		if (f.gate && (missing.has(gateLabel) || missing.has(gateLabel + ' (+' + f.tests.length + ')'))) continue;
+		for (const t of (f.gate ? [f.gate].concat(f.tests) : f.tests)) {
+			const label = describe(t);
+			if (missing.has(label) || emulated.has(label)) continue;
+			nativeLabels.add(label);
+			if (t.k === 'val') { knownProps.add(t.p); (knownValues[t.p] = knownValues[t.p] || new Set()).add(t.v.toLowerCase()); }
+			if (t.k === 'prop') knownProps.add(t.p);
+		}
+	}
+}
+const WEBKIT_PROPS = /^-webkit-(transform|transform-origin|transform-style|transition|transition-[a-z-]+|animation|animation-[a-z-]+|backface-visibility|perspective|perspective-origin|column-[a-z-]+|columns|user-select|appearance|filter|mask|mask-[a-z-]+|text-size-adjust|font-feature-settings|hyphens|box-decoration-break|font-kerning|writing-mode|line-clamp|box-reflect|text-stroke|text-stroke-[a-z]+|text-fill-color|box-orient|box-direction|box-pack|box-align|box-flex|box-ordinal-group|box-lines|box-sizing|text-emphasis[a-z-]*|font-smoothing|overflow-scrolling|tap-highlight-color|print-color-adjust|line-break|background-clip|border-image[a-z-]*|border-radius|box-shadow|text-orientation|text-combine)$/;
+const SIMPLE_TOKEN = /^(-?[\d.]+(px|em|rem|%|deg|rad|turn|s|ms|vw|vh|vmin|vmax|pt|cm|mm|in|ex|ch)?|auto|none|normal|inherit|initial|both|hidden|visible|scroll|block|inline|inline-block|inline-table|table|table-cell|table-row|list-item|left|right|center|top|bottom|justify|stretch|baseline|middle|horizontal|vertical|reverse|multiple|single|border-box|content-box|padding-box|solid|dotted|dashed|double|underline|overline|line-through|blink|small-caps|bold|bolder|lighter|italic|oblique|nowrap|pre|pre-wrap|pre-line|break-word|break-all|keep-all|loose|strict|always|avoid|optimizespeed|optimizelegibility|transparent|currentcolor|repeat|no-repeat|repeat-x|repeat-y|cover|contain|fixed|absolute|relative|static|ltr|rtl|start|end|ease|linear|ease-in|ease-out|ease-in-out|infinite|alternate|forwards|backwards|running|paused|[a-z]+|rgba?\([\d.,\s]+\)|#[0-9a-f]{3,6}|"[^"]*"|'[^']*'|url\([^)]*\)|-webkit-(box|inline-box|fill-available|sticky|calc\(.*\)|linear-gradient\(.*\)|repeating-linear-gradient\(.*\)|radial-gradient\(.*\)|repeating-radial-gradient\(.*\)|image-set\(.*\)|cross-fade\(.*\)|any\(.*\)|gradient\(.*\))|(translate|translate3d|translatex|translatey|translatez|rotate|rotatex|rotatey|rotatez|rotate3d|scale|scale3d|scalex|scaley|scalez|skew|skewx|skewy|matrix|matrix3d|perspective)\([^)]*\)|(blur|brightness|contrast|grayscale|invert|opacity|saturate|sepia|hue-rotate|drop-shadow)\([^)]*\)|(steps|cubic-bezier)\([^)]*\))$/i;
+function splitTokens (v) {
+	const out = []; let depth = 0, start = 0;
+	for (let i = 0; i < v.length; i++) {
+		const c = v[i];
+		if (c === '(') depth++; else if (c === ')') depth--;
+		else if (depth === 0 && (c === ' ' || c === ',' || c === '/')) { if (i > start) out.push(v.slice(start, i)); start = i + 1; }
+	}
+	if (v.length > start) out.push(v.slice(start));
+	return out;
+}
+function deviceAccepts (p, v) {
+	if (nativeLabels.has(p + ': ' + v)) return true;
+	const lv = v.toLowerCase().trim();
+	if (knownValues[p] && knownValues[p].has(lv)) return true;
+	if (!knownProps.has(p) && !WEBKIT_PROPS.test(p)) return false;
+	if (/^(inherit|initial)$/.test(lv)) return true;
+	return splitTokens(lv).every(t => SIMPLE_TOKEN.test(t));
+}
+const contextBaseline = {};
+function contextRuleCount (context) {
+	if (!context) return 1;
+	if (contextBaseline[context] === undefined) contextBaseline[context] = parseRewritten(rewrite('.bs{' + context + '}')).length;
+	return contextBaseline[context];
+}
+function declEmulated (p, v, context) {   // browserscore.js emulatedDeclaration with the device heuristic
+	const css = '.bs{' + (context || '') + p + ':' + v + '}';
+	const out = rewrite(css);
+	if (!out) return false;
+	const rules = parseRewritten(out);
+	if (!rules.length) return false;
+	const main = rules[0];
+	const extra = rules.length > contextRuleCount(context);
+	let accepted = extra, changed = extra;
+	const contextProps = context ? parseRewritten(rewrite('.bs{' + context + '}'))[0].decls : [];
+	for (const [dp, dv] of main.decls) {
+		if (contextProps.some(c => c[0] === dp && c[1] === dv)) continue;
+		if (dp !== p || dv.toLowerCase() !== v.toLowerCase()) changed = true;
+		if (deviceAccepts(dp, dv)) accepted = true;
+	}
+	return changed && accepted;
+}
+function valueChanged (p, v) {
+	if (declEmulated(p, v, '')) return true;
+	if (CONTEXT_PROPS.test(p)) return declEmulated(p, v, 'display:flex;') || declEmulated(p, v, 'display:grid;grid-template-columns:1fr 1fr;');
+	return false;
+}
+function estimate (t) {
+	try {
+		switch (t.k) {
+			case 'prop': return valueChanged(t.p, 'inherit') || valueChanged(t.p, 'initial') || (CONTEXT_PROPS.test(t.p) && valueChanged(t.p, '1px'));
+			case 'val': return valueChanged(t.p, t.v);
+			case 'sel': {
+				if (t.s.indexOf('&') >= 0) return /\.bs[^{]*\{color:rgb\(1,2,3\)\}/.test(rewrite('.bs{' + t.s + '{color:rgb(1,2,3)}}'));
+				const list = fix.fixSelectorList(t.s);
+				return list.length > 0 && list.some(s => s !== t.s);
+			}
+			case 'at': {
+				if (t.parent) return false;
+				const m = /^@([a-z-]+)\s*([\s\S]*)$/i.exec(t.code);
+				if (!m) return false;
+				const name = m[1].toLowerCase(), prelude = m[2].trim();
+				if (name === 'supports') return typeof fix.evalSupports(prelude) === 'boolean';
+				if (name === 'media') return typeof fix.fixMedia(prelude) === 'string';
+				if (name === 'layer' || name === 'scope' || name === 'property') return true;
+				const inner = typeof t.contents === 'string' && t.contents ? t.contents : '.bs{color:rgb(1,2,3)}';
+				const css = t.contents === false ? t.code + ';' : t.code + '{' + inner + '}';
+				const out = rewrite(css);
+				return out.trim() !== '' && norm(out) !== norm(css);
+			}
+			case 'mq': return fix.fixMedia(t.q) !== t.q;
+		}
+	} catch (e) { return false; }
+	return null;   // JS API: unknown here
+}
+
+let devicePass = 0, deviceTotal = 0, nowEmulated = 0, stillMissing = 0, unknown = 0;
+const groups = {};   // key -> { count, samples }
+const newly = {};    // spec -> count
+const newlyList = {};   // spec -> labels (window.ESTIMATE.newlyList)
+function addGroup (key, sample) {
+	const g = groups[key] || (groups[key] = { count: 0, samples: [] });
+	g.count++;
+	if (g.samples.length < 5) g.samples.push(sample);
+}
+for (const spec of data) {
+	const dev = byId[spec.id];
+	if (!dev) continue;
+	const missing = new Set(dev.missing);
+	deviceTotal += spec.total;
+	for (const f of spec.features) {
+		let gateMissing = false;
+		if (f.gate) {
+			const label = describe(f.gate);
+			gateMissing = missing.has(label) || missing.has(label + ' (+' + f.tests.length + ')');
+		}
+		const tests = f.gate ? [f.gate].concat(f.tests) : f.tests;
+		const gateNowOk = f.gate && gateMissing ? estimate(f.gate) : true;
+		for (const t of tests) {
+			const label = describe(t);
+			const isMissing = gateMissing || missing.has(label);
+			if (!isMissing) { devicePass++; continue; }
+			const est = (t === f.gate) ? gateNowOk : (gateNowOk === false ? false : estimate(t));
+			if (est === true) { nowEmulated++; newly[spec.id] = (newly[spec.id] || 0) + 1; (newlyList[spec.id] = newlyList[spec.id] || []).push(label); continue; }
+			if (est === null) { unknown++; addGroup('JS ' + spec.id, label); continue; }
+			stillMissing++;
+			const key = t.k === 'val' ? 'val ' + t.p : t.k === 'prop' ? 'prop ' + t.p : t.k === 'sel' ? 'sel' : t.k === 'at' ? 'at ' + (t.code.split(/[\s{]/)[0]) : t.k === 'mq' ? 'mq' : t.k;
+			addGroup(key + '  [' + spec.id + ']', label);
+		}
+	}
+}
+const lines = [];
+lines.push('device: ' + devicePass + ' passing of ' + deviceTotal + ' (' + (devicePass * 100 / deviceTotal).toFixed(1) + ' %)');
+lines.push('estimate with current cssfix: +' + nowEmulated + ' emulated -> ' + (devicePass + nowEmulated) + ' (' + ((devicePass + nowEmulated) * 100 / deviceTotal).toFixed(1) + ' %); still missing CSS ' + stillMissing + ', JS API not estimated ' + unknown);
+lines.push('');
+lines.push('--- newly emulated by spec');
+for (const [id, n] of Object.entries(newly).sort((a, b) => b[1] - a[1])) lines.push('  ' + id + ': +' + n);
+lines.push('');
+lines.push('--- still missing, grouped (count, samples)');
+for (const [key, g] of Object.entries(groups).sort((a, b) => b[1].count - a[1].count)) {
+	lines.push(String(g.count).padStart(5) + '  ' + key + '   e.g. ' + g.samples.join(' | '));
+}
+document.getElementById('out').textContent = lines.join('\n');
+window.ESTIMATE = { devicePass, deviceTotal, nowEmulated, stillMissing, unknown, groups, newly, newlyList };
+</script>
+</body>
+</html>

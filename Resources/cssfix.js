@@ -859,7 +859,10 @@ var CSSFix = (function () {
             case 'vh': return { n: n * g_viewportHeight / 100, u: 'px' };
             case 'vmin': return { n: n * Math.min(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
             case 'vmax': return { n: n * Math.max(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
-            case 'rem': case 'em': return { n: n * 16, u: 'px' };
+            case 'rem': case 'em': case 'ic': case 'ric': return { n: n * 16, u: 'px' };
+            case 'lh': case 'rlh': return { n: n * 16 * 1.2, u: 'px' };
+            case 'cap': case 'rcap': return { n: n * 16 * 0.7, u: 'px' };
+            case 'rex': case 'rch': return { n: n * 8, u: 'px' };
             case 'pt': return { n: n * 4 / 3, u: 'px' };
             case 'pc': return { n: n * 16, u: 'px' };
             case 'in': return { n: n * 96, u: 'px' };
@@ -1100,6 +1103,9 @@ var CSSFix = (function () {
         'text-align': 1, 'text-indent': 1, 'text-transform': 1, visibility: 1, 'white-space': 1, 'word-spacing': 1, 'word-break': 1, 'word-wrap': 1,
         'overflow-wrap': 1, 'caption-side': 1, 'border-collapse': 1, 'border-spacing': 1, 'empty-cells': 1, 'tab-size': 1, hyphens: 1, 'text-shadow': 1 };
 
+    // lh = line height (normal is about 1.2 em), cap = cap height, ic = ideographic advance, rex/rch = root ex/ch
+    var FONT_UNITS = { lh: [1.2, 'em'], rlh: [1.2, 'rem'], cap: [0.7, 'em'], rcap: [0.7, 'rem'], ic: [1, 'em'], ric: [1, 'rem'], rex: [0.5, 'rem'], rch: [0.5, 'rem'] };
+
     var SIZING = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, 'flex-basis': 1,
         'inline-size': 1, 'block-size': 1, 'min-inline-size': 1, 'max-inline-size': 1, 'min-block-size': 1, 'max-block-size': 1 };
 
@@ -1107,10 +1113,15 @@ var CSSFix = (function () {
         if (v.indexOf('(') >= 0) v = transformFunctions(v);
         v = fixHexAlpha(v);
         if (COLOR_KEYWORD_RE.test(v)) v = v.replace(new RegExp(COLOR_KEYWORD_RE.source, 'gi'), function (m) { return COLOR_KEYWORDS[m.toLowerCase()] || m; });
-        if (/\d(dvh|svh|lvh|dvw|svw|lvw|cqw|cqh|cqi|cqb|cqmin|cqmax|vi|vb)\b/.test(v)) {
-            v = v.replace(/(\d)(dvh|svh|lvh|cqh|cqb|vb)\b/g, '$1vh').replace(/(\d)(dvw|svw|lvw|cqw|cqi|vi)\b/g, '$1vw')
-                 .replace(/(\d)cqmin\b/g, '$1vmin').replace(/(\d)cqmax\b/g, '$1vmax');
+        if (/\d(dvh|svh|lvh|dvw|svw|lvw|cqw|cqh|cqi|cqb|cqmin|cqmax|vi|vb|svi|lvi|dvi|svb|lvb|dvb|svmin|lvmin|dvmin|svmax|lvmax|dvmax)\b/.test(v)) {
+            v = v.replace(/(\d)(dvh|svh|lvh|cqh|cqb|vb|svb|lvb|dvb)\b/g, '$1vh').replace(/(\d)(dvw|svw|lvw|cqw|cqi|vi|svi|lvi|dvi)\b/g, '$1vw')
+                 .replace(/(\d)(cqmin|svmin|lvmin|dvmin)\b/g, '$1vmin').replace(/(\d)(cqmax|svmax|lvmax|dvmax)\b/g, '$1vmax');
         }
+        // font-relative units the engine lacks, as their typical em/rem equivalents
+        if (/\d(lh|rlh|cap|rcap|ic|ric|rex|rch)\b/.test(v)) v = v.replace(/(-?\d*\.?\d+)(lh|rlh|cap|rcap|ic|ric|rex|rch)\b/g, function (m, num, unit) {
+            var f = FONT_UNITS[unit];
+            return (Math.round(parseFloat(num) * f[0] * 1000) / 1000) + f[1];
+        });
         var lv = v.toLowerCase();
         if (lv === 'unset' || lv === 'revert' || lv === 'revert-layer') return INHERITED[p] ? 'inherit' : 'initial';
         if (SIZING[p]) {
@@ -1132,13 +1143,46 @@ var CSSFix = (function () {
         appearance: 1, filter: 1, mask: 1, 'mask-image': 1, 'mask-size': 1, 'mask-position': 1, 'mask-repeat': 1, 'mask-composite': 1, 'mask-clip': 1,
         'mask-origin': 1, 'clip-path': 1, 'text-size-adjust': 1, 'font-feature-settings': 1, hyphens: 1, 'box-decoration-break': 1, 'font-kerning': 1,
         'writing-mode': 1, 'text-orientation': 1, 'shape-outside': 1, 'shape-margin': 1, 'text-emphasis': 1, 'text-emphasis-style': 1, 'text-emphasis-color': 1,
-        'line-clamp': 1, 'box-reflect': 1, 'text-combine': 1, 'font-smoothing': 1, 'overflow-scrolling': 1, 'tap-highlight-color': 1, 'text-fill-color': 1,
+        'line-clamp': 1, 'box-reflect': 1, 'text-combine': 1, 'font-smoothing': 1, 'overflow-scrolling': 1, 'tap-highlight-color': 1, 'text-fill-color': 1, 'hyphenate-character': 1,
         'text-stroke': 1, 'text-stroke-width': 1, 'text-stroke-color': 1, 'print-color-adjust': 1, 'background-clip': 0 };
 
     var PACK = { 'flex-start': 'start', start: 'start', left: 'start', 'flex-end': 'end', end: 'end', right: 'end', center: 'center',
-        'space-between': 'justify', 'space-around': 'justify', 'space-evenly': 'justify', stretch: 'start', normal: 'start' };
-    var ALIGN = { 'flex-start': 'start', start: 'start', 'self-start': 'start', 'flex-end': 'end', end: 'end', 'self-end': 'end', center: 'center',
-        baseline: 'baseline', stretch: 'stretch', normal: 'stretch' };
+        'space-between': 'justify', 'space-around': 'justify', 'space-evenly': 'justify', stretch: 'start', normal: 'start', 'anchor-center': 'center' };
+    var ALIGN = { 'flex-start': 'start', start: 'start', 'self-start': 'start', left: 'start', 'flex-end': 'end', end: 'end', 'self-end': 'end', right: 'end',
+        center: 'center', 'anchor-center': 'center', baseline: 'baseline', stretch: 'stretch', normal: 'stretch' };
+
+    function isGlobalKeyword(lv) { return lv === 'inherit' || lv === 'initial'; }
+
+    // css-text-4: white-space is "<white-space-collapse> || <text-wrap-mode>"; the old engine knows the five classic values
+    function whiteSpaceValue(p, lv) {
+        if (isGlobalKeyword(lv)) return lv;
+        var collapse = null, wrap = null, toks = lv.split(/\s+/);
+        if (toks.length === 1 && /^(normal|pre|nowrap|pre-wrap|pre-line)$/.test(lv)) return lv;
+        for (var i = 0; i < toks.length; i++) {
+            var t = toks[i];
+            if (t === 'normal' || t === 'pre' || t === 'pre-wrap' || t === 'pre-line') return t;
+            if (t === 'collapse' || t === 'preserve' || t === 'preserve-breaks' || t === 'preserve-spaces' || t === 'break-spaces' || t === 'discard') collapse = t;
+            else if (t === 'wrap' || t === 'nowrap') wrap = t;
+            else if (p === 'text-wrap' || p === 'text-wrap-mode') { /* balance, pretty, stable, auto: no equivalent */ }
+            else return null;
+        }
+        if (p === 'text-wrap' || p === 'text-wrap-mode') return wrap === 'nowrap' ? 'nowrap' : wrap === 'wrap' ? 'normal' : null;
+        if (collapse === null && wrap === null) return null;
+        var nowrap = wrap === 'nowrap';
+        switch (collapse) {
+            case 'preserve': return nowrap ? 'pre' : 'pre-wrap';
+            case 'preserve-breaks': return 'pre-line';
+            case 'preserve-spaces': case 'break-spaces': return 'pre-wrap';
+            default: return nowrap ? 'nowrap' : 'normal';   // collapse, discard, none
+        }
+    }
+    // "safe center", "first baseline", "legacy left": the qualifiers mean nothing to the 2009 box model
+    function alignKeywords(lv) {
+        var toks = lv.split(/\s+/), out = [];
+        for (var i = 0; i < toks.length; i++) if (!/^(safe|unsafe|first|last|legacy)$/.test(toks[i])) out.push(toks[i]);
+        return out.length ? out : ['baseline'];
+    }
+    function alignKeyword(lv) { return alignKeywords(lv)[0]; }
 
     function push(out, p, v, imp) { out.push({ p: p, v: v, imp: imp }); }
 
@@ -1272,42 +1316,55 @@ var CSSFix = (function () {
                     else push(out, 'display', v, imp);
                     continue;
                 case 'flex-direction':
-                    push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
-                    push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
+                    if (isGlobalKeyword(lv)) { push(out, '-webkit-box-orient', lv, imp); push(out, '-webkit-box-direction', lv, imp); }
+                    else {
+                        push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
+                        push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
+                    }
                     push(out, p, v, imp);
                     continue;
                 case 'flex-flow':
                     if (/column|row/.test(lv)) {
                         push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
                         push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
-                    }
+                    } else if (isGlobalKeyword(lv)) { push(out, '-webkit-box-orient', lv, imp); push(out, '-webkit-box-direction', lv, imp); push(out, '-webkit-box-lines', lv, imp); }
+                    if (/wrap/.test(lv) && !/nowrap/.test(lv)) push(out, '-webkit-box-lines', 'multiple', imp);
                     push(out, p, v, imp);
                     continue;
                 case 'flex-wrap':
-                    push(out, '-webkit-box-lines', /^wrap/.test(lv) ? 'multiple' : 'single', imp);
+                    push(out, '-webkit-box-lines', isGlobalKeyword(lv) ? lv : /^wrap/.test(lv) ? 'multiple' : 'single', imp);
                     push(out, p, v, imp);
                     continue;
-                case 'justify-content':
-                    if (PACK[lv]) push(out, '-webkit-box-pack', PACK[lv], imp);
+                case 'justify-content': {
+                    var jcv = alignKeyword(lv);
+                    if (PACK[jcv]) push(out, '-webkit-box-pack', PACK[jcv], imp);
+                    else if (isGlobalKeyword(lv)) push(out, '-webkit-box-pack', lv, imp);
                     push(out, p, v, imp);
                     continue;
-                case 'align-items':
-                    if (ALIGN[lv]) push(out, '-webkit-box-align', ALIGN[lv], imp);
+                }
+                case 'align-items': {
+                    var aiv = alignKeyword(lv);
+                    if (ALIGN[aiv]) push(out, '-webkit-box-align', ALIGN[aiv], imp);
+                    else if (isGlobalKeyword(lv)) push(out, '-webkit-box-align', lv, imp);
                     push(out, p, v, imp);
                     continue;
+                }
                 case 'place-items': {
-                    var pi = splitWS(lv);
-                    if (ALIGN[pi[0]]) push(out, '-webkit-box-align', ALIGN[pi[0]], imp);
+                    var pi = alignKeyword(lv);   // "<align-items> <justify-items>?": the first is the cross axis
+                    if (ALIGN[pi]) push(out, '-webkit-box-align', ALIGN[pi], imp);
+                    else if (isGlobalKeyword(lv)) push(out, '-webkit-box-align', lv, imp);
                     push(out, p, v, imp);
                     continue;
                 }
                 case 'place-content': {
-                    var pc = splitWS(lv), jc = pc.length > 1 ? pc[1] : pc[0];
+                    var pc = alignKeywords(lv), jc = pc.length > 1 ? pc[1] : pc[0];
                     if (PACK[jc]) push(out, '-webkit-box-pack', PACK[jc], imp);
+                    else if (isGlobalKeyword(lv)) push(out, '-webkit-box-pack', lv, imp);
                     push(out, p, v, imp);
                     continue;
                 }
                 case 'flex': {
+                    if (isGlobalKeyword(lv)) { push(out, '-webkit-box-flex', lv, imp); push(out, p, v, imp); continue; }
                     var f = parseFlexShorthand(v);
                     push(out, '-webkit-box-flex', f.grow, imp);
                     if (f.basis && f.basis !== '0' && f.basis !== '0px' && f.basis !== '0%') push(out, 'width', /^(min-content|max-content|fit-content|stretch)$/.test(f.basis) ? 'auto' : f.basis, imp);
@@ -1326,7 +1383,7 @@ var CSSFix = (function () {
                     continue;
                 case 'order': {
                     var o = parseInt(v, 10);
-                    push(out, '-webkit-box-ordinal-group', String(isNaN(o) ? 1 : Math.max(1, o + 1)), imp);
+                    push(out, '-webkit-box-ordinal-group', isGlobalKeyword(lv) ? lv : String(isNaN(o) ? 1 : Math.max(1, o + 1)), imp);
                     push(out, p, v, imp);
                     continue;
                 }
@@ -1385,8 +1442,63 @@ var CSSFix = (function () {
                 case 'word-break':
                     push(out, p, lv === 'auto-phrase' ? 'normal' : v, imp);
                     continue;
-                case 'white-space':
-                    push(out, p, lv === 'break-spaces' ? 'pre-wrap' : v, imp);
+                case 'white-space': case 'white-space-collapse': case 'text-wrap': case 'text-wrap-mode': {
+                    // css-text-4 keywords and the two-value syntax become the classic white-space values
+                    var wsv = whiteSpaceValue(p, lv);
+                    if (p === 'white-space') { push(out, p, wsv || v, imp); continue; }
+                    if (wsv) push(out, 'white-space', wsv, imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'vertical-align': {
+                    // css-inline-3 baseline keywords (alphabetic, central, first/last) map onto the classic ones
+                    var vat = lv.split(/\s+/), vout = [];
+                    for (var vi = 0; vi < vat.length; vi++) {
+                        var vt = vat[vi];
+                        if (vt === 'first' || vt === 'last') continue;
+                        vout.push(vt === 'alphabetic' ? 'baseline' : vt === 'central' || vt === 'mathematical' || vt === 'center' ? 'middle' : vt === 'ideographic' ? 'text-bottom' : vt);
+                    }
+                    push(out, p, vout.length ? vout[0] : 'baseline', imp);
+                    continue;
+                }
+                case 'text-overflow': {
+                    // fade() and strings are not drawn here; of two values (start/end lines) the end one is kept
+                    var tov = splitWS(lv), tol = tov[tov.length - 1] || 'clip';
+                    push(out, p, tol === 'clip' || tol === 'ellipsis' || isGlobalKeyword(tol) ? tol : 'ellipsis', imp);
+                    continue;
+                }
+                case 'image-rendering':
+                    if (lv === 'pixelated' || lv === 'crisp-edges') push(out, p, '-webkit-optimize-contrast', imp);
+                    else if (lv === 'smooth' || lv === 'high-quality') push(out, p, 'auto', imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'contain':
+                    if (/(^|\s)(strict|content|paint)(\s|$)/.test(lv)) push(out, 'overflow', 'hidden', imp);   // paint containment clips
+                    push(out, p, v, imp);
+                    continue;
+                case 'hyphenate-limit-chars': {
+                    // "<total> <before> <after>" -> the old engine's before/after limits
+                    var hl = lv.split(/\s+/);
+                    if (hl.length > 1 && hl[1] !== 'auto') push(out, '-webkit-hyphenate-limit-before', hl[1], imp);
+                    if (hl.length > 2 && hl[2] !== 'auto') push(out, '-webkit-hyphenate-limit-after', hl[2], imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'hyphenate-limit-lines':
+                    push(out, '-webkit-hyphenate-limit-lines', v, imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'letter-spacing': case 'word-spacing':
+                    // percentages are relative to the font size (letter-spacing) or the space width (word-spacing, about a quarter em)
+                    if (/^-?[\d.]+%$/.test(lv)) push(out, p, (Math.round(parseFloat(lv) * (p === 'letter-spacing' ? 100 : 25)) / 10000) + 'em', imp);
+                    else push(out, p, v, imp);
+                    continue;
+                case 'resize':
+                    push(out, p, lv === 'block' ? 'vertical' : lv === 'inline' ? 'horizontal' : v, imp);
+                    continue;
+                case 'user-select':
+                    push(out, '-webkit-user-select', lv === 'contain' || lv === 'all' ? 'text' : v, imp);
+                    push(out, p, v, imp);
                     continue;
                 case 'line-break':
                     push(out, '-webkit-line-break', lv === 'anywhere' ? 'loose' : v, imp);
@@ -1566,7 +1678,14 @@ var CSSFix = (function () {
 
     // ------------------------------------------------------------------ selectors
 
-    var DROP_SELECTOR = /:has\(|::part\(|::slotted\(|:host|:state\(|:popover-open|::backdrop|:modal|::marker|::file-selector-button|::cue|::view-transition|:placeholder-shown|:focus-within|:dir\(|:read-write|:read-only|:user-invalid|:user-valid|:autofill|:target-within|:fullscreen|:picture-in-picture|:paused|:playing|:defined|:current|:past|:future|:local-link|::highlight|::spelling-error|::grammar-error|::target-text|:xr-overlay|:open|:closed|:muted|:volume-locked|>>>|\/deep\/|^\s*&|\s&|&\s|:nth-child\([^)]*\bof\b/i;
+    var DROP_SELECTOR = /:has\(|::part\(|::slotted\(|:host|:state\(|:popover-open|::backdrop|::marker|::file-selector-button|::cue|::view-transition|:autofill|:picture-in-picture|:defined|:current|:past|:future|::highlight|::spelling-error|::grammar-error|::target-text|:xr-overlay|:open|:closed|:volume-locked|>>>|\/deep\/|^\s*&|\s&|&\s|:nth-child\([^)]*\bof\b/i;
+
+    // Pseudo-classes the engine lacks that shims-extra.js maintains as classes on the elements (focus-within,
+    // placeholder-shown, user-invalid/valid, blank, target-within, playing/paused/muted, local-link, modal, fullscreen)
+    var STATE_CLASSES = { ':focus-within': '.br-focus-within', ':placeholder-shown': '.br-placeholder-shown', ':user-invalid': '.br-user-invalid',
+        ':user-valid': '.br-user-valid', ':blank': '.br-blank', ':target-within': '.br-target-within', ':playing': '.br-playing', ':paused': '.br-paused',
+        ':muted': '.br-muted', ':local-link': '.br-local-link', ':modal': '.br-modal', ':fullscreen': '.br-fullscreen', ':-webkit-full-screen': '.br-fullscreen' };
+    var STATE_CLASS_RE = /:(focus-within|placeholder-shown|user-invalid|user-valid|blank|target-within|playing|paused|muted|local-link|modal|fullscreen|-webkit-full-screen)\b/gi;
 
     function isCompound(sel) {   // no combinators at depth 0
         var depth = 0;
@@ -1689,11 +1808,16 @@ var CSSFix = (function () {
         sel = trim(sel);
         if (!sel || DROP_SELECTOR.test(sel)) return [];
         sel = sel.replace(/:focus-visible/gi, ':focus')
-                 .replace(/::?placeholder\b/gi, '::-webkit-input-placeholder')
+                 .replace(/::?placeholder(?![\w-])/gi, '::-webkit-input-placeholder')
                  .replace(/:any-link/gi, ':link')
                  .replace(/:scope\b/gi, ':root')
                  .replace(/(\[[^\]]*?)\s+[isIS]\s*\]/g, '$1]')
-                 .replace(/:lang\(([^,)]*),[^)]*\)/gi, ':lang($1)');
+                 .replace(/:lang\(([^,)]*),[^)]*\)/gi, ':lang($1)')
+                 .replace(STATE_CLASS_RE, function (m) { return STATE_CLASSES[m.toLowerCase()] || m; })
+                 .replace(/:read-only\b/gi, '[readonly]')
+                 .replace(/:read-write\b/gi, ':not([readonly])')
+                 .replace(/:dir\(\s*rtl\s*\)/gi, '[dir="rtl"]')
+                 .replace(/:dir\(\s*ltr\s*\)/gi, ':not([dir="rtl"])');
         var list = /:(is|where|matches|-moz-any)\(/i.test(sel) ? expandIs(sel, 48) : [sel];
         var out = [];
         for (var i = 0; i < list.length && out.length < 64; i++) {
@@ -1885,6 +2009,29 @@ var CSSFix = (function () {
         return count;
     }
 
+    // A fixed row height a grid container rule asks for ("grid-auto-rows: 100px", "minmax(6rem, auto)", "repeat(3, 100px)"),
+    // or null. Only rules that are (or were) grid containers count.
+    function gridRowHeight(decls, ctx, key) {
+        var isGrid = false, rows = null;
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, v = decls[i].v;
+            if (p === 'display' && /^(inline-)?grid$/i.test(trim(v))) isGrid = true;
+            else if (p === 'grid-auto-rows' || p === 'grid-template-rows') rows = v;
+            else if (p === 'grid-template' && v.indexOf('/') >= 0) rows = v.slice(0, v.indexOf('/'));
+        }
+        if (!rows || (!isGrid && !(ctx.gridSels && ctx.gridSels[key] > 0))) return null;
+        rows = resolveVars(rows, null, ctx);
+        if (rows === null) return null;
+        var t = trim(trim(rows).toLowerCase().replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' '));
+        var LEN = '([\\d.]+(?:px|rem|em|vh|vw))';
+        // one track, repeat(N, track) or minmax(track, ...) forms; a list of different tracks is not one row height
+        var m = new RegExp('^' + LEN + '$').exec(t) ||
+                new RegExp('^repeat\\( ?(?:\\d+|auto-fill|auto-fit) ?, ?' + LEN + ' ?\\)$').exec(t) ||
+                new RegExp('^minmax\\( ?' + LEN + ' ?,[^)]*\\)$').exec(t) ||
+                new RegExp('^repeat\\( ?(?:\\d+|auto-fill|auto-fit) ?, ?minmax\\( ?' + LEN + ' ?,[^)]*\\) ?\\)$').exec(t);
+        return m ? m[1] : null;
+    }
+
     // What a flex container rule asks for that the 2009 box model cannot do by itself: wrapping and gaps.
     function flexContainerInfo(decls, ctx) {
         var info = { flex: false, wrap: false, column: false, rowGap: null, colGap: null, justify: null };
@@ -1939,7 +2086,15 @@ var CSSFix = (function () {
                             out.push({ t: 'q', sel: gapSel.join(','), decls: [{ p: 'margin-left', v: fi.colGap, imp: false }] });
                         }
                     }
-                    var columns = gridColumns(r.decls, ctx, sels.join(','));
+                    var gridKey = sels.join(',');
+                    var columns = gridColumns(r.decls, ctx, gridKey);
+                    var rowHeight = gridRowHeight(r.decls, ctx, gridKey);
+                    if (rowHeight) {
+                        // fixed row tracks (grid-auto-rows: 120px, minmax(120px, auto), repeat(3, 8rem)): the children get that minimum height
+                        var rowSels = [];
+                        for (var rh = 0; rh < sels.length; rh++) rowSels.push(sels[rh] + ' > *');
+                        out.push({ t: 'q', sel: rowSels.join(','), decls: [{ p: 'min-height', v: rowHeight, imp: false }] });
+                    }
                     if (columns === -1) {
                         // the same container goes back to a single column (a media query): the floats are undone
                         var resetSels = [];
