@@ -44,6 +44,7 @@ h2 { font-size: 14px; color: #888; margin: 18px 4px 6px; text-transform: upperca
 #t-order .a { order: 2; width: 100px; }
 #t-order .b { order: 1; width: 100px; }
 #t-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+#t-grid-gap { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
 #t-sticky { position: sticky; top: 0; }
 #t-gradient { background: linear-gradient(to right, red, blue); height: 20px; }
 #t-rgb { color: rgb(0 128 0 / 1); }
@@ -120,6 +121,7 @@ h2 { font-size: 14px; color: #888; margin: 18px 4px 6px; text-transform: upperca
   <div class="fx" id="t-align"><div class="child"></div></div>
   <div class="fx" id="t-order"><div class="child a"></div><div class="child b"></div></div>
   <div class="fx" id="t-grid"><div class="child"></div><div class="child"></div><div class="child"></div></div>
+  <div class="fx" id="t-grid-gap"><div class="child"></div><div class="child"></div><div class="child"></div></div>
   <div class="fx" id="t-sticky">sticky</div>
   <div class="fx" id="t-gradient"></div>
   <div class="fx" id="t-rgb">rgb</div><div class="fx" id="t-hex8">hex8</div><div class="fx" id="t-hsl">hsl</div><div class="fx" id="t-oklch">oklch</div><div class="fx" id="t-mix">mix</div>
@@ -170,6 +172,7 @@ h2 { font-size: 14px; color: #888; margin: 18px 4px 6px; text-transform: upperca
       ['flexbox: align-items: center', function () { var c = rect($('t-align').children[0]), p = rect($('t-align')); return near(c.top - p.top, 20, 4); }],
       ['flexbox: order', function () { var c = $('t-order').children; return rect(c[1]).left < rect(c[0]).left; }],
       ['grid: tři sloupce', function () { var c = $('t-grid').children; return near(rect(c[0]).top, rect(c[2]).top) && near(rect(c[0]).width, W / 3, 4); }],
+      ['grid: mezery (gap)', function () { var c = $('t-grid-gap').children; return near(rect(c[1]).left - rect(c[0]).right, 20, 3) && near(rect(c[2]).top - rect(c[0]).bottom, 20, 3); }],
       ['position: sticky', function () { var p = cs('t-sticky').position; return p === 'sticky' || p === '-webkit-sticky'; }],
       ['inline-flex', function () { return near(rect($('t-inline-flex-a')).top, rect($('t-inline-flex-b')).top) && rect($('t-inline-flex-b')).left > rect($('t-inline-flex-a')).left; }],
       ['aspect-ratio', function () { return near(rect($('t-aspect')).height, 100); }],

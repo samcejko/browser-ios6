@@ -1228,6 +1228,26 @@ var CSSFix = (function () {
     // ------------------------------------------------------------------ rule transformation
 
     // Number of columns a grid container would have (0 when the rule is not a grid or the count is unclear).
+    // gaps of a grid container rule: [rowGap, columnGap] as plain lengths or null
+    function gridGaps(decls, ctx) {
+        var row = null, col = null;
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, v = resolveVars(decls[i].v, null, ctx);
+            if (v === null) continue;
+            var lv = trim(v).toLowerCase();
+            if (p === 'gap' || p === 'grid-gap') { var g = splitWS(lv); row = g[0]; col = g.length > 1 ? g[1] : g[0]; }
+            else if (p === 'row-gap' || p === 'grid-row-gap') row = lv;
+            else if (p === 'column-gap' || p === 'grid-column-gap') col = lv;
+        }
+        function simple(x) { return x && /^[\d.]+(px|rem|em|vw|vh|%)$/.test(x) && parseFloat(x) > 0 ? x : null; }
+        return [simple(row), simple(col)];
+    }
+
+    function timesLength(len, n) {
+        var m = /^([\d.]+)([a-z%]+)$/.exec(len);
+        return m ? (Math.round(parseFloat(m[1]) * n * 100) / 100) + m[2] : null;
+    }
+
     function gridColumns(decls, ctx) {
         var isGrid = false, tracks = null;
         for (var i = 0; i < decls.length; i++) {
@@ -1323,12 +1343,21 @@ var CSSFix = (function () {
                     }
                     var columns = gridColumns(r.decls, ctx);
                     if (columns > 1) {
-                        // CSS grid does not exist here: the children float into equal columns instead of piling up
-                        var childSels = [], afterSels = [];
-                        for (var gs = 0; gs < sels.length; gs++) { childSels.push(sels[gs] + ' > *'); afterSels.push(sels[gs] + '::after'); }
+                        // CSS grid does not exist here: the children float into equal columns instead of piling up;
+                        // a column gap is taken out of the widths, a row gap becomes a bottom margin
+                        var childSels = [], afterSels = [], lastSels = [];
+                        for (var gs = 0; gs < sels.length; gs++) { childSels.push(sels[gs] + ' > *'); afterSels.push(sels[gs] + '::after'); lastSels.push(sels[gs] + ' > *:nth-child(' + columns + 'n)'); }
+                        var gaps = gridGaps(r.decls, ctx), colGap = gaps[1], rowGap = gaps[0];
                         var pct = (Math.floor(10000 / columns) / 100) + '%';
-                        out.push({ t: 'q', sel: childSels.join(','), decls: [{ p: 'float', v: 'left', imp: false }, { p: 'width', v: pct, imp: false },
-                                  { p: '-webkit-box-sizing', v: 'border-box', imp: false }, { p: 'box-sizing', v: 'border-box', imp: false }, { p: 'min-width', v: '0', imp: false }] });
+                        var childDecls = [{ p: 'float', v: 'left', imp: false }];
+                        var total = colGap ? timesLength(colGap, columns - 1) : null;
+                        if (total) childDecls.push({ p: 'width', v: '-webkit-calc((100% - ' + total + ') / ' + columns + ')', imp: false });
+                        else childDecls.push({ p: 'width', v: pct, imp: false });
+                        childDecls.push({ p: '-webkit-box-sizing', v: 'border-box', imp: false }, { p: 'box-sizing', v: 'border-box', imp: false }, { p: 'min-width', v: '0', imp: false });
+                        if (total) childDecls.push({ p: 'margin-right', v: colGap, imp: false });
+                        if (rowGap) childDecls.push({ p: 'margin-bottom', v: rowGap, imp: false });
+                        out.push({ t: 'q', sel: childSels.join(','), decls: childDecls });
+                        if (total) out.push({ t: 'q', sel: lastSels.join(','), decls: [{ p: 'margin-right', v: '0', imp: false }] });
                         out.push({ t: 'q', sel: afterSels.join(','), decls: [{ p: 'content', v: '""', imp: false }, { p: 'display', v: 'block', imp: false }, { p: 'clear', v: 'both', imp: false }] });
                     }
                 }

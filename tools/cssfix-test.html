@@ -53,6 +53,8 @@ var cases = [
   ['unset', '.a{color:unset;margin:unset}', '.a{color:inherit;margin:initial}'],
   ['individual transforms', '.a{translate:10px 20px;rotate:45deg}', '.a{-webkit-transform:translate(10px, 20px) rotate(45deg);transform:translate(10px, 20px) rotate(45deg)}'],
   ['display grid to block', '.a{display:grid;gap:8px}', '.a{display:block;gap:8px}'],
+  ['grid columns', '.a{display:grid;grid-template-columns:repeat(3,1fr)}', '.a{display:block;grid-template-columns:repeat(3,1fr)}\n.a > *{float:left;width:33.33%;-webkit-box-sizing:border-box;box-sizing:border-box;min-width:0}\n.a::after{content:"";display:block;clear:both}'],
+  ['grid columns with gap', '.a{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}', '.a{display:block;grid-template-columns:1fr 1fr;gap:10px 16px}\n.a > *{float:left;width:-webkit-calc((100% - 16px) / 2);-webkit-box-sizing:border-box;box-sizing:border-box;min-width:0;margin-right:16px;margin-bottom:10px}\n.a > *:nth-child(2n){margin-right:0}\n.a::after{content:"";display:block;clear:both}'],
   ['flex push margin left', '.a{margin-left:auto}', '.a{margin-left:0}'],
   ['flex push margin shorthand', '.a{margin:0 0 0 auto}.b{margin:4px auto 0 0}', '.a{margin:0 0 0 0}\n.b{margin:4px 0 0 0}'],
   ['flex push logical', '.a{margin-inline-start:auto}.b{margin-inline:auto 8px}', '.a{margin-left:0}\n.b{margin-left:0;margin-right:8px}'],
