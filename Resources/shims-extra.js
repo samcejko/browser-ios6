@@ -47,6 +47,7 @@
     }
     function addStyle(css) {
         var s = document.createElement('style');
+        s.__brOwn = true;   // already in a form the engine takes (see the runtime style rewriting)
         s.textContent = css;
         (document.head || document.documentElement).appendChild(s);
     }
@@ -1269,9 +1270,44 @@
             try { applyHas(); } catch (e) {}
             // the marker scan calls applyContainers and collects the inline deferred-value markers
             try { if (manifest.cq.length || (window.__brDeferred && window.__brDeferred.needsMarkers())) applyAspectRatios(); } catch (e2) {}
+            try { if (window.__brVars) window.__brVars.apply(); } catch (e5) {}
             try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e3) {}
         };
         var schedule = function () { if (!applyTimer) applyTimer = setTimeout(apply, 120); };
+        // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest
+        var extra = { has: [], cq: [], dv: [], pt: [], cv: [] };
+        var mergeExtra = function (m) {
+            for (var kind in extra) {
+                if (!extra.hasOwnProperty(kind) || !extra[kind].length) continue;
+                if (!m[kind]) m[kind] = [];
+                m[kind] = m[kind].concat(extra[kind]);
+            }
+        };
+        // the root custom properties and the scoped ones, for the rewriter the page runs itself
+        var notePageVars = function (m) {
+            var names = {}, list = [], cv = m.cv || [];
+            for (var i = 0; i < cv.length; i++) {
+                var e = cv[i], k;
+                if (e.d) for (k = 0; k < e.d.length; k++) names[e.d[k][0]] = 1;
+                if (e.r) names[e.r[0]] = 1;
+            }
+            for (var n in names) if (names.hasOwnProperty(n)) list.push(n);
+            window.__brPageVars = { vars: m.vars || {}, scoped: list.join(' ') };
+        };
+        window.__brManifestAdd = function (add) {
+            var any = false;
+            for (var kind in extra) {
+                if (!extra.hasOwnProperty(kind) || !add[kind] || !add[kind].length) continue;
+                extra[kind] = extra[kind].concat(add[kind]);
+                any = true;
+            }
+            if (!any) return;
+            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [] };
+            for (var k2 in add) if (add.hasOwnProperty(k2) && extra.hasOwnProperty(k2) && add[k2]) manifest[k2] = (manifest[k2] || []).concat(add[k2]);
+            try { if (window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e) {}
+            try { if (window.__brVars) window.__brVars.setManifest(manifest); } catch (e2) {}
+            schedule();
+        };
         var load = function () {
             if (fetching || !window.XMLHttpRequest || fetches > 40) return;
             fetching = true;
@@ -1289,7 +1325,10 @@
                     if (manifest && !manifest.cq) manifest.cq = [];
                     if (manifest && !manifest.dv) manifest.dv = [];
                     if (manifest && !manifest.pt) manifest.pt = [];
+                    if (manifest && !manifest.cv) manifest.cv = [];
+                    if (manifest) { notePageVars(manifest); mergeExtra(manifest); }
                     try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
+                    try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}
                     schedule();
                 };
                 x.send(null);
@@ -2243,6 +2282,562 @@
             apply: function () { pass(false); },
             reposition: function () { pass(true); },
             state: function () { return { entries: entries.length, positioned: positioned.length, anchors: anchors }; }
+        };
+    })();
+    // ---- The CSS rewriter inside the page (cssfix.js, loaded on first use): values computed here and styles that
+    // scripts insert go through the same conversions as the stylesheets did
+    var cssFixLib = null, cssFixTried = false;
+    var loadCSSFix = function () {
+        if (window.CSSFix) return window.CSSFix;
+        if (cssFixTried) return cssFixLib;
+        cssFixTried = true;
+        try {
+            var x = new XMLHttpRequest();
+            x.open('GET', 'https://ios6-browser.invalid/cssfix.js', false);
+            x.send(null);
+            if (x.status === 200 && x.responseText) {
+                (0, eval)(x.responseText);   // global scope: defines window.CSSFix
+                cssFixLib = window.CSSFix || null;
+            }
+        } catch (e) { cssFixLib = null; }
+        return cssFixLib;
+    };
+    window.__brLoadCSSFix = loadCSSFix;
+    // ---- Custom properties per element (manifest "cv", see registerVarRule in cssfix.js). The rewriter substituted a
+    // single value for every var(); where a custom property has several definitions (component variants, themes, media
+    // queries, style attributes) each element's value is computed here: the winner of the cascade among the definitions
+    // that match the element, or else its parent's value. Declarations that come out different from the substituted
+    // value are set inline (on ::before/::after through generated rules), unless another rule wins that property.
+    (function () {
+        var rules = [], registered = {}, rootVars = {}, gen = 0, tracked = [], timer = null, busy = false, lastCost = 0;
+        var watchStates = false, observer = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
+        var pseudoTracked = [], stats = { passes: 0, applied: 0, skipped: 0, rules: 0 };
+        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var norm = function (s) { return trim(String(s)).replace(/\s+/g, ' ').replace(/\s*([,()\/])\s*/g, '$1').toLowerCase(); };
+        var matchParen = function (s, i) {
+            var depth = 0;
+            for (var k = i; k < s.length; k++) { var c = s.charAt(k); if (c === '(') depth++; else if (c === ')') { depth--; if (!depth) return k; } }
+            return s.length;
+        };
+        var topComma = function (s) {
+            var depth = 0;
+            for (var k = 0; k < s.length; k++) { var c = s.charAt(k); if (c === '(') depth++; else if (c === ')') depth--; else if (c === ',' && !depth) return k; }
+            return -1;
+        };
+        // name(...) -> fn(inner); null from fn makes the whole value invalid
+        var replaceFn = function (s, name, fn) {
+            if (s === null) return null;
+            var out = '', i = 0, lower = s.toLowerCase(), key = name + '(';
+            while (i < s.length) {
+                var at = lower.indexOf(key, i);
+                while (at > 0 && /[\w-]/.test(lower.charAt(at - 1))) at = lower.indexOf(key, at + 1);
+                if (at < 0) { out += s.slice(i); break; }
+                var close = matchParen(s, at + name.length);
+                var r = fn(s.slice(at + key.length, close));
+                if (r === null || r === undefined) return null;
+                out += s.slice(i, at) + r;
+                i = close + 1;
+            }
+            return out;
+        };
+        var INHERITED = /^(color|font(-.*)?|line-height|letter-spacing|word-spacing|text-(align|align-last|indent|transform|shadow|rendering|justify|underline-position|emphasis.*|size-adjust|decoration-skip.*)|white-space|visibility|cursor|list-style(-.*)?|quotes|direction|border-collapse|border-spacing|caption-side|empty-cells|orphans|widows|tab-size|hyphens|word-break|overflow-wrap|word-wrap|writing-mode|fill(-.*)?|stroke(-.*)?|paint-order|color-scheme|accent-color|caret-color|pointer-events|-webkit-text-fill-color|-webkit-text-stroke.*)$/i;
+        var LONGHANDS = (function () {
+            var sides = ['top', 'right', 'bottom', 'left'], m = {}, i;
+            var each = function (fmt) { var out = []; for (var s = 0; s < 4; s++) out.push(fmt.replace('*', sides[s])); return out; };
+            m.margin = each('margin-*'); m.padding = each('padding-*');
+            m['border-color'] = each('border-*-color'); m['border-style'] = each('border-*-style'); m['border-width'] = each('border-*-width');
+            m.border = m['border-color'].concat(m['border-style'], m['border-width']);
+            for (i = 0; i < 4; i++) m['border-' + sides[i]] = ['border-' + sides[i] + '-color', 'border-' + sides[i] + '-style', 'border-' + sides[i] + '-width'];
+            m['border-radius'] = ['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius'];
+            m.background = ['background-color', 'background-image', 'background-position', 'background-size', 'background-repeat'];
+            m.font = ['font-style', 'font-weight', 'font-size', 'line-height', 'font-family'];
+            m.outline = ['outline-color', 'outline-style', 'outline-width'];
+            m['list-style'] = ['list-style-type', 'list-style-position', 'list-style-image'];
+            m.transition = ['-webkit-transition-property', '-webkit-transition-duration', '-webkit-transition-timing-function', '-webkit-transition-delay'];
+            m['-webkit-transition'] = m.transition;
+            m.overflow = ['overflow-x', 'overflow-y'];
+            m['text-decoration'] = ['text-decoration'];
+            m['-webkit-mask'] = ['-webkit-mask-image', '-webkit-mask-position', '-webkit-mask-size', '-webkit-mask-repeat'];
+            m['-webkit-column-rule'] = ['-webkit-column-rule-color', '-webkit-column-rule-style', '-webkit-column-rule-width'];
+            return m;
+        })();
+        // ---- selectors: the pseudo-element is cut off (the shim finds its element), classes the selector needs are kept
+        // so that rules for components missing from the page cost nothing
+        var PSEUDO_EL = /(::?(?:before|after|first-line|first-letter)|::(?:marker|placeholder|selection|backdrop|-webkit-[\w-]+))$/i;
+        var unescapeCSS = function (s) { return s.replace(/\\([0-9a-fA-F]{1,6})\s?/g, function (a, h) { return String.fromCharCode(parseInt(h, 16)); }).replace(/\\(.)/g, '$1'); };
+        var prepareSelector = function (sel) {
+            var s = trim(sel), pseudo = null, m = PSEUDO_EL.exec(s);
+            if (m) { pseudo = m[1].replace(/^:(?!:)/, '::').toLowerCase(); s = trim(s.slice(0, m.index)) || '*'; if (/[\s>+~]$/.test(s)) s += '*'; }
+            var req = [], stripped = s.replace(/\[[^\]]*\]/g, ' ').replace(/:(not|-webkit-any|is|where|matches|has)\((?:[^()]|\([^()]*\))*\)/gi, ' '), re = /\.((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/g, cm;
+            while ((cm = re.exec(stripped)) !== null) req.push(unescapeCSS(cm[1]));
+            if (/:(hover|active|focus|checked|target|enabled|disabled|valid|invalid|indeterminate)/i.test(s)) watchStates = true;
+            var attrRe = /\[\s*([\w-]+)/g, am;
+            while ((am = attrRe.exec(s)) !== null) attrNames[am[1].toLowerCase()] = 1;
+            return { base: s, pseudo: pseudo, req: req };
+        };
+        // attributes whose changes can change what the selectors match ("style" only when a selector looks at it:
+        // scripts animating inline styles would otherwise start a pass every frame)
+        var attrNames = { 'class': 1, id: 1, open: 1, hidden: 1, disabled: 1, checked: 1, selected: 1 };
+        var docClasses = function () {
+            var set = {}, all = document.getElementsByTagName('*');
+            for (var i = 0; i < all.length; i++) {
+                var c = all[i].className;
+                if (typeof c !== 'string') c = c && typeof c.baseVal === 'string' ? c.baseVal : '';
+                if (!c) continue;
+                var parts = c.split(/\s+/);
+                for (var k = 0; k < parts.length; k++) if (parts[k]) set[parts[k]] = 1;
+            }
+            return set;
+        };
+        var possible = function (req, classes) { for (var i = 0; i < req.length; i++) if (!classes[req[i]]) return false; return true; };
+        var beats = function (a, b) { return (a.i && !b.i) || (!!a.i === !!b.i && (a.sp > b.sp || (a.sp === b.sp && a.o >= b.o))); };
+        // ---- the value of custom property `name` on `el` (null: guaranteed-invalid)
+        var initialOf = function (name) {
+            if (registered[name]) return registered[name].init;
+            return rootVars.hasOwnProperty(name) ? rootVars[name] : null;
+        };
+        var resolveVar = function (el, name, depth) {
+            if (!el || el.nodeType !== 1 || depth > 80) return initialOf(name);
+            var memo = el.__brCVm;
+            if (!memo || memo.g !== gen) memo = el.__brCVm = { g: gen, v: {} };
+            if (memo.v.hasOwnProperty(name)) return memo.v[name];
+            memo.v[name] = null;   // a reference cycle makes the property invalid
+            var rec = el.__brCV, own = rec && rec.g === gen ? rec.d[name] : null, val;
+            if (!own && el.__brCVi && el.__brCVi.d.hasOwnProperty(name)) own = { v: el.__brCVi.d[name] };
+            if (own) val = substitute(own.v, el, depth + 1);
+            else if (registered[name] && !registered[name].inh) val = registered[name].init;
+            else val = el.parentNode && el.parentNode.nodeType === 1 ? resolveVar(el.parentNode, name, depth + 1) : initialOf(name);
+            if ((val === null || val === undefined) && registered[name]) val = registered[name].init;
+            memo.v[name] = val === undefined ? null : val;
+            return memo.v[name];
+        };
+        var substitute = function (v, el, depth) {
+            if (v === null || v === undefined) return null;
+            depth = depth || 0;
+            if (v.indexOf('var(') >= 0) v = replaceFn(v, 'var', function (inner) {
+                var c = topComma(inner), name = trim(c < 0 ? inner : inner.slice(0, c));
+                var r = resolveVar(el, name, depth);
+                if (r === null) r = c < 0 ? null : substitute(trim(inner.slice(c + 1)), el, depth + 1);
+                return r;
+            });
+            if (v !== null && v.indexOf('inherit(') >= 0) v = replaceFn(v, 'inherit', function (inner) {
+                var c = topComma(inner), name = trim(c < 0 ? inner : inner.slice(0, c));
+                var parent = el.parentNode && el.parentNode.nodeType === 1 ? el.parentNode : null;
+                var r = parent ? resolveVar(parent, name, depth) : initialOf(name);
+                if (r === null) r = c < 0 ? null : substitute(trim(inner.slice(c + 1)), el, depth + 1);
+                return r;
+            });
+            return v;
+        };
+        // ---- a declaration through the page's copy of the rewriter: [[property, value, important]]
+        var fixDecl = function (p, v) {
+            var key = p + ':' + v;
+            if (fixCache.hasOwnProperty(key)) return fixCache[key];
+            var out = [], lib = loadCSSFix();
+            if (!lib) out.push([p, v]);
+            else {
+                var text = '';
+                try { text = lib.fixInlineStyle(p + ':' + v, lib.makeContext(null)); } catch (e) { text = p + ':' + v; }
+                var parts = text.split(';');
+                for (var i = 0; i < parts.length; i++) {
+                    var c = parts[i].indexOf(':');
+                    if (c < 0) continue;
+                    var dp = trim(parts[i].slice(0, c)), dv = trim(parts[i].slice(c + 1).replace(/\s*!important\s*$/i, ''));
+                    if (!dp || (dp === 'counter-reset' && /^(br-[\w-]+\s+\d+\s*)+$/.test(dv))) continue;   // rewriter markers
+                    if (/^--/.test(dp)) continue;
+                    out.push([dp, dv]);
+                }
+            }
+            if (fixCacheSize > 3000) { fixCache = {}; fixCacheSize = 0; }
+            fixCache[key] = out;
+            fixCacheSize++;
+            return out;
+        };
+        // ---- inline styles we set, with what the page had there
+        var setInline = function (el, p, v, imp) {
+            if (!el.__brCVOrig) { el.__brCVOrig = {}; el.__brCVSet = {}; el.__brCVVal = {}; tracked.push(el); }
+            if (!el.__brCVOrig.hasOwnProperty(p)) el.__brCVOrig[p] = [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)];
+            el.__brCVSet[p] = gen;
+            if (el.style.getPropertyValue(p) !== v || el.style.getPropertyPriority(p) !== (imp ? 'important' : '')) el.style.setProperty(p, v, imp ? 'important' : '');
+            el.__brCVVal[p] = el.style.getPropertyValue(p);   // as the engine serialises it
+        };
+        var restoreInline = function (el, p) {
+            if (!el.__brCVSet || !el.__brCVSet.hasOwnProperty(p)) return;
+            var o = el.__brCVOrig[p];
+            // a script set its own value over ours meanwhile: that one stays
+            if (el.style.getPropertyValue(p) === el.__brCVVal[p]) { if (o && o[0]) el.style.setProperty(p, o[0], o[1]); else el.style.removeProperty(p); }
+            delete el.__brCVSet[p];
+            delete el.__brCVOrig[p];
+            delete el.__brCVVal[p];
+        };
+        var restoreStale = function () {
+            var keep = [];
+            for (var i = 0; i < tracked.length; i++) {
+                var el = tracked[i], set = el.__brCVSet, any = false;
+                for (var p in set) {
+                    if (!set.hasOwnProperty(p)) continue;
+                    if (set[p] === gen) { any = true; continue; }
+                    restoreInline(el, p);
+                }
+                if (any) keep.push(el); else { el.__brCVOrig = null; el.__brCVSet = null; el.__brCVVal = null; }
+            }
+            tracked = keep;
+        };
+        // ---- style attributes: custom properties defined there and declarations using them (the rewriter keeps
+        // both in the attribute; the engine ignores them), and custom properties set with style.setProperty()
+        var inlineEls = [], cpUsed = false;
+        var parseInline = function (el) {
+            var attr = el.getAttribute('style') || '';
+            var cache = el.__brCVi;
+            // once we (or anything else) changed the style, the engine serialises it without the declarations it does
+            // not know: the parsed ones stay until the page writes new custom properties or var()s into the attribute
+            if (cache && (cache.attr === attr || !/--|var\(|inherit\(/.test(attr))) {
+                if (el.style.__brCP) for (var n0 in el.style.__brCP) if (el.style.__brCP.hasOwnProperty(n0)) cache.d[n0] = el.style.__brCP[n0];
+                return cache;
+            }
+            var info = { attr: attr, out: null, d: {}, u: [] }, parts = attr.split(';'), statics = {};
+            for (var i = 0; i < parts.length; i++) {
+                var c = parts[i].indexOf(':');
+                if (c < 0) continue;
+                var p = trim(parts[i].slice(0, c)).toLowerCase(), v = trim(parts[i].slice(c + 1)), imp = /!important\s*$/i.test(v);
+                v = trim(v.replace(/\s*!important\s*$/i, ''));
+                if (p.indexOf('--') === 0) { info.d[p] = v; continue; }
+                if (/(^|[^\w-])(var|inherit)\(/i.test(v)) info.u.push({ p: p, v: v, st: statics.hasOwnProperty(p) ? statics[p] : null, i: imp, sp: 1e8, o: 1e9, ps: null, inl: true });
+                else statics[p] = v;
+            }
+            if (el.style.__brCP) for (var n in el.style.__brCP) if (el.style.__brCP.hasOwnProperty(n)) info.d[n] = el.style.__brCP[n];
+            if (!el.__brCVi) inlineEls.push(el);
+            el.__brCVi = info;
+            return info;
+        };
+        // ---- one pass over the page
+        var run = function () {
+            gen++;
+            stats.passes++;
+            var classes = docClasses(), mediaCache = {}, users = [], i, b, k, r, list, el, rec;
+            var mediaOk = function (m) {
+                if (!m) return true;
+                for (var j = 0; j < m.length; j++) {
+                    var q = m[j];
+                    if (!mediaCache.hasOwnProperty(q)) { try { mediaCache[q] = window.matchMedia(q).matches; } catch (e) { mediaCache[q] = false; } }
+                    if (!mediaCache[q]) return false;
+                }
+                return true;
+            };
+            var recOf = function (e2) { var rc = e2.__brCV; if (!rc || rc.g !== gen) rc = e2.__brCV = { g: gen, d: {}, u: {}, user: false }; return rc; };
+            var matched = 0;
+            for (i = 0; i < rules.length; i++) {
+                r = rules[i];
+                if (!r.s || !mediaOk(r.m)) continue;
+                for (b = 0; b < r.sel.length; b++) {
+                    var sel = r.sel[b];
+                    if (!possible(sel.req, classes)) continue;
+                    try { list = document.querySelectorAll(sel.base); } catch (x) { continue; }
+                    if (list.length) matched++;
+                    var spec = r.sp ? r.sp[b] : 0;
+                    for (k = 0; k < list.length; k++) {
+                        el = list[k];
+                        rec = recOf(el);
+                        if (r.d && !sel.pseudo) {
+                            for (var d = 0; d < r.d.length; d++) {
+                                var cd = { v: r.d[d][1], sp: spec, o: r.o, i: r.d[d][2] }, curD = rec.d[r.d[d][0]];
+                                if (!curD || beats(cd, curD)) rec.d[r.d[d][0]] = cd;
+                            }
+                        }
+                        if (r.u) {
+                            if (!rec.user) { rec.user = true; users.push(el); }
+                            for (var u = 0; u < r.u.length; u++) {
+                                var key = (sel.pseudo || '') + '|' + r.u[u][0];
+                                var cu = { p: r.u[u][0], v: r.u[u][1], st: r.u[u][3], sp: spec, o: r.o, i: r.u[u][2], ps: sel.pseudo, sel: sel.base }, curU = rec.u[key];
+                                if (!curU || beats(cu, curU)) rec.u[key] = cu;
+                            }
+                        }
+                    }
+                }
+            }
+            stats.rules = matched;
+            // style attributes (and style.setProperty('--x') of scripts)
+            var inl = [], seen = [];
+            try { inl = document.querySelectorAll('[style*="--"], [style*="var("], [style*="inherit("]'); } catch (x2) {}
+            for (i = 0; i < inl.length; i++) seen.push(inl[i]);
+            var root = document.documentElement, keepInline = [];
+            for (i = 0; i < inlineEls.length; i++) if (root.contains(inlineEls[i])) { keepInline.push(inlineEls[i]); seen.push(inlineEls[i]); }
+            inlineEls = keepInline;
+            if (cpUsed) {
+                var every = document.getElementsByTagName('*');
+                for (i = 0; i < every.length; i++) if (every[i].style && every[i].style.__brCP) seen.push(every[i]);
+            }
+            for (i = 0; i < seen.length; i++) {
+                el = seen[i];
+                if (el.__brCVs === gen) continue;
+                el.__brCVs = gen;
+                var info = parseInline(el);
+                if (info.u.length) {
+                    rec = recOf(el);
+                    if (!rec.user) { rec.user = true; users.push(el); }
+                    for (k = 0; k < info.u.length; k++) { var ikey = '|' + info.u[k].p, icur = rec.u[ikey]; if (!icur || beats(info.u[k], icur)) rec.u[ikey] = info.u[k]; }
+                }
+            }
+            // what each user of a scoped property gets
+            var pending = [];
+            for (i = 0; i < users.length; i++) {
+                el = users[i];
+                rec = el.__brCV;
+                for (var ukey in rec.u) {
+                    if (!rec.u.hasOwnProperty(ukey)) continue;
+                    var use = rec.u[ukey], raw = substitute(use.v, el, 0);
+                    if (raw === null) raw = INHERITED.test(use.p) ? 'inherit' : 'initial';   // invalid at computed-value time
+                    if (use.st !== null && use.st !== undefined && norm(raw) === norm(use.st)) continue;   // the stylesheet already has it
+                    pending.push({ el: el, use: use, raw: raw });
+                }
+            }
+            pending.sort(function (a, c) { return a.use.sp - c.use.sp || a.use.o - c.use.o; });
+            apply(pending);
+            writePseudo();
+        };
+        // ---- setting the values: another rule may win the property on this element (a site's own override), so the
+        // value the rule has in the stylesheet is compared with what the element computes before ours goes in
+        // transitions are held while the values are measured and set (a running transition shows the old value)
+        var frozen = [];
+        var freeze = function (el) {
+            if (el.__brCVfz) return;
+            el.__brCVfz = [el.style.getPropertyValue('-webkit-transition-property'), el.style.getPropertyPriority('-webkit-transition-property')];
+            el.style.setProperty('-webkit-transition-property', 'none', 'important');
+            frozen.push(el);
+        };
+        var thaw = function () {
+            for (var i = 0; i < frozen.length; i++) getComputedStyle(frozen[i]).color;   // commit the values first
+            for (var k = 0; k < frozen.length; k++) {
+                var el = frozen[k], o = el.__brCVfz;
+                el.__brCVfz = null;
+                if (o && o[0]) el.style.setProperty('-webkit-transition-property', o[0], o[1]); else el.style.removeProperty('-webkit-transition-property');
+            }
+            frozen = [];
+        };
+        var apply = function (pending) {
+            var checks = [], i, k, it, cs;
+            for (i = 0; i < pending.length; i++) if (!pending[i].use.ps) freeze(pending[i].el);
+            for (i = 0; i < pending.length; i++) {
+                it = pending[i];
+                it.decls = fixDecl(it.use.p, it.raw);
+                if (it.use.ps) { pseudoRule(it); continue; }
+                if (it.use.inl || it.use.st === null || it.use.st === undefined) { it.ok = true; continue; }
+                it.fb = fixDecl(it.use.p, it.use.st);
+                it.props = [];
+                for (k = 0; k < it.fb.length; k++) it.props = it.props.concat(LONGHANDS[it.fb[k][0]] || [it.fb[k][0]]);
+                for (k = 0; k < it.fb.length; k++) restoreInline(it.el, it.fb[k][0]);
+                for (k = 0; k < it.decls.length; k++) restoreInline(it.el, it.decls[k][0]);
+                checks.push(it);
+            }
+            // what the stylesheets give the element now
+            for (i = 0; i < checks.length; i++) {
+                it = checks[i];
+                cs = getComputedStyle(it.el);
+                it.before = [];
+                for (k = 0; k < it.props.length; k++) it.before.push(cs.getPropertyValue(it.props[k]));
+                // the page's own inline value wins over any rule (unless the rule is !important)
+                it.own = false;
+                for (k = 0; k < it.fb.length; k++) if (it.el.style.getPropertyValue(it.fb[k][0]) && !it.use.i) it.own = true;
+            }
+            // what the rule's substituted value gives it
+            for (i = 0; i < checks.length; i++) {
+                it = checks[i];
+                it.saved = [];
+                for (k = 0; k < it.fb.length; k++) {
+                    it.saved.push([it.fb[k][0], it.el.style.getPropertyValue(it.fb[k][0]), it.el.style.getPropertyPriority(it.fb[k][0])]);
+                    it.el.style.setProperty(it.fb[k][0], it.fb[k][1], '');
+                }
+            }
+            for (i = 0; i < checks.length; i++) {
+                it = checks[i];
+                cs = getComputedStyle(it.el);
+                it.ok = !it.own;
+                for (k = 0; k < it.props.length && it.ok; k++) if (cs.getPropertyValue(it.props[k]) !== it.before[k]) it.ok = false;
+            }
+            for (i = 0; i < checks.length; i++) {
+                it = checks[i];
+                for (k = it.saved.length - 1; k >= 0; k--) {
+                    if (it.saved[k][1]) it.el.style.setProperty(it.saved[k][0], it.saved[k][1], it.saved[k][2]);
+                    else it.el.style.removeProperty(it.saved[k][0]);
+                }
+            }
+            for (i = 0; i < pending.length; i++) {
+                it = pending[i];
+                if (it.use.ps) continue;
+                if (!it.ok) { stats.skipped++; continue; }
+                stats.applied++;
+                for (k = 0; k < it.decls.length; k++) setInline(it.el, it.decls[k][0], it.decls[k][1], it.use.i);
+            }
+            restoreStale();
+            thaw();
+        };
+        // ---- ::before / ::after values: a generated rule for the element, one class more specific than the original
+        var pseudoRules = [];
+        var pseudoRule = function (it) {
+            var el = it.el;
+            if (!el.__brCVp) { el.__brCVp = 'br-cvp-' + (++pseudoSeq); }
+            if (el.__brCVpg !== gen) { el.__brCVpg = gen; pseudoTracked.push(el); }
+            setStateClass(el, el.__brCVp, true);
+            var sel = it.use.sel + '.' + el.__brCVp + it.use.ps, body = [];
+            for (var k = 0; k < it.decls.length; k++) body.push(it.decls[k][0] + ':' + it.decls[k][1] + (it.use.i ? ' !important' : ''));
+            pseudoRules.push(sel + '{' + body.join(';') + '}');
+        };
+        var writePseudo = function () {
+            var text = pseudoRules.join('\n');
+            pseudoRules = [];
+            var keep = [];
+            for (var i = 0; i < pseudoTracked.length; i++) {
+                var el = pseudoTracked[i];
+                if (el.__brCVpg === gen) { keep.push(el); continue; }
+                setStateClass(el, el.__brCVp, false);
+            }
+            pseudoTracked = keep;
+            if (text === pseudoText) return;
+            pseudoText = text;
+            if (!pseudoStyle) {
+                pseudoStyle = document.createElement('style');
+                pseudoStyle.id = 'br-cv-pseudo';
+                pseudoStyle.__brOwn = true;
+            }
+            pseudoStyle.textContent = text;
+            if (!pseudoStyle.parentNode) (document.body || document.documentElement).appendChild(pseudoStyle);
+        };
+        // ---- when to run: after the manifest arrives, on resizes, DOM changes, and state changes the selectors use
+        var pass = function () {
+            timer = null;
+            if (!rules.length || busy) return;
+            busy = true;
+            var t0 = Date.now();
+            try { run(); } catch (e) { if (window.console && console.warn) console.warn('cv pass: ' + e); }
+            lastCost = Date.now() - t0;
+            busy = false;
+            if (observer && observer.takeRecords) observer.takeRecords();   // our own style changes
+        };
+        var schedule = function () {
+            if (timer || !rules.length) return;
+            timer = setTimeout(pass, lastCost > 40 ? Math.min(1000, lastCost * 3) : 40);
+        };
+        var watch = function () {
+            if (observer || !window.MutationObserver) return;
+            var filter = [];
+            for (var a in attrNames) if (attrNames.hasOwnProperty(a)) filter.push(a);
+            observer = new MutationObserver(function (records) {
+                if (busy) return;
+                for (var i = 0; i < records.length; i++) {
+                    var t = records[i].target;
+                    if (t && t.id === 'br-cv-pseudo') continue;
+                    schedule();
+                    return;
+                }
+            });
+            try { observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: filter }); } catch (e) { observer = null; }
+            if (watchStates) {
+                var ev = ['touchstart', 'touchend', 'mouseover', 'mouseout', 'focus', 'blur', 'change', 'input'];
+                for (var k = 0; k < ev.length; k++) document.addEventListener(ev[k], schedule, true);
+            }
+            window.addEventListener('resize', schedule, false);
+            window.addEventListener('orientationchange', schedule, false);
+        };
+        // custom properties that scripts set through style.setProperty (the engine drops them)
+        var CSDp = window.CSSStyleDeclaration && window.CSSStyleDeclaration.prototype;
+        if (CSDp && CSDp.setProperty && !CSDp.__brCVWrapped) {
+            CSDp.__brCVWrapped = true;
+            var origSet = CSDp.setProperty, origGet = CSDp.getPropertyValue, origRemove = CSDp.removeProperty;
+            CSDp.setProperty = function (name, value, priority) {
+                if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
+                    if (!this.__brCP) this.__brCP = {};
+                    this.__brCP[name] = String(value);
+                    cpUsed = true;
+                    schedule();
+                    return;
+                }
+                return origSet.apply(this, arguments);
+            };
+            CSDp.getPropertyValue = function (name) {
+                if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
+                    if (this.__brCP && this.__brCP.hasOwnProperty(name)) return this.__brCP[name];
+                    if (this.__brEl) { var v = computedVar(this.__brEl, name); return v === null ? '' : v; }
+                    return '';
+                }
+                return origGet.apply(this, arguments);
+            };
+            CSDp.removeProperty = function (name) {
+                if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
+                    var old = this.__brCP && this.__brCP.hasOwnProperty(name) ? this.__brCP[name] : '';
+                    if (this.__brCP) delete this.__brCP[name];
+                    schedule();
+                    return old;
+                }
+                return origRemove.apply(this, arguments);
+            };
+        }
+        // style="--x: ..." written by a script
+        if (Ep && Ep.setAttribute && !Ep.setAttribute.__brCV) {
+            var origSetAttr = Ep.setAttribute;
+            var wrappedSetAttr = function (name, value) {
+                var r = origSetAttr.apply(this, arguments);
+                if (rules.length && (name === 'style' || name === 'STYLE') && String(value).indexOf('--') >= 0) schedule();
+                return r;
+            };
+            wrappedSetAttr.__brCV = true;
+            Ep.setAttribute = wrappedSetAttr;
+        }
+        // getComputedStyle(el).getPropertyValue('--x'): the computed style remembers its element
+        if (window.getComputedStyle && !window.getComputedStyle.__brCV) {
+            var origGCS = window.getComputedStyle;
+            var wrappedGCS = function (el, pseudo) {
+                var cs = origGCS.call(window, el, pseudo === undefined ? null : pseudo);
+                try { if (cs && el && el.nodeType === 1) cs.__brEl = el; } catch (e) {}
+                return cs;
+            };
+            wrappedGCS.__brCV = true;
+            try { window.getComputedStyle = wrappedGCS; } catch (e) {}
+        }
+        var computedVar = function (el, name) {
+            if (!rules.length) return initialOf(name);
+            if (el.__brCVm && el.__brCVm.g === gen && el.__brCVm.v.hasOwnProperty(name)) return el.__brCVm.v[name];
+            return resolveVar(el, name, 0);
+        };
+        // the document order of the manifest's stylesheets (imports before the rules of the sheet importing them;
+        // the page's own <style> blocks at the place of the first one): entries arrive in network order
+        var sheetRanks = function (sheets) {
+            var order = [], page = location.href.split('#')[0], ranks = [];
+            var walk = function (sheet, depth) {
+                if (depth > 8) return;
+                try {
+                    var rs = sheet.cssRules;
+                    if (rs) for (var i = 0; i < rs.length; i++) if (rs[i].type === 3 && rs[i].styleSheet) walk(rs[i].styleSheet, depth + 1);
+                } catch (e) {}
+                order.push(sheet.href ? String(sheet.href).split('#')[0] : page);
+            };
+            try { for (var s = 0; s < document.styleSheets.length; s++) walk(document.styleSheets[s], 0); } catch (e2) {}
+            for (var k = 0; k < (sheets || []).length; k++) {
+                var at = -1;
+                for (var j = 0; j < order.length; j++) if (order[j] === sheets[k]) { at = j; break; }
+                ranks.push(at < 0 ? 10000 + k : at);
+            }
+            return ranks;
+        };
+        window.__brVars = {
+            setManifest: function (m) {
+                var list = m.cv || [], ranks = sheetRanks(m.sheets);
+                rules = [];
+                registered = {};
+                rootVars = m.vars || {};
+                for (var i = 0; i < list.length; i++) {
+                    var e = list[i];
+                    if (e.r) { registered[e.r[0]] = { init: e.r[1], inh: !!e.r[2] }; continue; }
+                    if (!e.s) continue;
+                    e.o = (e.si !== undefined && ranks[e.si] !== undefined ? ranks[e.si] : 0) * 100000 + i;
+                    e.sel = [];
+                    for (var b = 0; b < e.s.length; b++) e.sel.push(prepareSelector(e.s[b]));
+                    rules.push(e);
+                }
+                if (rules.length) watch();
+            },
+            apply: function () { if (rules.length) pass(); },
+            resolve: function (el, name) { return computedVar(el, name); },
+            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost }; }
         };
     })();
     // ---- Scroll snap, smooth scrolling and balanced text, driven by the rewriter's counter-reset markers
@@ -3277,13 +3872,138 @@
     try { if (!window.CSS.layoutWorklet) window.CSS.layoutWorklet = makeWorklet(); } catch (e2) {}
     if (!window.CSS.highlights) { window.CSS.highlights = { set: noop, get: function () { return undefined; }, has: function () { return false; }, 'delete': function () { return false; }, clear: noop, size: 0 }; window.Highlight = function Highlight() {}; }
     if (!window.CSS.elementSources) window.CSS.elementSources = {};
+    // ---- Styles that scripts insert (CSS-in-JS through insertRule, <style> elements created or filled at run time,
+    // style-loader bundles) go through the same rewriter as the stylesheets the app fetched. A rule the rewriter turns
+    // into several stays one rule (@media all { ... }), so libraries that count their rules keep their indexes.
+    var runtimeCSS = (function () {
+        var ruleCache = {}, ruleCacheSize = 0;
+        var trimS = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var syncTried = false;
+        var pageVars = function () {
+            var pv = window.__brPageVars;
+            if (!pv && !syncTried) {
+                // a style inserted before the page manifest arrived: the page's custom properties are fetched now
+                syncTried = true;
+                try {
+                    var x = new XMLHttpRequest();
+                    x.open('GET', window.__brManifestURL || ('https://ios6-browser.invalid/manifest?doc=' + encodeURIComponent(location.href.split('#')[0])), false);
+                    x.send(null);
+                    var m = x.status === 200 || x.status === 0 ? JSON.parse(x.responseText) : null;
+                    if (m) {
+                        var names = [], cv = m.cv || [];
+                        for (var i = 0; i < cv.length; i++) { var d = cv[i].d || []; for (var k = 0; k < d.length; k++) names.push(d[k][0]); if (cv[i].r) names.push(cv[i].r[0]); }
+                        pv = window.__brPageVars = { vars: m.vars || {}, scoped: names.join(' ') };
+                    }
+                } catch (e) {}
+            }
+            if (!pv) return null;
+            var o = {};
+            for (var k in pv.vars) if (pv.vars.hasOwnProperty(k)) o[k] = pv.vars[k];
+            if (pv.scoped) o[' scoped'] = pv.scoped;
+            return o;
+        };
+        var fixText = function (css) {
+            var lib = loadCSSFix();
+            if (!lib || !lib.run) return null;
+            var r;
+            try {
+                var vw = Math.min(screen.width || 768, screen.height || 1024);
+                r = JSON.parse(lib.run('css', css, pageVars(), { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1 }));
+            } catch (e) { return null; }
+            if (r.manifest && window.__brManifestAdd) { try { window.__brManifestAdd(r.manifest); } catch (e2) {} }
+            return String(r.out || '').replace(/\n?\/\*br-manifest:[\s\S]*$/, '');
+        };
+        // top-level rules of a stylesheet text
+        var splitRules = function (s) {
+            var out = [], depth = 0, start = 0, q = null;
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '/' && s.charAt(i + 1) === '*') { var e = s.indexOf('*/', i + 2); i = e < 0 ? s.length : e + 1; }
+                else if (c === '{') depth++;
+                else if (c === '}') { depth--; if (depth === 0) { out.push(trimS(s.slice(start, i + 1))); start = i + 1; } }
+                else if (c === ';' && depth === 0) { var st = trimS(s.slice(start, i + 1)); if (st.length > 1) out.push(st); start = i + 1; }
+            }
+            return out;
+        };
+        var rewriteRule = function (text) {
+            if (ruleCache.hasOwnProperty(text)) return ruleCache[text];
+            var out = fixText(text), res = null;
+            if (out !== null) {
+                var parts = splitRules(out);
+                if (!parts.length) res = '@media not all{}';   // nothing the engine can use, but the rule still counts
+                else if (parts.length === 1) res = parts[0];
+                else res = '@media all{' + parts.join('\n') + '}';
+            }
+            if (ruleCacheSize > 5000) { ruleCache = {}; ruleCacheSize = 0; }
+            ruleCache[text] = res;
+            ruleCacheSize++;
+            return res;
+        };
+        return { fixText: fixText, rewriteRule: rewriteRule };
+    })();
     if (window.CSSStyleSheet && window.CSSStyleSheet.prototype.insertRule && !window.CSSStyleSheet.prototype.__brWrapped) {
-        // the old engine requires the index argument; modern code omits it (append)
+        // the old engine also requires the index argument; modern code omits it (append)
         window.CSSStyleSheet.prototype.__brWrapped = true;
         var origInsert = window.CSSStyleSheet.prototype.insertRule;
-        window.CSSStyleSheet.prototype.insertRule = function (rule, index) { return origInsert.call(this, rule, index === undefined ? (this.cssRules ? this.cssRules.length : 0) : index); };
+        window.CSSStyleSheet.prototype.insertRule = function (rule, index) {
+            if (index === undefined) index = this.cssRules ? this.cssRules.length : 0;
+            var text = String(rule), fixed = null;
+            // @import/@charset/@namespace stay as they are; everything else is rewritten
+            if (!/^\s*@(import|charset|namespace)\b/i.test(text)) { try { fixed = runtimeCSS.rewriteRule(text); } catch (e) { fixed = null; } }
+            if (fixed !== null && fixed !== text) {
+                try { return origInsert.call(this, fixed, index); } catch (e2) { /* the original text decides whether it throws */ }
+            }
+            return origInsert.call(this, text, index);
+        };
         if (!window.CSSStyleSheet.prototype.deleteRule && window.CSSStyleSheet.prototype.removeRule) window.CSSStyleSheet.prototype.deleteRule = window.CSSStyleSheet.prototype.removeRule;
     }
+    // <style> elements: the app's rewriter marked the ones it rewrote with a leading /*br*/; the others get their text
+    // rewritten here, node by node (libraries append text nodes to one style element as they go)
+    (function () {
+        if (!window.MutationObserver) return;
+        // rewritten by the app: its first text node starts with the marker (the parser splits long text into several)
+        var nativeStyle = function (el) {
+            if (el.__brNative) return true;
+            var f = el.firstChild;
+            if (f && f.nodeType === 3 && /^\s*\/\*br\*\//.test(f.data)) { el.__brNative = true; return true; }
+            return false;
+        };
+        var fixNode = function (node) {
+            var data = node.data;
+            if (!data || node.__brOut === data || !/[{:]/.test(data)) return;
+            if (node.parentNode && nativeStyle(node.parentNode)) return;
+            var out = null;
+            try { out = runtimeCSS.fixText(data); } catch (e) { out = null; }
+            if (out === null) return;
+            node.__brOut = out;
+            if (out !== data) node.data = out;
+        };
+        var ownStyle = function (el) { return el.__brOwn || (el.id && el.id.indexOf('br-') === 0) || (el.type && !/^\s*(text\/css)?\s*$/i.test(el.type)); };
+        var fixStyle = function (el) {
+            if (ownStyle(el)) return;
+            for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) fixNode(n);
+        };
+        var styleObserver = new MutationObserver(function (records) {
+            for (var i = 0; i < records.length; i++) {
+                var rec = records[i], t = rec.target;
+                if (rec.type === 'characterData') {
+                    if (t.parentNode && t.parentNode.nodeName === 'STYLE' && !ownStyle(t.parentNode)) fixNode(t);
+                    continue;
+                }
+                var added = rec.addedNodes;
+                for (var k = 0; k < added.length; k++) {
+                    var a = added[k];
+                    if (a.nodeType === 3) { if (t.nodeName === 'STYLE' && !ownStyle(t)) fixNode(a); continue; }
+                    if (a.nodeType !== 1) continue;
+                    if (a.nodeName === 'STYLE') fixStyle(a);
+                    else if (a.getElementsByTagName) { var inner = a.getElementsByTagName('style'); for (var s = 0; s < inner.length; s++) fixStyle(inner[s]); }
+                }
+            }
+        });
+        try { styleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}
+    })();
     if (!window.CSSLayerBlockRule) { window.CSSLayerBlockRule = function CSSLayerBlockRule() {}; window.CSSContainerRule = function CSSContainerRule() {}; window.CSSSupportsRule = window.CSSSupportsRule || function CSSSupportsRule() {}; }
     if (!document.fonts) {
         document.fonts = { ready: resolved({ status: 'loaded' }), status: 'loaded', check: function () { return true; }, load: function () { return resolved([]); }, add: noop, 'delete': noop, clear: noop, has: function () { return false; }, forEach: noop, addEventListener: noop, removeEventListener: noop, onloadingdone: null, size: 0 };

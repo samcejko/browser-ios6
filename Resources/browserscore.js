@@ -8,6 +8,7 @@
     var probe = document.createElement('div');
     var probeStyle = probe.style;
     var styleEl = document.createElement('style');
+    styleEl.__brOwn = true;   // the native checks need the engine's own parse: the page shim must not rewrite it
     document.head.appendChild(styleEl);
     var cssPrefixes = ['', '-webkit-'];
     var domPrefixes = ['', 'webkit', 'Webkit', 'WebKit'];
@@ -271,7 +272,16 @@
             if (dp !== p || dv.toLowerCase() !== v.toLowerCase()) changed = true;
             if (nativeValue(dp, dv)) accepted = true;
         }
-        return changed && accepted;
+        if (changed && accepted) return true;
+        // declarations the page shim resolves per element (custom properties that differ between elements, inherit())
+        var m = manifestOf(css);
+        if (m && m.cv) {
+            for (var k = 0; k < m.cv.length; k++) {
+                var uses = m.cv[k].u || [];
+                for (var u = 0; u < uses.length; u++) if (uses[u][0] === p) return true;
+            }
+        }
+        return false;
     }
     function emulatedValue(p, v) {
         if (emulatedDeclaration(p, v, '')) return true;

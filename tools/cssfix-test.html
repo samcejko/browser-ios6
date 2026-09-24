@@ -11,9 +11,13 @@
 <div id="out"></div>
 <script>
 var cases = [
-  ['vars root', ':root{--c:#f00;--pad:4px 8px}.a{color:var(--c);padding:var(--pad);margin:var(--nope,2px)}', '.a{color:#f00;padding:4px 8px;margin:2px}'],
-  ['vars local', '.b{--x:10px;width:var(--x);height:var(--y)}', '.b{width:10px}'],
-  ['vars nested fallback', '.c{color:var(--a,var(--b,blue))}', '.c{color:blue}'],
+  // a custom property no stylesheet defines may still come from a script (style.setProperty): its users go to the manifest
+  ['vars root', ':root{--c:#f00;--pad:4px 8px}.a{color:var(--c);padding:var(--pad);margin:var(--nope,2px)}', '.a{color:#f00;padding:4px 8px;margin:2px}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"1u7g2uf","s":[".a"],"sp":[100],"u":[["margin","var(--nope,2px)",0,"2px"]]}]}*/'],
+  ['vars local', '.b{--x:10px;width:var(--x);height:var(--y)}', '.b{width:10px}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"5fvnlr","s":[".b"],"sp":[100],"u":[["height","var(--y)",0,null]]}]}*/'],
+  ['vars nested fallback', '.c{color:var(--a,var(--b,blue))}', '.c{color:blue}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"p0j7fd","s":[".c"],"sp":[100],"u":[["color","var(--a,var(--b,blue))",0,"blue"]]}]}*/'],
+  // scoped custom properties: definitions and users with the rule's selectors, the static value for comparison
+  ['vars scoped per element', '.btn{--bg:transparent;background:var(--bg);color:red}.btn-primary{--bg:blue}.card{padding:var(--pad, 1px)}',
+   '.btn{background:transparent;color:red}\n.card{padding:1px}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"10qf7ts","s":[".btn"],"sp":[100],"d":[["--bg","transparent",0]],"u":[["background","var(--bg)",0,"transparent"]]},{"h":"l43o16","s":[".btn-primary"],"sp":[100],"d":[["--bg","blue",0]]},{"h":"i6wik","s":[".card"],"sp":[100],"u":[["padding","var(--pad, 1px)",0,"1px"]]}]}*/'],
   ['flex row', '.f{display:flex;justify-content:space-between;align-items:center;flex-direction:row}', '.f{display:-webkit-box;-webkit-box-pack:justify;justify-content:space-between;-webkit-box-align:center;align-items:center;-webkit-box-orient:horizontal;-webkit-box-direction:normal;flex-direction:row}'],
   ['flex wrap', '.g{display:flex;flex-wrap:wrap}', '.g{display:block;-webkit-box-lines:multiple;flex-wrap:wrap}\n.g > *{display:inline-block;vertical-align:top}'],
   ['flex wrap gap justify', '.g{display:flex;flex-wrap:wrap;gap:8px 4px;justify-content:center}', '.g{display:block;-webkit-box-lines:multiple;flex-wrap:wrap;gap:8px 4px;-webkit-box-pack:center;justify-content:center}\n.g > *{display:inline-block;vertical-align:top;margin:4px 2px}\n.g{text-align:center}'],
@@ -106,7 +110,7 @@ var cases = [
   ['if() style supports media', '.b{--x:true;line-height:if(style(--x: true): 1; else: 2)}.c{color:if(supports(display: grid): red; else: blue)}.d{padding:if(media(screen): 10px)}', '.b{line-height:1}\n.c{color:blue}\n@media screen{.d{padding:10px}}'],
   ['first-valid ident url modifiers', '.e{padding:first-valid(foo; 10px; 20px)}.f{animation-name:ident("cool-" 1)}.g{background:url("a.png" crossorigin(anonymous) referrerpolicy(no-referrer)) no-repeat}', '.e{padding:20px;padding:10px;padding:foo}\n.f{-webkit-animation-name:cool-1;animation-name:cool-1}\n.g{background:url("a.png") no-repeat}'],
   ['progress first mixes', '.h{color:color-mix(0.25 in srgb, red, blue);background-image:cross-fade(50%, url(a.png), url(b.png))}', '.h{color:rgb(191,0,64);background-image:-webkit-cross-fade(url(a.png), url(b.png), 50%)}'],
-  ['media-progress and inherit()', '.i{width:calc(100px * media-progress(width, 500px, 1000px))}:root{--w:12px}.j{width:inherit(--w, 5px);height:inherit(--nope, 7px)}', '.i{width:53.6px}\n.j{width:12px;height:7px}'],
+  ['media-progress and inherit()', '.i{width:calc(100px * media-progress(width, 500px, 1000px))}:root{--w:12px}.j{width:inherit(--w, 5px);height:inherit(--nope, 7px)}', '.i{width:53.6px}\n.j{width:12px;height:7px}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"ip0y0k","s":[".j"],"sp":[100],"u":[["width","inherit(--w, 5px)",0,"12px"],["height","inherit(--nope, 7px)",0,"7px"]]}]}*/'],
   ['timeline mixes deferred', '.k{width:calc-mix(scroll(), 100px, 200px);color:mix(view(), red, blue)}', '.k{width:calc-mix(scroll(), 100px, 200px);color:mix(view(), red, blue);counter-reset:br-dv-v331ew 1 br-dv-u4gzul 1}\n/*br-manifest:{"has":[],"cq":[],"dv":[{"h":"v331ew","p":"width","v":"calc-mix(scroll(), 100px, 200px)","s":[".k"],"sp":[100]},{"h":"u4gzul","p":"color","v":"mix(view(), red, blue)","s":[".k"],"sp":[100]}]}*/'],
   ['color spaces', '.a{color:color(display-p3 0.2 0.6 0.3);background:color(prophoto-rgb 0.5 0.3 0.8);border-color:color(rec2020 0.3 0.5 0.7)}.b{color:color(xyz-d50 0.3 0.4 0.2);background:color(from #336699 rec2020 r g b)}', '.a{color:rgb(0,156,66);background:rgb(148,77,226);border-color:rgb(0,144,191)}\n.b{color:rgb(122,184,127);background:rgb(51,102,153)}'],
   ['hdr colours', '.a{color:color(rec2100-pq 0.58 0.58 0.58);background:color(rec2100-hlg 0.75 0.75 0.75);border-color:ictcp(0.4 0.05 -0.05)}.b{color:jzazbz(0.1 0.05 0);background:jzczhz(0.15 0.05 60deg);border-color:ictcp(from red 58% 0 0)}.c{color:color-hdr(red 0, color(rec2100-linear 2 2 2) 2)}', '.a{color:rgb(254,254,254);background:rgb(255,255,255);border-color:rgb(75,115,144)}\n.b{color:rgb(145,78,105);background:rgb(201,152,122);border-color:rgb(254,254,254)}\n.c{color:red}'],
@@ -123,7 +127,7 @@ var cases = [
   ['flex push logical', '.a{margin-inline-start:auto}.b{margin-inline:auto 8px}', '.a{margin-left:0}\n.b{margin-left:0;margin-right:8px}'],
   ['centering margins kept', '.a{margin:0 auto}.b{margin-left:auto;margin-right:auto}.c{margin:auto}', '.a{margin:0 auto}\n.b{margin-left:auto;margin-right:auto}\n.c{margin:auto}'],
   ['color-mix', '.a{color:color-mix(in srgb,red 50%,blue)}', '.a{color:rgb(128,0,128)}'],
-  ['important', '.a{color:var(--c,red)!important}', '.a{color:red !important}'],
+  ['important', '.a{color:var(--c,red)!important}', '.a{color:red !important}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"1rcbrde","s":[".a"],"sp":[100],"u":[["color","var(--c,red)",1,"red"]]}]}*/'],
   ['url untouched', '.a{background:url("data:image/svg+xml,%3Csvg xmlns=(x)%3E") no-repeat}', '.a{background:url("data:image/svg+xml,%3Csvg xmlns=(x)%3E") no-repeat}'],
   ['font-face', '@font-face{font-family:X;src:url(a.woff2) format("woff2") tech(variations),url(a.woff) format("woff")}', '@font-face{font-family:X;src:url(a.woff2) format("truetype"),url(a.woff) format("woff")}'],
   ['import layer', '@import url(a.css) layer(base) supports(display:grid);', '@import url(a.css);'],

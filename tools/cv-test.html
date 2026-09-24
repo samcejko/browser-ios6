@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>custom properties test</title>
+<script>
+window.__errors = [];
+window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+</script>
+<script src="../Resources/cssfix.js"></script>
+</head>
+<body style="margin:0">
+<script>
+// The page as a site would ship it, through the real rewriter (CSSFix.run('html')). The rewritten stylesheets hold only
+// the substituted values, so the desktop browser renders what the old engine would; the style attributes keep their
+// custom properties and var() declarations (the shim reads them), which a desktop browser applies by itself as well.
+var page = [
+  '<style>',
+  ':root { --bs-body-bg: #fff; --bs-body-color: #212529; --gap: 5px; }',
+  '@media (min-width: 1px) { :root { --gap: 20px; } }',
+  '[data-bs-theme=dark] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; }',
+  '.card { background-color: var(--bs-body-bg); color: var(--bs-body-color); padding: 4px; }',
+  '.btn { --bs-btn-bg: transparent; --bs-btn-color: #212529; --bs-btn-border-color: transparent; display: inline-block; color: var(--bs-btn-color);',
+  '  background-color: var(--bs-btn-bg); border: 1px solid var(--bs-btn-border-color); padding: 2px 6px; transition: background-color .3s, color .3s; }',
+  '.btn-primary { --bs-btn-bg: #0d6efd; --bs-btn-color: #fff; --bs-btn-border-color: #0d6efd; }',
+  '.btn-danger { --bs-btn-bg: #dc3545; --bs-btn-color: #fff; }',
+  '.site-override { background-color: rgb(1, 2, 3); }',
+  '.ratio { position: relative; width: 160px; --bs-aspect-ratio: 100%; }',
+  '.ratio::before { display: block; padding-top: var(--bs-aspect-ratio); content: ""; }',
+  '.ratio-16x9 { --bs-aspect-ratio: 56.25%; }',
+  '.gapbox { margin-left: var(--gap); height: 5px; }',
+  '.usew { width: var(--w, 10px); height: 5px; background: #ccc; }',
+  '.outer { --z: 40px; }',
+  '.inh { --z: 10px; padding-left: inherit(--z, 3px); }',
+  '.spbox { width: var(--sp, 1px); height: 5px; background: #ccc; }',
+  '@property --np { syntax: "<length>"; inherits: false; initial-value: 7px; }',
+  '.npparent { --np: 50px; }',
+  '.npchild { width: var(--np); height: 5px; background: #ccc; }',
+  '.hsl { --h: 200; --l: 50%; background-color: hsl(var(--h), 100%, var(--l)); height: 5px; }',
+  '.hsl.dark { --l: 20%; }',
+  '</style>',
+  '<div class="card" id="card1">light card</div>',
+  '<div data-bs-theme="dark"><div class="card" id="card2">dark card</div></div>',
+  '<a class="btn" id="b0">plain</a> <a class="btn btn-primary" id="b1">primary</a> <a class="btn btn-danger" id="b2">danger</a>',
+  '<a class="btn btn-primary site-override" id="b3">override</a>',
+  '<div class="ratio ratio-16x9" id="r1"></div><div class="ratio" id="r2"></div>',
+  '<div class="gapbox" id="g1"></div>',
+  '<div style="--w: 123px"><div class="usew" id="w1"></div></div><div class="usew" id="w2"></div>',
+  '<div class="outer"><div class="inh" id="i1">inh</div></div>',
+  '<div class="spbox" id="sp1"></div>',
+  '<div class="npparent"><div class="npchild" id="np1"></div></div>',
+  '<div style="--k: 33px"><div id="inl" style="width: var(--k, 5px); height: 5px; background: #ccc"></div></div>',
+  '<div class="hsl" id="h1"></div><div class="hsl dark" id="h2"></div>'
+].join('\n');
+var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
+var html = result.out;
+window.__manifest = CSSFix.readManifest(html);
+window.__rewritten = html;
+window.__brManifestURL = 'data:application/json,' + encodeURIComponent(JSON.stringify(window.__manifest));
+document.write(html.replace(/<\/?(html|head|body)>/g, ''));
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+<pre id="out" style="font-size: 11px">…</pre>
+<script>
+var cs = function (id, pseudo) { return getComputedStyle(document.getElementById(id), pseudo || null); };
+var run = function () {
+  var checks = [];
+  var check = function (name, ok, detail) { checks.push((ok ? 'OK   ' : 'FAIL ') + name + (ok ? '' : '  ' + detail)); };
+  check('root value', cs('card1').backgroundColor === 'rgb(255, 255, 255)', cs('card1').backgroundColor);
+  check('theme attribute scope', cs('card2').backgroundColor === 'rgb(33, 37, 41)' && cs('card2').color === 'rgb(222, 226, 230)', cs('card2').backgroundColor + ' ' + cs('card2').color);
+  check('component default', cs('b0').backgroundColor === 'rgba(0, 0, 0, 0)' && cs('b0').color === 'rgb(33, 37, 41)', cs('b0').backgroundColor + ' ' + cs('b0').color);
+  check('variant class', cs('b1').backgroundColor === 'rgb(13, 110, 253)' && cs('b1').color === 'rgb(255, 255, 255)' && cs('b1').borderTopColor === 'rgb(13, 110, 253)', cs('b1').backgroundColor + ' ' + cs('b1').color + ' ' + cs('b1').borderTopColor);
+  check('second variant', cs('b2').backgroundColor === 'rgb(220, 53, 69)', cs('b2').backgroundColor);
+  check('site rule wins over the var() rule', cs('b3').backgroundColor === 'rgb(1, 2, 3)' && cs('b3').color === 'rgb(255, 255, 255)', cs('b3').backgroundColor + ' ' + cs('b3').color);
+  check('::before through a generated rule', document.getElementById('r1').offsetHeight === 90 && document.getElementById('r2').offsetHeight === 160, document.getElementById('r1').offsetHeight + ' ' + document.getElementById('r2').offsetHeight);
+  check('definition inside @media', cs('g1').marginLeft === '20px', cs('g1').marginLeft);
+  check('style attribute definition, fallback outside', document.getElementById('w1').offsetWidth === 123 && document.getElementById('w2').offsetWidth === 10, document.getElementById('w1').offsetWidth + ' ' + document.getElementById('w2').offsetWidth);
+  check('inherit()', cs('i1').paddingLeft === '40px', cs('i1').paddingLeft);
+  check('@property inherits: false', document.getElementById('np1').offsetWidth === 7, document.getElementById('np1').offsetWidth);
+  var inl = document.getElementById('inl');
+  check('var() in a style attribute', inl.offsetWidth === 33 && !!(inl.__brCVSet && inl.__brCVSet.width), inl.offsetWidth + ' ' + JSON.stringify(inl.__brCVSet));
+  check('hsl() from two properties', cs('h1').backgroundColor === 'rgb(0, 170, 255)' && cs('h2').backgroundColor === 'rgb(0, 68, 102)', cs('h1').backgroundColor + ' ' + cs('h2').backgroundColor);
+  check('getComputedStyle().getPropertyValue(--w)', cs('w1').getPropertyValue('--w') === '123px', JSON.stringify(cs('w1').getPropertyValue('--w')));
+  // dynamic: a class and a script-set custom property
+  document.getElementById('b0').className += ' btn-danger';
+  document.getElementById('sp1').style.setProperty('--sp', '77px');
+  // styles scripts insert: CSSOM rules (CSS-in-JS) and <style> text (style-loader)
+  var rtSheet = document.createElement('style');
+  document.head.appendChild(rtSheet);
+  var inserted = rtSheet.sheet.insertRule('.rt1{display:flex;gap:10px;color:rgb(0 0 255 / 50%)}', 0);
+  var rtText = document.createElement('style');
+  rtText.textContent = '.rt2{display:flex;inset:0}';
+  document.head.appendChild(rtText);
+  var rtVars = document.createElement('style');
+  rtVars.appendChild(document.createTextNode('.rt3{--rq:3px}.rt3.big{--rq:9px}.rt3 i{display:block;height:2px;background:#999;width:var(--rq)}'));
+  document.head.appendChild(rtVars);
+  var rtBox = document.createElement('div');
+  rtBox.className = 'rt3 big';
+  rtBox.innerHTML = '<i id="rq"></i>';
+  document.body.appendChild(rtBox);
+  setTimeout(function () {
+    check('class added later', cs('b0').backgroundColor === 'rgb(220, 53, 69)', cs('b0').backgroundColor);
+    check('style.setProperty(--sp)', document.getElementById('sp1').offsetWidth === 77, document.getElementById('sp1').offsetWidth);
+    var r0 = rtSheet.sheet.cssRules;
+    check('insertRule rewritten, still one rule', inserted === 0 && r0.length === 1 && /-webkit-box/.test(r0[0].cssText) && /rgba\(0, 0, 255, 0\.5\)/.test(r0[0].cssText), r0.length + ' ' + (r0[0] && r0[0].cssText));
+    check('<style> text rewritten', /-webkit-box/.test(rtText.textContent) && /top:\s*0/.test(rtText.textContent), rtText.textContent);
+    check('runtime style with scoped custom properties', document.getElementById('rq').offsetWidth === 9, document.getElementById('rq').offsetWidth + ' ' + rtVars.textContent.slice(0, 200));
+    checks.push('errors: ' + (window.__errors.join(' | ') || 'none'));
+    checks.push('state ' + JSON.stringify(window.__brVars && window.__brVars.state()) + ' cv=' + (window.__manifest && window.__manifest.cv ? window.__manifest.cv.length : 0));
+    document.getElementById('out').textContent = checks.join('\n');
+    var fails = checks.filter(function (c) { return c.indexOf('FAIL') === 0; }).length;
+    document.title = 'cv ' + (checks.length - 2 - fails) + '/' + (checks.length - 2);
+  }, 1500);
+};
+// hidden tabs run timers at most once a second: wait for the shim's first pass
+var waitStart = Date.now();
+var waitForShim = function () {
+  var st = window.__brVars && window.__brVars.state();
+  if ((st && st.passes > 0) || Date.now() - waitStart > 8000) setTimeout(run, 300); else setTimeout(waitForShim, 200);
+};
+setTimeout(waitForShim, 200);
+</script>
+</body>
+</html>

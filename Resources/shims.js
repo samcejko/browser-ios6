@@ -510,6 +510,7 @@
     if (window.HTMLUnknownElement && !('content' in document.createElement('template'))) {
         // <template> polyfill: expose .content as a document fragment of the children and hide the element
         var style = document.createElement('style');
+        style.__brOwn = true;
         style.textContent = 'template{display:none!important}';
         (document.head || document.documentElement).appendChild(style);
         var proto = Object.getPrototypeOf(document.createElement('template'));

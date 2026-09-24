@@ -330,31 +330,138 @@ var CSSFix = (function () {
         return false;
     }
 
+    // true when every selector of the list is the root element, the body or everything: a custom property defined
+    // there has the same value in the whole document, so it can be substituted when the stylesheet is rewritten
+    function allRootSelectors(sel) {
+        var parts = splitTop(sel, ',');
+        for (var i = 0; i < parts.length; i++) {
+            var p = trim(parts[i]).toLowerCase().replace(/^:(where|is)\((.*)\)$/, '$2');
+            if (p !== ':root' && p !== 'html' && p !== 'body' && p !== '*' && p !== ':host' && p !== 'html:root') return false;
+        }
+        return true;
+    }
+
     function collectVars(rules, ctx, inMedia) {
+        if (!ctx.defs) ctx.defs = [];
+        if (!ctx.varInfo) ctx.varInfo = {};
         for (var i = 0; i < rules.length; i++) {
             var r = rules[i];
             if (r.t === 'q') {
                 var root = !inMedia && isRootSelector(r.sel);
+                var local = !allRootSelectors(r.sel);
                 for (var k = 0; k < r.decls.length; k++) {
                     var d = r.decls[k];
+                    // var(--x, fallback) somewhere: outside the scope of --x the fallback applies
+                    if (d.v.indexOf('var(') >= 0 || d.v.indexOf('inherit(') >= 0) {
+                        var fbRe = /(?:^|[^\w-])(?:var|inherit)\(\s*(--[\w-]+)(?=(\s*,)?)/g, fm;   // the comma is looked at, not consumed: "var(--a,var(--b))"
+                        while ((fm = fbRe.exec(d.v)) !== null) { var ri = varInfo(ctx, fm[1]); ri.used = true; if (fm[2]) ri.fallback = true; }
+                    }
                     if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') {
                         if (root) ctx.root[d.p] = d.v;
                         else if (!(d.p in ctx.root)) ctx.other[d.p] = d.v;
+                        ctx.defs.push({ n: d.p, v: d.v });
+                        var info = varInfo(ctx, d.p);
+                        info.values[trim(d.v)] = true;
+                        if (inMedia) info.cond = true;
+                        if (local) info.local = true;
                     }
                 }
             } else if (r.t === 'at' && r.rules) {
                 if (r.name === 'keyframes' || r.name === '-webkit-keyframes') continue;
-                collectVars(r.rules, ctx, inMedia || r.name === 'media' || r.name === 'container');
+                // @supports is decided here (see transformRules): a false block defines nothing
+                if (r.name === 'supports') { if (evalSupports(r.prelude)) collectVars(r.rules, ctx, inMedia); continue; }
+                collectVars(r.rules, ctx, inMedia || r.name === 'media' || r.name === 'container' || r.name === 'scope');
             } else if (r.t === 'at' && r.name === 'property' && r.decls) {
                 // @property --x { initial-value: 4px }: a registered property falls back to its initial value
                 // (var() fallbacks never apply to it), so the initial value is the last resort of resolveVars
                 var pname = trim(r.prelude);
                 if (pname.indexOf('--') === 0) {
                     if (!ctx.initial) ctx.initial = {};
-                    for (var q = 0; q < r.decls.length; q++) if (r.decls[q].p === 'initial-value') ctx.initial[pname] = r.decls[q].v;
+                    if (!ctx.registered) ctx.registered = {};
+                    ctx.registered[pname] = { inh: true };
+                    for (var q = 0; q < r.decls.length; q++) {
+                        if (r.decls[q].p === 'initial-value') { ctx.initial[pname] = r.decls[q].v; ctx.registered[pname].init = r.decls[q].v; }
+                        else if (r.decls[q].p === 'inherits') ctx.registered[pname].inh = trim(r.decls[q].v).toLowerCase() !== 'false';
+                    }
                 }
             }
         }
+    }
+
+    // ---- custom properties resolved per element at run time ("cv" manifest entries). The rewriter still substitutes
+    // a static value (what the declaration gets without a scoped definition); the entries give the shim the rule's
+    // selectors, the scoped definitions and the raw declarations, so it can compute the real value for each element.
+    function varRefs(v, set) {   // does the value reference one of the properties in `set`?
+        var re = /(?:^|[^\w-])(?:var|inherit)\(\s*(--[\w-]+)/g, m;
+        while ((m = re.exec(v)) !== null) if (set[m[1]]) return true;
+        return false;
+    }
+    function varInfo(ctx, name) {
+        if (!ctx.varInfo) ctx.varInfo = {};
+        return ctx.varInfo[name] || (ctx.varInfo[name] = { values: {}, cond: false, local: false, fallback: false, inline: false, used: false });
+    }
+    // Custom properties whose value differs between elements: two or more different definitions (in this document or
+    // against the page's earlier ones), a definition inside @media / @container, one in a style attribute, or a
+    // definition limited to some elements while a var() elsewhere has a fallback for the others. A property with a
+    // single definition gets that value everywhere, which is what the static substitution already does. Then every
+    // property whose definition refers to one of those, and the page's scoped properties from earlier documents.
+    function runtimeVars(ctx) {
+        var set = {}, n, any = false, infos = ctx.varInfo || {};
+        for (n in infos) {
+            if (!infos.hasOwnProperty(n)) continue;
+            var info = infos[n], count = 0, v, reg = ctx.registered && ctx.registered[n];
+            for (v in info.values) if (info.values.hasOwnProperty(v)) count++;
+            var known = count > 0 || n in ctx.page;
+            if (n in ctx.page && count && !info.values.hasOwnProperty(trim(String(ctx.page[n])))) count++;
+            // used but defined nowhere: scripts set it (style.setProperty) or another document of the page defines it
+            var undefinedUse = info.used && !known && !reg;
+            if (count > 1 || info.cond || info.inline || (info.local && info.fallback && count) || undefinedUse || (reg && !reg.inh && info.local)) { set[n] = true; any = true; }
+        }
+        if (ctx.pageScoped) for (n in ctx.pageScoped) if (ctx.pageScoped.hasOwnProperty(n)) { set[n] = true; any = true; }
+        if (!any) return null;
+        var defs = ctx.defs || [], changed = true, guard = 0;
+        while (changed && guard++ < 16) {
+            changed = false;
+            for (var i = 0; i < defs.length; i++) {
+                if (set[defs[i].n] || !varRefs(defs[i].v, set)) continue;
+                set[defs[i].n] = true;
+                changed = true;
+            }
+        }
+        return set;
+    }
+    // what resolveVars would substitute for one property (null: nothing known)
+    function staticVarValue(name, local, ctx) {
+        if (local && local.hasOwnProperty(name)) return local[name];
+        if (name in ctx.page) return ctx.page[name];
+        if (name in ctx.root) return ctx.root[name];
+        if (name in ctx.other) return ctx.other[name];
+        if (ctx.initial && name in ctx.initial) return ctx.initial[name];
+        return null;
+    }
+    // var() of properties that are not resolved at run time are substituted now, so the manifest only carries the
+    // scoped ones (and the shim needs no other definitions)
+    function staticizeVars(v, local, ctx, set, depth) {
+        if ((depth || 0) > 8 || v.indexOf('var(') < 0) return v;
+        var out = '', i = 0, lower = v.toLowerCase();
+        for (;;) {
+            var at = lower.indexOf('var(', i);
+            while (at > 0 && /[\w-]/.test(lower.charAt(at - 1))) at = lower.indexOf('var(', at + 4);
+            if (at < 0) { out += v.slice(i); break; }
+            var close = matchParen(v, at + 3);
+            var inner = v.slice(at + 4, close), comma = scanUntil(inner, 0, inner.length, ',');
+            var name = trim(inner.slice(0, comma)), fb = comma < inner.length ? inner.slice(comma + 1) : null;
+            out += v.slice(i, at);
+            if (set[name]) out += 'var(' + name + (fb !== null ? ',' + staticizeVars(fb, local, ctx, set, (depth || 0) + 1) : '') + ')';
+            else {
+                var sv = staticVarValue(name, local, ctx);
+                if (sv !== null) out += staticizeVars(trim(sv), local, ctx, set, (depth || 0) + 1);
+                else if (fb !== null) out += staticizeVars(trim(fb), local, ctx, set, (depth || 0) + 1);
+                else out += 'var(' + name + ')';   // guaranteed-invalid at run time too
+            }
+            i = close + 1;
+        }
+        return out;
     }
 
     // returns the value with var() resolved, or null when it cannot be resolved
@@ -1199,6 +1306,31 @@ var CSSFix = (function () {
         markers.push('br-dv-' + entry.h + ' 1');
     }
 
+    // one "cv" manifest entry per style rule: its selectors (with specificity and the media queries around it), the
+    // scoped custom properties it defines ([name, value, important]) and the declarations using them
+    // ([property, raw value, important, static value])
+    function registerVarRule(ctx, sels, defs, uses) {
+        var media = ctx.mediaStack && ctx.mediaStack.length ? ctx.mediaStack.slice(0) : null;
+        var entry = { h: manifestHash('cv|' + sels.join(',') + '|' + JSON.stringify(defs) + '|' + JSON.stringify(uses) + '|' + (media ? media.join('&') : '')), s: sels, sp: [] };
+        for (var i = 0; i < sels.length; i++) entry.sp.push(specificity(sels[i]));
+        if (media) entry.m = media;
+        if (defs.length) entry.d = defs;
+        if (uses.length) entry.u = uses;
+        manifestAdd('cv', entry);
+    }
+
+    // which custom properties this document resolves at run time; registered ones (@property) among them go to the
+    // manifest with their initial value and whether they inherit
+    function prepareRuntimeVars(ctx) {
+        ctx.rt = g_manifest !== false ? runtimeVars(ctx) : null;
+        if (!ctx.rt || !ctx.registered) return;
+        for (var n in ctx.registered) {
+            if (!ctx.registered.hasOwnProperty(n) || !ctx.rt[n]) continue;
+            var reg = ctx.registered[n];
+            manifestAdd('cv', { h: manifestHash('cvr|' + n + '|' + reg.init + '|' + reg.inh), r: [n, reg.init === undefined ? null : reg.init, reg.inh ? 1 : 0] });
+        }
+    }
+
     // the value to show before the shim runs: anchor()/attr() fallbacks, the keyword basis of calc-size()
     function deferredFallback(v) {
         var lv = trim(v).toLowerCase();
@@ -1212,7 +1344,7 @@ var CSSFix = (function () {
 
     function manifestAdd(kind, entry) {
         if (g_suppressManifest) return;
-        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], seen: {} };
+        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], seen: {} };
         var key = kind + ':' + entry.h;
         if (g_manifest.seen[key]) return;
         g_manifest.seen[key] = true;
@@ -1916,12 +2048,30 @@ var CSSFix = (function () {
         // result text ended up 0 px wide next to its thumbnail), so the lone auto margin becomes 0.
         var flexPush = autoLeft !== autoRight;
         var out = [];
+        var rt = !keyframe && g_manifest !== false ? ctx.rt : null;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             var p = d.p, imp = d.imp;
-            if (p.charAt(0) === '-' && p.charAt(1) === '-') continue;
-            // inherit(--x, fallback): custom properties are resolved statically, so the inherited value is var()'s
-            var v = resolveVars(/inherit\(/i.test(d.v) ? d.v.replace(/(^|[^\w-])inherit\(/gi, '$1var(') : d.v, local, ctx);
+            if (p.charAt(0) === '-' && p.charAt(1) === '-') {
+                // a scoped definition goes to the manifest; in a style attribute it stays (the engine ignores it and
+                // the shim reads it back from the attribute)
+                if (rt && rt[p] && ctx.cvDefs && ctx.curSels) ctx.cvDefs.push([p, staticizeVars(d.v, local, ctx, rt), imp ? 1 : 0]);
+                if (ctx.inlineStyle) push(out, p, d.v, imp);
+                continue;
+            }
+            // inherit(--x, fallback): the static value is var()'s without the rule's own definitions (they are the
+            // element's, not the parent's); the shim takes the parent's value
+            var hasInherit = /(^|[^\w-])inherit\(/i.test(d.v);
+            var v = hasInherit ? resolveVars(d.v.replace(/(^|[^\w-])inherit\(/gi, '$1var('), null, ctx) : resolveVars(d.v, local, ctx);
+            var cvUse = rt && (hasInherit || varRefs(d.v, rt)) ? [p, staticizeVars(d.v, local, ctx, rt), imp ? 1 : 0] : null;
+            if (cvUse) {
+                // the static value the rule gets below, which the shim compares with the per-element one
+                var cvStatic = v;
+                if (cvStatic !== null && /(^|[^\w-])if\(/i.test(cvStatic)) cvStatic = resolveIf(p, cvStatic, imp, local, { page: ctx.page, root: ctx.root, other: ctx.other, initial: ctx.initial });
+                cvUse.push(cvStatic);
+                if (ctx.cvUses && ctx.curSels) ctx.cvUses.push(cvUse);
+                else if (ctx.inlineStyle) ctx.inlineUses.push(cvUse);
+            }
             if (v === null) continue;
             if (/(^|[^\w-])if\(/i.test(v)) { v = resolveIf(p, v, imp, local, ctx); if (v === null) continue; }
             if (!keyframe && g_manifest !== false && isDeferred(p, v)) {
@@ -2496,6 +2646,12 @@ var CSSFix = (function () {
                 else push(out, 'counter-reset', markers.join(' '), ownReset ? ownReset.imp : false);
             } else if (!ownReset) push(out, 'counter-reset', markerKeyword, false);
         }
+        // a style attribute keeps its declarations with scoped custom properties after the static ones: the engine
+        // drops them, the shim reads them back from the attribute
+        if (ctx.inlineStyle && ctx.inlineUses && ctx.inlineUses.length) {
+            for (var iu = 0; iu < ctx.inlineUses.length; iu++) push(out, ctx.inlineUses[iu][0], ctx.inlineUses[iu][1], !!ctx.inlineUses[iu][2]);
+            ctx.inlineUses = [];
+        }
         return out;
     }
 
@@ -2938,10 +3094,15 @@ var CSSFix = (function () {
             if (r.t === 'q') {
                 var sels = keyframe ? [r.sel] : fixSelectorList(r.sel);
                 if (!sels.length) continue;
-                var prevSels = ctx.curSels, prevCond = ctx.condRules;
+                var prevSels = ctx.curSels, prevCond = ctx.condRules, prevDefs = ctx.cvDefs, prevUses = ctx.cvUses;
                 ctx.curSels = keyframe ? null : sels;
                 ctx.condRules = keyframe ? null : [];
+                ctx.cvDefs = ctx.rt && !keyframe ? [] : null;
+                ctx.cvUses = ctx.rt && !keyframe ? [] : null;
                 var decls = fixDeclarations(r.decls, ctx, keyframe);
+                if (ctx.cvDefs && (ctx.cvDefs.length || ctx.cvUses.length)) registerVarRule(ctx, sels, ctx.cvDefs, ctx.cvUses);
+                ctx.cvDefs = prevDefs;
+                ctx.cvUses = prevUses;
                 var condRules = ctx.condRules;
                 ctx.condRules = null;
                 if (condRules && condRules.length) {
@@ -3099,12 +3260,21 @@ var CSSFix = (function () {
     }
 
     function makeContext(pageVars) {
-        var page = {};
+        var page = {}, pageScoped = null;
         if (pageVars) {
             if (typeof pageVars === 'string') { try { pageVars = JSON.parse(pageVars); } catch (e) { pageVars = null; } }
-            if (pageVars && typeof pageVars === 'object') for (var k in pageVars) if (pageVars.hasOwnProperty(k)) page[k] = pageVars[k];
+            if (pageVars && typeof pageVars === 'object') {
+                for (var k in pageVars) {
+                    if (!pageVars.hasOwnProperty(k)) continue;
+                    if (k === ' scoped') {
+                        // the page's scoped custom properties found in earlier documents (space separated)
+                        var names = String(pageVars[k]).split(/\s+/);
+                        for (var n = 0; n < names.length; n++) if (names[n]) { if (!pageScoped) pageScoped = {}; pageScoped[names[n]] = true; }
+                    } else page[k] = pageVars[k];
+                }
+            }
         }
-        return { page: page, root: {}, other: {}, initial: {} };
+        return { page: page, root: {}, other: {}, initial: {}, pageScoped: pageScoped };
     }
 
     function fixCSS(text, ctx) {
@@ -3113,6 +3283,7 @@ var CSSFix = (function () {
         parseRules(clean, 0, clean.length, rules);
         rules = flattenNesting(rules);
         collectVars(rules, ctx, false);
+        prepareRuntimeVars(ctx);
         return serializeRules(transformRules(rules, ctx, false));
     }
 
@@ -3121,7 +3292,10 @@ var CSSFix = (function () {
         var prevSels = ctx.curSels, prevMedia = ctx.mediaStack;
         ctx.curSels = null;   // deferred values of a style attribute are found through their marker
         ctx.mediaStack = null;
+        ctx.inlineStyle = true;
+        ctx.inlineUses = [];
         var out = serializeDecls(fixDeclarations(decls, ctx, false));
+        ctx.inlineStyle = false;
         ctx.curSels = prevSels;
         ctx.mediaStack = prevMedia;
         return out;
@@ -3257,10 +3431,19 @@ var CSSFix = (function () {
             parseRules(clean, 0, clean.length, rules);
             collectVars(flattenNesting(rules), ctx, false);
         }
+        // custom properties defined in style attributes are scoped to those elements
+        var inlineDefRe = /\sstyle\s*=\s*("[^"]*"|'[^']*')/gi, im;
+        while ((im = inlineDefRe.exec(html)) !== null) {
+            if (im[1].indexOf('--') < 0) continue;
+            var defNames = im[1].match(/--[\w-]+(?=\s*:)/g);
+            if (defNames) for (var dn = 0; dn < defNames.length; dn++) varInfo(ctx, defNames[dn]).inline = true;
+        }
+        prepareRuntimeVars(ctx);
         // 2. rewrite the blocks
         html = html.replace(styleRe, function (all, open, body, close) {
             if (!trim(body)) return all;
-            return open + fixCSS(body, ctx) + close;
+            // the marker tells the page shim this block is done (it rewrites the <style> text scripts add)
+            return open + '/*br*/' + fixCSS(body, ctx) + close;
         });
         // 3. inline style attributes
         html = html.replace(/(\sstyle\s*=\s*)("([^"]*)"|'([^']*)')/gi, function (all, prefix, quoted, dq, sq) {
@@ -3291,16 +3474,20 @@ var CSSFix = (function () {
         g_manifest = null;
         var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
         var manifest = null;
-        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length)) {
+        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length)) {
             manifest = { has: g_manifest.has, cq: g_manifest.cq };
             if (g_manifest.dv.length) manifest.dv = g_manifest.dv;
             if (g_manifest.pt.length) manifest.pt = g_manifest.pt;
+            if (g_manifest.cv.length) manifest.cv = g_manifest.cv;
             // the entries ride along in the output (so a cached copy keeps them); "*/" cannot occur inside
             var json = JSON.stringify(manifest).replace(/\*\//g, '*\\/');
             out += kind === 'html' ? '\n<!--br-manifest:' + json.replace(/--/g, '-\\u002d') + '-->' : '\n/*br-manifest:' + json + '*/';
         }
         g_manifest = null;
-        return JSON.stringify({ out: out, vars: ctx.root, manifest: manifest });
+        // the scoped custom properties, for the documents of the page rewritten after this one
+        var scoped = [];
+        if (ctx.rt) for (var sn in ctx.rt) if (ctx.rt.hasOwnProperty(sn)) scoped.push(sn);
+        return JSON.stringify({ out: out, vars: ctx.root, manifest: manifest, scoped: scoped });
     }
 
     // the manifest comment of a rewritten document or stylesheet, parsed (used by the shim's dev harness and tests)

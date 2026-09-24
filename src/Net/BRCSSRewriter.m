@@ -96,29 +96,33 @@ static CGFloat g_devicePixelRatio = 1;
 
 #pragma mark - Manifest (:has() and @container entries for the page shim)
 
-- (void)registerManifestInData:(NSData *)data pageURL:(NSURL *)pageURL
+- (void)registerManifestInData:(NSData *)data pageURL:(NSURL *)pageURL sourceURL:(NSURL *)sourceURL
 {
     if (data.length < 20 || !pageURL) return;
-    // the comment sits at the very end: "/*br-manifest:{...}*/" or "<!--br-manifest:{...}-->"
-    NSUInteger tailLength = MIN(data.length, (NSUInteger)65536);
-    NSData *tail = [data subdataWithRange:NSMakeRange(data.length - tailLength, tailLength)];
-    NSString *text = [[NSString alloc] initWithData:tail encoding:NSUTF8StringEncoding];
-    if (!text) { text = [[NSString alloc] initWithData:tail encoding:NSISOLatin1StringEncoding]; if (!text) return; }
-    NSRange marker = [text rangeOfString:@"br-manifest:" options:NSBackwardsSearch];
+    // the comment sits at the very end: "/*br-manifest:{...}*/" or "<!--br-manifest:{...}-->"; with the custom
+    // property entries of a big framework it can be several hundred KB
+    NSData *markerData = [@"br-manifest:" dataUsingEncoding:NSUTF8StringEncoding];
+    NSRange marker = [data rangeOfData:markerData options:NSDataSearchBackwards range:NSMakeRange(0, data.length)];
     if (marker.location == NSNotFound) return;
-    NSString *rest = [text substringFromIndex:marker.location + marker.length];
-    NSRange end = [rest rangeOfString:@"*/" options:NSBackwardsSearch];
-    if (end.location == NSNotFound) end = [rest rangeOfString:@"-->" options:NSBackwardsSearch];
-    if (end.location == NSNotFound) return;
-    NSString *json = [[rest substringToIndex:end.location] stringByReplacingOccurrencesOfString:@"-\\u002d" withString:@"--"];
+    NSUInteger start = marker.location + marker.length;
+    NSRange tailRange = NSMakeRange(start, data.length - start);
+    NSRange end = [data rangeOfData:[@"*/" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:tailRange];
+    if (end.location == NSNotFound) end = [data rangeOfData:[@"-->" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:tailRange];
+    if (end.location == NSNotFound || end.location < start) return;
+    NSString *json = [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(start, end.location - start)] encoding:NSUTF8StringEncoding];
+    if (!json) return;
+    json = [json stringByReplacingOccurrencesOfString:@"-\\u002d" withString:@"--"];
     NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if (![parsed isKindOfClass:[NSDictionary class]]) return;
     NSString *key = BRPageKey(pageURL);
+    NSString *source = (sourceURL ?: pageURL).absoluteString ?: @"";
+    NSRange hash = [source rangeOfString:@"#"];
+    if (hash.location != NSNotFound) source = [source substringToIndex:hash.location];
     @synchronized (self) {
         NSMutableDictionary *m = _pageManifests[key];
         if (!m) {
             m = [@{ @"has": [NSMutableArray array], @"cq": [NSMutableArray array], @"dv": [NSMutableArray array], @"pt": [NSMutableArray array],
-                    @"seen": [NSMutableSet set] } mutableCopy];
+                    @"cv": [NSMutableArray array], @"sheets": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
             _pageManifests[key] = m;
             [_manifestOrder addObject:key];
             while (_manifestOrder.count > BRMaxPagesRemembered) {
@@ -127,7 +131,11 @@ static CGFloat g_devicePixelRatio = 1;
             }
         }
         NSMutableSet *seen = m[@"seen"];
-        for (NSString *kind in @[@"has", @"cq", @"dv", @"pt"]) {
+        // custom property rules remember which stylesheet they came from: the page shim orders them the way the
+        // document orders its stylesheets (they arrive in network order)
+        NSMutableArray *sheets = m[@"sheets"];
+        NSUInteger sheetIndex = [sheets indexOfObject:source];
+        for (NSString *kind in @[@"has", @"cq", @"dv", @"pt", @"cv"]) {
             NSArray *entries = parsed[kind];
             if (![entries isKindOfClass:[NSArray class]]) continue;
             for (NSDictionary *e in entries) {
@@ -135,7 +143,14 @@ static CGFloat g_devicePixelRatio = 1;
                 NSString *entryId = [kind stringByAppendingString:e[@"h"]];
                 if ([seen containsObject:entryId]) continue;
                 [seen addObject:entryId];
-                [m[kind] addObject:e];
+                if ([kind isEqualToString:@"cv"]) {
+                    if (sheetIndex == NSNotFound) { [sheets addObject:source]; sheetIndex = sheets.count - 1; }
+                    NSMutableDictionary *withSheet = [e mutableCopy];
+                    withSheet[@"si"] = @(sheetIndex);
+                    [m[kind] addObject:withSheet];
+                } else {
+                    [m[kind] addObject:e];
+                }
             }
         }
     }
@@ -147,9 +162,12 @@ static CGFloat g_devicePixelRatio = 1;
     NSDictionary *out = nil;
     @synchronized (self) {
         NSDictionary *m = _pageManifests[key];
-        if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy], @"dv": [m[@"dv"] copy], @"pt": [m[@"pt"] copy] };
+        NSMutableDictionary *rootVars = [_pageVars[key] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [rootVars removeObjectForKey:@" scoped"];
+        if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy], @"dv": [m[@"dv"] copy], @"pt": [m[@"pt"] copy],
+                        @"cv": [m[@"cv"] copy], @"sheets": [m[@"sheets"] copy], @"vars": rootVars };
     }
-    if (!out) out = @{ @"has": @[], @"cq": @[], @"dv": @[], @"pt": @[] };
+    if (!out) out = @{ @"has": @[], @"cq": @[], @"dv": @[], @"pt": @[], @"cv": @[] };
     return [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL] ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 
@@ -196,17 +214,19 @@ static NSString *BRPageKey(NSURL *url)
 // engine queue only
 - (NSMutableDictionary *)varsForPage:(NSString *)key create:(BOOL)create
 {
-    NSMutableDictionary *vars = _pageVars[key];
-    if (!vars && create) {
-        vars = [NSMutableDictionary dictionary];
-        _pageVars[key] = vars;
-        [_pageOrder addObject:key];
-        while (_pageOrder.count > BRMaxPagesRemembered) {
-            [_pageVars removeObjectForKey:_pageOrder[0]];
-            [_pageOrder removeObjectAtIndex:0];
+    @synchronized (self) {   // the manifest endpoint reads them from other threads
+        NSMutableDictionary *vars = _pageVars[key];
+        if (!vars && create) {
+            vars = [NSMutableDictionary dictionary];
+            _pageVars[key] = vars;
+            [_pageOrder addObject:key];
+            while (_pageOrder.count > BRMaxPagesRemembered) {
+                [_pageVars removeObjectForKey:_pageOrder[0]];
+                [_pageOrder removeObjectAtIndex:0];
+            }
         }
+        return vars;
     }
-    return vars;
 }
 
 + (NSString *)polyfillURLString
@@ -261,10 +281,9 @@ static NSString *BRPageKey(NSURL *url)
             NSString *pageKey = BRPageKey(pageURL);
             NSMutableDictionary *vars = [self varsForPage:pageKey create:YES];
             NSString *varsJSON = @"{}";
-            if (vars.count) {
-                NSData *j = [NSJSONSerialization dataWithJSONObject:vars options:0 error:NULL];
-                if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
-            }
+            NSData *j = nil;
+            @synchronized (self) { if (vars.count) j = [NSJSONSerialization dataWithJSONObject:vars options:0 error:NULL]; }
+            if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
             NSString *optionsJSON = @"{}";
             {
                 NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
@@ -281,10 +300,21 @@ static NSString *BRPageKey(NSURL *url)
             NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;
             if (![out isKindOfClass:[NSString class]]) { completion(data, charset); return; }
             NSDictionary *newVars = parsed[@"vars"];
-            if ([newVars isKindOfClass:[NSDictionary class]] && newVars.count) {
-                for (NSString *name in newVars) {
-                    id value = newVars[name];
-                    if ([value isKindOfClass:[NSString class]]) vars[name] = value;
+            NSArray *scoped = parsed[@"scoped"];
+            @synchronized (self) {
+                if ([newVars isKindOfClass:[NSDictionary class]] && newVars.count) {
+                    for (NSString *name in newVars) {
+                        id value = newVars[name];
+                        if ([value isKindOfClass:[NSString class]] && ![name isEqualToString:@" scoped"]) vars[name] = value;
+                    }
+                }
+                // custom properties resolved per element at run time, for the page's later documents (" scoped" is
+                // not a property name, so it cannot clash with one)
+                if ([scoped isKindOfClass:[NSArray class]] && scoped.count) {
+                    NSMutableOrderedSet *names = [NSMutableOrderedSet orderedSetWithArray:[vars[@" scoped"] ?: @"" componentsSeparatedByString:@" "]];
+                    for (id n in scoped) if ([n isKindOfClass:[NSString class]]) [names addObject:n];
+                    [names removeObject:@""];
+                    vars[@" scoped"] = [names.array componentsJoinedByString:@" "];
                 }
             }
             NSData *outData = [out dataUsingEncoding:NSUTF8StringEncoding];

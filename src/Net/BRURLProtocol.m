@@ -701,7 +701,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
         if (cacheable && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
-        [[BRCSSRewriter shared] registerManifestInData:out pageURL:page];
+        [[BRCSSRewriter shared] registerManifestInData:out pageURL:page sourceURL:url];
         [self performOnClientThread:^{
             [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
             if (out.length) [self.client URLProtocol:self didLoadData:out];
@@ -760,7 +760,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSData *data = cached.data;
     NSString *cachedType = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
     if ([cachedType hasPrefix:@"text/css"] || [cachedType hasPrefix:@"text/html"]) {
-        [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL];
+        [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL sourceURL:self.request.URL];
     }
     [self performOnClientThread:^{
         [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
