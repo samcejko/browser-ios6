@@ -279,6 +279,15 @@
     }
     function emulatedSelector(s) {
         if (!fix) return false;
+        if (s.indexOf('&') >= 0) {
+            // the nesting selector only exists inside a nested rule: the rewriter flattens ".bs{&:hover{}}" into ".bs:hover{}"
+            var nested = rewriteCSS('.bs{' + s + '{color:rgb(1,2,3)}}');
+            var nr = parseRewritten(nested);
+            for (var n = 0; n < nr.length; n++) {
+                if (nr[n].decls.length === 1 && nr[n].decls[0][0] === 'color' && nr[n].decls[0][1] === 'rgb(1,2,3)') return nr[n].sel.indexOf('&') < 0 && nativeSelector(nr[n].sel);
+            }
+            return false;
+        }
         var list;
         try { list = fix.fixSelectorList(s); } catch (e) { return false; }
         if (!list || !list.length) return false;
@@ -301,6 +310,13 @@
                 if (t.contents === false) return true;   // statements are consumed without error
                 var out = rewriteCSS(t.code + '{.bs{color:rgb(1,2,3)}}');
                 return /\.bs\s*\{/.test(out) && rulesParse(out) !== null;
+            }
+            if (name === 'property') {
+                // the rule itself is consumed, and a registered initial value reaches var() users
+                var pout = rewriteCSS(t.code + '{' + (typeof t.contents === 'string' ? t.contents : '') + '}.bs{color:rgb(1,2,3)}');
+                if (!/\.bs\s*\{color:rgb\(1,2,3\)\}/.test(pout)) return false;
+                var seeded = rewriteCSS('@property --bsp{syntax:"<length>";inherits:false;initial-value:7px}.bs{width:var(--bsp)}');
+                return /\.bs\s*\{width:7px\}/.test(seeded);
             }
         } catch (e) { return false; }
         var inner = typeof t.contents === 'string' && t.contents ? t.contents : '.bs{color:rgb(1,2,3)}';

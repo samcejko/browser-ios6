@@ -15,9 +15,13 @@ the app around it:
   web view's WebKit preferences (WebGL 1.0 on the iPad 2's SGX543).
 - **Ad and tracker blocking** by host name (Peter Lowe's list fetched at build time plus a bundled
   base list), which also keeps memory use down on 512 MB devices.
-- **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties,
-  flexbox (2009 syntax), vendor prefixes, gradients, modern colours, `:is()`/`:where()`, `@supports`,
-  `@layer`, logical properties and more, so that 2012 WebKit renders modern stylesheets.
+- **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties
+  (including `@property` initial values), CSS nesting flattened into plain rules (`&`, relative
+  selectors, nested `@media`/`@supports` hoisted), flexbox (2009 syntax), vendor prefixes, gradients
+  (conic gradients become linear ones with the same stops), modern colours (`oklch()`, `color-mix()`,
+  relative colour syntax `rgb(from …)`, `contrast-color()`, `light-dark()`), `image()` and
+  `cross-fade()`, two-value `display`, `line-clamp`, `:is()`/`:where()`, `@supports`, `@layer`,
+  logical properties and more, so that 2012 WebKit renders modern stylesheets.
 - **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
   **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
   very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's

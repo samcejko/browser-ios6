@@ -147,7 +147,10 @@ var CSSFix = (function () {
         return m ? m[1].toLowerCase() : '';
     }
 
-    function parseDecls(str) {
+    // Declarations of a block. With `nestedOut`, nested rules (CSS nesting: "&:hover{}", ".b{}", "@media{}")
+    // are collected into it as {t:'q', sel, decls, nested} / {t:'at', name, prelude, decls, nested}; without
+    // it they are skipped (descriptor blocks, inline styles).
+    function parseDecls(str, nestedOut) {
         var decls = [], i = 0, n = str.length, start = 0, depth = 0;
         function flush(end) {
             var seg = trim(str.slice(start, end));
@@ -168,9 +171,20 @@ var CSSFix = (function () {
             if (c === 92) { i += 2; continue; }
             if (c === 40 || c === 91) depth++;
             else if (c === 41 || c === 93) { if (depth > 0) depth--; }
-            else if (depth === 0 && c === 123) {          // nested rule (CSS nesting): skip it
+            else if (depth === 0 && c === 123) {          // nested rule
                 var e = findBlockEnd(str, i, n);
-                start = e < 0 ? n : e + 1;
+                if (e < 0) e = n;
+                if (nestedOut) {
+                    var head = trim(str.slice(start, i)), sub = [];
+                    if (head) {
+                        var inner = str.slice(i + 1, e);
+                        if (head.charAt(0) === '@') {
+                            var an = atName(head);
+                            nestedOut.push({ t: 'at', name: an, prelude: trim(head.slice(an.length + 1)), decls: parseDecls(inner, sub), nested: sub });
+                        } else nestedOut.push({ t: 'q', sel: head, decls: parseDecls(inner, sub), nested: sub });
+                    }
+                }
+                start = e + 1;
                 i = start;
                 continue;
             } else if (depth === 0 && c === 59) { flush(i); start = i + 1; }
@@ -178,6 +192,70 @@ var CSSFix = (function () {
         }
         flush(n);
         return decls;
+    }
+
+    // ---- CSS nesting: nested rules become plain descendant rules, nested conditional at-rules are hoisted
+    var NESTED_AT = { media: 1, supports: 1, container: 1, layer: 1, scope: 1, 'starting-style': 1 };
+
+    function replaceNestingSelector(sel, parent) {   // every "&" outside strings and brackets -> parent
+        var out = '', i = 0, n = sel.length, depth = 0;
+        while (i < n) {
+            var c = sel.charCodeAt(i);
+            if (c === 34 || c === 39) { var e = skipString(sel, i, n); out += sel.slice(i, e); i = e; continue; }
+            if (c === 91) depth++; else if (c === 93) { if (depth > 0) depth--; }
+            if (c === 38 && depth === 0) out += parent; else out += sel.charAt(i);
+            i++;
+        }
+        return out;
+    }
+
+    function nestedSelectors(parentSels, childSel) {
+        var parts = splitTop(childSel, ','), out = [];
+        for (var i = 0; i < parts.length && out.length < 64; i++) {
+            var c = trim(parts[i].replace(/\s+/g, ' '));
+            if (!c) continue;
+            for (var k = 0; k < parentSels.length && out.length < 64; k++) {
+                if (c.indexOf('&') >= 0) out.push(replaceNestingSelector(c, parentSels[k]));
+                else out.push(parentSels[k] + ' ' + c);   // relative selectors (".b", "> .b", "+ .b") are descendants of the parent
+            }
+        }
+        return out;
+    }
+
+    function emitNested(nested, parentSels, out, depth) {
+        if (depth > 12) return;
+        for (var i = 0; i < nested.length; i++) {
+            var n = nested[i];
+            if (n.t === 'q' || n.name === 'nest') {
+                var sels = nestedSelectors(parentSels, n.t === 'q' ? n.sel : n.prelude);
+                if (!sels.length) continue;
+                out.push({ t: 'q', sel: sels.join(','), decls: n.decls });
+                if (n.nested.length) emitNested(n.nested, sels, out, depth + 1);
+            } else if (NESTED_AT[n.name]) {
+                var inner = [];
+                if (n.decls.length) inner.push({ t: 'q', sel: parentSels.join(','), decls: n.decls });
+                if (n.nested.length) emitNested(n.nested, parentSels, inner, depth + 1);
+                if (inner.length) out.push({ t: 'at', name: n.name, prelude: n.prelude, rules: inner, decls: null, raw: null });
+            }
+        }
+    }
+
+    function flattenNesting(rules) {
+        var out = [];
+        for (var i = 0; i < rules.length; i++) {
+            var r = rules[i];
+            if (r.t === 'q') {
+                out.push(r);
+                if (r.nested && r.nested.length) {
+                    var sels = [], parts = splitTop(r.sel, ',');
+                    for (var k = 0; k < parts.length; k++) { var ps = trim(parts[k].replace(/\s+/g, ' ')); if (ps) sels.push(ps); }
+                    if (sels.length) emitNested(r.nested, sels, out, 0);
+                }
+            } else if (r.t === 'at' && r.rules) {
+                out.push({ t: 'at', name: r.name, prelude: r.prelude, rules: flattenNesting(r.rules), decls: null, raw: null });
+            } else out.push(r);
+        }
+        return out;
     }
 
     function parseRules(s, i, end, out) {
@@ -209,7 +287,8 @@ var CSSFix = (function () {
             var sel = trim(s.slice(i, j2));
             var close2 = findBlockEnd(s, j2, end);
             if (close2 < 0) close2 = end;
-            out.push({ t: 'q', sel: sel, decls: parseDecls(s.slice(j2 + 1, close2)) });
+            var nested = [];
+            out.push({ t: 'q', sel: sel, decls: parseDecls(s.slice(j2 + 1, close2), nested), nested: nested });
             i = close2 + 1;
         }
     }
@@ -266,6 +345,14 @@ var CSSFix = (function () {
             } else if (r.t === 'at' && r.rules) {
                 if (r.name === 'keyframes' || r.name === '-webkit-keyframes') continue;
                 collectVars(r.rules, ctx, inMedia || r.name === 'media' || r.name === 'container');
+            } else if (r.t === 'at' && r.name === 'property' && r.decls) {
+                // @property --x { initial-value: 4px }: a registered property falls back to its initial value
+                // (var() fallbacks never apply to it), so the initial value is the last resort of resolveVars
+                var pname = trim(r.prelude);
+                if (pname.indexOf('--') === 0) {
+                    if (!ctx.initial) ctx.initial = {};
+                    for (var q = 0; q < r.decls.length; q++) if (r.decls[q].p === 'initial-value') ctx.initial[pname] = r.decls[q].v;
+                }
             }
         }
     }
@@ -293,6 +380,7 @@ var CSSFix = (function () {
             else if (name in ctx.page) val = ctx.page[name];
             else if (name in ctx.root) val = ctx.root[name];
             else if (name in ctx.other) val = ctx.other[name];
+            else if (ctx.initial && name in ctx.initial) val = ctx.initial[name];
             else if (fallback !== null) val = fallback;
             if (val === null) return null;
             v = v.slice(0, at) + trim(val) + v.slice(close + 1);
@@ -384,6 +472,116 @@ var CSSFix = (function () {
         return rgbString(to255(r + m), to255(g + m), to255(b + m), alpha);
     }
 
+    // every CSS named colour (for relative colour syntax, colour math and contrast-color)
+    var NAMED_ALL_SRC = 'aliceblue f0f8ff antiquewhite faebd7 aqua 00ffff aquamarine 7fffd4 azure f0ffff beige f5f5dc bisque ffe4c4 black 000000 blanchedalmond ffebcd blue 0000ff blueviolet 8a2be2 brown a52a2a burlywood deb887 cadetblue 5f9ea0 chartreuse 7fff00 chocolate d2691e coral ff7f50 cornflowerblue 6495ed cornsilk fff8dc crimson dc143c cyan 00ffff darkblue 00008b darkcyan 008b8b darkgoldenrod b8860b darkgray a9a9a9 darkgreen 006400 darkgrey a9a9a9 darkkhaki bdb76b darkmagenta 8b008b darkolivegreen 556b2f darkorange ff8c00 darkorchid 9932cc darkred 8b0000 darksalmon e9967a darkseagreen 8fbc8f darkslateblue 483d8b darkslategray 2f4f4f darkslategrey 2f4f4f darkturquoise 00ced1 darkviolet 9400d3 deeppink ff1493 deepskyblue 00bfff dimgray 696969 dimgrey 696969 dodgerblue 1e90ff firebrick b22222 floralwhite fffaf0 forestgreen 228b22 fuchsia ff00ff gainsboro dcdcdc ghostwhite f8f8ff gold ffd700 goldenrod daa520 gray 808080 green 008000 greenyellow adff2f grey 808080 honeydew f0fff0 hotpink ff69b4 indianred cd5c5c indigo 4b0082 ivory fffff0 khaki f0e68c lavender e6e6fa lavenderblush fff0f5 lawngreen 7cfc00 lemonchiffon fffacd lightblue add8e6 lightcoral f08080 lightcyan e0ffff lightgoldenrodyellow fafad2 lightgray d3d3d3 lightgreen 90ee90 lightgrey d3d3d3 lightpink ffb6c1 lightsalmon ffa07a lightseagreen 20b2aa lightskyblue 87cefa lightslategray 778899 lightslategrey 778899 lightsteelblue b0c4de lightyellow ffffe0 lime 00ff00 limegreen 32cd32 linen faf0e6 magenta ff00ff maroon 800000 mediumaquamarine 66cdaa mediumblue 0000cd mediumorchid ba55d3 mediumpurple 9370db mediumseagreen 3cb371 mediumslateblue 7b68ee mediumspringgreen 00fa9a mediumturquoise 48d1cc mediumvioletred c71585 midnightblue 191970 mintcream f5fffa mistyrose ffe4e1 moccasin ffe4b5 navajowhite ffdead navy 000080 oldlace fdf5e6 olive 808000 olivedrab 6b8e23 orange ffa500 orangered ff4500 orchid da70d6 palegoldenrod eee8aa palegreen 98fb98 paleturquoise afeeee palevioletred db7093 papayawhip ffefd5 peachpuff ffdab9 peru cd853f pink ffc0cb plum dda0dd powderblue b0e0e6 purple 800080 rebeccapurple 663399 red ff0000 rosybrown bc8f8f royalblue 4169e1 saddlebrown 8b4513 salmon fa8072 sandybrown f4a460 seagreen 2e8b57 seashell fff5ee sienna a0522d silver c0c0c0 skyblue 87ceeb slateblue 6a5acd slategray 708090 slategrey 708090 snow fffafa springgreen 00ff7f steelblue 4682b4 tan d2b48c teal 008080 thistle d8bfd8 tomato ff6347 turquoise 40e0d0 violet ee82ee wheat f5deb3 white ffffff whitesmoke f5f5f5 yellow ffff00 yellowgreen 9acd32';
+    var NAMED_ALL = null;
+    function namedColor(name) {
+        if (!NAMED_ALL) {
+            NAMED_ALL = {};
+            var t = NAMED_ALL_SRC.split(' ');
+            for (var i = 0; i + 1 < t.length; i += 2) NAMED_ALL[t[i]] = t[i + 1];
+        }
+        return NAMED_ALL.hasOwnProperty(name) ? NAMED_ALL[name] : null;
+    }
+
+    // ---- sRGB -> other colour spaces (inverse of the conversions above), for relative colour syntax
+    function linearChannel(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+    function cbrt(x) { return x < 0 ? -Math.pow(-x, 1 / 3) : Math.pow(x, 1 / 3); }
+    function rgbToXYZ(r, g, b) {   // D65
+        var R = linearChannel(r), G = linearChannel(g), B = linearChannel(b);
+        return [0.4124564 * R + 0.3575761 * G + 0.1804375 * B, 0.2126729 * R + 0.7151522 * G + 0.0721750 * B, 0.0193339 * R + 0.1191920 * G + 0.9503041 * B];
+    }
+    function rgbToLab(r, g, b) {
+        var xyz = rgbToXYZ(r, g, b);
+        var X = 1.0478112 * xyz[0] + 0.0228866 * xyz[1] - 0.0501270 * xyz[2];   // Bradford D65 -> D50
+        var Y = 0.0295424 * xyz[0] + 0.9904844 * xyz[1] - 0.0170491 * xyz[2];
+        var Z = -0.0092345 * xyz[0] + 0.0150436 * xyz[1] + 0.7521316 * xyz[2];
+        var e = 216 / 24389, k = 24389 / 27;
+        var f = function (t) { return t > e ? cbrt(t) : (k * t + 16) / 116; };
+        var fx = f(X / 0.96422), fy = f(Y), fz = f(Z / 0.82521);
+        return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+    }
+    function rgbToOklab(r, g, b) {
+        var R = linearChannel(r), G = linearChannel(g), B = linearChannel(b);
+        var l = cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+        var m = cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+        var s = cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+        return [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s, 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s];
+    }
+    function rgbToHsl(r, g, b) {
+        r /= 255; g /= 255; b /= 255;
+        var max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, h = 0, s = 0, d = max - min;
+        if (d) {
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            if (max === r) h = (g - b) / d + (g < b ? 6 : 0); else if (max === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+            h *= 60;
+        }
+        return [h, s * 100, l * 100];
+    }
+    function polar(ab) {   // [a, b] -> [chroma, hue in degrees]
+        var h = Math.atan2(ab[1], ab[0]) * 180 / Math.PI;
+        return [Math.sqrt(ab[0] * ab[0] + ab[1] * ab[1]), h < 0 ? h + 360 : h];
+    }
+    function num4(n) { return String(Math.round(n * 10000) / 10000); }
+
+    // "rgb(from indianred 255 g b)", "oklch(from var(--c) l c calc(h + 90))": the base colour's channels in the
+    // target space replace the channel keywords, calc() is evaluated, and the plain function is converted
+    function relativeColor(name, inner) {
+        var s = trim(inner.slice(4)), baseEnd, m = /^[a-zA-Z-]+\(/.exec(s);
+        if (m) baseEnd = matchParen(s, m[0].length - 1) + 1;
+        else { baseEnd = 0; while (baseEnd < s.length && !isWS(s.charCodeAt(baseEnd))) baseEnd++; }
+        var base = parseColor(s.slice(0, baseEnd));
+        if (!base) return null;
+        var rest = trim(s.slice(baseEnd)).toLowerCase(), space = name;
+        if (name === 'color') {
+            var sm = /^([a-z0-9-]+)\s*/.exec(rest);
+            if (!sm) return null;
+            space = sm[1];
+            rest = rest.slice(sm[0].length);
+        }
+        var r = base[0], g = base[1], b = base[2], alpha = base[3] === undefined ? 1 : base[3];
+        var names, vals, pct = [false, false, false], hsl, lab, ok, xyz;
+        switch (space) {
+            case 'rgb': case 'rgba': names = ['r', 'g', 'b']; vals = [r, g, b]; break;
+            case 'hsl': case 'hsla': hsl = rgbToHsl(r, g, b); names = ['h', 's', 'l']; vals = hsl; pct = [false, true, true]; break;
+            case 'hwb': hsl = rgbToHsl(r, g, b); names = ['h', 'w', 'b']; vals = [hsl[0], Math.min(r, g, b) / 255 * 100, (1 - Math.max(r, g, b) / 255) * 100]; pct = [false, true, true]; break;
+            case 'lab': names = ['l', 'a', 'b']; vals = rgbToLab(r, g, b); break;
+            case 'lch': lab = rgbToLab(r, g, b); names = ['l', 'c', 'h']; vals = [lab[0]].concat(polar([lab[1], lab[2]])); break;
+            case 'oklab': names = ['l', 'a', 'b']; vals = rgbToOklab(r, g, b); break;
+            case 'oklch': ok = rgbToOklab(r, g, b); names = ['l', 'c', 'h']; vals = [ok[0]].concat(polar([ok[1], ok[2]])); break;
+            case 'srgb': case 'display-p3': case 'a98-rgb': case 'prophoto-rgb': case 'rec2020': names = ['r', 'g', 'b']; vals = [r / 255, g / 255, b / 255]; break;
+            case 'srgb-linear': names = ['r', 'g', 'b']; vals = [linearChannel(r), linearChannel(g), linearChannel(b)]; break;
+            case 'xyz': case 'xyz-d65': case 'xyz-d50': names = ['x', 'y', 'z']; vals = rgbToXYZ(r, g, b); break;
+            default: return null;
+        }
+        var alphaTok = null, slash = scanUntil(rest, 0, rest.length, '/');
+        if (slash < rest.length) { alphaTok = trim(rest.slice(slash + 1)); rest = rest.slice(0, slash); }
+        var toks = splitWS(rest);
+        if (toks.length < 3) return null;
+        var subst = function (tok) {
+            // the walker already turned "calc(h + 90)" (unknown keywords) into "-webkit-calc(h + 90)"
+            tok = tok.replace(/-webkit-calc\(/g, 'calc(').replace(/(^|[^a-zA-Z0-9_.%-])(alpha|[a-z])(?![a-zA-Z0-9_%-])/g, function (all, pre, id) {
+                if (id === 'alpha') return pre + num4(alpha);
+                var k = names.indexOf(id);
+                return k < 0 ? all : pre + num4(vals[k]);
+            });
+            if (tok.indexOf('calc(') >= 0) tok = transformFunctions(tok);
+            return tok;
+        };
+        var outToks = [];
+        for (var i = 0; i < 3; i++) {
+            var t = subst(toks[i]);
+            if (pct[i] && /^-?[\d.]+$/.test(t)) t += '%';   // hsl()/hwb() channels are percentages
+            outToks.push(t);
+        }
+        var assembled = (name === 'color' ? space + ' ' : '') + outToks.join(' ') + (alphaTok !== null ? ' / ' + subst(alphaTok) : (alpha < 1 ? ' / ' + num4(alpha) : ''));
+        return convertColorFunction(name, assembled);
+    }
+
+    function relativeLuminance(c) {
+        return 0.2126 * linearChannel(c[0]) + 0.7152 * linearChannel(c[1]) + 0.0722 * linearChannel(c[2]);
+    }
+
     // splits "a b c / d" or "a, b, c, d" into components and alpha
     function colorComponents(inner) {
         var alpha = null, main = inner;
@@ -402,6 +600,7 @@ var CSSFix = (function () {
     function parseColor(str) {
         str = trim(str).toLowerCase();
         if (NAMED.hasOwnProperty(str)) return NAMED[str] ? NAMED[str].slice(0) : null;
+        if (/^[a-z]+$/.test(str)) { var named = namedColor(str); if (!named) return null; str = '#' + named; }
         var m = /^#([0-9a-f]{3,8})$/.exec(str);
         if (m) {
             var h = m[1];
@@ -426,8 +625,15 @@ var CSSFix = (function () {
         return null;
     }
 
+    function pctChannel(tok) {   // "50%" -> 0.5, "50" -> 0.5 (modern syntax takes numbers as percentages), "none" -> 0
+        if (tok === undefined || tok === 'none') return 0;
+        var n = parseFloat(tok);
+        return isNaN(n) ? 0 : n / 100;
+    }
+
     function convertColorFunction(name, inner) {
         var cc, a;
+        if (/^from\s/i.test(inner)) return relativeColor(name, inner);
         if (name === 'rgb' || name === 'rgba') {
             if (inner.indexOf(',') >= 0 && inner.indexOf('/') < 0) return null;   // legacy syntax already
             cc = colorComponents(inner);
@@ -438,12 +644,24 @@ var CSSFix = (function () {
             if (inner.indexOf(',') >= 0 && inner.indexOf('/') < 0 && !/deg|turn|rad/.test(inner)) return null;
             cc = colorComponents(inner);
             if (cc.c.length < 3) return null;
-            return hslToRGB(hueDeg(cc.c[0]), numOrPct(cc.c[1], 1), numOrPct(cc.c[2], 1), alphaOf(cc.a));
+            return hslToRGB(hueDeg(cc.c[0]), pctChannel(cc.c[1]), pctChannel(cc.c[2]), alphaOf(cc.a));
+        }
+        if (name === 'contrast-color') {
+            // black or white, whichever contrasts more with the given colour
+            var cbase = parseColor(trim(inner));
+            if (!cbase) return null;
+            return relativeLuminance(cbase) > 0.179 ? '#000000' : '#ffffff';
+        }
+        if (name === 'device-cmyk') {
+            cc = colorComponents(inner);
+            if (cc.c.length < 4) return null;
+            var cy = numOrPct(cc.c[0], 1), mg = numOrPct(cc.c[1], 1), ye = numOrPct(cc.c[2], 1), kk = numOrPct(cc.c[3], 1);
+            return rgbString(to255((1 - cy) * (1 - kk)), to255((1 - mg) * (1 - kk)), to255((1 - ye) * (1 - kk)), alphaOf(cc.a));
         }
         if (name === 'hwb') {
             cc = colorComponents(inner);
             if (cc.c.length < 3) return null;
-            var w = numOrPct(cc.c[1], 1), bl = numOrPct(cc.c[2], 1);
+            var w = pctChannel(cc.c[1]), bl = pctChannel(cc.c[2]);
             if (w + bl > 1) { var sum = w + bl; w /= sum; bl /= sum; }
             var base = /rgba?\((\d+),(\d+),(\d+)/.exec(hslToRGB(hueDeg(cc.c[0]), 1, 0.5, 1));
             var f = function (c) { return Math.round((c / 255 * (1 - w - bl) + w) * 255); };
@@ -563,6 +781,55 @@ var CSSFix = (function () {
         } else rest = args;
         var stops = normalizeStops(rest);
         return (head ? head + ', ' : '') + stops.join(', ');
+    }
+
+    // conic gradients do not exist in the old engine: the same colour stops as a top-to-bottom linear gradient
+    // keep the colours of pie charts and decorations instead of leaving the box empty
+    function convertConicGradient(inner) {
+        inner = inner.replace(INTERPOLATION_RE, ' ');
+        var args = splitTop(inner, ',');
+        if (/^\s*(from\s|at\s)/i.test(args[0])) args = args.slice(1);
+        var stops = [];
+        for (var i = 0; i < args.length; i++) {
+            var toks = splitWS(trim(args[i])), out = [];
+            for (var k = 0; k < toks.length; k++) {
+                if (/^-?[\d.]+(deg|grad|rad|turn)$/i.test(toks[k])) out.push((Math.round(hueDeg(toks[k].toLowerCase()) / 360 * 10000) / 100) + '%');
+                else out.push(toks[k]);
+            }
+            if (out.length) stops.push(out.join(' '));
+        }
+        return normalizeStops(stops).join(', ');
+    }
+
+    // image("a.png"), image(url(a.png), red), image(red): the first image, or a flat gradient of the colour
+    function convertImage(inner) {
+        var args = splitTop(inner, ','), color = null;
+        for (var i = 0; i < args.length; i++) {
+            var a = trim(args[i]).replace(/^(ltr|rtl)\s+/i, '');
+            if (/^["']/.test(a)) return 'url(' + a + ')';
+            if (/^(url|-webkit-[a-z-]*gradient|[a-z-]*gradient|-webkit-image-set|image-set)\(/i.test(a)) return a;
+            if (!color && parseColor(a)) color = a;
+        }
+        return color ? '-webkit-linear-gradient(' + color + ', ' + color + ')' : 'none';
+    }
+
+    // cross-fade(url(a) 25%, url(b)) / cross-fade(url(a), url(b), 25%) -> -webkit-cross-fade(url(a), url(b), 25%)
+    function convertCrossFade(inner) {
+        var args = splitTop(inner, ','), images = [], pcts = [], trailing = null;
+        for (var i = 0; i < args.length; i++) {
+            var toks = splitWS(trim(args[i])), pct = null, img = [];
+            for (var k = 0; k < toks.length; k++) { if (/^[\d.]+%$/.test(toks[k])) pct = toks[k]; else img.push(toks[k]); }
+            if (img.length) {
+                var im = img.join(' ');
+                if (!/\(/.test(im) && parseColor(im)) im = '-webkit-linear-gradient(' + im + ', ' + im + ')';
+                images.push(im);
+                pcts.push(pct);
+            } else if (pct !== null) trailing = pct;
+        }
+        if (!images.length) return 'none';
+        if (images.length === 1) return images[0];
+        var p = trailing !== null ? trailing : pcts[1] !== null ? pcts[1] : pcts[0] !== null ? (100 - parseFloat(pcts[0])) + '%' : '50%';
+        return '-webkit-cross-fade(' + images[0] + ', ' + images[1] + ', ' + p + ')';
     }
 
     // ------------------------------------------------------------------ values
@@ -774,7 +1041,11 @@ var CSSFix = (function () {
                 return '-webkit-' + name + '(' + convertLinearGradient(inner) + ')';
             case 'radial-gradient': case 'repeating-radial-gradient':
                 return '-webkit-' + name + '(' + convertRadialGradient(inner) + ')';
-            case 'conic-gradient': case 'repeating-conic-gradient': case 'paint': case 'element': case 'cross-fade':
+            case 'conic-gradient': return '-webkit-linear-gradient(' + convertConicGradient(inner) + ')';
+            case 'repeating-conic-gradient': return '-webkit-repeating-linear-gradient(' + convertConicGradient(inner) + ')';
+            case 'image': return convertImage(inner);
+            case 'cross-fade': return convertCrossFade(inner);
+            case 'paint': case 'element':
                 return 'none';
             case 'image-set': {
                 // type() hints go, bare strings become url(), gradients stay as they are
@@ -783,6 +1054,7 @@ var CSSFix = (function () {
             }
             case 'fit-content': return inner;
             case 'rgb': case 'rgba': case 'hsl': case 'hsla': case 'hwb': case 'oklch': case 'oklab': case 'lab': case 'lch': case 'color': case 'color-mix': case 'light-dark':
+            case 'contrast-color': case 'device-cmyk':
                 return convertColorFunction(name, inner);
             case 'env': { var e = splitTop(inner, ','); return e.length > 1 ? trim(e[1]) : '0px'; }
         }
@@ -790,7 +1062,7 @@ var CSSFix = (function () {
     }
 
     // values that contain none of the functions we rewrite skip the walker entirely (url(), translate(), ... are common)
-    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|env|image-set|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade)\(/i;
+    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade)\(/i;
 
     function transformFunctions(s) {
         if (s.indexOf('(') < 0 || !INTERESTING_FN.test(s)) return s;
@@ -869,6 +1141,31 @@ var CSSFix = (function () {
         baseline: 'baseline', stretch: 'stretch', normal: 'stretch' };
 
     function push(out, p, v, imp) { out.push({ p: p, v: v, imp: imp }); }
+
+    // two-value display syntax (css-display-3): "block flex" -> flex, "inline flow-root" -> inline-block, ...
+    var DISPLAY_INSIDE = { flow: 1, 'flow-root': 1, table: 1, flex: 1, grid: 1, ruby: 1, math: 1 };
+    function normalizeDisplay(lv) {
+        var toks = lv.split(/\s+/), outside = null, inside = null, listItem = false;
+        for (var i = 0; i < toks.length; i++) {
+            var t = toks[i];
+            if (t === 'block' || t === 'inline' || t === 'run-in') outside = t;
+            else if (DISPLAY_INSIDE[t]) inside = t;
+            else if (t === 'list-item') listItem = true;
+            else return lv;
+        }
+        if (listItem) return outside === 'inline' ? 'inline-block' : 'list-item';
+        var inl = outside === 'inline';
+        switch (inside || 'flow') {
+            case 'flow': return outside || 'block';
+            case 'flow-root': return inl ? 'inline-block' : 'flow-root';
+            case 'table': return inl ? 'inline-table' : 'table';
+            case 'flex': return inl ? 'inline-flex' : 'flex';
+            case 'grid': return inl ? 'inline-grid' : 'grid';
+            case 'ruby': return inl ? 'ruby' : 'block';
+            case 'math': return inl ? 'inline' : 'block';
+        }
+        return lv;
+    }
 
     function expandBox(vals) {   // 1-4 values -> [top, right, bottom, left]
         var t = vals[0], r = vals.length > 1 ? vals[1] : t, b = vals.length > 2 ? vals[2] : t, l = vals.length > 3 ? vals[3] : r;
@@ -967,6 +1264,7 @@ var CSSFix = (function () {
             var lv = v.toLowerCase();
             switch (p) {
                 case 'display':
+                    if (lv.indexOf(' ') > 0 || lv === 'flow') { lv = normalizeDisplay(lv); v = lv; }
                     if (lv === 'flex') push(out, 'display', (wrap || columnFlex) ? 'block' : '-webkit-box', imp);
                     else if (lv === 'inline-flex') push(out, 'display', (wrap || columnFlex) ? 'inline-block' : '-webkit-inline-box', imp);
                     else if (lv === 'grid' || lv === 'flow-root' || lv === 'contents') push(out, 'display', 'block', imp);
@@ -1188,6 +1486,26 @@ var CSSFix = (function () {
                 case 'text-rendering':
                     // optimizeLegibility / geometricPrecision force the slow CoreText shaping path in the old engine
                     push(out, p, /speed|auto/i.test(lv) ? v : 'optimizeSpeed', imp);
+                    continue;
+                case 'line-clamp':
+                    // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box)
+                    if (/^\d+$/.test(lv)) {
+                        push(out, '-webkit-line-clamp', v, imp);
+                        if (!hasDisplay) push(out, 'display', '-webkit-box', imp);
+                        push(out, '-webkit-box-orient', 'vertical', imp);
+                        push(out, 'overflow', 'hidden', imp);
+                    }
+                    push(out, p, v, imp);
+                    continue;
+                case 'font-variant-caps':
+                    if (/^(all-)?(small|petite)-caps$/.test(lv)) push(out, 'font-variant', 'small-caps', imp);
+                    else if (lv === 'normal') push(out, 'font-variant', 'normal', imp);
+                    push(out, p, v, imp);
+                    continue;
+                case 'font-variant':
+                    // the engine knows normal and small-caps; the level 4 keyword lists would invalidate the declaration
+                    if (/(^|\s)(all-)?(small|petite)-caps(\s|$)/.test(lv)) push(out, p, 'small-caps', imp);
+                    else if (/^(normal|none|inherit|initial|small-caps)$/.test(lv)) push(out, p, v, imp);
                     continue;
                 case 'font-feature-settings': case '-webkit-font-feature-settings': case 'font-variant-ligatures': case 'font-kerning':
                 case '-webkit-font-kerning': case 'font-variant-numeric': case 'font-optical-sizing': case 'font-variation-settings':
@@ -1518,20 +1836,29 @@ var CSSFix = (function () {
         return m ? (Math.round(parseFloat(m[1]) * n * 100) / 100) + m[2] : null;
     }
 
-    function gridColumns(decls, ctx) {
-        var isGrid = false, tracks = null;
+    // Number of equal columns a grid container rule asks for (0: not a grid, or nothing to emulate; -1: a
+    // container that was a multi-column grid earlier in the sheet goes back to one column, typically in a
+    // media query, and the floated children must be reset). `key` identifies the rule's selector list.
+    function gridColumns(decls, ctx, key) {
+        var isGrid = false, tracks = null, display = null;
         for (var i = 0; i < decls.length; i++) {
             var p = decls[i].p, v = decls[i].v;
-            if (p === 'display' && /^(inline-)?grid$/i.test(trim(v))) isGrid = true;
+            if (p === 'display') { display = trim(v).toLowerCase(); isGrid = /^(inline-)?grid$/.test(display); }
             else if (p === 'grid-template-columns') tracks = v;
             else if (p === 'grid-template' && v.indexOf('/') >= 0) tracks = v.slice(v.lastIndexOf('/') + 1);
             else if (p === 'grid' && v.indexOf('/') >= 0 && !/auto-flow/i.test(v.slice(0, v.indexOf('/')))) tracks = v.slice(v.lastIndexOf('/') + 1);
         }
-        if (!isGrid || !tracks) return 0;
+        if (!ctx.gridSels) ctx.gridSels = {};
+        // per selector list: undefined = never a grid, 0 = no longer one, 1 = grid with one column, n = n floated columns
+        var state = key ? ctx.gridSels[key] : undefined, known = state > 0, wasColumns = state > 1;
+        if (isGrid && key) ctx.gridSels[key] = 1;
+        else if (!isGrid && display !== null && known && key) { ctx.gridSels[key] = 0; return wasColumns ? -1 : 0; }   // display:block / none in a media query
+        if (!isGrid && !known) return 0;
+        if (!tracks) return 0;
         tracks = resolveVars(tracks, null, ctx);
         if (tracks === null) return 0;
         var t = trim(tracks).replace(/\[[^\]]*\]/g, ' ');
-        if (/^(none|auto|subgrid|masonry)$/i.test(t)) return 0;
+        if (/^(none|auto|subgrid|masonry)$/i.test(t)) return wasColumns ? -1 : 0;
         var width = ctx.viewportWidth || 768;
         var rep = /repeat\(\s*(\d+|auto-fill|auto-fit)\s*,\s*([^)]*(?:\([^)]*\))?[^)]*)\)/i.exec(t);
         var count = 0;
@@ -1550,11 +1877,12 @@ var CSSFix = (function () {
         } else {
             count = splitWS(t).length;
         }
-        if (count < 2) return 0;
         // 6+ explicit tracks (12-column systems) are used with spans: stacking the children beats twelve narrow columns
         var autoRepeat = rep && !/^\d+$/.test(rep[1]);
-        if (!autoRepeat && count >= 6) return 0;
-        return Math.min(count, 8);
+        if (count < 2 || (!autoRepeat && count >= 6)) { if (key) ctx.gridSels[key] = 1; return wasColumns ? -1 : 0; }
+        count = Math.min(count, 8);
+        if (key) ctx.gridSels[key] = count;
+        return count;
     }
 
     // What a flex container rule asks for that the 2009 box model cannot do by itself: wrapping and gaps.
@@ -1611,8 +1939,13 @@ var CSSFix = (function () {
                             out.push({ t: 'q', sel: gapSel.join(','), decls: [{ p: 'margin-left', v: fi.colGap, imp: false }] });
                         }
                     }
-                    var columns = gridColumns(r.decls, ctx);
-                    if (columns > 1) {
+                    var columns = gridColumns(r.decls, ctx, sels.join(','));
+                    if (columns === -1) {
+                        // the same container goes back to a single column (a media query): the floats are undone
+                        var resetSels = [];
+                        for (var rs = 0; rs < sels.length; rs++) resetSels.push(sels[rs] + ' > *');
+                        out.push({ t: 'q', sel: resetSels.join(','), decls: [{ p: 'float', v: 'none', imp: false }, { p: 'width', v: 'auto', imp: false }, { p: 'margin-right', v: '0', imp: false }] });
+                    } else if (columns > 1) {
                         // CSS grid does not exist here: the children float into equal columns instead of piling up;
                         // a column gap is taken out of the widths, a row gap becomes a bottom margin
                         var childSels = [], afterSels = [], lastSels = [];
@@ -1682,13 +2015,14 @@ var CSSFix = (function () {
             if (typeof pageVars === 'string') { try { pageVars = JSON.parse(pageVars); } catch (e) { pageVars = null; } }
             if (pageVars && typeof pageVars === 'object') for (var k in pageVars) if (pageVars.hasOwnProperty(k)) page[k] = pageVars[k];
         }
-        return { page: page, root: {}, other: {} };
+        return { page: page, root: {}, other: {}, initial: {} };
     }
 
     function fixCSS(text, ctx) {
         var clean = stripComments(text);
         var rules = [];
         parseRules(clean, 0, clean.length, rules);
+        rules = flattenNesting(rules);
         collectVars(rules, ctx, false);
         return serializeRules(transformRules(rules, ctx, false));
     }
@@ -1826,7 +2160,7 @@ var CSSFix = (function () {
             var clean = stripComments(m[2]);
             var rules = [];
             parseRules(clean, 0, clean.length, rules);
-            collectVars(rules, ctx, false);
+            collectVars(flattenNesting(rules), ctx, false);
         }
         // 2. rewrite the blocks
         html = html.replace(styleRe, function (all, open, body, close) {
