@@ -144,3 +144,5 @@
 "Built-in start page" = "Vestavěná úvodní stránka";
 "Current page" = "Aktuální stránka";
 "Site passwords forgotten." = "Hesla k webům byla zapomenuta.";
+"This site checks the browser before showing the page, which this engine cannot pass. Try again with another browser identity?" = "Tento web před zobrazením ověřuje prohlížeč, což tento engine nezvládne. Zkusit stránku znovu s jinou identitou prohlížeče?";
+"Try another identity" = "Zkusit jinou identitu";

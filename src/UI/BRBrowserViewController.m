@@ -1763,7 +1763,12 @@ static void BRWebThreadLock(void)
     if (alertView.tag == 200 && buttonIndex != alertView.cancelButtonIndex && self.documentController) {
         [self openDocumentController];
     } else if (alertView.tag == 400) {
-        if (buttonIndex != alertView.cancelButtonIndex && self.challengeURL) [[UIApplication sharedApplication] openURL:self.challengeURL];
+        if (buttonIndex != alertView.cancelButtonIndex && self.challengeURL) {
+            NSString *host = [self.challengeURL.host lowercaseString] ?: @"";
+            [BRSettings setUserAgentMode:[BRSettings userAgentModeForHost:host] == 0 ? 2 : 0 forHost:host];
+            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+            [self reloadIgnoringCache];
+        }
         self.challengeURL = nil;
     } else if (alertView.tag == 300) {
         void (^completion)(NSString *, NSString *) = self.authCompletion;
@@ -2361,8 +2366,9 @@ static void BRWebThreadLock(void)
     if ([asked containsObject:host] || self.authCompletion) return;
     [asked addObject:host];
     BRLog(@"Browser challenge page on %@ (%@)", host, title);
-    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:host message:L(@"This site checks the browser before showing the page, which this engine cannot pass. Open it in Safari?")
-                                                   delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Open in Safari"), nil];
+    // Safari on this device has the same engine, so the only thing worth trying is the other browser identity
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:host message:L(@"This site checks the browser before showing the page, which this engine cannot pass. Try again with another browser identity?")
+                                                   delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Try another identity"), nil];
     alert.tag = 400;
     self.challengeURL = url;
     [alert show];

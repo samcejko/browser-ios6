@@ -383,6 +383,14 @@
         addStyle('[data-shadow-root]{display:inherit}');
     }
     if (Np && !Np.getRootNode) Np.getRootNode = function () { var n = this; while (n.parentNode) n = n.parentNode; return n; };
+    if (Ep && !Ep.checkVisibility) Ep.checkVisibility = function (opts) {
+        // rendered at all (display:none anywhere up the tree gives no boxes), optionally visibility and opacity too
+        if (!this.getClientRects().length) return false;
+        var cs = getComputedStyle(this);
+        if (opts && (opts.checkVisibilityCSS || opts.visibilityProperty) && cs.visibility !== 'visible') return false;
+        if (opts && (opts.checkOpacity || opts.opacityProperty)) { for (var n = this; n && n.nodeType === 1; n = n.parentNode) if (parseFloat(getComputedStyle(n).opacity) === 0) return false; }
+        return true;
+    };
     if (Np && !('isConnected' in Np)) try { Object.defineProperty(Np, 'isConnected', { get: function () { return document.documentElement.contains(this); } }); } catch (e) {}
     if (window.HTMLLinkElement && !('import' in document.createElement('link'))) {
         try { Object.defineProperty(window.HTMLLinkElement.prototype, 'import', { get: function () { return null; }, configurable: true }); } catch (e) {}
