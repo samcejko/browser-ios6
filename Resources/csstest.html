@@ -207,7 +207,8 @@ h2 { font-size: 14px; color: #888; margin: 18px 4px 6px; text-transform: upperca
       ['object-fit (přes polyfill)', function () { return cs('t-object-fit').backgroundImage !== 'none' || cs('t-object-fit').objectFit === 'cover'; }],
       ['filter', function () { var s = cs('t-filter'); return /grayscale/.test(s.webkitFilter || s.filter || ''); }],
       ['mask-image', function () { var s = cs('t-mask'); return (s.webkitMaskImage || s.maskImage || 'none') !== 'none'; }],
-      ['clip-path', function () { var s = cs('t-clip-path'); return (s.webkitClipPath || s.clipPath || 'none') !== 'none'; }],
+      // natively a clip path; after the rewrite an SVG mask image of the same shape
+      ['clip-path', function () { var s = cs('t-clip-path'); return (s.webkitClipPath || s.clipPath || 'none') !== 'none' || /svg/.test(s.webkitMaskImage || ''); }],
       ['backdrop-filter', function () { var s = cs('t-backdrop'); return !!(s.webkitBackdropFilter || s.backdropFilter); }]
     ]],
     ['Transformace a animace', [

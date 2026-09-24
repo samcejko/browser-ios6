@@ -70,12 +70,14 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
 }
 
 static CGFloat g_viewportWidth = 768;
+static CGFloat g_devicePixelRatio = 1;
 
 + (void)warmUp
 {
     BRCSSRewriter *r = [self shared];
     CGRect screen = [UIScreen mainScreen].bounds;
     g_viewportWidth = MIN(screen.size.width, screen.size.height);   // portrait width: the wider layout of the two is fine
+    g_devicePixelRatio = [UIScreen mainScreen].scale ?: 1;          // read here, on the main thread
     [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; }];
 }
 
@@ -115,7 +117,8 @@ static CGFloat g_viewportWidth = 768;
     @synchronized (self) {
         NSMutableDictionary *m = _pageManifests[key];
         if (!m) {
-            m = [@{ @"has": [NSMutableArray array], @"cq": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
+            m = [@{ @"has": [NSMutableArray array], @"cq": [NSMutableArray array], @"dv": [NSMutableArray array], @"pt": [NSMutableArray array],
+                    @"seen": [NSMutableSet set] } mutableCopy];
             _pageManifests[key] = m;
             [_manifestOrder addObject:key];
             while (_manifestOrder.count > BRMaxPagesRemembered) {
@@ -124,7 +127,7 @@ static CGFloat g_viewportWidth = 768;
             }
         }
         NSMutableSet *seen = m[@"seen"];
-        for (NSString *kind in @[@"has", @"cq"]) {
+        for (NSString *kind in @[@"has", @"cq", @"dv", @"pt"]) {
             NSArray *entries = parsed[kind];
             if (![entries isKindOfClass:[NSArray class]]) continue;
             for (NSDictionary *e in entries) {
@@ -144,9 +147,9 @@ static CGFloat g_viewportWidth = 768;
     NSDictionary *out = nil;
     @synchronized (self) {
         NSDictionary *m = _pageManifests[key];
-        if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy] };
+        if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy], @"dv": [m[@"dv"] copy], @"pt": [m[@"pt"] copy] };
     }
-    if (!out) out = @{ @"has": @[], @"cq": @[] };
+    if (!out) out = @{ @"has": @[], @"cq": @[], @"dv": @[], @"pt": @[] };
     return [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL] ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 
@@ -264,7 +267,8 @@ static NSString *BRPageKey(NSURL *url)
             }
             NSString *optionsJSON = @"{}";
             {
-                NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth) } mutableCopy];
+                NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
+                                                @"devicePixelRatio": @(g_devicePixelRatio) } mutableCopy];
                 // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
                 if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
                 if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;

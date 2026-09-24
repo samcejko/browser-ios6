@@ -1267,7 +1267,9 @@
             applyTimer = null;
             if (!manifest) return;
             try { applyHas(); } catch (e) {}
-            try { if (manifest.cq.length) applyAspectRatios(); } catch (e2) {}   // the marker scan calls applyContainers
+            // the marker scan calls applyContainers and collects the inline deferred-value markers
+            try { if (manifest.cq.length || (window.__brDeferred && window.__brDeferred.needsMarkers())) applyAspectRatios(); } catch (e2) {}
+            try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e3) {}
         };
         var schedule = function () { if (!applyTimer) applyTimer = setTimeout(apply, 120); };
         var load = function () {
@@ -1285,6 +1287,9 @@
                     try { manifest = JSON.parse(x.responseText); } catch (e) { manifest = null; }
                     if (manifest && !manifest.has) manifest.has = [];
                     if (manifest && !manifest.cq) manifest.cq = [];
+                    if (manifest && !manifest.dv) manifest.dv = [];
+                    if (manifest && !manifest.pt) manifest.pt = [];
+                    try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
                     schedule();
                 };
                 x.send(null);
@@ -1294,7 +1299,7 @@
         onReady(scheduleLoad);
         window.addEventListener('load', scheduleLoad, false);
         onSettled(function () { scheduleLoad(); if (manifest) schedule(); });
-        window.addEventListener('resize', function () { if (manifest && manifest.cq.length) schedule(); }, false);
+        window.addEventListener('resize', function () { if (manifest && (manifest.cq.length || manifest.dv.length)) schedule(); }, false);
         var reevaluate = function () { if (manifest && manifest.has.length) schedule(); };
         document.addEventListener('input', reevaluate, true);
         document.addEventListener('change', reevaluate, true);
@@ -1302,6 +1307,929 @@
         document.addEventListener('focus', reevaluate, true);
         document.addEventListener('blur', reevaluate, true);
         window.__brManifestReload = load;
+    })();
+    // ---- Deferred values (manifest "dv" and "pt", see registerDeferred in cssfix.js): declarations whose value depends
+    // on the element. Each pass finds the elements the entries' selectors match (and the style attributes marked with
+    // br-dv-<hash>), resolves the cascade among the entries by specificity and order, computes the values and sets
+    // them inline: anchor positioning (anchor(), anchor-size(), position-area, position-try-fallbacks, position-visibility,
+    // anchor-scope, anchor-center), attr(), calc-size() of intrinsic sizes, sibling-index()/sibling-count(),
+    // container-progress(), toggle(), field-sizing and the SVG geometry properties (cx, cy, r, rx, ry, x, y, d).
+    (function () {
+        var entries = [], byHash = {}, tryRules = {}, inlineMarked = [], hasInline = false;
+        var gen = 0, recGen = 0, tracked = [], positioned = [], timelineRecs = [], anchors = {}, scopes = [], scrollTimer = null;
+        var SVGNS = 'http://www.w3.org/2000/svg';
+        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var num = function (s) { var n = parseFloat(s); return isNaN(n) ? 0 : n; };
+        var round2 = function (n) { return Math.round(n * 100) / 100; };
+        var isGlobal = function (v) { return v === 'inherit' || v === 'initial' || v === 'unset' || v === 'revert' || v === 'revert-layer'; };
+        var matchParen = function (s, i) {   // s[i] === '('
+            var depth = 0;
+            for (var k = i; k < s.length; k++) { var c = s.charAt(k); if (c === '(') depth++; else if (c === ')') { depth--; if (!depth) return k; } }
+            return s.length;
+        };
+        var topComma = function (s) {
+            var depth = 0;
+            for (var k = 0; k < s.length; k++) { var c = s.charAt(k); if (c === '(') depth++; else if (c === ')') depth--; else if (c === ',' && !depth) return k; }
+            return -1;
+        };
+        var splitTop = function (s, sep) {
+            var parts = [], depth = 0, start = 0;
+            for (var k = 0; k < s.length; k++) {
+                var c = s.charAt(k);
+                if (c === '(') depth++; else if (c === ')') depth--;
+                else if (!depth && (sep === ' ' ? /\s/.test(c) : c === sep)) { if (k > start || sep !== ' ') parts.push(trim(s.slice(start, k))); start = k + 1; }
+            }
+            parts.push(trim(s.slice(start)));
+            var out = [];
+            for (var j = 0; j < parts.length; j++) if (parts[j] !== '' || sep !== ' ') out.push(parts[j]);
+            return out;
+        };
+        // name(...) -> fn(inner) for every call of `name` (not part of a longer identifier); null makes the value invalid
+        var replaceFunctions = function (s, name, fn) {
+            if (s === null) return null;
+            var out = '', i = 0, lower = s.toLowerCase(), key = name + '(';
+            while (i < s.length) {
+                var at = lower.indexOf(key, i);
+                while (at > 0 && /[\w-]/.test(lower.charAt(at - 1))) at = lower.indexOf(key, at + 1);
+                if (at < 0) { out += s.slice(i); break; }
+                var close = matchParen(s, at + name.length);
+                var r = fn(s.slice(at + key.length, close));
+                if (r === null || r === undefined) return null;
+                out += s.slice(i, at) + r;
+                i = close + 1;
+            }
+            return out;
+        };
+        // ---- lengths: numbers with absolute, font, viewport and percentage units, + - * /, calc()/min()/max()/clamp()
+        var evalLength = function (str, el, pctBase) {
+            var s = trim(String(str)).toLowerCase().replace(/-webkit-calc\(/g, 'calc('), pos = 0, failed = false, fs = null, rfs = null;
+            var vw = window.innerWidth, vh = window.innerHeight;
+            var fontPx = function () { if (fs === null) fs = num(getComputedStyle(el).fontSize) || 16; return fs; };
+            var rootPx = function () { if (rfs === null) rfs = num(getComputedStyle(document.documentElement).fontSize) || 16; return rfs; };
+            var unitVal = function (n, u) {
+                switch (u) {
+                    case '': return { n: n, u: '' };
+                    case 'px': return { n: n, u: 'px' };
+                    case 'em': return { n: n * fontPx(), u: 'px' };
+                    case 'rem': return { n: n * rootPx(), u: 'px' };
+                    case 'ex': case 'ch': return { n: n * fontPx() / 2, u: 'px' };
+                    case 'lh': return { n: n * fontPx() * 1.2, u: 'px' };
+                    case 'vw': case 'svw': case 'lvw': case 'dvw': case 'vi': return { n: n * vw / 100, u: 'px' };
+                    case 'vh': case 'svh': case 'lvh': case 'dvh': case 'vb': return { n: n * vh / 100, u: 'px' };
+                    case 'vmin': return { n: n * Math.min(vw, vh) / 100, u: 'px' };
+                    case 'vmax': return { n: n * Math.max(vw, vh) / 100, u: 'px' };
+                    case '%': return pctBase === null || pctBase === undefined ? null : { n: n * pctBase / 100, u: 'px' };
+                    case 'pt': return { n: n * 4 / 3, u: 'px' };
+                    case 'pc': return { n: n * 16, u: 'px' };
+                    case 'in': return { n: n * 96, u: 'px' };
+                    case 'cm': return { n: n * 96 / 2.54, u: 'px' };
+                    case 'mm': return { n: n * 96 / 25.4, u: 'px' };
+                    case 'q': return { n: n * 96 / 101.6, u: 'px' };
+                    case 'deg': return { n: n, u: 'deg' };
+                    case 'grad': return { n: n * 0.9, u: 'deg' };
+                    case 'rad': return { n: n * 180 / Math.PI, u: 'deg' };
+                    case 'turn': return { n: n * 360, u: 'deg' };
+                    case 's': return { n: n * 1000, u: 'ms' };
+                    case 'ms': return { n: n, u: 'ms' };
+                }
+                return null;
+            };
+            var skip = function () { while (pos < s.length && /\s/.test(s.charAt(pos))) pos++; };
+            var sum, product, atom, args;
+            args = function () {
+                var list = [];
+                for (;;) {
+                    var v = sum();
+                    if (!v) { failed = true; return null; }
+                    list.push(v);
+                    skip();
+                    var c = s.charAt(pos);
+                    if (c === ',') { pos++; continue; }
+                    if (c === ')') { pos++; return list; }
+                    failed = true;
+                    return null;
+                }
+            };
+            atom = function () {
+                skip();
+                var c = s.charAt(pos), m;
+                if (c === '(') { pos++; var v = sum(); skip(); if (s.charAt(pos) !== ')') { failed = true; return null; } pos++; return v; }
+                m = /^(calc|min|max|clamp)\(/.exec(s.slice(pos));
+                if (m) {
+                    pos += m[0].length;
+                    var list = args();
+                    if (!list) return null;
+                    if (m[1] === 'calc') { if (list.length !== 1) { failed = true; return null; } return list[0]; }
+                    if (m[1] === 'clamp') { if (list.length !== 3) { failed = true; return null; } return { n: Math.max(list[0].n, Math.min(list[1].n, list[2].n)), u: list[1].u }; }
+                    var best = list[0];
+                    for (var i = 1; i < list.length; i++) if (m[1] === 'min' ? list[i].n < best.n : list[i].n > best.n) best = list[i];
+                    return best;
+                }
+                if ((c === '-' || c === '+') && !/[\d.]/.test(s.charAt(pos + 1))) {
+                    pos++;
+                    var inner = atom();
+                    if (!inner) return null;
+                    return c === '-' ? { n: -inner.n, u: inner.u } : inner;
+                }
+                m = /^[-+]?(?:\d*\.\d+|\d+)(?:e[-+]?\d+)?/.exec(s.slice(pos));
+                if (m) {
+                    pos += m[0].length;
+                    var u = /^(%|[a-z]+)/.exec(s.slice(pos));
+                    if (u) pos += u[0].length;
+                    var uv = unitVal(parseFloat(m[0]), u ? u[0] : '');
+                    if (!uv) failed = true;
+                    return uv;
+                }
+                failed = true;
+                return null;
+            };
+            product = function () {
+                var left = atom();
+                for (;;) {
+                    if (failed || !left) return null;
+                    skip();
+                    var op = s.charAt(pos);
+                    if (op !== '*' && op !== '/') return left;
+                    pos++;
+                    var right = atom();
+                    if (!right) { failed = true; return null; }
+                    if (op === '*') { if (left.u && right.u) { failed = true; return null; } left = { n: left.n * right.n, u: left.u || right.u }; }
+                    else { if ((right.u && right.u !== left.u) || !right.n) { failed = true; return null; } left = { n: left.n / right.n, u: right.u ? '' : left.u }; }
+                }
+            };
+            sum = function () {
+                var left = product();
+                for (;;) {
+                    if (failed || !left) return null;
+                    skip();
+                    var op = s.charAt(pos);
+                    if (op !== '+' && op !== '-') return left;
+                    pos++;
+                    var right = product();
+                    if (!right) { failed = true; return null; }
+                    if (left.u !== right.u) {
+                        if (!left.n && !left.u) left.u = right.u;
+                        else if (!right.n && !right.u) right.u = left.u;
+                        else { failed = true; return null; }
+                    }
+                    left = { n: op === '+' ? left.n + right.n : left.n - right.n, u: left.u };
+                }
+            };
+            var r = sum();
+            skip();
+            if (failed || !r || pos < s.length || isNaN(r.n)) return null;
+            return r;
+        };
+        // ---- property names: logical to physical (horizontal writing, left to right), shorthands to longhands
+        var PHYS = { 'inset-block-start': 'top', 'inset-block-end': 'bottom', 'inset-inline-start': 'left', 'inset-inline-end': 'right',
+            'inline-size': 'width', 'block-size': 'height', 'min-inline-size': 'min-width', 'min-block-size': 'min-height', 'max-inline-size': 'max-width',
+            'max-block-size': 'max-height', 'margin-block-start': 'margin-top', 'margin-block-end': 'margin-bottom', 'margin-inline-start': 'margin-left',
+            'margin-inline-end': 'margin-right', 'padding-block-start': 'padding-top', 'padding-block-end': 'padding-bottom',
+            'padding-inline-start': 'padding-left', 'padding-inline-end': 'padding-right' };
+        var SHORT = { inset: ['top', 'right', 'bottom', 'left'], 'inset-block': ['top', 'bottom'], 'inset-inline': ['left', 'right'],
+            'margin-block': ['margin-top', 'margin-bottom'], 'margin-inline': ['margin-left', 'margin-right'],
+            'padding-block': ['padding-top', 'padding-bottom'], 'padding-inline': ['padding-left', 'padding-right'] };
+        var INSETS = { top: 1, right: 1, bottom: 1, left: 1 };
+        var SIZES = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1 };
+        var POSITION_PROPS = { 'anchor-name': 1, 'anchor-scope': 1, 'position-anchor': 1, 'position-area': 1, 'inset-area': 1, 'position-try': 1,
+            'position-try-fallbacks': 1, 'position-try-options': 1, 'position-try-order': 1, 'position-visibility': 1 };
+        var SELF_ALIGN = { 'justify-self': 1, 'align-self': 1, 'place-self': 1, 'justify-items': 1, 'align-items': 1, 'place-items': 1 };
+        var SVG_GEOM = { cx: 1, cy: 1, r: 1, rx: 1, ry: 1, x: 1, y: 1, d: 1 };
+        var PREFIXED = { transform: 1, 'transform-origin': 1, perspective: 1, filter: 1 };
+        var expand = function (vals, n) {
+            if (n === 2) return [vals[0], vals.length > 1 ? vals[1] : vals[0]];
+            var t = vals[0], r = vals.length > 1 ? vals[1] : t, b = vals.length > 2 ? vals[2] : t, l = vals.length > 3 ? vals[3] : r;
+            return [t, r, b, l];
+        };
+        // [[physical property, value]] for a declaration
+        var longhands = function (p, v) {
+            if (SHORT[p]) {
+                var parts = splitTop(v, ' '), names = SHORT[p], vals = expand(parts, names.length), out = [];
+                for (var i = 0; i < names.length; i++) out.push([names[i], vals[i]]);
+                return out;
+            }
+            return [[PHYS[p] || p, v]];
+        };
+        // ---- inline styles we set, with what the page had, so that a later pass can give it back
+        var setProp = function (el, prop, value) {
+            if (!el.__brDVOrig) { el.__brDVOrig = {}; el.__brDVSet = {}; tracked.push(el); }
+            if (!el.__brDVOrig.hasOwnProperty(prop)) el.__brDVOrig[prop] = [el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)];
+            el.__brDVSet[prop] = gen;
+            if (el.style.getPropertyValue(prop) !== value) el.style.setProperty(prop, value, '');
+            if (PREFIXED[prop] && el.style.getPropertyValue('-webkit-' + prop) !== value) setProp(el, '-webkit-' + prop, value);
+        };
+        var unsetProp = function (el, prop) {   // back to what the page had before we set it
+            if (!el.__brDVSet || !el.__brDVSet.hasOwnProperty(prop)) return;
+            var o = el.__brDVOrig[prop];
+            if (o && o[0]) el.style.setProperty(prop, o[0], o[1]); else el.style.removeProperty(prop);
+            delete el.__brDVSet[prop];
+            delete el.__brDVOrig[prop];
+        };
+        var restoreStale = function () {
+            for (var i = 0; i < tracked.length; i++) {
+                var el = tracked[i], set = el.__brDVSet;
+                for (var p in set) {
+                    if (!set.hasOwnProperty(p) || set[p] === gen) continue;
+                    var o = el.__brDVOrig[p];
+                    if (o && o[0]) el.style.setProperty(p, o[0], o[1]); else el.style.removeProperty(p);
+                    delete set[p];
+                    delete el.__brDVOrig[p];
+                }
+            }
+        };
+        // ---- containing block of an absolutely or fixed positioned element, in viewport coordinates
+        var containingBlock = function (el) {
+            var cs = getComputedStyle(el);
+            if (cs.position === 'fixed') return { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight, viewport: true };
+            var op = el.offsetParent;
+            if (op && op !== document.documentElement && (op !== document.body || getComputedStyle(op).position !== 'static')) {
+                var r = op.getBoundingClientRect();
+                return { x: r.left + op.clientLeft - op.scrollLeft, y: r.top + op.clientTop - op.scrollTop, w: op.clientWidth, h: op.clientHeight };
+            }
+            var de = document.documentElement;
+            return { x: -window.pageXOffset, y: -window.pageYOffset, w: de.clientWidth || window.innerWidth, h: de.clientHeight || window.innerHeight, initial: true };
+        };
+        var rectIn = function (a, cb) {
+            var r = a.getBoundingClientRect();
+            return { l: r.left - cb.x, t: r.top - cb.y, r: r.right - cb.x, b: r.bottom - cb.y, w: r.width, h: r.height };
+        };
+        var pctBaseFor = function (el, prop, st) {
+            var vertical = /^(top|bottom|height|min-height|max-height)$/.test(prop);
+            if (st && st.cb) return vertical ? st.cb.h : st.cb.w;
+            var p = el.parentNode;
+            if (!p || p.nodeType !== 1) return vertical ? window.innerHeight : window.innerWidth;
+            return vertical ? p.clientHeight : p.clientWidth;
+        };
+        // ---- anchors
+        var findAnchor = function (name, el) {
+            var list = anchors[name];
+            if (!list) return null;
+            for (var i = list.length - 1; i >= 0; i--) {   // the last one in tree order wins
+                var a = list[i];
+                if (a === el || el.contains(a)) continue;
+                var blocked = false;
+                for (var s = 0; s < scopes.length && !blocked; s++) {
+                    var sc = scopes[s];
+                    if ((sc.names === 'all' || sc.names.indexOf(name) >= 0) && sc.el.contains(a) && !sc.el.contains(el)) blocked = true;
+                }
+                if (blocked || getComputedStyle(a).display === 'none') continue;
+                return a;
+            }
+            return null;
+        };
+        var anchorFor = function (st, name) {
+            var n = name || (st.defaultName && /^--/.test(st.defaultName) ? st.defaultName : null);
+            if (n) return findAnchor(n, st.el);
+            var inv = st.el.__brInvoker;   // implicit anchor: the button that opened this popover
+            return inv && inv.nodeType === 1 && document.documentElement.contains(inv) ? inv : null;
+        };
+        var anchorArgs = function (inner) {
+            var comma = topComma(inner), head = trim(comma < 0 ? inner : inner.slice(0, comma)), fb = comma < 0 ? null : trim(inner.slice(comma + 1));
+            var toks = head.split(/\s+/), name = null, key = null;
+            for (var i = 0; i < toks.length; i++) { if (/^--/.test(toks[i])) name = toks[i]; else if (toks[i]) key = toks[i].toLowerCase(); }
+            return { name: name, key: key, fb: fb };
+        };
+        // anchor() for the inset `side` (top/right/bottom/left)
+        var anchorFn = function (inner, side, st) {
+            var a = anchorArgs(inner), el = anchorFor(st, a.name);
+            if (!el || !a.key || !INSETS[side]) { st.invalid = st.invalid || !el; return a.fb; }
+            var axis = side === 'top' || side === 'bottom' ? 'y' : 'x', frac = null, key = a.key, pm;
+            if (key === 'top') frac = axis === 'y' ? 0 : null;
+            else if (key === 'bottom') frac = axis === 'y' ? 1 : null;
+            else if (key === 'left') frac = axis === 'x' ? 0 : null;
+            else if (key === 'right') frac = axis === 'x' ? 1 : null;
+            else if (key === 'start' || key === 'self-start') frac = 0;
+            else if (key === 'end' || key === 'self-end') frac = 1;
+            else if (key === 'center') frac = 0.5;
+            else if (key === 'inside') frac = side === 'top' || side === 'left' ? 0 : 1;
+            else if (key === 'outside') frac = side === 'top' || side === 'left' ? 1 : 0;
+            else if ((pm = /^(-?[\d.]+)%$/.exec(key))) frac = parseFloat(pm[1]) / 100;
+            if (frac === null) return a.fb;
+            var ar = rectIn(el, st.cb), coord = axis === 'y' ? ar.t + frac * ar.h : ar.l + frac * ar.w;
+            var value = side === 'top' || side === 'left' ? coord : (axis === 'y' ? st.cb.h : st.cb.w) - coord;
+            return round2(value) + 'px';
+        };
+        var anchorSizeFn = function (inner, prop, st) {
+            var a = anchorArgs(inner), el = anchorFor(st, a.name);
+            if (!el) { st.invalid = true; return a.fb; }
+            var r = el.getBoundingClientRect(), key = a.key;
+            if (!key) key = /height|top|bottom/.test(prop) ? 'height' : 'width';
+            if (key === 'width' || key === 'inline' || key === 'self-inline') return round2(r.width) + 'px';
+            if (key === 'height' || key === 'block' || key === 'self-block') return round2(r.height) + 'px';
+            return a.fb;
+        };
+        // ---- attr(), sibling-index(), sibling-count(), toggle(), container-progress(), calc-size()
+        var ATTR_UNIT = /^(%|px|em|rem|ex|ch|vw|vh|vmin|vmax|cm|mm|in|pt|pc|q|deg|grad|rad|turn|s|ms|hz|khz|dpi|dpcm|dppx|fr)$/;
+        var quote = function (t) { return '"' + String(t).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; };
+        var attrFn = function (el, inner, prop) {
+            var comma = topComma(inner), head = trim(comma < 0 ? inner : inner.slice(0, comma)), fb = comma < 0 ? null : trim(inner.slice(comma + 1));
+            var m = /^([\w:.-]+)\s*([\s\S]*)$/.exec(head);
+            if (!m) return fb;
+            var raw = el.getAttribute(m[1]), type = trim(m[2]).toLowerCase();
+            if (raw === null) return fb;
+            raw = trim(raw);
+            if (!type) return prop === 'content' ? quote(raw) : fb;   // an untyped attr() is a string, which only content takes
+            if (type === 'string' || /^type\(\s*<string>\s*\)$/.test(type)) return quote(raw);
+            if (ATTR_UNIT.test(type)) return /^-?(\d*\.\d+|\d+)(e[-+]?\d+)?$/.test(raw) ? raw + type : fb;
+            var t = /^type\(\s*([\s\S]*)\)$/.exec(type);
+            if (!t) return fb;
+            var want = t[1].replace(/["'\s]/g, '');
+            if (want === '*') return raw;
+            if (/^<(number|integer)>$/.test(want) && !/^-?(\d*\.\d+|\d+)(e[-+]?\d+)?$/.test(raw)) return fb;
+            if (/^<(length|length-percentage|percentage|angle|time|resolution)>/.test(want) && !/^-?(\d*\.\d+|\d+)(%|[a-z]+)?$/i.test(raw) && !(want.indexOf('auto') >= 0 && raw === 'auto')) {
+                if (want.indexOf('+') < 0 && want.indexOf('#') < 0) return fb;
+            }
+            if (want === '<url>') return 'url(' + quote(raw) + ')';
+            return raw;
+        };
+        var siblingIndex = function (el) { var i = 1; for (var n = el.previousSibling; n; n = n.previousSibling) if (n.nodeType === 1) i++; return i; };
+        var siblingCount = function (el) { var p = el.parentNode, c = 0; if (!p) return 1; for (var n = p.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) c++; return c; };
+        var toggleFn = function (el, prop, inner) {
+            var alts = splitTop(inner, ','), parent = el.parentNode;
+            if (!alts.length) return null;
+            if (!parent || parent.nodeType !== 1) return alts[0];
+            var pv = trim(getComputedStyle(parent).getPropertyValue(prop) || '').toLowerCase();
+            for (var i = 0; i < alts.length; i++) if (trim(alts[i]).toLowerCase() === pv) return alts[(i + 1) % alts.length];
+            return alts[0];
+        };
+        var nearestContainer = function (el, name) {
+            for (var n = el.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+                var cr = ' ' + (getComputedStyle(n).counterReset || '') + ' ';
+                if (name ? cr.indexOf(' br-cn-' + name + ' ') >= 0 : cr.indexOf(' br-container ') >= 0) return n;
+            }
+            return null;
+        };
+        var containerProgressFn = function (inner, el) {
+            var a = splitTop(inner, ',');
+            if (a.length !== 3) return null;
+            var m = /^([\w-]+)(?:\s+of\s+--([\w-]+))?$/.exec(trim(a[0]).toLowerCase());
+            if (!m) return null;
+            var c = nearestContainer(el, m[2] || null);
+            if (!c) return null;
+            var size = /height|block/.test(m[1]) ? c.clientHeight : c.clientWidth;
+            var lo = evalLength(a[1], el, size), hi = evalLength(a[2], el, size);
+            if (!lo || !hi || hi.n === lo.n) return null;
+            return String(Math.round(Math.max(0, Math.min(1, (size - lo.n) / (hi.n - lo.n))) * 10000) / 10000);
+        };
+        var measureBasis = function (el, prop, basis) {
+            var isX = !/height|block/.test(prop), dim = isX ? 'width' : 'height';
+            if (basis === 'any') return 0;
+            if (/^calc-size\(/.test(basis)) {
+                var nested = replaceFunctions(basis, 'calc-size', function (inner) { return calcSizeFn(inner, el, prop); });
+                var nv = nested === null ? null : evalLength(nested, el, pctBaseFor(el, prop, null));
+                return nv ? nv.n : null;
+            }
+            var len = evalLength(basis, el, pctBaseFor(el, prop, null));
+            if (len) return len.n;
+            var style = el.style, keys = ['width', 'height', 'display', 'white-space', 'min-width', 'max-width', 'min-height', 'max-height'], saved = [], k;
+            for (k = 0; k < keys.length; k++) saved.push([style.getPropertyValue(keys[k]), style.getPropertyPriority(keys[k])]);
+            style.setProperty('min-' + dim, '0px', 'important');
+            style.setProperty('max-' + dim, 'none', 'important');
+            if (basis === 'stretch') style.setProperty(dim, '-webkit-fill-available', 'important');
+            else if (isX && (basis === 'min-content' || basis === 'max-content' || basis === 'fit-content')) {
+                style.setProperty('display', 'inline-block', 'important');
+                style.setProperty(dim, basis === 'min-content' ? '0px' : 'auto', 'important');
+                if (basis === 'max-content') style.setProperty('white-space', 'nowrap', 'important');
+            } else style.setProperty(dim, 'auto', 'important');
+            var cs = getComputedStyle(el), px = isX ? (basis === 'min-content' ? el.scrollWidth : el.offsetWidth) : el.offsetHeight;
+            if (cs.boxSizing !== 'border-box' && cs.webkitBoxSizing !== 'border-box') {
+                px -= isX ? num(cs.paddingLeft) + num(cs.paddingRight) + num(cs.borderLeftWidth) + num(cs.borderRightWidth)
+                          : num(cs.paddingTop) + num(cs.paddingBottom) + num(cs.borderTopWidth) + num(cs.borderBottomWidth);
+            }
+            for (k = 0; k < keys.length; k++) { if (saved[k][0]) style.setProperty(keys[k], saved[k][0], saved[k][1]); else style.removeProperty(keys[k]); }
+            return Math.max(0, px);
+        };
+        var calcSizeFn = function (inner, el, prop) {
+            var comma = topComma(inner);
+            if (comma < 0) return null;
+            var basis = trim(inner.slice(0, comma)).toLowerCase(), expr = trim(inner.slice(comma + 1));
+            if (basis === 'content') basis = 'max-content';
+            var px = measureBasis(el, prop, basis);
+            if (px === null) return null;
+            var e = expr.replace(/(^|[^\w-])size(?![\w-])/gi, function (m0, pre) { return pre + '(' + px + 'px)'; });
+            var val = evalLength(e, el, pctBaseFor(el, prop, null));
+            return val ? round2(val.n) + (val.u === 'px' ? 'px' : val.u) : 'calc(' + e + ')';
+        };
+        // ---- mixes driven by a timeline: mix(), calc-mix(), color-mix(), cross-fade() whose progress is scroll(), view()
+        // or a named timeline (scroll-timeline-name / view-timeline-name, marked br-stl-<name> / br-vtl-<name>)
+        var scrollerOf = function (el, inline) {
+            for (var n = el.parentNode; n && n.nodeType === 1 && n !== document.body && n !== document.documentElement; n = n.parentNode) {
+                var cs = getComputedStyle(n), ov = inline ? cs.overflowX : cs.overflowY;
+                if ((ov === 'auto' || ov === 'scroll') && (inline ? n.scrollWidth > n.clientWidth : n.scrollHeight > n.clientHeight)) return n;
+            }
+            return null;   // the viewport
+        };
+        var scrollProgressOf = function (sc, inline) {
+            var pos, max, de = document.documentElement;
+            if (!sc) { max = inline ? de.scrollWidth - window.innerWidth : de.scrollHeight - window.innerHeight; pos = inline ? window.pageXOffset : window.pageYOffset; }
+            else { max = inline ? sc.scrollWidth - sc.clientWidth : sc.scrollHeight - sc.clientHeight; pos = inline ? sc.scrollLeft : sc.scrollTop; }
+            return max > 0 ? Math.max(0, Math.min(1, pos / max)) : 0;
+        };
+        var viewProgressOf = function (subject, inline) {   // the "cover" range: entering at the far edge until gone at the near edge
+            var sc = scrollerOf(subject, inline), r = subject.getBoundingClientRect(), start = 0, size = inline ? window.innerWidth : window.innerHeight;
+            if (sc) { var sr = sc.getBoundingClientRect(); start = inline ? sr.left : sr.top; size = inline ? sc.clientWidth : sc.clientHeight; }
+            var pos = (inline ? r.left : r.top) - start, len = inline ? r.width : r.height;
+            return Math.max(0, Math.min(1, (size - pos) / (size + len)));
+        };
+        var timelineProgress = function (spec, el) {
+            var m = /^(scroll|view)\(([^)]*)\)$/i.exec(spec);
+            if (m) {
+                var a = m[2].toLowerCase(), inline = /\b(inline|x)\b/.test(a);
+                if (m[1].toLowerCase() === 'view') return viewProgressOf(el, inline);
+                return scrollProgressOf(/\broot\b/.test(a) ? null : /\bself\b/.test(a) ? el : scrollerOf(el, inline), inline);
+            }
+            var name = spec.slice(2);
+            for (var n = el; n && n.nodeType === 1; n = n.parentNode) {
+                var cr = ' ' + (getComputedStyle(n).counterReset || '') + ' ', inl = cr.indexOf(' br-tl-src-inline ') >= 0;
+                if (cr.indexOf(' br-stl-' + name + ' ') >= 0) return scrollProgressOf(n === document.documentElement || n === document.body ? null : n, inl);
+                if (cr.indexOf(' br-vtl-' + name + ' ') >= 0) return viewProgressOf(n, inl);
+            }
+            return null;
+        };
+        var cubicBezier = function (x1, y1, x2, y2, t) {
+            var bx = function (u) { return 3 * x1 * u * (1 - u) * (1 - u) + 3 * x2 * u * u * (1 - u) + u * u * u; };
+            var by = function (u) { return 3 * y1 * u * (1 - u) * (1 - u) + 3 * y2 * u * u * (1 - u) + u * u * u; };
+            var lo = 0, hi = 1, u = t;
+            for (var i = 0; i < 30; i++) { u = (lo + hi) / 2; if (bx(u) < t) lo = u; else hi = u; }
+            return by(u);
+        };
+        var EASINGS = { ease: [0.25, 0.1, 0.25, 1], 'ease-in': [0.42, 0, 1, 1], 'ease-out': [0, 0, 0.58, 1], 'ease-in-out': [0.42, 0, 0.58, 1] };
+        var applyEasing = function (e, p) {
+            e = trim(e).toLowerCase();
+            var m;
+            if (EASINGS.hasOwnProperty(e)) return cubicBezier(EASINGS[e][0], EASINGS[e][1], EASINGS[e][2], EASINGS[e][3], p);
+            if ((m = /^cubic-bezier\(([^)]*)\)$/.exec(e))) { var cb = m[1].split(','); return cubicBezier(num(cb[0]), num(cb[1]), num(cb[2]), num(cb[3]), p); }
+            if ((m = /^steps\(\s*(\d+)\s*(?:,\s*([\w-]+))?\s*\)$/.exec(e))) {
+                var n = Math.max(1, parseInt(m[1], 10)), pos = m[2] || 'end', k = Math.floor(p * n);
+                if (pos === 'start' || pos === 'jump-start') return Math.min(1, (k + 1) / n);
+                if (pos === 'jump-none') return n > 1 ? Math.min(1, k / (n - 1)) : p;
+                if (pos === 'jump-both') return Math.min(1, (k + 1) / (n + 1));
+                return Math.min(1, k / n);
+            }
+            if ((m = /^linear\(([^)]*)\)$/.exec(e))) {
+                var pts = m[1].split(','), vals = [];
+                for (var i = 0; i < pts.length; i++) vals.push(num(trim(pts[i]).split(/\s+/)[0]));
+                if (vals.length < 2) return p;
+                var x = p * (vals.length - 1), j = Math.min(vals.length - 2, Math.floor(x));
+                return vals[j] + (vals[j + 1] - vals[j]) * (x - j);
+            }
+            return p;
+        };
+        var probe = null;
+        var colorOf = function (c) {
+            if (!probe) { probe = document.createElement('i'); probe.style.display = 'none'; (document.body || document.documentElement).appendChild(probe); }
+            probe.style.color = '';
+            probe.style.color = c;
+            if (!probe.style.color) return null;
+            var m = /rgba?\(([^)]*)\)/.exec(getComputedStyle(probe).color);
+            if (!m) return null;
+            var p = m[1].split(',');
+            return [num(p[0]), num(p[1]), num(p[2]), p.length > 3 ? num(p[3]) : 1];
+        };
+        var TIMELINE_ARG = /^\s*(scroll\([^)]*\)|view\([^)]*\)|--[\w-]+)(?:\s+by\s+([\s\S]*?))?(?:\s+in\s+[\s\S]*)?\s*$/i;
+        var mixFn = function (name, inner, el, prop) {
+            var args = splitTop(inner, ','), m = TIMELINE_ARG.exec(args[0]);
+            if (!m) return name + '(' + inner + ')';   // not a timeline mix: left as it is
+            var p = timelineProgress(m[1], el);
+            if (p === null || args.length !== 3) return null;
+            if (m[2]) p = applyEasing(m[2], p);
+            var a = trim(args[1]), b = trim(args[2]);
+            if (name === 'cross-fade') return '-webkit-cross-fade(' + a + ', ' + b + ', ' + Math.round(p * 100) + '%)';
+            if (name !== 'color-mix') {
+                var base = pctBaseFor(el, prop, null), la = evalLength(a, el, base), lb = evalLength(b, el, base);
+                if (la && lb && la.u === lb.u) return (Math.round((la.n + (lb.n - la.n) * p) * 10000) / 10000) + la.u;
+            }
+            if (name !== 'calc-mix') {
+                var ca = colorOf(a), cb = colorOf(b);
+                if (ca && cb) {
+                    var mix = function (i) { return Math.round(ca[i] + (cb[i] - ca[i]) * p); };
+                    return 'rgba(' + mix(0) + ',' + mix(1) + ',' + mix(2) + ',' + (Math.round((ca[3] + (cb[3] - ca[3]) * p) * 1000) / 1000) + ')';
+                }
+            }
+            return name === 'mix' ? (p < 0.5 ? a : b) : null;
+        };
+        var TIMELINE_VALUE = /(^|[^\w-])(mix|calc-mix|color-mix|cross-fade)\(\s*(scroll\(|view\(|--)/i;
+        // the value of `prop` for `el` with every element-dependent function computed (st: positioning state or null)
+        var evalValue = function (el, prop, v, st) {
+            var s = String(v);
+            s = replaceFunctions(s, 'sibling-index', function () { return String(siblingIndex(el)); });
+            s = replaceFunctions(s, 'sibling-count', function () { return String(siblingCount(el)); });
+            s = replaceFunctions(s, 'attr', function (inner) { return attrFn(el, inner, prop); });
+            if (s !== null && /anchor(-size)?\(/i.test(s)) {
+                if (!st) return null;   // anchor functions only work on absolutely positioned elements
+                s = replaceFunctions(s, 'anchor-size', function (inner) { return anchorSizeFn(inner, prop, st); });
+                s = replaceFunctions(s, 'anchor', function (inner) { return anchorFn(inner, prop, st); });
+            }
+            s = replaceFunctions(s, 'container-progress', function (inner) { return containerProgressFn(inner, el); });
+            s = replaceFunctions(s, 'calc-size', function (inner) { return calcSizeFn(inner, el, prop); });
+            s = replaceFunctions(s, 'toggle', function (inner) { return toggleFn(el, prop, inner); });
+            if (s !== null && TIMELINE_VALUE.test(s)) {
+                s = replaceFunctions(s, 'calc-mix', function (inner) { return mixFn('calc-mix', inner, el, prop); });
+                s = replaceFunctions(s, 'color-mix', function (inner) { return mixFn('color-mix', inner, el, prop); });
+                s = replaceFunctions(s, 'cross-fade', function (inner) { return mixFn('cross-fade', inner, el, prop); });
+                s = replaceFunctions(s, 'mix', function (inner) { return mixFn('mix', inner, el, prop); });
+            }
+            if (s === null) return null;
+            var len = evalLength(s, el, pctBaseFor(el, prop, st));
+            if (len && (len.u === 'px' || len.u === 'deg' || len.u === 'ms')) {
+                if (len.u === 'px' && len.n < 0 && /^(width|height|min-|max-|padding)/.test(prop)) len.n = 0;
+                return round2(len.n) + len.u;
+            }
+            if (len && !len.u) return String(round2(len.n));
+            return s.replace(/(^|[^\w-])calc\(/gi, '$1-webkit-calc(');
+        };
+        // ---- position-area: a 3x3 grid around the anchor inside the containing block
+        var AREA_ROW = { top: 's', 'y-start': 's', 'block-start': 's', 'self-block-start': 's', 'y-self-start': 's', bottom: 'e', 'y-end': 'e', 'block-end': 'e',
+            'self-block-end': 'e', 'y-self-end': 'e', 'span-top': 'ss', 'span-y-start': 'ss', 'span-block-start': 'ss', 'span-self-block-start': 'ss',
+            'span-y-self-start': 'ss', 'span-bottom': 'se', 'span-y-end': 'se', 'span-block-end': 'se', 'span-self-block-end': 'se', 'span-y-self-end': 'se' };
+        var AREA_COL = { left: 's', 'x-start': 's', 'inline-start': 's', 'self-inline-start': 's', 'x-self-start': 's', right: 'e', 'x-end': 'e', 'inline-end': 'e',
+            'self-inline-end': 'e', 'x-self-end': 'e', 'span-left': 'ss', 'span-x-start': 'ss', 'span-inline-start': 'ss', 'span-self-inline-start': 'ss',
+            'span-x-self-start': 'ss', 'span-right': 'se', 'span-x-end': 'se', 'span-inline-end': 'se', 'span-self-inline-end': 'se', 'span-x-self-end': 'se' };
+        var AREA_ANY = { start: 's', end: 'e', 'self-start': 's', 'self-end': 'e', 'span-start': 'ss', 'span-end': 'se', 'span-self-start': 'ss', 'span-self-end': 'se',
+            center: 'c', 'span-all': 'a' };
+        var parseArea = function (v) {
+            var toks = trim(v).toLowerCase().split(/\s+/), row = null, col = null, generic = [];
+            if (toks.length > 2) return null;
+            for (var i = 0; i < toks.length; i++) {
+                var t = toks[i];
+                if (AREA_ROW.hasOwnProperty(t)) row = AREA_ROW[t];
+                else if (AREA_COL.hasOwnProperty(t)) col = AREA_COL[t];
+                else if (AREA_ANY.hasOwnProperty(t)) generic.push(AREA_ANY[t]);
+                else return null;
+            }
+            if (generic.length === 2) { row = generic[0]; col = generic[1]; }
+            else if (generic.length === 1) { if (row === null && col === null) { row = generic[0]; col = generic[0]; } else if (row === null) row = generic[0]; else col = generic[0]; }
+            return { row: row === null ? 'a' : row, col: col === null ? 'a' : col };
+        };
+        // where the margin box starts along one axis: before the anchor end-aligned, after it start-aligned, over it centred
+        var areaPos = function (code, a0, a1, m) {
+            if (code === 's') return a0 - m;
+            if (code === 'e') return a1;
+            if (code === 'ss') return a1 - m;
+            if (code === 'se') return a0;
+            return (a0 + a1) / 2 - m / 2;
+        };
+        var FLIP_CODE = { s: 'e', e: 's', ss: 'se', se: 'ss', c: 'c', a: 'a' };
+        // ---- one placement: position-area or insets, sizes, margins, anchor-center
+        var placementOf = function (props, parentProps) {
+            var pl = { area: null, insets: {}, sizes: {}, margins: {}, cx: false, cy: false };
+            for (var p in props) {
+                if (!props.hasOwnProperty(p)) continue;
+                var v = props[p].v, lv = trim(v).toLowerCase();
+                if (p === 'position-area' || p === 'inset-area') { if (lv !== 'none' && !isGlobal(lv)) pl.area = parseArea(lv); continue; }
+                if (SELF_ALIGN[p]) {
+                    if (/anchor-center/.test(lv) && (p === 'justify-self' || p === 'place-self')) pl.cx = true;
+                    if (/anchor-center/.test(lv) && (p === 'align-self' || p === 'place-self')) pl.cy = true;
+                    continue;
+                }
+                if (POSITION_PROPS[p]) continue;
+                var lh = longhands(p, v);
+                for (var i = 0; i < lh.length; i++) {
+                    var name = lh[i][0];
+                    if (INSETS[name]) pl.insets[name] = lh[i][1];
+                    else if (SIZES[name]) pl.sizes[name] = lh[i][1];
+                    else if (/^margin-/.test(name)) pl.margins[name] = lh[i][1];
+                }
+            }
+            if (parentProps) {   // justify-items / align-items: anchor-center on the containing element
+                for (var q in parentProps) {
+                    if (!parentProps.hasOwnProperty(q) || !/anchor-center/.test(parentProps[q].v)) continue;
+                    if ((q === 'justify-items' || q === 'place-items') && !props['justify-self'] && !props['place-self']) pl.cx = true;
+                    if ((q === 'align-items' || q === 'place-items') && !props['align-self'] && !props['place-self']) pl.cy = true;
+                }
+            }
+            return pl;
+        };
+        var copyPlacement = function (pl) {
+            var out = { area: pl.area, insets: {}, sizes: {}, margins: {}, cx: pl.cx, cy: pl.cy }, k;
+            for (k in pl.insets) if (pl.insets.hasOwnProperty(k)) out.insets[k] = pl.insets[k];
+            for (k in pl.sizes) if (pl.sizes.hasOwnProperty(k)) out.sizes[k] = pl.sizes[k];
+            for (k in pl.margins) if (pl.margins.hasOwnProperty(k)) out.margins[k] = pl.margins[k];
+            return out;
+        };
+        var flipPlacement = function (pl, tactic) {
+            var side, kw, k;
+            if (tactic === 'flip-block') { side = { top: 'bottom', bottom: 'top' }; kw = { top: 'bottom', bottom: 'top', start: 'end', end: 'start', 'self-start': 'self-end', 'self-end': 'self-start' }; }
+            else if (tactic === 'flip-inline') { side = { left: 'right', right: 'left' }; kw = { left: 'right', right: 'left', start: 'end', end: 'start', 'self-start': 'self-end', 'self-end': 'self-start' }; }
+            else { side = { top: 'left', left: 'top', bottom: 'right', right: 'bottom' }; kw = { top: 'left', left: 'top', bottom: 'right', right: 'bottom', width: 'height', height: 'width', block: 'inline', inline: 'block', 'self-block': 'self-inline', 'self-inline': 'self-block' }; }
+            var flipArgs = function (v) {
+                return String(v).replace(/(anchor(?:-size)?\()([^,)]*)/gi, function (m0, fn, args) {
+                    return fn + args.replace(/-?[\w.-]+%?/g, function (w) {
+                        var lw = w.toLowerCase(), pm = /^(-?[\d.]+)%$/.exec(lw);
+                        if (kw.hasOwnProperty(lw)) return kw[lw];
+                        if (pm && tactic !== 'flip-start') return (100 - parseFloat(pm[1])) + '%';
+                        return w;
+                    });
+                });
+            };
+            var out = { area: null, insets: {}, sizes: {}, margins: {}, cx: tactic === 'flip-start' ? pl.cy : pl.cx, cy: tactic === 'flip-start' ? pl.cx : pl.cy, variant: true };
+            for (k in pl.insets) if (pl.insets.hasOwnProperty(k)) out.insets[side[k] || k] = flipArgs(pl.insets[k]);
+            for (k in pl.sizes) if (pl.sizes.hasOwnProperty(k)) out.sizes[tactic === 'flip-start' ? k.replace(/width|height/, function (d) { return d === 'width' ? 'height' : 'width'; }) : k] = flipArgs(pl.sizes[k]);
+            for (k in pl.margins) if (pl.margins.hasOwnProperty(k)) { var mside = k.slice(7); out.margins['margin-' + (side[mside] || mside)] = pl.margins[k]; }
+            if (pl.area) {
+                if (tactic === 'flip-block') out.area = { row: FLIP_CODE[pl.area.row], col: pl.area.col };
+                else if (tactic === 'flip-inline') out.area = { row: pl.area.row, col: FLIP_CODE[pl.area.col] };
+                else out.area = { row: pl.area.col, col: pl.area.row };
+            }
+            return out;
+        };
+        var applyPlacement = function (st, pl) {
+            var el = st.el, k, val;
+            st.invalid = false;
+            for (k in pl.sizes) if (pl.sizes.hasOwnProperty(k)) { val = evalValue(el, k, pl.sizes[k], st); if (val === null) st.invalid = true; else setProp(el, k, val); }
+            for (k in pl.margins) if (pl.margins.hasOwnProperty(k)) { val = evalValue(el, k, pl.margins[k], st); if (val !== null) setProp(el, k, val); }
+            var cs = getComputedStyle(el);
+            if (pl.area) {
+                var a = anchorFor(st, null);
+                if (a) {
+                    var ar = rectIn(a, st.cb);
+                    var mw = el.offsetWidth + num(cs.marginLeft) + num(cs.marginRight), mh = el.offsetHeight + num(cs.marginTop) + num(cs.marginBottom);
+                    setProp(el, 'left', round2(areaPos(pl.area.col, ar.l, ar.r, mw)) + 'px');
+                    setProp(el, 'top', round2(areaPos(pl.area.row, ar.t, ar.b, mh)) + 'px');
+                    setProp(el, 'right', 'auto');
+                    setProp(el, 'bottom', 'auto');
+                } else st.invalid = true;
+            }
+            for (k in pl.insets) {
+                if (!pl.insets.hasOwnProperty(k) || pl.area) continue;
+                val = evalValue(el, k, pl.insets[k], st);
+                if (val === null) st.invalid = true; else setProp(el, k, val);
+            }
+            if (!pl.area) {
+                // sides this placement does not name: auto in a fallback option, the page's own value otherwise
+                for (k in INSETS) {
+                    if (!INSETS.hasOwnProperty(k) || pl.insets.hasOwnProperty(k)) continue;
+                    if (pl.variant) setProp(el, k, 'auto'); else unsetProp(el, k);
+                }
+            }
+            if (pl.cx || pl.cy) {
+                var ca = anchorFor(st, null);
+                if (ca) {
+                    var cr = rectIn(ca, st.cb);
+                    if (pl.cx) { setProp(el, 'left', round2((cr.l + cr.r) / 2 - (el.offsetWidth + num(cs.marginLeft) + num(cs.marginRight)) / 2) + 'px'); setProp(el, 'right', 'auto'); }
+                    if (pl.cy) { setProp(el, 'top', round2((cr.t + cr.b) / 2 - (el.offsetHeight + num(cs.marginTop) + num(cs.marginBottom)) / 2) + 'px'); setProp(el, 'bottom', 'auto'); }
+                }
+            }
+        };
+        var overflows = function (st) {
+            var r = st.el.getBoundingClientRect(), cb = st.cb;
+            var box = cb.initial || cb.viewport ? { l: 0, t: 0, r: window.innerWidth, b: window.innerHeight } : { l: cb.x, t: cb.y, r: cb.x + cb.w, b: cb.y + cb.h };
+            return r.left < box.l - 1 || r.top < box.t - 1 || r.right > box.r + 1 || r.bottom > box.b + 1;
+        };
+        // space the placement leaves the element in the containing block, for position-try-order
+        var available = function (st, order) {
+            var s = st.el.style;
+            if (order === 'most-width' || order === 'most-inline-size') return st.cb.w - num(s.left) - num(s.right);
+            return st.cb.h - num(s.top) - num(s.bottom);
+        };
+        var optionPlacement = function (base, opt) {
+            var toks = trim(opt).split(/\s+/), named = null, tactics = [], area = [], pl = base, i;
+            for (i = 0; i < toks.length; i++) {
+                var t = toks[i], lt = t.toLowerCase();
+                if (/^--/.test(t)) named = t;
+                else if (/^flip-(block|inline|start)$/.test(lt)) tactics.push(lt);
+                else area.push(lt);
+            }
+            if (area.length) {
+                var parsed = parseArea(area.join(' '));
+                if (!parsed || named || tactics.length) return null;
+                pl = copyPlacement(base);
+                pl.area = parsed;
+                pl.insets = {};
+                pl.variant = true;
+                return pl;
+            }
+            if (named) {
+                var decls = tryRules[named];
+                if (!decls) return null;
+                var props = {};
+                for (i = 0; i < decls.length; i++) props[decls[i][0]] = { v: decls[i][1] };
+                var over = placementOf(props, null);
+                pl = copyPlacement(base);
+                pl.variant = true;
+                var k;
+                if (over.area || props['position-area']) { pl.area = over.area; pl.insets = {}; }
+                for (k in over.insets) if (over.insets.hasOwnProperty(k)) { pl.insets[k] = over.insets[k]; pl.area = null; }
+                for (k in over.sizes) if (over.sizes.hasOwnProperty(k)) pl.sizes[k] = over.sizes[k];
+                for (k in over.margins) if (over.margins.hasOwnProperty(k)) pl.margins[k] = over.margins[k];
+                if (over.cx) pl.cx = true;
+                if (over.cy) pl.cy = true;
+            }
+            for (i = 0; i < tactics.length; i++) pl = flipPlacement(pl, tactics[i]);
+            return pl;
+        };
+        var positionElement = function (rec) {
+            var el = rec.el, props = rec.props, ecs = getComputedStyle(el);
+            // anchor functions and position-area only apply to absolutely and fixed positioned boxes
+            if (ecs.display === 'none' || (ecs.position !== 'absolute' && ecs.position !== 'fixed')) return;
+            var pa = props['position-anchor'] ? trim(props['position-anchor'].v) : 'auto';
+            var st = { el: el, cb: containingBlock(el), defaultName: /^--/.test(pa) ? pa : null, invalid: false };
+            var parentRec = el.parentNode && el.parentNode.__brDV && el.parentNode.__brDV.gen === recGen ? el.parentNode.__brDV.props : null;
+            var base = placementOf(props, parentRec);
+            // position-try: <order>? <fallbacks>; position-try-fallbacks / position-try-options; position-try-order
+            var order = props['position-try-order'] ? trim(props['position-try-order'].v).toLowerCase() : 'normal', fbv = null;
+            if (props['position-try']) {
+                var ptv = trim(props['position-try'].v), om = /^(normal|most-width|most-height|most-block-size|most-inline-size)\s*(.*)$/i.exec(ptv);
+                if (om) { order = om[1].toLowerCase(); fbv = om[2]; } else fbv = ptv;
+            }
+            if (props['position-try-fallbacks']) fbv = props['position-try-fallbacks'].v;
+            else if (props['position-try-options']) fbv = props['position-try-options'].v;
+            applyPlacement(st, base);
+            var chosenInvalid = st.invalid;
+            if (fbv && !/^\s*(none|normal)?\s*$/i.test(fbv) && (overflows(st) || order !== 'normal')) {
+                var opts = splitTop(fbv, ','), candidates = [], i;
+                for (i = 0; i < opts.length; i++) { var op = optionPlacement(base, opts[i]); if (op) candidates.push(op); }
+                var winner = null;
+                if (order !== 'normal') {
+                    var bestSpace = available(st, order);
+                    winner = base;
+                    for (i = 0; i < candidates.length; i++) {
+                        applyPlacement(st, candidates[i]);
+                        var sp = available(st, order);
+                        if (!overflows(st) && sp > bestSpace) { bestSpace = sp; winner = candidates[i]; }
+                    }
+                } else {
+                    for (i = 0; i < candidates.length && !winner; i++) { applyPlacement(st, candidates[i]); if (!overflows(st) && !st.invalid) winner = candidates[i]; }
+                }
+                applyPlacement(st, winner || base);
+                chosenInvalid = st.invalid;
+            }
+            // position-visibility
+            var vis = props['position-visibility'] ? trim(props['position-visibility'].v).toLowerCase() : 'always', hide = false;
+            if (vis.indexOf('anchors-valid') >= 0 && chosenInvalid) hide = true;
+            if (vis.indexOf('anchors-visible') >= 0) {
+                var an = anchorFor(st, null);
+                if (an) {
+                    var r = an.getBoundingClientRect();
+                    if ((!r.width && !r.height) || r.bottom < 0 || r.right < 0 || r.top > window.innerHeight || r.left > window.innerWidth) hide = true;
+                }
+            }
+            if (vis.indexOf('no-overflow') >= 0 && overflows(st)) hide = true;
+            if (hide) setProp(el, 'visibility', 'hidden');
+        };
+        // ---- the other deferred properties
+        var fieldSizing = function (el, mode) {
+            var tag = el.tagName;
+            if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+            el.__brFieldSizing = mode === 'content';
+            if (!el.__brFieldSizing || el.__brFieldSize) { if (el.__brFieldSize) el.__brFieldSize(); return; }
+            var resize = el.__brFieldSize = function () {
+                if (!el.__brFieldSizing) return;
+                if (el.tagName === 'TEXTAREA') {
+                    el.style.height = 'auto';
+                    el.style.overflow = 'hidden';
+                    el.style.height = el.scrollHeight + 'px';
+                    return;
+                }
+                var cs = getComputedStyle(el), probe = document.createElement('span');
+                probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;left:-9999px;top:0;font:' + cs.font + ';letter-spacing:' + cs.letterSpacing + ';text-transform:' + cs.textTransform;
+                probe.textContent = el.value || el.getAttribute('placeholder') || ' ';
+                (document.body || document.documentElement).appendChild(probe);
+                var w = probe.offsetWidth + num(cs.paddingLeft) + num(cs.paddingRight) + num(cs.borderLeftWidth) + num(cs.borderRightWidth) + 4;
+                probe.parentNode.removeChild(probe);
+                el.style.width = Math.ceil(w) + 'px';
+            };
+            el.addEventListener('input', resize, false);
+            el.addEventListener('change', resize, false);
+            resize();
+        };
+        var svgGeometry = function (el, p, v) {
+            if (el.namespaceURI !== SVGNS) return;
+            var val = evalValue(el, p, v, null);
+            if (val === null) return;
+            val = trim(val);
+            if (!val || isGlobal(val.toLowerCase())) return;
+            if (p === 'd') {
+                var m = /^path\(\s*(["'])([\s\S]*)\1\s*\)$/i.exec(val);
+                if (m) el.setAttribute('d', m[2]); else if (val.toLowerCase() === 'none') el.removeAttribute('d');
+                return;
+            }
+            if (val.toLowerCase() === 'auto') el.removeAttribute(p); else el.setAttribute(p, val);
+        };
+        var INDIVIDUAL_TRANSFORM = { rotate: 1, scale: 1, translate: 1 };
+        var applyGeneral = function (rec) {
+            var el = rec.el, props = rec.props;
+            for (var p in props) {
+                if (!props.hasOwnProperty(p) || POSITION_PROPS[p] || SELF_ALIGN[p]) continue;
+                var v = props[p].v;
+                if (p === 'field-sizing') { fieldSizing(el, trim(v).toLowerCase()); continue; }
+                if (SVG_GEOM[p]) { svgGeometry(el, p, v); continue; }
+                if (INDIVIDUAL_TRANSFORM[p]) {
+                    var tv = evalValue(el, p, v, null);
+                    if (tv === null || /^none$/i.test(trim(tv))) continue;
+                    var parts = splitTop(tv, ' ');
+                    var fn = p === 'rotate' ? 'rotate(' + parts[parts.length - 1] + ')' : p + '(' + parts.join(', ') + ')';
+                    setProp(el, 'transform', fn);
+                    continue;
+                }
+                var lh = longhands(p, v);
+                for (var i = 0; i < lh.length; i++) {
+                    var val = evalValue(el, lh[i][0], lh[i][1], null);
+                    if (val !== null) setProp(el, lh[i][0], val);
+                }
+            }
+        };
+        var needsPositioning = function (props) {
+            for (var p in props) {
+                if (!props.hasOwnProperty(p) || p === 'anchor-name' || p === 'anchor-scope') continue;
+                if (POSITION_PROPS[p] || (SELF_ALIGN[p] && /anchor-center/.test(props[p].v)) || /anchor(-size)?\(/i.test(props[p].v)) return true;
+            }
+            return false;
+        };
+        var mediaOk = function (list) {
+            if (!list) return true;
+            for (var i = 0; i < list.length; i++) { try { if (!window.matchMedia(list[i]).matches) return false; } catch (e) { return false; } }
+            return true;
+        };
+        var collect = function () {
+            var recs = [], i, k, b;
+            var consider = function (el, e, spec) {
+                var rec = el.__brDV;
+                if (!rec || rec.gen !== gen) { rec = el.__brDV = { gen: gen, el: el, props: {} }; recs.push(rec); }
+                var cur = rec.props[e.p];
+                if (cur && ((cur.imp && !e.i) || (!!cur.imp === !!e.i && (cur.spec > spec || (cur.spec === spec && cur.order > e.__order))))) return;
+                rec.props[e.p] = { v: e.v, spec: spec, order: e.__order, imp: !!e.i };
+            };
+            for (i = 0; i < entries.length; i++) {
+                var e = entries[i];
+                if (!e.s || !mediaOk(e.m)) continue;
+                for (b = 0; b < e.s.length; b++) {
+                    var list = null;
+                    try { list = document.querySelectorAll(e.s[b]); } catch (x) { list = null; }
+                    if (list) for (k = 0; k < list.length; k++) consider(list[k], e, e.sp ? e.sp[b] : 0);
+                }
+            }
+            for (i = 0; i < inlineMarked.length; i++) {
+                var mk = inlineMarked[i];
+                for (k = 0; k < mk.hs.length; k++) { var ie = byHash[mk.hs[k]]; if (ie && !ie.s) consider(mk.el, ie, 1000000); }
+            }
+            return recs;
+        };
+        var byDocumentOrder = function (a, b) { return a === b ? 0 : (a.compareDocumentPosition(b) & 4 ? -1 : 1); };
+        var pass = function (positionOnly) {
+            if (!entries.length) return;
+            gen++;
+            var i;
+            if (!positionOnly) {
+                recGen = gen;
+                var recs = collect();
+                anchors = {};
+                scopes = [];
+                positioned = [];
+                for (i = 0; i < recs.length; i++) {
+                    var props = recs[i].props;
+                    if (props['anchor-name']) {
+                        var names = splitTop(props['anchor-name'].v, ',');
+                        for (var n = 0; n < names.length; n++) if (/^--/.test(names[n])) (anchors[names[n]] = anchors[names[n]] || []).push(recs[i].el);
+                    }
+                    if (props['anchor-scope']) {
+                        var sv = trim(props['anchor-scope'].v);
+                        if (sv.toLowerCase() === 'all') scopes.push({ el: recs[i].el, names: 'all' });
+                        else if (!/^(none|inherit|initial|unset)$/i.test(sv)) scopes.push({ el: recs[i].el, names: splitTop(sv, ',') });
+                    }
+                }
+                for (var an in anchors) if (anchors.hasOwnProperty(an)) anchors[an].sort(byDocumentOrder);
+                timelineRecs = [];
+                for (i = 0; i < recs.length; i++) {
+                    try { applyGeneral(recs[i]); } catch (e1) {}
+                    if (needsPositioning(recs[i].props)) positioned.push(recs[i]);
+                    for (var tp in recs[i].props) if (recs[i].props.hasOwnProperty(tp) && TIMELINE_VALUE.test(recs[i].props[tp].v)) { timelineRecs.push(recs[i]); break; }
+                }
+            } else {
+                for (i = 0; i < timelineRecs.length; i++) { try { applyGeneral(timelineRecs[i]); } catch (e3) {} }
+            }
+            for (i = 0; i < positioned.length; i++) { try { positionElement(positioned[i]); } catch (e2) {} }
+            if (!positionOnly) restoreStale();
+        };
+        onMarkers(function (marked) {
+            inlineMarked = [];
+            for (var i = 0; i < marked.length; i++) {
+                var hs = marked[i].cr.match(/br-dv-[0-9a-z]+/g);
+                if (!hs) continue;
+                for (var k = 0; k < hs.length; k++) hs[k] = hs[k].slice(6);
+                inlineMarked.push({ el: marked[i].el, hs: hs });
+            }
+        });
+        window.addEventListener('scroll', function () {
+            if ((!positioned.length && !timelineRecs.length) || scrollTimer) return;
+            scrollTimer = setTimeout(function () { scrollTimer = null; pass(true); }, 30);
+        }, true);
+        document.addEventListener('toggle', function () { if (entries.length) setTimeout(function () { pass(false); }, 0); }, true);
+        window.__brDeferred = {
+            setManifest: function (m) {
+                entries = m.dv || [];
+                byHash = {};
+                tryRules = {};
+                hasInline = false;
+                for (var i = 0; i < entries.length; i++) { entries[i].__order = i; byHash[entries[i].h] = entries[i]; if (!entries[i].s) hasInline = true; }
+                var pts = m.pt || [];
+                for (var k = 0; k < pts.length; k++) tryRules[pts[k].n] = pts[k].d;
+            },
+            needsMarkers: function () { return hasInline; },
+            apply: function () { pass(false); },
+            reposition: function () { pass(true); },
+            state: function () { return { entries: entries.length, positioned: positioned.length, anchors: anchors }; }
+        };
     })();
     // ---- Scroll snap, smooth scrolling and balanced text, driven by the rewriter's counter-reset markers
     // (br-snap-x/y, br-snap-m, br-snap-pad, br-snap-align on the items, br-smooth, br-balance)
@@ -1604,9 +2532,13 @@
             setStateClass(el, 'br-popover-open', true);
             setTimeout(function () { el.dispatchEvent(new ToggleEvent('toggle', { oldState: 'closed', newState: 'open' })); }, 0);
         };
-        Ep.showPopover = function () { show(this); };
+        // the invoking element becomes the popover's implicit anchor (anchor positioning without a name)
+        Ep.showPopover = function (opts) { if (opts && opts.source) this.__brInvoker = opts.source; show(this); };
         Ep.hidePopover = function () { hide(this); };
-        Ep.togglePopover = function (force) { var want = force === undefined ? !isOpen(this) : !!force; if (want) show(this); else hide(this); return want; };
+        Ep.togglePopover = function (force) {
+            if (force && typeof force === 'object') { if (force.source) this.__brInvoker = force.source; force = force.force; }
+            var want = force === undefined ? !isOpen(this) : !!force; if (want) show(this); else hide(this); return want;
+        };
         try {
             Object.defineProperty(Ep, 'popover', { get: function () { if (!this.hasAttribute('popover')) return null; var v = (this.getAttribute('popover') || '').toLowerCase(); return v === 'manual' ? 'manual' : 'auto'; }, set: function (v) { if (v === null || v === undefined) this.removeAttribute('popover'); else this.setAttribute('popover', v); }, configurable: true });
             var targetProp = function (proto) {
@@ -1622,6 +2554,7 @@
             if (t && t.nodeType === 1) {
                 var target = document.getElementById(t.getAttribute('popovertarget') || '');
                 if (target && target.hasAttribute('popover')) {
+                    target.__brInvoker = t;
                     var action = (t.getAttribute('popovertargetaction') || 'toggle').toLowerCase();
                     if (action === 'show') show(target); else if (action === 'hide') hide(target); else { if (isOpen(target)) hide(target); else show(target); }
                     e.__brPopoverHandled = true;

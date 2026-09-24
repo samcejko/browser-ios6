@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>deferred values test</title>
+<script>
+window.__errors = [];
+window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+</script>
+<script src="../Resources/cssfix.js"></script>
+</head>
+<body style="margin:0">
+<script>
+// The page as a site would ship it; it goes through the real rewriter (CSSFix.run('html')). A desktop browser implements
+// anchor positioning, typed attr(), calc-size() and friends itself, so those declarations are stripped from the output
+// afterwards: only the rewriter's markers, the manifest and the page shim are left to do the work.
+var page = [
+  '<style>',
+  '#a1 { position: absolute; left: 200px; top: 150px; width: 80px; height: 40px; background: #cde; anchor-name: --a; }',
+  '#b1 { position: fixed; left: 300px; bottom: 10px; width: 60px; height: 30px; background: #edc; anchor-name: --b; }',
+  '.tip { position: absolute; width: 50px; height: 20px; background: #f99; }',
+  '#t1 { position-anchor: --a; top: anchor(bottom); left: anchor(left); }',
+  '#t2 { position-anchor: --a; position-area: top center; }',
+  '#t3 { right: anchor(--a left); bottom: anchor(--a top); }',
+  '#t4 { position-anchor: --a; top: anchor(top); left: anchor(right, 10px); width: anchor-size(width); height: anchor-size(--a height); }',
+  '#t5 { position: fixed; position-anchor: --b; top: anchor(bottom); left: anchor(left); position-try-fallbacks: flip-block; }',
+  '@position-try --above { top: auto; bottom: anchor(top); }',
+  '#t6 { position: fixed; position-anchor: --b; top: anchor(bottom); left: anchor(left); position-try-fallbacks: --above; }',
+  '#t7 { position-anchor: --a; top: 400px; justify-self: anchor-center; }',
+  '#t8 { position-anchor: --a; top: calc(anchor(bottom) + 5px); left: calc(anchor(center) - 25px); }',
+  '.w { width: attr(data-w px); height: attr(data-h type(<length>), 40px); background: #9c9; }',
+  'li { margin-left: calc(sibling-index() * 10px); }',
+  '#box { width: 300px; } .cs { width: calc-size(auto, size - 20px); height: 10px; background: #99c; }',
+  'em { font-style: toggle(italic, normal); }',
+  'circle { r: 20px; cx: 30px; cy: 25px; }',
+  'section { anchor-scope: --s; position: relative; height: 60px; margin-top: 20px; }',
+  'section .anc { anchor-name: --s; position: absolute; left: 100px; top: 10px; width: 40px; height: 20px; background: #ccc; }',
+  'section .tip2 { position: absolute; position-anchor: --s; top: anchor(bottom); left: anchor(right); width: 10px; height: 10px; background: #c66; }',
+  '#pop { position: fixed; margin: 0; inset: auto; position-area: bottom span-right; width: 100px; height: 30px; }',
+  '@media (min-width: 1px) { #t9 { position-anchor: --a; top: anchor(top); left: anchor(left); } }',
+  '#tl { height: 10px; width: calc-mix(scroll(root), 100px, 300px); background: color-mix(scroll(root) in srgb, rgb(255, 0, 0), rgb(0, 0, 255)); }',
+  '@media (max-width: 1px) { #t9 { top: 0; left: 0; position-anchor: --nothing; } }',
+  '</style>',
+  '<div id="a1">a1</div><div id="b1">b1</div>',
+  '<div class="tip" id="t1"></div><div class="tip" id="t2"></div><div class="tip" id="t3"></div><div class="tip" id="t4"></div>',
+  '<div class="tip" id="t5"></div><div class="tip" id="t6"></div><div class="tip" id="t7"></div><div class="tip" id="t8"></div><div class="tip" id="t9"></div>',
+  '<div class="tip" id="t10" style="position: absolute; top: anchor(--a top); left: anchor(--a right)"></div>',
+  '<div id="stack" style="position:absolute; top: 500px; left: 0">',
+  '<div id="tl"></div>',
+  '<div class="w" id="w1" data-w="123" data-h="17px"></div><div class="w" id="w2" data-w="x"></div>',
+  '<ul id="ul"><li>1</li><li>2</li><li id="li3">3</li></ul>',
+  '<div id="box"><div class="cs" id="cs1"></div></div>',
+  '<p><em id="em1">outer <em id="em2">inner</em></em></p>',
+  '<svg width="100" height="60"><circle id="c1" fill="red"></circle></svg>',
+  '<section id="s1"><div class="anc" id="s1a"></div><div class="tip2" id="s1t"></div></section>',
+  '<section id="s2"><div class="anc" id="s2a"></div><div class="tip2" id="s2t"></div></section>',
+  '<button id="btn" popovertarget="pop" style="margin-left: 40px">open</button><div id="pop" popover>popover</div>',
+  '</div>'
+].join('\n');
+var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
+var html = result.out;
+window.__manifest = CSSFix.readManifest(html);
+var NATIVE_DV = /^(anchor-name|anchor-scope|position-anchor|position-area|position-try|position-try-fallbacks|position-try-order|position-visibility|field-sizing|r|cx|cy|d|x|y)$/i;
+var DV_VALUE = /anchor\(|anchor-size\(|attr\([^)]*(px|type)|calc-size\(|sibling-index\(|sibling-count\(|toggle\(|container-progress\(|anchor-center|mix\(\s*scroll\(/i;
+html = html.replace(/(^|[;{"]\s*)([a-z-]+)\s*:\s*([^;}"]*)/gi, function (all, pre, p, v) { return NATIVE_DV.test(p) || DV_VALUE.test(v) ? pre : all; });
+window.__rewritten = html;
+window.__brManifestURL = 'data:application/json,' + encodeURIComponent(JSON.stringify(window.__manifest));
+document.write(html.replace(/<\/?(html|head|body)>/g, ''));
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+<pre id="out" style="position:absolute; top: 900px; left: 0; font-size: 11px">…</pre>
+<script>
+var rect = function (id) { var r = document.getElementById(id).getBoundingClientRect(); return { l: Math.round(r.left + pageXOffset), t: Math.round(r.top + pageYOffset), r: Math.round(r.right + pageXOffset), b: Math.round(r.bottom + pageYOffset), w: Math.round(r.width), h: Math.round(r.height) }; };
+var near = function (a, b) { return Math.abs(a - b) <= 1; };
+var run = function () {
+  var a = rect('a1'), bb = rect('b1'), checks = [];
+  var check = function (name, ok, detail) { checks.push((ok ? 'OK   ' : 'FAIL ') + name + (ok ? '' : '  ' + detail)); };
+  var t1 = rect('t1'); check('anchor(bottom)/anchor(left)', near(t1.t, a.b) && near(t1.l, a.l), JSON.stringify(t1) + ' a=' + JSON.stringify(a));
+  var t2 = rect('t2'); check('position-area: top center', near(t2.b, a.t) && near(t2.l + t2.w / 2, a.l + a.w / 2), JSON.stringify(t2));
+  var t3 = rect('t3'); check('right/bottom with named anchor', near(t3.r, a.l) && near(t3.b, a.t), JSON.stringify(t3));
+  var t4 = rect('t4'); check('anchor-size() and anchor(right)', near(t4.w, a.w) && near(t4.h, a.h) && near(t4.l, a.r) && near(t4.t, a.t), JSON.stringify(t4));
+  var t5 = rect('t5'); check('position-try-fallbacks: flip-block', near(t5.b, bb.t) && near(t5.l, bb.l), JSON.stringify(t5) + ' b=' + JSON.stringify(bb));
+  var t6 = rect('t6'); check('@position-try --above', near(t6.b, bb.t), JSON.stringify(t6));
+  var t7 = rect('t7'); check('justify-self: anchor-center', near(t7.l + t7.w / 2, a.l + a.w / 2) && near(t7.t, 400), JSON.stringify(t7));
+  var t8 = rect('t8'); check('calc() around anchor()', near(t8.t, a.b + 5) && near(t8.l, a.l + a.w / 2 - 25), JSON.stringify(t8));
+  var t9 = rect('t9'); check('anchor rule inside @media', near(t9.t, a.t) && near(t9.l, a.l), JSON.stringify(t9));
+  var t10 = rect('t10'); check('inline style anchor()', near(t10.t, a.t) && near(t10.l, a.r), JSON.stringify(t10));
+  var w1 = rect('w1'), w2 = rect('w2'); check('attr(px) and typed attr()', w1.w === 123 && w1.h === 17, JSON.stringify(w1)); check('attr() fallbacks', w2.h === 40, JSON.stringify(w2));
+  check('sibling-index()', getComputedStyle(document.getElementById('li3')).marginLeft === '30px', getComputedStyle(document.getElementById('li3')).marginLeft);
+  check('calc-size(auto, size - 20px)', rect('cs1').w === 280, JSON.stringify(rect('cs1')));
+  check('toggle()', getComputedStyle(document.getElementById('em1')).fontStyle === 'italic' && getComputedStyle(document.getElementById('em2')).fontStyle === 'normal', getComputedStyle(document.getElementById('em2')).fontStyle);
+  var c1 = document.getElementById('c1'); check('SVG geometry properties', c1.getAttribute('r') === '20px' && c1.getAttribute('cx') === '30px', c1.getAttribute('r') + ' ' + c1.getAttribute('cx'));
+  var s1a = rect('s1a'), s1t = rect('s1t'), s2a = rect('s2a'), s2t = rect('s2t');
+  check('anchor-scope', near(s1t.t, s1a.b) && near(s2t.t, s2a.b) && near(s1t.l, s1a.r), JSON.stringify([s1a, s1t, s2a, s2t]));
+  document.getElementById('btn').click();
+  setTimeout(function () {
+    var btn = rect('btn'), pop = rect('pop');
+    check('popover implicit anchor + position-area', near(pop.t, btn.b) && near(pop.l, btn.l), JSON.stringify(pop) + ' btn=' + JSON.stringify(btn));
+    // timeline mixes: at the top of the page, then half way down (the scroll event drives the update)
+    var tl = document.getElementById('tl'), w0 = tl.getBoundingClientRect().width, bg0 = getComputedStyle(tl).backgroundColor;
+    window.scrollTo(0, (document.documentElement.scrollHeight - window.innerHeight) / 2);
+    window.dispatchEvent(new Event('scroll'));
+    setTimeout(function () {
+    var w1 = tl.getBoundingClientRect().width, bg1 = getComputedStyle(tl).backgroundColor;
+    check('calc-mix()/color-mix() on scroll(root)', w0 === 100 && Math.abs(w1 - 200) <= 2 && /255, 0, 0/.test(bg0) && /12[78], 0, 12[78]/.test(bg1), w0 + ' ' + bg0 + ' -> ' + w1 + ' ' + bg1);
+    window.scrollTo(0, 0);
+    checks.push('errors: ' + (window.__errors.join(' | ') || 'none'));
+    checks.push('manifest dv=' + (window.__manifest && window.__manifest.dv ? window.__manifest.dv.length : 0) + ' pt=' + (window.__manifest && window.__manifest.pt ? window.__manifest.pt.length : 0));
+    document.getElementById('out').textContent = checks.join('\n');
+    var fails = checks.filter(function (c) { return c.indexOf('FAIL') === 0; }).length;
+    document.title = 'dv ' + (checks.length - 2 - fails) + '/' + (checks.length - 2);
+    }, 1200);
+  }, 400);
+};
+// hidden tabs (the test pane) run timers at most once a second: wait for the shim's first full pass
+var waitStart = Date.now();
+var waitForShim = function () {
+  var st = window.__brDeferred && window.__brDeferred.state();
+  if ((st && st.positioned > 0) || Date.now() - waitStart > 8000) setTimeout(run, 300); else setTimeout(waitForShim, 200);
+};
+setTimeout(waitForShim, 200);
+</script>
+</body>
+</html>

@@ -32,8 +32,23 @@ the app around it:
   (relative selectors inside each candidate, container sizes from the elements marked by
   `container-type`). The same marker channel drives shims for `scroll-snap-type`/`scroll-snap-align`
   (carousels snap after the scroll settles), `scroll-behavior: smooth` (anchor links and
-  `scrollTo({behavior: "smooth"})` glide) and `text-wrap: balance` (headings get the narrowest width
-  that keeps their line count).
+  `scrollTo({behavior: "smooth"})` glide), `text-wrap: balance` (headings get the narrowest width
+  that keeps their line count) and scroll-driven animations (`animation-timeline: scroll()`/`view()`
+  with `animation-range`: the animation is paused and seeked by the scroll position). `clip-path`
+  basic shapes (circle, ellipse, inset, polygon, path) render through `-webkit-mask-image` SVG data
+  URLs, and the css-borders-4 `border-<side>-radius` shorthands expand into the corner longhands.
+- **Deferred values**: declarations whose value depends on the element are recorded in the page manifest
+  with the rule's selectors, their specificity and the media queries around them, and a shim computes
+  them per element and sets them inline. This covers **CSS anchor positioning** (`anchor-name`,
+  `anchor()`, `anchor-size()`, `position-anchor` including a popover's implicit anchor, `position-area`,
+  `position-try-fallbacks` with flips and `@position-try` rules, `position-try-order`,
+  `position-visibility`, `anchor-scope`, `anchor-center`), typed `attr()`, `calc-size()` of intrinsic
+  sizes, `sibling-index()`/`sibling-count()`, `container-progress()`, `toggle()`, `field-sizing:
+  content`, the SVG geometry properties and `mix()`/`calc-mix()`/`color-mix()`/`cross-fade()` driven by
+  a scroll or view timeline. `if()` is resolved by the rewriter (`supports()`/`style()` statically,
+  `media()` branches as `@media` rules), as are `first-valid()`, `ident()`, `inherit()`,
+  `random-item()`, `media-progress()` and request modifiers inside `url()`. `tools/dv-test.html` checks
+  the whole chain in a desktop browser with its native implementations stripped.
 - **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
   **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
   very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's

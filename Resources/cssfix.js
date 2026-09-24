@@ -140,7 +140,7 @@ var CSSFix = (function () {
     // ------------------------------------------------------------------ parser
 
     var RULE_AT = { media: 1, supports: 1, layer: 1, container: 1, keyframes: 1, '-webkit-keyframes': 1, document: 1, '-moz-document': 1, scope: 1, 'starting-style': 1 };
-    var DECL_AT = { 'font-face': 1, page: 1, property: 1, 'counter-style': 1, viewport: 1, '-ms-viewport': 1, 'font-palette-values': 1 };
+    var DECL_AT = { 'font-face': 1, page: 1, property: 1, 'counter-style': 1, viewport: 1, '-ms-viewport': 1, 'font-palette-values': 1, 'position-try': 1 };
 
     function atName(prelude) {
         var m = /^@([a-zA-Z_-][a-zA-Z0-9_-]*)/.exec(prelude);
@@ -549,9 +549,11 @@ var CSSFix = (function () {
             case 'lch': lab = rgbToLab(r, g, b); names = ['l', 'c', 'h']; vals = [lab[0]].concat(polar([lab[1], lab[2]])); break;
             case 'oklab': names = ['l', 'a', 'b']; vals = rgbToOklab(r, g, b); break;
             case 'oklch': ok = rgbToOklab(r, g, b); names = ['l', 'c', 'h']; vals = [ok[0]].concat(polar([ok[1], ok[2]])); break;
-            case 'srgb': case 'display-p3': case 'a98-rgb': case 'prophoto-rgb': case 'rec2020': names = ['r', 'g', 'b']; vals = [r / 255, g / 255, b / 255]; break;
-            case 'srgb-linear': names = ['r', 'g', 'b']; vals = [linearChannel(r), linearChannel(g), linearChannel(b)]; break;
-            case 'xyz': case 'xyz-d65': case 'xyz-d50': names = ['x', 'y', 'z']; vals = rgbToXYZ(r, g, b); break;
+            case 'srgb': names = ['r', 'g', 'b']; vals = [r / 255, g / 255, b / 255]; break;
+            case 'srgb-linear': case 'display-p3': case 'a98-rgb': case 'prophoto-rgb': case 'rec2020':
+                names = ['r', 'g', 'b']; vals = spaceFromXYZ(space, rgbToXYZ(r, g, b)); break;
+            case 'xyz': case 'xyz-d65': names = ['x', 'y', 'z']; vals = rgbToXYZ(r, g, b); break;
+            case 'xyz-d50': names = ['x', 'y', 'z']; vals = d65ToD50(rgbToXYZ(r, g, b)); break;
             default: return null;
         }
         var alphaTok = null, slash = scanUntil(rest, 0, rest.length, '/');
@@ -695,12 +697,16 @@ var CSSFix = (function () {
         if (name === 'color-mix') {
             var args = splitTop(inner, ',');
             if (args.length < 3) return null;
+            if (/^\s*(scroll\(|view\(|--)/i.test(args[0])) return null;   // a timeline progress: the page shim mixes on scroll
             var c1 = splitWS(trim(args[1])), c2 = splitWS(trim(args[2]));
             var p1 = null, p2 = null, s1 = [], s2 = [], i;
             for (i = 0; i < c1.length; i++) { if (/%$/.test(c1[i])) p1 = parseFloat(c1[i]) / 100; else s1.push(c1[i]); }
             for (i = 0; i < c2.length; i++) { if (/%$/.test(c2[i])) p2 = parseFloat(c2[i]) / 100; else s2.push(c2[i]); }
             var col1 = parseColor(s1.join(' ')), col2 = parseColor(s2.join(' '));
             if (!col1 || !col2) return s1.join(' ');
+            // color-mix(<progress> in <space>, a, b): the progress is the share of b
+            var progressFirst = /^\s*(-?[\d.]+%?)\s+in\s/i.exec(args[0]);
+            if (progressFirst && p1 === null && p2 === null) { p2 = mixProgress(progressFirst[1]); p1 = 1 - p2; }
             if (p1 === null && p2 === null) { p1 = 0.5; p2 = 0.5; }
             else if (p1 === null) p1 = 1 - p2;
             else if (p2 === null) p2 = 1 - p1;
@@ -822,6 +828,13 @@ var CSSFix = (function () {
     // cross-fade(url(a) 25%, url(b)) / cross-fade(url(a), url(b), 25%) -> -webkit-cross-fade(url(a), url(b), 25%)
     function convertCrossFade(inner) {
         var args = splitTop(inner, ','), images = [], pcts = [], trailing = null;
+        if (/^\s*(scroll\(|view\(|--)/i.test(args[0])) return null;   // a timeline progress: the page shim fades on scroll
+        var lead = /^\s*(-?[\d.]+%?)\s*$/.exec(args[0]);
+        if (lead && args.length === 3) {
+            // cross-fade(<progress>, a, b): the progress is the share of b
+            var fade = function (im) { im = trim(im); return !/\(/.test(im) && parseColor(im) ? '-webkit-linear-gradient(' + im + ', ' + im + ')' : im; };
+            return '-webkit-cross-fade(' + fade(args[1]) + ', ' + fade(args[2]) + ', ' + Math.round(mixProgress(lead[1]) * 100) + '%)';
+        }
         for (var i = 0; i < args.length; i++) {
             var toks = splitWS(trim(args[i])), pct = null, img = [];
             for (var k = 0; k < toks.length; k++) { if (/^[\d.]+%$/.test(toks[k])) pct = toks[k]; else img.push(toks[k]); }
@@ -859,9 +872,179 @@ var CSSFix = (function () {
         for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
         return h.toString(36);
     }
+    // ---- deferred values: declarations whose value depends on the element (anchor(), anchor-size(), attr(),
+    // calc-size() of an intrinsic size, sibling-index(), toggle(), ...) and the anchor positioning properties. The
+    // rewriter records them in the manifest with the rule's selectors, their specificity and the media queries
+    // around the rule; the page shim finds the matching elements, resolves the cascade among the entries and
+    // computes the value for each element. Inline style attributes are found through the br-dv-<hash> marker.
+    var DV_PROPS = { 'anchor-name': 1, 'anchor-scope': 1, 'position-anchor': 1, 'position-area': 1, 'inset-area': 1, 'position-try': 1,
+        'position-try-fallbacks': 1, 'position-try-options': 1, 'position-try-order': 1, 'position-visibility': 1,
+        cx: 1, cy: 1, r: 1, rx: 1, ry: 1, x: 1, y: 1, d: 1, 'field-sizing': 1 };
+    var DV_FN = /(?:^|[^\w-])(anchor|anchor-size|attr|calc-size|sibling-index|sibling-count|container-progress|toggle)\(/i;
+    var ANCHOR_CENTER_PROPS = { 'justify-self': 1, 'align-self': 1, 'place-self': 1, 'justify-items': 1, 'align-items': 1, 'place-items': 1 };
+
+    var TIMELINE_MIX = /(^|[^\w-])(mix|calc-mix|color-mix|cross-fade)\(\s*(scroll\(|view\(|--[\w-]+(\s|,))/i;
+    function isDeferred(p, v) {
+        if (DV_PROPS[p]) return true;
+        if (ANCHOR_CENTER_PROPS[p] && /\banchor-center\b/i.test(v)) return true;
+        if (TIMELINE_MIX.test(v)) return true;   // mixes driven by a scroll or view timeline
+        if (!DV_FN.test(v)) return false;
+        var lv = v.toLowerCase();
+        // content is mostly on ::before/::after, which the shim cannot reach: attr() there becomes the engine's own
+        // plain attr(name) (see fixValue)
+        if (p === 'content' && !/(anchor|calc-size|sibling-|container-progress|toggle)\(/.test(lv)) return false;
+        // calc-size() with a length basis is evaluated statically
+        if (/calc-size\(/.test(lv) && !/(anchor|anchor-size|attr|sibling-|container-progress|toggle)\(/.test(lv) && transformFunctions(v).toLowerCase().indexOf('calc-size(') < 0) return false;
+        return true;
+    }
+
+    // first-valid(a; b; c): the engine keeps the last declaration it understands, so the candidates in reverse order
+    // leave the first valid one in effect
+    function expandFirstValid(decls) {
+        var out = null;
+        for (var i = 0; i < decls.length; i++) {
+            var d = decls[i], m = /^\s*first-valid\(([\s\S]*)\)\s*$/i.exec(d.v);
+            if (!m) { if (out) out.push(d); continue; }
+            if (!out) out = decls.slice(0, i);
+            var cands = splitTop(m[1], ';');
+            for (var k = cands.length - 1; k >= 0; k--) if (trim(cands[k])) out.push({ p: d.p, v: trim(cands[k]), imp: d.imp });
+        }
+        return out || decls;
+    }
+
+    // ---- if(): conditions known when the stylesheet is rewritten (supports(), style() of the custom properties in
+    // scope) are decided here; media() branches become @media rules emitted after the rule, last branch first, so that
+    // the first matching branch wins. Returns the value for the rule itself, or null when no branch is certain.
+    function splitBoolean(s) {   // top-level " and " / " or " -> {terms, ops}
+        var terms = [], ops = [], depth = 0, start = 0;
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (c === '(') depth++;
+            else if (c === ')') depth--;
+            else if (depth === 0) {
+                var m = /^\s+(and|or)\s+/i.exec(s.slice(i));
+                if (m) { terms.push(s.slice(start, i)); ops.push(m[1].toLowerCase()); i += m[0].length - 1; start = i + 1; }
+            }
+        }
+        terms.push(s.slice(start));
+        return { terms: terms, ops: ops };
+    }
+    function unwrapParens(s) {
+        s = trim(s);
+        while (s.charAt(0) === '(' && matchParen(s, 0) === s.length - 1) s = trim(s.slice(1, -1));
+        return s;
+    }
+    function evalStyleQuery(q, local, ctx) {
+        q = unwrapParens(q);
+        if (/^not\s/i.test(q)) return !evalStyleQuery(q.slice(4), local, ctx);
+        var b = splitBoolean(q);
+        if (b.terms.length > 1) {
+            var acc = evalStyleQuery(b.terms[0], local, ctx);
+            for (var i = 1; i < b.terms.length; i++) { var r = evalStyleQuery(b.terms[i], local, ctx); acc = b.ops[i - 1] === 'and' ? acc && r : acc || r; }
+            return acc;
+        }
+        var m = /^(--[\w-]+)\s*(?::\s*([\s\S]*))?$/.exec(q);
+        if (!m) return false;
+        var val = resolveVars('var(' + m[1] + ')', local, ctx);
+        if (m[2] === undefined) return val !== null && trim(val) !== '' && trim(val).toLowerCase() !== 'initial';
+        return val !== null && trim(val) === trim(m[2]);
+    }
+    function evalIfCondition(cond, local, ctx) {   // {k: 't'} | {k: 'f'} | {k: 'm', q: <media query>}
+        cond = unwrapParens(cond);
+        if (/^not\s/i.test(cond)) {
+            var n = evalIfCondition(cond.slice(4), local, ctx);
+            if (n.k !== 'm') return { k: n.k === 't' ? 'f' : 't' };
+            return n.q.indexOf(',') >= 0 ? { k: 'f' } : { k: 'm', q: 'not all and ' + n.q };
+        }
+        var b = splitBoolean(cond);
+        if (b.terms.length > 1) {
+            var acc = evalIfCondition(b.terms[0], local, ctx);
+            for (var i = 1; i < b.terms.length; i++) {
+                var r = evalIfCondition(b.terms[i], local, ctx);
+                if (b.ops[i - 1] === 'and') acc = acc.k === 'f' || r.k === 'f' ? { k: 'f' } : acc.k === 't' ? r : r.k === 't' ? acc : { k: 'm', q: acc.q + ' and ' + r.q };
+                else acc = acc.k === 't' || r.k === 't' ? { k: 't' } : acc.k === 'f' ? r : r.k === 'f' ? acc : { k: 'm', q: acc.q + ', ' + r.q };
+            }
+            return acc;
+        }
+        var fm = /^(media|supports|style)\(([\s\S]*)\)$/i.exec(cond);
+        if (!fm) return { k: 'f' };
+        var kind = fm[1].toLowerCase(), arg = trim(fm[2]);
+        if (kind === 'supports') return evalSupports(/^[\w-]+\s*:/.test(arg) ? '(' + arg + ')' : arg) ? { k: 't' } : { k: 'f' };
+        if (kind === 'media') {
+            // media(width < 600px): a bare media feature is allowed here, a media query needs it in parentheses
+            if (arg.charAt(0) !== '(' && !/^(not\s+|only\s+)?(all|screen|print|speech)\b/i.test(arg) && /^[\w.-]+\s*(:|<|>|=)/.test(arg)) arg = '(' + arg + ')';
+            var q = fixMedia(arg);
+            return /^\s*all\s*$/i.test(q) ? { k: 't' } : { k: 'm', q: q };
+        }
+        return evalStyleQuery(arg, local, ctx) ? { k: 't' } : { k: 'f' };
+    }
+    function resolveIf(p, v, imp, local, ctx) {
+        for (var guard = 0; guard < 8; guard++) {
+            var m = /(^|[^\w-])if\(/i.exec(v);
+            if (!m) return v;
+            var start = m.index + m[1].length, open = start + 2, close = matchParen(v, open);
+            var branches = splitTop(v.slice(open + 1, close), ';'), base = null, media = [];
+            for (var i = 0; i < branches.length; i++) {
+                var br = trim(branches[i]);
+                if (!br) continue;
+                var colon = scanUntil(br, 0, br.length, ':');
+                if (colon >= br.length) continue;
+                var cond = trim(br.slice(0, colon)), val = trim(br.slice(colon + 1));
+                var r = /^else$/i.test(cond) ? { k: 't' } : evalIfCondition(cond, local, ctx);
+                if (r.k === 'f') continue;
+                if (r.k === 't') { base = val; break; }
+                media.push([r.q, val]);
+            }
+            if (media.length && ctx.condRules) {
+                for (var k = media.length - 1; k >= 0; k--) ctx.condRules.push({ m: media[k][0], p: p, v: v.slice(0, start) + media[k][1] + v.slice(close + 1), imp: imp });
+            }
+            if (base === null) return null;
+            v = v.slice(0, start) + base + v.slice(close + 1);
+        }
+        return v;
+    }
+
+    // a*10000 + b*100 + c (ids, classes/attributes/pseudo-classes, types/pseudo-elements)
+    function specificity(sel) {
+        var s = String(sel).replace(/"[^"]*"|'[^']*'/g, '""').replace(/\[[^\]]*\]/g, '.x');
+        var c = 0;
+        s = s.replace(/::?(before|after|first-line|first-letter)\b|::[\w-]+(\([^)]*\))?/gi, function () { c++; return ' '; });
+        var a = (s.match(/#[\w-]+/g) || []).length;
+        var b = (s.match(/\.[\w-]+|:[\w-]+/g) || []).length - (s.match(/:(not|-webkit-any|is|where|matches)\b/gi) || []).length;
+        c += (s.replace(/[.#:][\w-]+/g, ' ').match(/(^|[\s>+~(,])[a-zA-Z][\w-]*/g) || []).length;
+        return Math.min(a, 99) * 10000 + Math.min(Math.max(b, 0), 99) * 100 + Math.min(c, 99);
+    }
+
+    function registerDeferred(ctx, p, v, imp, markers) {
+        var sels = ctx.curSels || null, media = ctx.mediaStack && ctx.mediaStack.length ? ctx.mediaStack.slice(0) : null;
+        // timeline mixes keep their function (it returns null here) while the colours inside become ones the engine knows
+        if (TIMELINE_MIX.test(v) && !DV_FN.test(v)) v = transformFunctions(v);
+        var entry = { h: manifestHash((sels ? sels.join(',') : '@inline') + '|' + p + '|' + v + '|' + (media ? media.join('&') : '')), p: p, v: v };
+        if (sels) {
+            entry.s = sels;
+            entry.sp = [];
+            for (var i = 0; i < sels.length; i++) entry.sp.push(specificity(sels[i]));
+        }
+        if (media) entry.m = media;
+        if (imp) entry.i = 1;
+        manifestAdd('dv', entry);
+        markers.push('br-dv-' + entry.h + ' 1');
+    }
+
+    // the value to show before the shim runs: anchor()/attr() fallbacks, the keyword basis of calc-size()
+    function deferredFallback(v) {
+        var lv = trim(v).toLowerCase();
+        var cs = /^calc-size\(\s*(auto|stretch)\s*,/.exec(lv);
+        if (cs) return cs[1] === 'stretch' ? '-webkit-fill-available' : 'auto';
+        var m = /^(anchor|anchor-size|attr)\(([\s\S]*)\)$/i.exec(trim(v));
+        if (!m || matchParen(trim(v), m[1].length) !== trim(v).length - 1) return null;
+        var comma = scanUntil(m[2], 0, m[2].length, ',');
+        return comma < m[2].length ? trim(m[2].slice(comma + 1)) : null;
+    }
+
     function manifestAdd(kind, entry) {
         if (g_suppressManifest) return;
-        if (!g_manifest) g_manifest = { has: [], cq: [], seen: {} };
+        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], seen: {} };
         var key = kind + ':' + entry.h;
         if (g_manifest.seen[key]) return;
         g_manifest.seen[key] = true;
@@ -1097,6 +1280,32 @@ var CSSFix = (function () {
                 if (name === 'mix' && parseColor(mA) && parseColor(mB)) return convertColorFunction('color-mix', 'in srgb, ' + mA + ' ' + Math.round((1 - mp) * 100) + '%, ' + mB);
                 return mp < 0.5 ? mA : mB;
             }
+            case 'ident': {
+                // ident("cool-" 1) -> cool-1
+                var idParts = splitWS(inner), ident = '';
+                for (var ip = 0; ip < idParts.length; ip++) { var sm = /^(["'])([\s\S]*)\1$/.exec(idParts[ip]); ident += sm ? sm[2] : idParts[ip]; }
+                return /^-?[a-zA-Z_][\w-]*$/.test(ident) ? ident : null;
+            }
+            case 'random-item': {
+                // random-item(<key>; a; b; c): one of the items, chosen when the stylesheet is rewritten
+                var items = splitTop(inner, ';');
+                if (items.length < 2) return null;
+                return trim(items[1 + Math.floor(Math.random() * (items.length - 1))]);
+            }
+            case 'media-progress': {
+                // media-progress(width, a, b) against the viewport the page is rewritten for
+                var mp = splitTop(inner, ',');
+                if (mp.length !== 3) return null;
+                var feature = trim(mp[0]).toLowerCase(), fv, pctUnit;
+                if (feature === 'width') { fv = g_viewportWidth; pctUnit = 'vw'; }
+                else if (feature === 'height') { fv = g_viewportHeight; pctUnit = 'vh'; }
+                else if (feature === 'resolution') { fv = g_dpr * 96; pctUnit = null; }
+                else return null;
+                var toUnits = function (s) { s = s.replace(/(\d)%/g, '$1' + (pctUnit || '%')); return feature === 'resolution' ? s.replace(/(-?[\d.]+)dppx/g, function (m0, n) { return (parseFloat(n) * 96) + 'px'; }).replace(/(-?[\d.]+)dpi/g, '$1px') : s; };
+                var mlo = evalExpr(toUnits(mp[1])), mhi = evalExpr(toUnits(mp[2]));
+                if (!mlo || !mhi || mhi.n === mlo.n) return null;
+                return fmtValue({ n: (fv - mlo.n) / (mhi.n - mlo.n), u: '' });
+            }
             case 'random': {
                 // random([options,] min, max [, step]): one value chosen when the stylesheet is rewritten
                 var rArgs = splitTop(inner, ','), rNums = [];
@@ -1112,7 +1321,7 @@ var CSSFix = (function () {
                 if (csArgs.length !== 2) return null;
                 var csBasis = trim(csArgs[0]), csExpr = trim(csArgs[1]).toLowerCase();
                 if (csExpr === 'size') return csBasis;
-                if (csExpr.indexOf('size') < 0) { var csPlain = evalExpr(csExpr); return csPlain ? fmtValue(csPlain) : csExpr; }
+                if (csExpr.indexOf('size') < 0) { var csPlain = evalExpr(csExpr); return csPlain ? fmtValue(csPlain) : '-webkit-calc(' + csExpr + ')'; }
                 var csBase = evalExpr(csBasis);
                 if (!csBase) return null;   // auto / stretch / max-content bases need the layout, which only the engine knows
                 var csVal = evalExpr(csExpr.replace(/\bsize\b/g, '(' + fmtValue(csBase) + ')'));
@@ -1127,7 +1336,9 @@ var CSSFix = (function () {
     }
 
     // values that contain none of the functions we rewrite skip the walker entirely (url(), translate(), ... are common)
-    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade|progress|mix|calc-mix|random|calc-size)\(/i;
+    var INTERESTING_FN = /(?:^|[^a-zA-Z0-9_-])(?:calc|clamp|min|max|linear-gradient|repeating-linear-gradient|radial-gradient|repeating-radial-gradient|conic-gradient|repeating-conic-gradient|rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark|contrast-color|device-cmyk|env|image-set|image|fit-content|round|mod|rem|abs|sign|pow|sqrt|hypot|sin|cos|tan|asin|acos|atan|atan2|exp|log|paint|element|cross-fade|progress|mix|calc-mix|random|calc-size|ident|random-item|media-progress)\(/i;
+
+    var g_dpr = 1;   // device pixel ratio of the page being rewritten (set by run())
 
     function mixProgress(tok) {   // "0.5" or "50%" -> 0.5; timelines and other sources cannot be resolved statically
         if (/^-?[\d.]+%$/.test(tok)) return parseFloat(tok) / 100;
@@ -1178,6 +1389,10 @@ var CSSFix = (function () {
         'inline-size': 1, 'block-size': 1, 'min-inline-size': 1, 'max-inline-size': 1, 'min-block-size': 1, 'max-block-size': 1 };
 
     function fixValue(p, v) {
+        // typed attr() and attr() fallbacks in content: the engine's plain attr(name)
+        if (p === 'content' && /attr\(/i.test(v)) v = v.replace(/attr\(\s*([\w:.-]+)[^)]*\)/gi, 'attr($1)');
+        // request modifiers inside url(): url("a.png" crossorigin(anonymous) referrerpolicy(no-referrer)) -> url("a.png")
+        if (/url\(\s*["']/i.test(v)) v = v.replace(/url\(\s*("[^"]*"|'[^']*')(?:\s+[a-z-]+\([^()]*\))+\s*\)/gi, 'url($1)');
         if (v.indexOf('(') >= 0) v = transformFunctions(v);
         v = fixHexAlpha(v);
         if (COLOR_KEYWORD_RE.test(v)) v = v.replace(new RegExp(COLOR_KEYWORD_RE.source, 'gi'), function (m) { return COLOR_KEYWORDS[m.toLowerCase()] || m; });
@@ -1458,6 +1673,7 @@ var CSSFix = (function () {
 
     function fixDeclarations(decls, ctx, keyframe) {
         var local = null, i, d;
+        decls = expandFirstValid(decls);
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
         var autoLeft = false, autoRight = false, hasDisplay = false;
@@ -1493,8 +1709,17 @@ var CSSFix = (function () {
             d = decls[i];
             var p = d.p, imp = d.imp;
             if (p.charAt(0) === '-' && p.charAt(1) === '-') continue;
-            var v = resolveVars(d.v, local, ctx);
+            // inherit(--x, fallback): custom properties are resolved statically, so the inherited value is var()'s
+            var v = resolveVars(/inherit\(/i.test(d.v) ? d.v.replace(/(^|[^\w-])inherit\(/gi, '$1var(') : d.v, local, ctx);
             if (v === null) continue;
+            if (/(^|[^\w-])if\(/i.test(v)) { v = resolveIf(p, v, imp, local, ctx); if (v === null) continue; }
+            if (!keyframe && g_manifest !== false && isDeferred(p, v)) {
+                registerDeferred(ctx, p, v, imp, markers);
+                var dvFallback = deferredFallback(v);
+                if (dvFallback !== null && !DV_PROPS[p]) push(out, p, fixValue(p, dvFallback), imp);
+                push(out, p, v, imp);   // the engine drops it; kept for reference
+                continue;
+            }
             v = fixValue(p, v);
             var lv = v.toLowerCase();
             switch (p) {
@@ -1988,8 +2213,15 @@ var CSSFix = (function () {
             }
             if (parts.length) { push(out, '-webkit-transform', parts.join(' '), false); push(out, 'transform', parts.join(' '), false); }
         }
-        if (markers.length) push(out, 'counter-reset', markers.join(' '), false);
-        else if (markerKeyword) push(out, 'counter-reset', markerKeyword, false);
+        if (markers.length || markerKeyword) {
+            // a counter-reset of the rule itself keeps its counters next to the markers
+            var ownReset = null;
+            for (var cr = 0; cr < out.length; cr++) if (out[cr].p === 'counter-reset') ownReset = out[cr];
+            if (markers.length) {
+                if (ownReset && !/^(none|inherit|initial|unset)$/i.test(trim(ownReset.v))) out.push({ p: 'counter-reset', v: ownReset.v + ' ' + markers.join(' '), imp: ownReset.imp });
+                else push(out, 'counter-reset', markers.join(' '), ownReset ? ownReset.imp : false);
+            } else if (!ownReset) push(out, 'counter-reset', markerKeyword, false);
+        }
         return out;
     }
 
@@ -2432,9 +2664,29 @@ var CSSFix = (function () {
             if (r.t === 'q') {
                 var sels = keyframe ? [r.sel] : fixSelectorList(r.sel);
                 if (!sels.length) continue;
+                var prevSels = ctx.curSels, prevCond = ctx.condRules;
+                ctx.curSels = keyframe ? null : sels;
+                ctx.condRules = keyframe ? null : [];
                 var decls = fixDeclarations(r.decls, ctx, keyframe);
-                if (!decls.length) continue;
-                out.push({ t: 'q', sel: sels.join(','), decls: decls });
+                var condRules = ctx.condRules;
+                ctx.condRules = null;
+                if (condRules && condRules.length) {
+                    // if() media branches: the same selectors inside @media, after the rule
+                    for (var ci = 0; ci < condRules.length; ci++) {
+                        var cr0 = condRules[ci];
+                        if (!ctx.mediaStack) ctx.mediaStack = [];
+                        ctx.mediaStack.push(cr0.m);
+                        var cdecls = fixDeclarations([{ p: cr0.p, v: cr0.v, imp: cr0.imp }], ctx, false);
+                        ctx.mediaStack.pop();
+                        if (cdecls.length) condRules[ci] = { t: 'at', name: 'media', prelude: cr0.m, rules: [{ t: 'q', sel: sels.join(','), decls: cdecls }], decls: null, raw: null };
+                        else condRules[ci] = null;
+                    }
+                }
+                ctx.curSels = prevSels;
+                ctx.condRules = prevCond;
+                if (!decls.length && !(condRules && condRules.length)) continue;
+                if (decls.length) out.push({ t: 'q', sel: sels.join(','), decls: decls });
+                if (condRules) for (var cj = 0; cj < condRules.length; cj++) if (condRules[cj]) out.push(condRules[cj]);
                 if (!keyframe) {
                     var fi = flexContainerInfo(r.decls, ctx);
                     if (fi.flex) {
@@ -2493,8 +2745,24 @@ var CSSFix = (function () {
             var name = r.name, k, sub;
             if (name === 'media') {
                 if (!r.rules) continue;
+                var fixedMedia = fixMedia(r.prelude);
+                if (!ctx.mediaStack) ctx.mediaStack = [];
+                ctx.mediaStack.push(fixedMedia);   // deferred values remember the media queries around them
                 sub = transformRules(r.rules, ctx, keyframe);
-                if (sub.length) out.push({ t: 'at', name: 'media', prelude: fixMedia(r.prelude), rules: sub, decls: null, raw: null });
+                ctx.mediaStack.pop();
+                if (sub.length) out.push({ t: 'at', name: 'media', prelude: fixedMedia, rules: sub, decls: null, raw: null });
+            } else if (name === 'position-try') {
+                // "@position-try --name { top: anchor(bottom); ... }": the declarations go to the manifest for
+                // position-try-fallbacks; the engine gets nothing
+                var ptName = trim(r.prelude);
+                if (/^--[\w-]+$/.test(ptName) && r.decls && g_manifest !== false) {
+                    var ptDecls = [];
+                    for (k = 0; k < r.decls.length; k++) {
+                        var ptv = resolveVars(r.decls[k].v, null, ctx);
+                        if (ptv !== null) ptDecls.push([r.decls[k].p, ptv]);
+                    }
+                    manifestAdd('pt', { h: manifestHash('pt|' + ptName + '|' + JSON.stringify(ptDecls)), n: ptName, d: ptDecls });
+                }
             } else if (name === 'supports') {
                 if (r.rules && evalSupports(r.prelude)) {
                     sub = transformRules(r.rules, ctx, keyframe);
@@ -2576,7 +2844,13 @@ var CSSFix = (function () {
 
     function fixInlineStyle(text, ctx) {
         var decls = parseDecls(stripComments(text));
-        return serializeDecls(fixDeclarations(decls, ctx, false));
+        var prevSels = ctx.curSels, prevMedia = ctx.mediaStack;
+        ctx.curSels = null;   // deferred values of a style attribute are found through their marker
+        ctx.mediaStack = null;
+        var out = serializeDecls(fixDeclarations(decls, ctx, false));
+        ctx.curSels = prevSels;
+        ctx.mediaStack = prevMedia;
+        return out;
     }
 
     // ------------------------------------------------------------------ scripts inside HTML
@@ -2739,11 +3013,14 @@ var CSSFix = (function () {
         if (opts && opts.viewportWidth > 0) ctx.viewportWidth = opts.viewportWidth;
         g_viewportWidth = (opts && opts.viewportWidth > 0) ? opts.viewportWidth : 768;
         g_viewportHeight = (opts && opts.viewportHeight > 0) ? opts.viewportHeight : Math.round(g_viewportWidth * 4 / 3);
+        g_dpr = (opts && opts.devicePixelRatio > 0) ? opts.devicePixelRatio : 1;
         g_manifest = null;
         var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
         var manifest = null;
-        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length)) {
+        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length)) {
             manifest = { has: g_manifest.has, cq: g_manifest.cq };
+            if (g_manifest.dv.length) manifest.dv = g_manifest.dv;
+            if (g_manifest.pt.length) manifest.pt = g_manifest.pt;
             // the entries ride along in the output (so a cached copy keeps them); "*/" cannot occur inside
             var json = JSON.stringify(manifest).replace(/\*\//g, '*\\/');
             out += kind === 'html' ? '\n<!--br-manifest:' + json.replace(/--/g, '-\\u002d') + '-->' : '\n/*br-manifest:' + json + '*/';

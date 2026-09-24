@@ -318,12 +318,33 @@
                 var seeded = rewriteCSS('@property --bsp{syntax:"<length>";inherits:false;initial-value:7px}.bs{width:var(--bsp)}');
                 return /\.bs\s*\{width:7px\}/.test(seeded);
             }
+            if (name === 'position-try') {
+                // the rule goes to the page manifest, where the deferred-value shim uses it for position-try-fallbacks
+                var tm = manifestOf(t.code + '{' + (typeof t.contents === 'string' && t.contents ? t.contents : 'top:anchor(bottom)') + '}');
+                if (!tm || !tm.pt) return false;
+                for (var pi = 0; pi < tm.pt.length; pi++) if (tm.pt[pi].n === prelude) return true;
+                return false;
+            }
         } catch (e) { return false; }
         var inner = typeof t.contents === 'string' && t.contents ? t.contents : '.bs{color:rgb(1,2,3)}';
         var css = t.contents === false ? t.code + ';' : t.code + '{' + inner + '}';
         var rewritten = rewriteCSS(css);
         if (!rewritten || !/\S/.test(rewritten)) return false;
         return rulesParse(rewritten) !== null && rewritten.replace(/\s+/g, '') !== css.replace(/\s+/g, '');
+    }
+    // the manifest the rewriter produces for a stylesheet (deferred values, position-try rules), or null
+    function manifestOf(css) {
+        if (!fix || !fix.run) return null;
+        try { var r = JSON.parse(fix.run('css', css, null)); return r.manifest || null; } catch (e) { return null; }
+    }
+    // descriptors of at-rules the rewriter hands to the page shim
+    function emulatedDescriptor(at, d) {
+        if (!/^@position-try\s/i.test(at)) return false;
+        var m = manifestOf(at + '{' + d + ':initial}');
+        if (!m || !m.pt || !m.pt.length) return false;
+        var decls = m.pt[m.pt.length - 1].d || [];
+        for (var i = 0; i < decls.length; i++) if (decls[i][0] === d) return true;
+        return false;
     }
     function emulatedMedia(q) {
         if (!fix) return false;
@@ -343,7 +364,7 @@
                 case 'val': r = nativeValue(t.p, t.v) ? NATIVE : (emulatedValue(t.p, t.v) ? EMULATED : FAIL); break;
                 case 'sel': r = nativeSelector(t.s) ? NATIVE : (emulatedSelector(t.s) ? EMULATED : FAIL); break;
                 case 'at': r = nativeAtrule(t) ? NATIVE : (emulatedAtrule(t) ? EMULATED : FAIL); break;
-                case 'desc': r = nativeDescriptor(t.at, t.d) ? NATIVE : FAIL; break;
+                case 'desc': r = nativeDescriptor(t.at, t.d) ? NATIVE : (emulatedDescriptor(t.at, t.d) ? EMULATED : FAIL); break;
                 case 'descval': r = nativeDescriptorValue(t.at, t.d, t.v) ? NATIVE : FAIL; break;
                 case 'mq': r = nativeMedia(t.q) ? NATIVE : (emulatedMedia(t.q) ? EMULATED : FAIL); break;
                 case 'global': r = resolveGlobal(t.g) ? NATIVE : FAIL; break;
