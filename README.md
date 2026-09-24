@@ -24,8 +24,13 @@ the app around it:
   logical properties, css-text-4 `white-space`/`text-wrap` keywords, `lh`/`cap`/`ic` units, alignment
   qualifiers (`safe`, `first baseline`) and more, so that 2012 WebKit renders modern stylesheets.
   Pseudo-classes the engine lacks (`:focus-within`, `:placeholder-shown`, `:user-invalid`/`:user-valid`,
-  `:blank`, `:target-within`, `:playing`/`:paused`/`:muted`, `:local-link`, `:modal`, `:fullscreen`)
-  become classes that a shim keeps up to date on the elements.
+  `:blank`, `:target-within`, `:playing`/`:paused`/`:muted`, `:local-link`, `:modal`, `:fullscreen`,
+  `:popover-open`) become classes that a shim keeps up to date on the elements. `:has()` selectors and
+  `@container` queries become classes too: the rewriter leaves their definitions in a manifest comment
+  at the end of the stylesheet, the app collects the manifests of every stylesheet served for a page
+  (`https://ios6-browser.invalid/manifest?doc=…`), and the shim evaluates them on the live DOM
+  (relative selectors inside each candidate, container sizes from the elements marked by
+  `container-type`).
 - **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
   **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
   very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's

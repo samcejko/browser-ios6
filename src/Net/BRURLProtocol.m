@@ -701,6 +701,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
         if (cacheable && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
+        [[BRCSSRewriter shared] registerManifestInData:out pageURL:page];
         [self performOnClientThread:^{
             [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
             if (out.length) [self.client URLProtocol:self didLoadData:out];
@@ -757,6 +758,10 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     self.done = YES;
     NSHTTPURLResponse *response = (NSHTTPURLResponse *)cached.response;
     NSData *data = cached.data;
+    NSString *cachedType = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
+    if ([cachedType hasPrefix:@"text/css"] || [cachedType hasPrefix:@"text/html"]) {
+        [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL];
+    }
     [self performOnClientThread:^{
         [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
         if (data.length) [self.client URLProtocol:self didLoadData:data];
@@ -778,8 +783,19 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *path = self.request.URL.path ?: @"";
     NSData *body = nil;
     NSString *type = @"text/javascript; charset=utf-8";
+    NSString *cacheControl = @"max-age=31536000";
     if ([path hasPrefix:@"/polyfills"] && [path hasSuffix:@".js"]) {
         body = [BRCSSRewriter polyfillBundle];
+    } else if ([path isEqualToString:@"/manifest"]) {
+        // :has() / @container entries collected for the page named in ?doc= (see BRCSSRewriter)
+        NSString *query = self.request.URL.query ?: @"";
+        NSString *doc = nil;
+        for (NSString *pair in [query componentsSeparatedByString:@"&"]) {
+            if ([pair hasPrefix:@"doc="]) doc = [[pair substringFromIndex:4] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+        }
+        body = [[BRCSSRewriter shared] manifestJSONForPageURLString:doc ?: self.request.mainDocumentURL.absoluteString];
+        type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
@@ -814,10 +830,11 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         return;
     }
     NSDictionary *fields = @{ @"Content-Type": type, @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)body.length],
-                              @"Cache-Control": @"max-age=31536000", @"Access-Control-Allow-Origin": @"*" };
+                              @"Cache-Control": cacheControl, @"Access-Control-Allow-Origin": @"*" };
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:fields];
+    BOOL noStore = [cacheControl isEqualToString:@"no-store"];
     [self performOnClientThread:^{
-        [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowedInMemoryOnly];
+        [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:noStore ? NSURLCacheStorageNotAllowed : NSURLCacheStorageAllowedInMemoryOnly];
         [self.client URLProtocol:self didLoadData:body];
         [self.client URLProtocolDidFinishLoading:self];
     }];

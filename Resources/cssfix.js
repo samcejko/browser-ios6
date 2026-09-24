@@ -844,6 +844,23 @@ var CSSFix = (function () {
     // viewport of the page being rewritten (set by run()), for clamp()/min()/max() with viewport units
     var g_viewportWidth = 768, g_viewportHeight = 1024;
 
+    // ---- manifest for the page shim: :has() selectors and @container queries the engine cannot evaluate are
+    // rewritten to classes (.br-has-<hash>, .br-cq-<hash>) that shims-extra.js toggles on the elements; the
+    // entries travel in a trailing comment of the rewritten output and the app hands them to the page.
+    var g_manifest = null;
+    function manifestHash(s) {
+        var h = 5381;
+        for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+        return h.toString(36);
+    }
+    function manifestAdd(kind, entry) {
+        if (!g_manifest) g_manifest = { has: [], cq: [], seen: {} };
+        var key = kind + ':' + entry.h;
+        if (g_manifest.seen[key]) return;
+        g_manifest.seen[key] = true;
+        g_manifest[kind].push(entry);
+    }
+
     function pxString(n) { return (Math.round(n * 100) / 100) + 'px'; }
 
     // ---- calc-style expressions evaluated statically: numbers with absolute, font or viewport units, + - * /, parentheses.
@@ -1599,6 +1616,19 @@ var CSSFix = (function () {
                     // optimizeLegibility / geometricPrecision force the slow CoreText shaping path in the old engine
                     push(out, p, /speed|auto/i.test(lv) ? v : 'optimizeSpeed', imp);
                     continue;
+                case 'container-type': case 'container-name': case 'container': {
+                    // container elements are marked through counter-reset (read back from the computed style by the
+                    // shim): "br-container 1" for a size container, "br-cn-<name> 1" for each container name
+                    var cqMarks = [], cqNames = '', cqType = '';
+                    if (p === 'container') { var slash = lv.indexOf('/'); cqNames = trim(slash >= 0 ? lv.slice(0, slash) : lv); cqType = slash >= 0 ? trim(lv.slice(slash + 1)) : ''; }
+                    else if (p === 'container-name') cqNames = lv;
+                    else cqType = lv;
+                    if (cqType === 'size' || cqType === 'inline-size') cqMarks.push('br-container 1');
+                    if (cqNames && cqNames !== 'none') { var cqList = cqNames.split(/\s+/); for (var cqi = 0; cqi < cqList.length; cqi++) if (/^[a-z_][\w-]*$/.test(cqList[cqi])) cqMarks.push('br-cn-' + cqList[cqi] + ' 1'); }
+                    if (cqMarks.length) push(out, 'counter-reset', cqMarks.join(' '), imp);
+                    push(out, p, v, imp);
+                    continue;
+                }
                 case 'line-clamp':
                     // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box)
                     if (/^\d+$/.test(lv)) {
@@ -1678,14 +1708,14 @@ var CSSFix = (function () {
 
     // ------------------------------------------------------------------ selectors
 
-    var DROP_SELECTOR = /:has\(|::part\(|::slotted\(|:host|:state\(|:popover-open|::backdrop|::marker|::file-selector-button|::cue|::view-transition|:autofill|:picture-in-picture|:defined|:current|:past|:future|::highlight|::spelling-error|::grammar-error|::target-text|:xr-overlay|:open|:closed|:volume-locked|>>>|\/deep\/|^\s*&|\s&|&\s|:nth-child\([^)]*\bof\b/i;
+    var DROP_SELECTOR = /:has\(|::part\(|::slotted\(|:host|:state\(|::backdrop|::marker|::file-selector-button|::cue|::view-transition|:autofill|:picture-in-picture|:defined|:current|:past|:future|::highlight|::spelling-error|::grammar-error|::target-text|:xr-overlay|:open|:closed|:volume-locked|>>>|\/deep\/|^\s*&|\s&|&\s|:nth-child\([^)]*\bof\b/i;
 
     // Pseudo-classes the engine lacks that shims-extra.js maintains as classes on the elements (focus-within,
     // placeholder-shown, user-invalid/valid, blank, target-within, playing/paused/muted, local-link, modal, fullscreen)
     var STATE_CLASSES = { ':focus-within': '.br-focus-within', ':placeholder-shown': '.br-placeholder-shown', ':user-invalid': '.br-user-invalid',
         ':user-valid': '.br-user-valid', ':blank': '.br-blank', ':target-within': '.br-target-within', ':playing': '.br-playing', ':paused': '.br-paused',
-        ':muted': '.br-muted', ':local-link': '.br-local-link', ':modal': '.br-modal', ':fullscreen': '.br-fullscreen', ':-webkit-full-screen': '.br-fullscreen' };
-    var STATE_CLASS_RE = /:(focus-within|placeholder-shown|user-invalid|user-valid|blank|target-within|playing|paused|muted|local-link|modal|fullscreen|-webkit-full-screen)\b/gi;
+        ':muted': '.br-muted', ':local-link': '.br-local-link', ':modal': '.br-modal', ':fullscreen': '.br-fullscreen', ':-webkit-full-screen': '.br-fullscreen', ':popover-open': '.br-popover-open' };
+    var STATE_CLASS_RE = /:(focus-within|placeholder-shown|user-invalid|user-valid|blank|target-within|playing|paused|muted|local-link|modal|fullscreen|-webkit-full-screen|popover-open)\b/gi;
 
     function isCompound(sel) {   // no combinators at depth 0
         var depth = 0;
@@ -1804,8 +1834,34 @@ var CSSFix = (function () {
         return out;
     }
 
+    // ".card:has(> img):hover" -> ".card.br-has-xxxx:hover"; the shim finds the ".card" candidates and checks "> img"
+    // inside each. :has() nested in :not()/:is() stays unsupported (the selector is dropped).
+    function rewriteHas(sel) {
+        var out = '', i = 0, n = sel.length;
+        while (i < n) {
+            var at = sel.indexOf(':has(', i);
+            if (at < 0) { out += sel.slice(i); break; }
+            var close = matchParen(sel, at + 4);
+            var inner = trim(sel.slice(at + 5, close));
+            var prefix = trim(out + sel.slice(i, at));
+            if (!inner || /:(not|is|where|has)\(/i.test(prefix.slice(prefix.lastIndexOf(' ') + 1)) && /\(/.test(prefix) && matchParen(prefix, prefix.indexOf('(')) >= prefix.length) return null;
+            var target = prefix;
+            if (!target || /[>+~\s]$/.test(target)) target += '*';
+            var h = manifestHash(target + '|' + inner);
+            manifestAdd('has', { h: h, target: target, inner: inner });
+            out += sel.slice(i, at) + (/[>+~\s]$/.test(sel.slice(i, at)) || at === i ? '*' : '') + '.br-has-' + h;
+            i = close + 1;
+        }
+        return out;
+    }
+
     function fixSelector(sel) {
         sel = trim(sel);
+        if (sel.indexOf(':has(') >= 0 && g_manifest !== false) {
+            var rewritten = rewriteHas(sel);
+            if (rewritten === null) return [];
+            sel = rewritten;
+        }
         if (!sel || DROP_SELECTOR.test(sel)) return [];
         sel = sel.replace(/:focus-visible/gi, ':focus')
                  .replace(/::?placeholder(?![\w-])/gi, '::-webkit-input-placeholder')
@@ -1887,7 +1943,7 @@ var CSSFix = (function () {
         var p = trim(decl.slice(0, colon)).toLowerCase(), v = trim(decl.slice(colon + 1));
         if (p.charAt(0) === '-' && p.charAt(1) === '-') return true;   // custom properties: resolved statically
         if (p.indexOf('grid') >= 0 || p === 'gap' || p === 'row-gap' || p === 'column-gap' && !/column/.test(v) || p === 'aspect-ratio' || p === 'object-fit' ||
-            p === 'backdrop-filter' || p === '-webkit-backdrop-filter' || p === 'container-type' || p === 'container' ||
+            p === 'backdrop-filter' || p === '-webkit-backdrop-filter' ||
             p === 'overflow' && /clip/i.test(v) || p === 'display' && /grid|contents|flow-root/i.test(v) || p === 'scroll-snap-type' || p === 'scroll-behavior' ||
             p === 'writing-mode' || p === 'text-wrap' || p === 'anchor-name' || p === 'view-transition-name' || p === 'contain' || p === 'content-visibility' ||
             p === 'accent-color' || p === 'color-scheme' || p === 'field-sizing' || p === 'text-box-trim' || p === 'animation-timeline') return false;
@@ -2137,6 +2193,18 @@ var CSSFix = (function () {
                     sub = transformRules(r.rules, ctx, keyframe);
                     for (k = 0; k < sub.length; k++) out.push(sub[k]);
                 }
+            } else if (name === 'container') {
+                // "@container [name] (cond) { rules }": the rules become descendants of ".br-cq-<hash>", a class the
+                // page shim puts on container elements (marked by container-type) whose size satisfies the condition
+                if (r.rules && g_manifest !== false) {
+                    var cqm = /^([a-zA-Z_][\w-]*)?\s*([\s\S]*)$/.exec(trim(r.prelude));
+                    var cqName = cqm && cqm[1] && !/^(not|and|or)$/i.test(cqm[1]) ? cqm[1] : '', cqCond = cqm ? trim(cqm[1] && cqName ? cqm[2] : r.prelude) : r.prelude;
+                    var cqh = manifestHash(cqName + '|' + cqCond);
+                    manifestAdd('cq', { h: cqh, name: cqName, cond: cqCond });
+                    sub = transformRules(r.rules, ctx, keyframe);
+                    prefixRules(sub, '.br-cq-' + cqh + ' ');
+                    for (k = 0; k < sub.length; k++) out.push(sub[k]);
+                }
             } else if (name === 'keyframes' || name === '-webkit-keyframes') {
                 if (!r.rules) continue;
                 sub = transformRules(r.rules, ctx, true);
@@ -2162,6 +2230,18 @@ var CSSFix = (function () {
             // container, property, counter-style, document, starting-style, font-feature-values and unknown ones are dropped
         }
         return out;
+    }
+
+    // every style rule (also inside nested at-rules) gets `prefix` before each of its selectors
+    function prefixRules(rules, prefix) {
+        for (var i = 0; i < rules.length; i++) {
+            var r = rules[i];
+            if (r.t === 'q') {
+                var parts = splitTop(r.sel, ','), sels = [];
+                for (var k = 0; k < parts.length; k++) sels.push(prefix + trim(parts[k]));
+                r.sel = sels.join(',');
+            } else if (r.t === 'at' && r.rules && r.name !== '-webkit-keyframes' && r.name !== 'keyframes') prefixRules(r.rules, prefix);
+        }
     }
 
     function makeContext(pageVars) {
@@ -2347,12 +2427,28 @@ var CSSFix = (function () {
         if (opts && opts.viewportWidth > 0) ctx.viewportWidth = opts.viewportWidth;
         g_viewportWidth = (opts && opts.viewportWidth > 0) ? opts.viewportWidth : 768;
         g_viewportHeight = (opts && opts.viewportHeight > 0) ? opts.viewportHeight : Math.round(g_viewportWidth * 4 / 3);
+        g_manifest = null;
         var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
-        return JSON.stringify({ out: out, vars: ctx.root });
+        var manifest = null;
+        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length)) {
+            manifest = { has: g_manifest.has, cq: g_manifest.cq };
+            // the entries ride along in the output (so a cached copy keeps them); "*/" cannot occur inside
+            var json = JSON.stringify(manifest).replace(/\*\//g, '*\\/');
+            out += kind === 'html' ? '\n<!--br-manifest:' + json.replace(/--/g, '-\\u002d') + '-->' : '\n/*br-manifest:' + json + '*/';
+        }
+        g_manifest = null;
+        return JSON.stringify({ out: out, vars: ctx.root, manifest: manifest });
+    }
+
+    // the manifest comment of a rewritten document or stylesheet, parsed (used by the shim's dev harness and tests)
+    function readManifest(text) {
+        var m = /br-manifest:(\{[\s\S]*?\})(?:\*\/|-->)\s*$/.exec(text);
+        if (!m) return null;
+        try { return JSON.parse(m[1]); } catch (e) { return null; }
     }
 
     return { run: run, fixCSS: fixCSS, fixHTML: fixHTML, fixInlineStyle: fixInlineStyle, makeContext: makeContext, evalSupports: evalSupports,
-             fixSelectorList: fixSelectorList, fixMedia: fixMedia, transformFunctions: transformFunctions, parseColor: parseColor };
+             fixSelectorList: fixSelectorList, fixMedia: fixMedia, transformFunctions: transformFunctions, parseColor: parseColor, readManifest: readManifest };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = CSSFix;

@@ -6,6 +6,7 @@
 #include <zlib.h>
 
 static const NSUInteger BRMaxPagesRemembered = 8;
+static NSString *BRPageKey(NSURL *url);
 // The bundle is cached by pages for a year, so its URL carries a checksum of the content: a new
 // build with new polyfills gets a new URL instead of the old cached bundle.
 static NSString *g_polyfillURL;
@@ -56,6 +57,8 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
     BOOL _loadFailed;
     NSMutableDictionary *_pageVars;     // page key -> NSMutableDictionary of --name: value
     NSMutableArray *_pageOrder;
+    NSMutableDictionary *_pageManifests;   // page key -> @{ @"has": NSMutableArray, @"cq": NSMutableArray, @"seen": NSMutableSet }
+    NSMutableArray *_manifestOrder;
 }
 
 + (instancetype)shared
@@ -82,9 +85,69 @@ static CGFloat g_viewportWidth = 768;
     if (self) {
         _pageVars = [NSMutableDictionary dictionary];
         _pageOrder = [NSMutableArray array];
+        _pageManifests = [NSMutableDictionary dictionary];
+        _manifestOrder = [NSMutableArray array];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(engineDidReset:) name:BRJSEngineDidResetNotification object:nil];
     }
     return self;
+}
+
+#pragma mark - Manifest (:has() and @container entries for the page shim)
+
+- (void)registerManifestInData:(NSData *)data pageURL:(NSURL *)pageURL
+{
+    if (data.length < 20 || !pageURL) return;
+    // the comment sits at the very end: "/*br-manifest:{...}*/" or "<!--br-manifest:{...}-->"
+    NSUInteger tailLength = MIN(data.length, (NSUInteger)65536);
+    NSData *tail = [data subdataWithRange:NSMakeRange(data.length - tailLength, tailLength)];
+    NSString *text = [[NSString alloc] initWithData:tail encoding:NSUTF8StringEncoding];
+    if (!text) { text = [[NSString alloc] initWithData:tail encoding:NSISOLatin1StringEncoding]; if (!text) return; }
+    NSRange marker = [text rangeOfString:@"br-manifest:" options:NSBackwardsSearch];
+    if (marker.location == NSNotFound) return;
+    NSString *rest = [text substringFromIndex:marker.location + marker.length];
+    NSRange end = [rest rangeOfString:@"*/" options:NSBackwardsSearch];
+    if (end.location == NSNotFound) end = [rest rangeOfString:@"-->" options:NSBackwardsSearch];
+    if (end.location == NSNotFound) return;
+    NSString *json = [[rest substringToIndex:end.location] stringByReplacingOccurrencesOfString:@"-\\u002d" withString:@"--"];
+    NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if (![parsed isKindOfClass:[NSDictionary class]]) return;
+    NSString *key = BRPageKey(pageURL);
+    @synchronized (self) {
+        NSMutableDictionary *m = _pageManifests[key];
+        if (!m) {
+            m = [@{ @"has": [NSMutableArray array], @"cq": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
+            _pageManifests[key] = m;
+            [_manifestOrder addObject:key];
+            while (_manifestOrder.count > BRMaxPagesRemembered) {
+                [_pageManifests removeObjectForKey:_manifestOrder[0]];
+                [_manifestOrder removeObjectAtIndex:0];
+            }
+        }
+        NSMutableSet *seen = m[@"seen"];
+        for (NSString *kind in @[@"has", @"cq"]) {
+            NSArray *entries = parsed[kind];
+            if (![entries isKindOfClass:[NSArray class]]) continue;
+            for (NSDictionary *e in entries) {
+                if (![e isKindOfClass:[NSDictionary class]] || ![e[@"h"] isKindOfClass:[NSString class]]) continue;
+                NSString *entryId = [kind stringByAppendingString:e[@"h"]];
+                if ([seen containsObject:entryId]) continue;
+                [seen addObject:entryId];
+                [m[kind] addObject:e];
+            }
+        }
+    }
+}
+
+- (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString
+{
+    NSString *key = BRPageKey([NSURL URLWithString:pageURLString ?: @""]);
+    NSDictionary *out = nil;
+    @synchronized (self) {
+        NSDictionary *m = _pageManifests[key];
+        if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy] };
+    }
+    if (!out) out = @{ @"has": @[], @"cq": @[] };
+    return [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL] ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 - (void)engineDidReset:(NSNotification *)note

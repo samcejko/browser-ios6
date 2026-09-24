@@ -22,4 +22,10 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 + (NSString *)polyfillURLString;
 + (NSData *)polyfillBundle;
 
+// The rewriter turns :has() selectors and @container queries into classes and appends the entries to the output as a
+// trailing comment; every rewritten (or cached) stylesheet/document served for a page registers them here, and the
+// page shim fetches https://ios6-browser.invalid/manifest?doc=<page> to evaluate them. Thread safe.
+- (void)registerManifestInData:(NSData *)data pageURL:(NSURL *)pageURL;
+- (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString;
+
 @end

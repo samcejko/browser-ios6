@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>manifest test</title>
+<script>
+window.__errors = [];
+window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+</script>
+<script src="../Resources/cssfix.js"></script>
+<script>
+// The stylesheet a page would ship, rewritten the way the app does it; the manifest comment at its end is what the
+// app serves at https://ios6-browser.invalid/manifest — here it is handed to the shim as a data: URL.
+var source = [
+  '.card { padding: 4px; border: 1px solid #999; }',
+  '.card:has(> img) { border-color: red; }',
+  'label:has(input:checked) { font-weight: bold; }',
+  '.wrap { container-type: inline-size; container-name: main; }',
+  '@container main (min-width: 300px) { .item { color: green; } }',
+  '@container (width < 300px) { .item { color: blue; } }'
+].join('\n');
+var rewritten = JSON.parse(CSSFix.run('css', source, null, '{"viewportWidth":768}')).out;
+var manifest = CSSFix.readManifest(rewritten);
+window.__brManifestURL = 'data:application/json,' + encodeURIComponent(JSON.stringify(manifest));
+document.write('<style>' + rewritten.replace(/\/\*br-manifest[\s\S]*$/, '') + '</style>');
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>manifest test</h1>
+<div class="card" id="c1"><img alt="" width="10" height="10"></div>
+<div class="card" id="c2">no image</div>
+<label id="l1"><input type="checkbox" id="cb"> check me</label>
+<div class="wrap" id="w1" style="width:400px"><span class="item" id="i1">item in wide container</span></div>
+<div class="wrap" id="w2" style="width:200px"><span class="item" id="i2">item in narrow container</span></div>
+<pre id="out">…</pre>
+<script>
+setTimeout(function () {
+  var cs = function (id) { return getComputedStyle(document.getElementById(id)); };
+  var lines = [
+    'errors: ' + (window.__errors.length ? window.__errors.join(' | ') : 'none'),
+    'manifest: ' + JSON.stringify(manifest),
+    'c1 (has img) border: ' + cs('c1').borderTopColor + ' class=' + document.getElementById('c1').className,
+    'c2 (no img) border: ' + cs('c2').borderTopColor + ' class=' + document.getElementById('c2').className,
+    'i1 (wide) color: ' + cs('i1').color,
+    'i2 (narrow) color: ' + cs('i2').color,
+    'w1 class=' + document.getElementById('w1').className + ' w2 class=' + document.getElementById('w2').className
+  ];
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'manifest test done';
+}, 1500);
+</script>
+</body>
+</html>

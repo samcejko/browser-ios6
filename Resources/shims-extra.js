@@ -966,13 +966,18 @@
     }
     // aspect-ratio: cssfix stores the ratio in "counter-reset: br-aspect W br-aspect-h H"; media elements and
     // empty boxes with such a rule get their height from their width (and again when the viewport changes)
-    var aspectTimer = null, aspectElements = [];
+    var aspectTimer = null, aspectElements = [], containerElements = [];
     var applyAspectRatios = function () {
         try {
-            var all = document.getElementsByTagName('*'), found = [];
+            var all = document.getElementsByTagName('*'), found = [], containers = [];
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
                 var cr = getComputedStyle(el).counterReset || '';
+                if (cr.indexOf('br-c') >= 0) {   // container-type / container-name markers (see the manifest block)
+                    var names = [], cn = /br-cn-([\w-]+)/g, cm;
+                    while ((cm = cn.exec(cr)) !== null) names.push(cm[1]);
+                    if (cr.indexOf('br-container') >= 0 || names.length) containers.push({ el: el, names: names });
+                }
                 if (cr.indexOf('br-aspect') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 var m = /br-aspect\s+(\d+)\s+br-aspect-h\s+(\d+)/.exec(cr);
                 if (!m) continue;
@@ -986,6 +991,8 @@
                 found.push(el);
             }
             aspectElements = found;
+            containerElements = containers;
+            if (window.__brApplyContainerQueries) window.__brApplyContainerQueries(containers);
         } catch (e) {}
     };
     var scheduleAspect = function () { if (aspectTimer) return; aspectTimer = setTimeout(function () { aspectTimer = null; applyAspectRatios(); }, 200); };
@@ -1094,6 +1101,255 @@
         };
         onReady(function () { markLocalLinks(document); });
         onSettled(function () { markLocalLinks(document); });
+    })();
+    // ---- :has() and @container: the CSS rewriter turned them into .br-has-<h> / .br-cq-<h> classes and left the
+    // entries in a manifest the app serves per page; the classes are kept up to date here.
+    (function () {
+        var manifest = null, lastText = '', applyTimer = null, fetching = false, fetchTimer = null, fetches = 0;
+        var manifestURL = function () { return window.__brManifestURL || ('https://ios6-browser.invalid/manifest?doc=' + encodeURIComponent(location.href.split('#')[0])); };   // the override is for tests
+        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var splitTop = function (s, sep) {
+            var parts = [], depth = 0, start = 0, q = null;
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c; else if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--;
+                else if (depth === 0 && c === sep) { parts.push(s.slice(start, i)); start = i + 1; }
+            }
+            parts.push(s.slice(start));
+            return parts;
+        };
+        // ---- :has(): does `el` have what the relative selector list asks for?
+        var hasMatch = function (el, inner) {
+            var parts = splitTop(inner, ','), parent = el.parentNode || document;
+            el.setAttribute('data-br-scope', '1');
+            var found = false;
+            try {
+                for (var i = 0; i < parts.length && !found; i++) {
+                    var p = trim(parts[i]);
+                    if (!p) continue;
+                    var sel = '[data-br-scope]' + (/^[>+~]/.test(p) ? ' ' + p : ' ' + p);
+                    try { found = !!parent.querySelector(sel); } catch (e) { found = false; }
+                }
+            } finally { el.removeAttribute('data-br-scope'); }
+            return found;
+        };
+        var applyHas = function () {
+            if (!manifest || !manifest.has || !manifest.has.length) return;
+            for (var i = 0; i < manifest.has.length; i++) {
+                var entry = manifest.has[i], candidates;
+                try { candidates = document.querySelectorAll(entry.target); } catch (e) { continue; }
+                for (var k = 0; k < candidates.length && k < 3000; k++) setStateClass(candidates[k], 'br-has-' + entry.h, hasMatch(candidates[k], entry.inner));
+            }
+        };
+        // ---- @container: size conditions evaluated against the marked container elements
+        var lengthPx = function (tok, el) {
+            var m = /^(-?[\d.]+)([a-z%]*)$/i.exec(tok);
+            if (!m) return null;
+            var n = parseFloat(m[1]), u = m[2].toLowerCase();
+            switch (u) {
+                case '': case 'px': return n;
+                case 'em': return n * (parseFloat(getComputedStyle(el).fontSize) || 16);
+                case 'rem': return n * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+                case 'vw': return n * window.innerWidth / 100;
+                case 'vh': return n * window.innerHeight / 100;
+                case 'vmin': return n * Math.min(window.innerWidth, window.innerHeight) / 100;
+                case 'vmax': return n * Math.max(window.innerWidth, window.innerHeight) / 100;
+                case 'pt': return n * 4 / 3;
+                case 'cm': return n * 96 / 2.54;
+                case 'mm': return n * 96 / 25.4;
+                case 'in': return n * 96;
+            }
+            return null;
+        };
+        var featureValue = function (name, el, size) {
+            switch (name) {
+                case 'width': case 'inline-size': return size.w;
+                case 'height': case 'block-size': return size.h;
+                case 'aspect-ratio': return size.h ? size.w / size.h : 0;
+                case 'orientation': return size.w >= size.h ? 'landscape' : 'portrait';
+            }
+            return undefined;
+        };
+        var ratioValue = function (tok) { var m = /^([\d.]+)\s*\/\s*([\d.]+)$/.exec(tok); return m ? parseFloat(m[1]) / (parseFloat(m[2]) || 1) : parseFloat(tok); };
+        var compare = function (a, op, b) {
+            switch (op) { case '<': return a < b; case '<=': return a <= b; case '>': return a > b; case '>=': return a >= b; default: return a === b; }
+        };
+        var evalFeature = function (expr, el, size) {
+            expr = trim(expr);
+            if (/^(style|scroll-state)\(/i.test(expr)) return false;
+            var colon = expr.indexOf(':');
+            var m;
+            if (colon > 0 && !/[<>=]/.test(expr)) {
+                var name = trim(expr.slice(0, colon)).toLowerCase(), val = trim(expr.slice(colon + 1)).toLowerCase();
+                var minmax = /^(min|max)-(.+)$/.exec(name), base = minmax ? minmax[2] : name;
+                var fv = featureValue(base, el, size);
+                if (fv === undefined) return false;
+                if (base === 'orientation') return fv === val;
+                var target = base === 'aspect-ratio' ? ratioValue(val) : lengthPx(val, el);
+                if (target === null || isNaN(target)) return false;
+                return minmax ? (minmax[1] === 'min' ? fv >= target : fv <= target) : fv === target;
+            }
+            // range syntax: "width >= 400px", "400px < width <= 800px", "orientation = portrait"
+            m = /^([\w-]+|[\d.]+[a-z%]*(?:\s*\/\s*[\d.]+)?)\s*(<=|>=|<|>|=)\s*([\w-]+|[\d.]+[a-z%]*(?:\s*\/\s*[\d.]+)?)(?:\s*(<=|>=|<|>|=)\s*([\d.]+[a-z%]*(?:\s*\/\s*[\d.]+)?))?$/.exec(expr);
+            if (!m) return false;
+            var leftIsFeature = featureValue(m[1].toLowerCase(), el, size) !== undefined;
+            var feature = leftIsFeature ? m[1].toLowerCase() : m[3].toLowerCase();
+            var fval = featureValue(feature, el, size);
+            if (fval === undefined) return false;
+            var conv = function (tok) { return feature === 'aspect-ratio' ? ratioValue(tok) : feature === 'orientation' ? tok.toLowerCase() : lengthPx(tok, el); };
+            if (leftIsFeature) return compare(fval, m[2], conv(m[3])) && (!m[4] || compare(fval, m[4], conv(m[5])));
+            // "400px < width <= 800px": the first comparison is written from the value's side
+            var flip = { '<': '>', '<=': '>=', '>': '<', '>=': '<=', '=': '=' };
+            return compare(fval, flip[m[2]], conv(m[1])) && (!m[4] || compare(fval, m[4], conv(m[5])));
+        };
+        var evalCond = function (cond, el, size) {
+            cond = trim(cond);
+            if (!cond) return false;
+            while (cond.charAt(0) === '(' && (function () { var d = 0; for (var i = 0; i < cond.length; i++) { var c = cond.charAt(i); if (c === '(') d++; else if (c === ')') { d--; if (d === 0) return i === cond.length - 1; } } return false; })()) cond = trim(cond.slice(1, -1));
+            if (/^not\s/i.test(cond)) return !evalCond(cond.slice(4), el, size);
+            var terms = [], ops = [], depth = 0, start = 0;
+            for (var i = 0; i < cond.length; i++) {
+                var c = cond.charAt(i);
+                if (c === '(') depth++; else if (c === ')') depth--;
+                else if (depth === 0) {
+                    var m = /^\s+(and|or)\s+/i.exec(cond.slice(i));
+                    if (m) { terms.push(cond.slice(start, i)); ops.push(m[1].toLowerCase()); i += m[0].length - 1; start = i + 1; }
+                }
+            }
+            terms.push(cond.slice(start));
+            if (terms.length === 1) return evalFeature(cond, el, size);
+            var result = evalCond(terms[0], el, size);
+            for (var k = 1; k < terms.length; k++) { var v = evalCond(terms[k], el, size); result = ops[k - 1] === 'or' ? (result || v) : (result && v); }
+            return result;
+        };
+        var containerSize = function (el) {
+            var cs = getComputedStyle(el);
+            var w = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+            var h = el.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+            return { w: w > 0 ? w : 0, h: h > 0 ? h : 0 };
+        };
+        var applyContainers = function (containers) {
+            if (!manifest || !manifest.cq || !manifest.cq.length || !containers) return;
+            for (var i = 0; i < containers.length; i++) {
+                var c = containers[i], size = null;
+                for (var k = 0; k < manifest.cq.length; k++) {
+                    var q = manifest.cq[k];
+                    if (q.name && c.names.indexOf(q.name) < 0) { setStateClass(c.el, 'br-cq-' + q.h, false); continue; }
+                    if (!size) size = containerSize(c.el);
+                    var on = false;
+                    try { on = evalCond(q.cond, c.el, size); } catch (e) { on = false; }
+                    setStateClass(c.el, 'br-cq-' + q.h, on);
+                }
+            }
+        };
+        window.__brApplyContainerQueries = applyContainers;
+        var apply = function () {
+            applyTimer = null;
+            if (!manifest) return;
+            try { applyHas(); } catch (e) {}
+            try { if (manifest.cq.length) applyAspectRatios(); } catch (e2) {}   // the marker scan calls applyContainers
+        };
+        var schedule = function () { if (!applyTimer) applyTimer = setTimeout(apply, 120); };
+        var load = function () {
+            if (fetching || !window.XMLHttpRequest || fetches > 40) return;
+            fetching = true;
+            fetches++;
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', manifestURL(), true);
+                x.onreadystatechange = function () {
+                    if (x.readyState !== 4) return;
+                    fetching = false;
+                    if (x.status !== 200 || !x.responseText || x.responseText === lastText) return;
+                    lastText = x.responseText;
+                    try { manifest = JSON.parse(x.responseText); } catch (e) { manifest = null; }
+                    if (manifest && !manifest.has) manifest.has = [];
+                    if (manifest && !manifest.cq) manifest.cq = [];
+                    schedule();
+                };
+                x.send(null);
+            } catch (e) { fetching = false; }
+        };
+        var scheduleLoad = function () { if (!fetchTimer) fetchTimer = setTimeout(function () { fetchTimer = null; load(); }, 300); };
+        onReady(scheduleLoad);
+        window.addEventListener('load', scheduleLoad, false);
+        onSettled(function () { scheduleLoad(); if (manifest) schedule(); });
+        window.addEventListener('resize', function () { if (manifest && manifest.cq.length) schedule(); }, false);
+        var reevaluate = function () { if (manifest && manifest.has.length) schedule(); };
+        document.addEventListener('input', reevaluate, true);
+        document.addEventListener('change', reevaluate, true);
+        document.addEventListener('click', reevaluate, true);
+        document.addEventListener('focus', reevaluate, true);
+        document.addEventListener('blur', reevaluate, true);
+        window.__brManifestReload = load;
+    })();
+    // ---- Popover API: [popover] elements, showPopover()/hidePopover()/togglePopover(), popovertarget buttons,
+    // light dismiss for auto popovers, ToggleEvent; cssfix rewrites :popover-open to .br-popover-open
+    if (Ep && !('popover' in Ep)) (function () {
+        var open = [];
+        addStyle('[popover]:not(.br-popover-open){display:none !important}' +
+                 '[popover].br-popover-open{position:fixed;top:0;right:0;bottom:0;left:0;width:-webkit-fit-content;width:fit-content;height:-webkit-fit-content;height:fit-content;' +
+                 'margin:auto;border:solid;padding:0.25em;overflow:auto;color:black;background:white;z-index:2147483646}');
+        var ToggleEvent = function ToggleEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, false, type === 'beforetoggle'); e.oldState = init && init.oldState || ''; e.newState = init && init.newState || ''; return e; };
+        try { ToggleEvent.prototype = Object.create(window.Event.prototype); ToggleEvent.prototype.oldState = ''; ToggleEvent.prototype.newState = ''; } catch (e0) {}
+        if (!window.ToggleEvent) window.ToggleEvent = ToggleEvent;
+        var isOpen = function (el) { return open.indexOf(el) >= 0; };
+        var hide = function (el, viaDismiss) {
+            var i = open.indexOf(el);
+            if (i < 0) return;
+            var before = new ToggleEvent('beforetoggle', { oldState: 'open', newState: 'closed' });
+            el.dispatchEvent(before);
+            open.splice(i, 1);
+            setStateClass(el, 'br-popover-open', false);
+            setTimeout(function () { el.dispatchEvent(new ToggleEvent('toggle', { oldState: 'open', newState: 'closed' })); }, 0);
+        };
+        var show = function (el) {
+            if (isOpen(el) || !el.hasAttribute('popover')) return;
+            var before = new ToggleEvent('beforetoggle', { oldState: 'closed', newState: 'open' });
+            if (!el.dispatchEvent(before)) return;   // preventDefault keeps it closed
+            var mode = (el.getAttribute('popover') || 'auto').toLowerCase();
+            if (mode !== 'manual') {   // an auto popover closes the other auto popovers (nested ones stay)
+                for (var i = open.length - 1; i >= 0; i--) if ((open[i].getAttribute('popover') || 'auto').toLowerCase() !== 'manual' && !open[i].contains(el)) hide(open[i]);
+            }
+            open.push(el);
+            setStateClass(el, 'br-popover-open', true);
+            setTimeout(function () { el.dispatchEvent(new ToggleEvent('toggle', { oldState: 'closed', newState: 'open' })); }, 0);
+        };
+        Ep.showPopover = function () { show(this); };
+        Ep.hidePopover = function () { hide(this); };
+        Ep.togglePopover = function (force) { var want = force === undefined ? !isOpen(this) : !!force; if (want) show(this); else hide(this); return want; };
+        try {
+            Object.defineProperty(Ep, 'popover', { get: function () { if (!this.hasAttribute('popover')) return null; var v = (this.getAttribute('popover') || '').toLowerCase(); return v === 'manual' ? 'manual' : 'auto'; }, set: function (v) { if (v === null || v === undefined) this.removeAttribute('popover'); else this.setAttribute('popover', v); }, configurable: true });
+            var targetProp = function (proto) {
+                Object.defineProperty(proto, 'popoverTargetElement', { get: function () { var id = this.getAttribute('popovertarget'); return id ? document.getElementById(id) : null; }, set: function (el) { if (el && el.id) this.setAttribute('popovertarget', el.id); else this.removeAttribute('popovertarget'); }, configurable: true });
+                Object.defineProperty(proto, 'popoverTargetAction', { get: function () { var a = (this.getAttribute('popovertargetaction') || '').toLowerCase(); return a === 'show' || a === 'hide' ? a : 'toggle'; }, set: function (v) { this.setAttribute('popovertargetaction', v); }, configurable: true });
+            };
+            if (window.HTMLButtonElement) targetProp(window.HTMLButtonElement.prototype);
+            if (window.HTMLInputElement) targetProp(window.HTMLInputElement.prototype);
+        } catch (e1) {}
+        document.addEventListener('click', function (e) {
+            var t = e.target;
+            while (t && t.nodeType === 1 && !t.hasAttribute('popovertarget')) t = t.parentNode;
+            if (t && t.nodeType === 1) {
+                var target = document.getElementById(t.getAttribute('popovertarget') || '');
+                if (target && target.hasAttribute('popover')) {
+                    var action = (t.getAttribute('popovertargetaction') || 'toggle').toLowerCase();
+                    if (action === 'show') show(target); else if (action === 'hide') hide(target); else { if (isOpen(target)) hide(target); else show(target); }
+                    e.__brPopoverHandled = true;
+                    return;
+                }
+            }
+            // light dismiss: a click outside every open auto popover closes them
+            for (var i = open.length - 1; i >= 0; i--) {
+                var p = open[i];
+                if ((p.getAttribute('popover') || 'auto').toLowerCase() === 'manual') continue;
+                var inside = false, n = e.target;
+                while (n) { if (n === p) { inside = true; break; } n = n.parentNode; }
+                if (!inside) hide(p, true);
+            }
+        }, false);
+        document.addEventListener('keydown', function (e) { if (e.keyCode === 27) for (var i = open.length - 1; i >= 0; i--) if ((open[i].getAttribute('popover') || 'auto').toLowerCase() !== 'manual') hide(open[i], true); }, false);
     })();
     // The engine knows WebGL only under its experimental name; pages ask for 'webgl' (and 'webgl2', which does not exist here)
     if (HCp && HCp.getContext && !HCp.__brGLAlias) {
