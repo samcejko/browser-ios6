@@ -35,6 +35,8 @@ var page = [
   '.shape { display: inline-block; width: 120px; height: 80px; margin: 6px; background: #4a8; border: 5px solid #135; border-radius: 30px; }',
   '#k1 { corner-shape: bevel; } #k2 { corner-shape: scoop notch squircle square; } #k3 { border-radius: 0; border-clip: 20px 10px; }',
   '#k4 { border-color: #00c; border-shape: circle(40%); } #k5 { corner-top-left-shape: superellipse(-2); corner-bottom-shape: bevel; }',
+  '.gapgrid { display: flex; flex-wrap: wrap; width: 320px; gap: 10px; column-rule: 2px solid red repeat(auto, 1px dashed blue); row-rule: 3px solid green; }',
+  '.gapgrid > div { width: 90px; height: 30px; background: #ddd; }',
   'em { font-style: toggle(italic, normal); }',
   'circle { r: 20px; cx: 30px; cy: 25px; }',
   'section { anchor-scope: --s; position: relative; height: 60px; margin-top: 20px; }',
@@ -54,6 +56,7 @@ var page = [
   '<div class="w" id="w1" data-w="123" data-h="17px"></div><div class="w" id="w2" data-w="x"></div>',
   '<ul id="ul"><li>1</li><li>2</li><li id="li3">3</li></ul>',
   '<div id="box"><div class="cs" id="cs1"></div></div>',
+  '<div class="gapgrid" id="gg"><div></div><div></div><div></div><div></div><div></div><div></div></div>',
   '<div id="shapes"><div class="shape" id="k1"></div><div class="shape" id="k2"></div><div class="shape" id="k3"></div><div class="shape" id="k4"></div><div class="shape" id="k5"></div></div>',
   '<div id="box2" style="width: 400px"><div class="fc" id="fc1">hello world</div><div class="mc" id="mc1">aaa bbb ccc</div><span id="ref1" style="font: 16px sans-serif">hello world</span> <span id="ref2" style="font: 16px sans-serif; white-space: nowrap">aaa bbb ccc</span></div>',
   '<p><em id="em1">outer <em id="em2">inner</em></em></p>',
@@ -66,7 +69,7 @@ var page = [
 var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
 var html = result.out;
 window.__manifest = CSSFix.readManifest(html);
-var NATIVE_DV = /^(anchor-name|anchor-scope|position-anchor|position-area|position-try|position-try-fallbacks|position-try-order|position-visibility|field-sizing|r|cx|cy|d|x|y|corner-[a-z-]*shape|border-shape|border-clip[a-z-]*|border-limit)$/i;
+var NATIVE_DV = /^(anchor-name|anchor-scope|position-anchor|position-area|position-try|position-try-fallbacks|position-try-order|position-visibility|field-sizing|r|cx|cy|d|x|y|corner-[a-z-]*shape|border-shape|border-clip[a-z-]*|border-limit|(column-|row-)?rule(-[a-z]+)?|rule-paint-order)$/i;
 var DV_VALUE = /anchor\(|anchor-size\(|attr\([^)]*(px|type)|calc-size\(|sibling-index\(|sibling-count\(|toggle\(|container-progress\(|anchor-center|mix\(\s*scroll\(|^\s*(fit-content|max-content|min-content|stretch)\s*$/i;
 html = html.replace(/(^|[;{"]\s*)([a-z-]+)\s*:\s*([^;}"]*)/gi, function (all, pre, p, v) { return NATIVE_DV.test(p) || DV_VALUE.test(v) ? pre : all; });
 window.__rewritten = html;
@@ -97,6 +100,9 @@ var run = function () {
   check('calc-size(auto, size - 20px)', rect('cs1').w === 280, JSON.stringify(rect('cs1')));
   var painted = function (id) { var el = document.getElementById(id); return /svg/.test(el.style.webkitMaskImage || el.style.getPropertyValue('-webkit-mask-image')) && /svg/.test(el.style.backgroundImage); };
   check('corner-shape, border-clip, border-shape painted', painted('k1') && painted('k2') && painted('k3') && painted('k4') && painted('k5'), ['k1', 'k2', 'k3', 'k4', 'k5'].map(painted).join());
+  var gg = document.getElementById('gg'), ggSvg = decodeURIComponent(gg.style.backgroundImage || '');
+  // two column gaps (red, then the auto-repeated blue) joined across both rows (rule-break: spanning-item), one row gap
+  check('gap decorations (column-rule list, row-rule)', (ggSvg.match(/<line/g) || []).length === 3 && /stroke="red"/.test(ggSvg) && /stroke="blue"[^>]*dasharray/.test(ggSvg) && /green/.test(ggSvg), ggSvg.slice(0, 400));
   check('width: fit-content, min-width: max-content', Math.abs(rect('fc1').w - rect('ref1').w) <= 1 && Math.abs(rect('mc1').w - rect('ref2').w) <= 1, JSON.stringify([rect('fc1').w, rect('ref1').w, rect('mc1').w, rect('ref2').w]));
   check('toggle()', getComputedStyle(document.getElementById('em1')).fontStyle === 'italic' && getComputedStyle(document.getElementById('em2')).fontStyle === 'normal', getComputedStyle(document.getElementById('em2')).fontStyle);
   var c1 = document.getElementById('c1'); check('SVG geometry properties', c1.getAttribute('r') === '20px' && c1.getAttribute('cx') === '30px', c1.getAttribute('r') + ' ' + c1.getAttribute('cx'));

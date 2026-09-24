@@ -1272,10 +1272,59 @@ var CSSFix = (function () {
         for (i = 0; i < toks.length; i++) if (!/^(\d*\.?\d+(px|%|em|rem|fr)|0)$/.test(toks[i])) return false;
         return toks.length > 0;
     }
+    // CSS Gap Decorations: rules between the columns and rows of multi-column, flex and grid containers. A single
+    // column rule is the engine's own (multi-column); value lists with repeat(), row rules and the placement properties
+    // are painted by the shim (see the gap painter in shims-extra.js).
+    var GAP_PROPS = /^((column|row)-rule|rule)(-(color|style|width))?$|^((column|row)-rule|rule)-(break|outset)$|^rule-paint-order$/;
+    var GAP_WIDTH = /^(\d*\.?\d+(px|em|rem|%|pt)|0|thin|medium|thick)$/, GAP_STYLE = /^(none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)$/;
+    function gapColor(t) { return !!parseColor(t) || /^(currentcolor|transparent)$/i.test(t); }
+    // "red repeat(2, lime blue) repeat(auto, ...)": the items of a gap value list, null when invalid (nested repeat()s,
+    // more than one auto repeat, a bad token)
+    function gapList(v, kind) {
+        var toks = splitTop(trim(v), ' '), items = [], autos = 0;
+        var okToken = function (t) { return kind === 'color' ? gapColor(t) : kind === 'style' ? GAP_STYLE.test(t.toLowerCase()) : kind === 'width' ? GAP_WIDTH.test(t.toLowerCase()) : null; };
+        var rule = function (tokens) {   // shorthand: <width> || <style> || <color>
+            var w = 0, s = 0, c = 0;
+            for (var i = 0; i < tokens.length; i++) { var t = trim(tokens[i]); if (!t) continue; if (GAP_WIDTH.test(t.toLowerCase())) w++; else if (GAP_STYLE.test(t.toLowerCase())) s++; else if (gapColor(t)) c++; else return false; }
+            return w <= 1 && s <= 1 && c <= 1 && w + s + c > 0;
+        };
+        var pending = [];
+        var flush = function () { if (!pending.length) return true; var okr = rule(pending); if (okr) items.push({ rule: pending }); pending = []; return okr; };
+        for (var i = 0; i < toks.length; i++) {
+            var t = toks[i], m = /^repeat\(\s*(auto|\d+)\s*,([\s\S]*)\)$/i.exec(t);
+            if (/^repeat\(/i.test(t)) {
+                if (!m || /repeat\(/i.test(m[2]) || matchParen(t, 6) !== t.length - 1) return null;
+                if (kind === 'rule' && !flush()) return null;
+                var inner = kind === 'rule' ? splitTop(m[2], ',') : splitTop(trim(m[2]), ' ');
+                for (var k = 0; k < inner.length; k++) if (kind === 'rule' ? !rule(splitTop(trim(inner[k]), ' ')) : !okToken(trim(inner[k]))) return null;
+                if (m[1].toLowerCase() === 'auto') autos++;
+                else if (parseInt(m[1], 10) < 1) return null;
+                items.push({ repeat: m[1].toLowerCase(), list: inner });
+            } else if (kind === 'rule') {
+                if (/,$/.test(t)) { pending.push(t.slice(0, -1)); if (!flush()) return null; }
+                else pending.push(t);
+            } else if (!okToken(t)) return null;
+            else items.push({ value: t });
+        }
+        if (kind === 'rule' && !flush()) return null;
+        return autos <= 1 && items.length ? items : null;
+    }
+    function validGapValue(p, v) {
+        var lv = trim(v).toLowerCase();
+        if (isGlobalKeyword(lv) || lv === 'unset') return true;
+        if (/-break$/.test(p)) return /^(none|spanning-item|intersection)$/.test(lv);
+        if (/-outset$/.test(p)) return /^-?(\d*\.?\d+(px|em|rem|%)|0)$/.test(lv);
+        if (p === 'rule-paint-order') return /^(row-over-column|column-over-row)$/.test(lv);
+        var kind = /-color$/.test(p) ? 'color' : /-style$/.test(p) ? 'style' : /-width$/.test(p) ? 'width' : 'rule';
+        return gapList(v, kind) !== null;
+    }
+    // a column rule the multi-column engine draws by itself: one value, no list
+    function nativeColumnRule(p, v) { return /^column-rule(-(color|style|width))?$/.test(p) && !/repeat\(/i.test(v) && (p === 'column-rule' || splitTop(trim(v), ' ').length === 1); }
     function isDeferred(p, v) {
         if (DV_PROPS[p]) return true;
         if (SPEECH_PROPS[p]) return validSpeechValue(p, v);
         if (BOX_PAINT_PROPS.test(p)) return validBoxPaintValue(p, v);
+        if (GAP_PROPS.test(p) && !nativeColumnRule(p, v)) return validGapValue(p, v);
         if (ANCHOR_CENTER_PROPS[p] && /\banchor-center\b/i.test(v)) return true;
         if (TIMELINE_MIX.test(v)) return true;   // mixes driven by a scroll or view timeline
         if (intrinsicDeferred(p, v)) return true;
@@ -2301,6 +2350,8 @@ var CSSFix = (function () {
             var sizedByShim = hasDisplay && (p === 'width' || p === 'inline-size') && INTRINSIC_CONTENT.test(trim(v));
             if (!keyframe && g_manifest !== false && (isDeferred(p, v) || sizedByShim)) {
                 registerDeferred(ctx, p, v, imp, markers);
+                // "rule" with one value also sets the column rule, which multi-column layout draws by itself
+                if (/^rule(-(color|style|width))?$/.test(p) && !/repeat\(/i.test(v) && (p === 'rule' || splitTop(trim(v), ' ').length === 1)) push(out, '-webkit-column-' + p, v, imp);
                 var dvFallback = deferredFallback(v, p);
                 if (dvFallback !== null && !DV_PROPS[p]) push(out, p, fixValue(p, dvFallback), imp);
                 push(out, p, v, imp);   // the engine drops it; kept for reference

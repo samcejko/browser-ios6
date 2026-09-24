@@ -2884,6 +2884,159 @@
             }
             return null;
         };
+        // ---- Gap decorations: rules in the gaps between the columns and rows of multi-column, flex and grid containers,
+        // drawn as an SVG background layer under the items (value lists with repeat(), rule-break, rule-outset,
+        // rule-paint-order). A plain column rule of a multi-column container stays the engine's own.
+        var GAP_PAINT = /^((column|row)-rule|rule)(-(color|style|width|break|outset))?$|^rule-paint-order$/;
+        var GAP_W = { thin: 1, medium: 3, thick: 5 };
+        // the cascade winner among the given properties (they are separate entries in the record)
+        var winner = function (props, names) {
+            var best = null;
+            for (var i = 0; i < names.length; i++) {
+                var c = props[names[i]];
+                if (c && (!best || (c.imp && !best.imp) || (!!c.imp === !!best.imp && (c.spec > best.spec || (c.spec === best.spec && c.order >= best.order))))) best = c;
+            }
+            return best;
+        };
+        // "red repeat(2, lime blue) repeat(auto, ...)" -> {lead: [...], auto: [...] or null, tail: [...]}
+        var gapItems = function (v, rule) {
+            var toks = splitTop(trim(v), ' '), lead = [], tail = [], auto = null, pending = [];
+            var push = function (x) { (auto ? tail : lead).push(x); };
+            var flush = function () { if (pending.length) { push(pending.join(' ')); pending = []; } };
+            for (var i = 0; i < toks.length; i++) {
+                var m = /^repeat\(\s*(auto|\d+)\s*,([\s\S]*)\)$/i.exec(toks[i]);
+                if (m) {
+                    flush();
+                    var inner = rule ? splitTop(m[2], ',') : splitTop(trim(m[2]), ' ');
+                    for (var k = 0; k < inner.length; k++) inner[k] = trim(inner[k]);
+                    if (m[1].toLowerCase() === 'auto') auto = inner;
+                    else for (var n = 0; n < parseInt(m[1], 10); n++) for (var q = 0; q < inner.length; q++) push(inner[q]);
+                } else if (rule) { if (/,$/.test(toks[i])) { pending.push(toks[i].slice(0, -1)); flush(); } else pending.push(toks[i]); }
+                else push(toks[i]);
+            }
+            flush();
+            return { lead: lead, auto: auto, tail: tail };
+        };
+        var gapValueAt = function (items, i, n) {
+            if (!items) return null;
+            var lead = items.lead, tail = items.tail, auto = items.auto;
+            if (!auto) { var all = lead.concat(tail); return all.length ? all[i % all.length] : null; }
+            if (i < lead.length) return lead[i];
+            if (i >= n - tail.length) return tail[i - (n - tail.length)];
+            return auto.length ? auto[(i - lead.length) % auto.length] : null;
+        };
+        // width, style and colour lists of one direction ("column" or "row")
+        var gapRules = function (props, dir, cs, native) {
+            var pick = function (part) {
+                var own = winner(props, [dir + '-rule-' + part, dir + '-rule', 'rule-' + part, 'rule']);
+                if (!own) return native ? { lead: [native[part]], auto: null, tail: [] } : null;
+                var isShort = own === props[dir + '-rule'] || own === props.rule;
+                if (!isShort) return gapItems(own.v, false);
+                // a shorthand: the part of each rule
+                var rules = gapItems(own.v, true), take = function (list) {
+                    var out = [];
+                    for (var i = 0; list && i < list.length; i++) {
+                        var t = splitTop(list[i], ' '), val = part === 'width' ? 'medium' : part === 'style' ? 'none' : 'currentcolor';
+                        for (var k = 0; k < t.length; k++) {
+                            var lt = t[k].toLowerCase();
+                            if (part === 'width' && (GAP_W[lt] || /^\d*\.?\d+(px|em|rem|%|pt)$|^0$/.test(lt))) val = t[k];
+                            else if (part === 'style' && /^(none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)$/.test(lt)) val = lt;
+                            else if (part === 'color' && !GAP_W[lt] && !/^\d*\.?\d+(px|em|rem|%|pt)$|^0$/.test(lt) && !/^(none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)$/.test(lt)) val = t[k];
+                        }
+                        out.push(val);
+                    }
+                    return out;
+                };
+                return { lead: take(rules.lead), auto: rules.auto ? take(rules.auto) : null, tail: take(rules.tail) };
+            };
+            return { width: pick('width'), style: pick('style'), color: pick('color') };
+        };
+        var gapLine = function (x1, y1, x2, y2, width, style, color) {
+            if (!width || style === 'none' || style === 'hidden') return '';
+            var dash = style === 'dashed' ? ' stroke-dasharray="' + width * 3 + ' ' + width * 3 + '"' : style === 'dotted' ? ' stroke-dasharray="0.01 ' + width * 2 + '" stroke-linecap="round"' : '';
+            if (style === 'double' && width >= 3) {
+                var t = width / 3, dx = x1 === x2 ? t : 0, dy = y1 === y2 ? t : 0;
+                return gapLine(x1 - dx, y1 - dy, x2 - dx, y2 - dy, t, 'solid', color) + gapLine(x1 + dx, y1 + dy, x2 + dx, y2 + dy, t, 'solid', color);
+            }
+            return '<line x1="' + f1(x1) + '" y1="' + f1(y1) + '" x2="' + f1(x2) + '" y2="' + f1(y2) + '" stroke="' + color + '" stroke-width="' + width + '"' + dash + '/>';
+        };
+        var paintGaps = function (el, props, keepLayers) {
+            if (!keepLayers) for (var u = 0; u < BOX_MANAGED.length; u++) if (/^background/.test(BOX_MANAGED[u])) unsetProp(el, BOX_MANAGED[u]);
+            var cs = getComputedStyle(el), w = el.offsetWidth, h = el.offsetHeight;
+            if (!w || !h) return;
+            var bl = num(cs.borderLeftWidth), bt = num(cs.borderTopWidth), pl = num(cs.paddingLeft), pt = num(cs.paddingTop);
+            var ox = bl + pl, oy = bt + pt, cw = el.clientWidth - pl - num(cs.paddingRight), ch = el.clientHeight - pt - num(cs.paddingBottom);
+            var colGaps = [], rowGaps = [], count = cs.webkitColumnCount, cwid = cs.webkitColumnWidth;
+            var multicol = (count && count !== 'auto') || (cwid && cwid !== 'auto');
+            if (multicol) {
+                var g = cs.webkitColumnGap === 'normal' ? num(cs.fontSize) : num(cs.webkitColumnGap), n = parseInt(count, 10) || 0, colW = num(cwid);
+                if (!n) n = Math.max(1, Math.floor((cw + g) / (colW + g)));
+                else if (colW) n = Math.max(1, Math.min(n, Math.floor((cw + g) / (colW + g))));
+                var width = (cw - (n - 1) * g) / n;
+                for (var i = 1; i < n; i++) colGaps.push({ x: ox + i * (width + g) - g / 2, y1: oy, y2: oy + ch, size: g });
+            } else {
+                // the in-flow items, in rows by their top edge
+                var box = el.getBoundingClientRect(), rows = [];
+                for (var c = el.firstElementChild || el.firstChild; c; c = c.nextSibling) {
+                    if (c.nodeType !== 1) continue;
+                    var ccs = getComputedStyle(c);
+                    if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
+                    var rr = c.getBoundingClientRect(), it = { l: rr.left - box.left, r: rr.right - box.left, t: rr.top - box.top, b: rr.bottom - box.top };
+                    var row = null;
+                    for (var ri = 0; ri < rows.length; ri++) if (Math.abs(rows[ri].t - it.t) < 2) { row = rows[ri]; break; }
+                    if (!row) { row = { t: it.t, b: it.b, items: [] }; rows.push(row); }
+                    row.items.push(it);
+                    if (it.b > row.b) row.b = it.b;
+                }
+                rows.sort(function (a, b) { return a.t - b.t; });
+                for (var r0 = 0; r0 < rows.length; r0++) {
+                    var its = rows[r0].items.sort(function (a, b) { return a.l - b.l; });
+                    for (var k = 1; k < its.length; k++) if (its[k].l - its[k - 1].r > 0.5) colGaps.push({ x: (its[k - 1].r + its[k].l) / 2, y1: rows[r0].t, y2: rows[r0].b, size: its[k].l - its[k - 1].r, row: r0 });
+                    if (r0 > 0 && rows[r0].t - rows[r0 - 1].b > 0.5) rowGaps.push({ y: (rows[r0 - 1].b + rows[r0].t) / 2, x1: ox, x2: ox + cw, size: rows[r0].t - rows[r0 - 1].b });
+                }
+            }
+            if (!colGaps.length && !rowGaps.length) return;
+            // the engine's own column rule (a single value) for flex and grid containers
+            var nativeRule = cs.webkitColumnRuleStyle && cs.webkitColumnRuleStyle !== 'none' ? { width: cs.webkitColumnRuleWidth, style: cs.webkitColumnRuleStyle, color: cs.webkitColumnRuleColor } : null;
+            var colRules = gapRules(props, 'column', cs, multicol ? null : nativeRule), rowRules = gapRules(props, 'row', cs, null);
+            var brk = function (dir) { var c = winner(props, [dir + '-rule-break', 'rule-break']); return c ? trim(c.v).toLowerCase() : 'spanning-item'; };
+            var outsetOf = function (dir, size) { var c = winner(props, [dir + '-rule-outset', 'rule-outset']), v = c ? trim(c.v) : '50%'; return /%$/.test(v) ? parseFloat(v) * size / 100 : evalLength(v, el, size) ? evalLength(v, el, size).n : 0; };
+            // columns: one segment per row, joined across the rows unless the rule breaks at intersections
+            if (brk('column') !== 'intersection' && !multicol) {
+                var merged = [];
+                for (var m = 0; m < colGaps.length; m++) {
+                    var gm = colGaps[m], join = null;
+                    for (var q = 0; q < merged.length; q++) if (Math.abs(merged[q].x - gm.x) < 1 && gm.y1 - merged[q].y2 < gm.size + 40) join = merged[q];
+                    if (join) join.y2 = Math.max(join.y2, gm.y2); else merged.push({ x: gm.x, y1: gm.y1, y2: gm.y2, size: gm.size });
+                }
+                colGaps = merged;
+            }
+            var draw = function (gaps, rules, dir) {
+                var out = '', rowGapSize = rowGaps.length ? rowGaps[0].size : 0, colGapSize = colGaps.length ? colGaps[0].size : 0;
+                for (var i = 0; i < gaps.length; i++) {
+                    var wv = gapValueAt(rules.width, i, gaps.length) || 'medium', sv = gapValueAt(rules.style, i, gaps.length) || 'none', cv = gapValueAt(rules.color, i, gaps.length) || cs.color;
+                    if (/^currentcolor$/i.test(cv)) cv = cs.color;
+                    var gw = GAP_W[String(wv).toLowerCase()] || (/%$/.test(wv) ? parseFloat(wv) * gaps[i].size / 100 : num(evalValue(el, 'width', wv, null)));
+                    var gi = gaps[i];
+                    if (dir === 'column') { var o = outsetOf('column', rowGapSize); out += gapLine(gi.x + ox * 0, Math.max(0, gi.y1 - o), gi.x, Math.min(h, gi.y2 + o), gw, String(sv).toLowerCase(), cv); }
+                    else { var o2 = outsetOf('row', colGapSize); out += gapLine(Math.max(0, gi.x1 - o2), gi.y, Math.min(w, gi.x2 + o2), gi.y, gw, String(sv).toLowerCase(), cv); }
+                }
+                return out;
+            };
+            var order = winner(props, ['rule-paint-order']), rowsOnTop = !order || trim(order.v).toLowerCase() === 'row-over-column';
+            var cols = multicol && !winner(props, ['column-rule', 'column-rule-color', 'column-rule-style', 'column-rule-width', 'rule', 'rule-color', 'rule-style', 'rule-width']) ? '' : draw(colGaps, colRules, 'column');
+            var rowsSvg = draw(rowGaps, rowRules, 'row');
+            var body = rowsOnTop ? cols + rowsSvg : rowsSvg + cols;
+            if (!body) return;
+            var image = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' + body + '</svg>') + '")';
+            var layers = function (prop, ours) { var cur = cs.getPropertyValue(prop); return cur && cur !== 'none' && cs.backgroundImage !== 'none' ? ours + ', ' + cur : ours; };
+            setProp(el, 'background-image', layers('background-image', image));
+            setProp(el, 'background-size', layers('background-size', w + 'px ' + h + 'px'));
+            setProp(el, 'background-position', layers('background-position', '0px 0px'));
+            setProp(el, 'background-repeat', layers('background-repeat', 'no-repeat'));
+            setProp(el, 'background-origin', layers('background-origin', 'border-box'));
+            setProp(el, 'background-clip', layers('background-clip', 'border-box'));
+        };
         var INDIVIDUAL_TRANSFORM = { rotate: 1, scale: 1, translate: 1 };
         var SPEECH = { speak: 1, 'speak-as': 1, pause: 1, 'pause-before': 1, 'pause-after': 1, rest: 1, 'rest-before': 1, 'rest-after': 1, cue: 1,
             'cue-before': 1, 'cue-after': 1, 'voice-family': 1, 'voice-rate': 1, 'voice-pitch': 1, 'voice-range': 1, 'voice-volume': 1, 'voice-stress': 1,
@@ -2907,12 +3060,13 @@
             return out;
         };
         var applyGeneral = function (rec) {
-            var el = rec.el, props = rec.props, boxPaint = false;
+            var el = rec.el, props = rec.props, boxPaint = false, gapPaint = false;
             for (var p in props) {
                 if (!props.hasOwnProperty(p) || POSITION_PROPS[p] || SELF_ALIGN[p]) continue;
                 var v = props[p].v;
                 if (SPEECH[p]) continue;   // kept in the record for the read-aloud feature (see speechOf)
                 if (BOX_PAINT.test(p)) { boxPaint = true; continue; }
+                if (GAP_PAINT.test(p)) { gapPaint = true; continue; }
                 if (p === 'field-sizing') { fieldSizing(el, trim(v).toLowerCase()); continue; }
                 if (SVG_GEOM[p]) { svgGeometry(el, p, v); continue; }
                 if (p === 'text-decoration-color') {
@@ -2936,6 +3090,7 @@
                 }
             }
             if (boxPaint) { try { paintBox(el, props); } catch (e) {} }
+            if (gapPaint) { try { paintGaps(el, props, boxPaint); } catch (e2) {} }
         };
         var needsPositioning = function (props) {
             for (var p in props) {
