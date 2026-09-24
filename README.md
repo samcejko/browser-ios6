@@ -48,7 +48,8 @@ the app around it:
   in the tab strip, long press on links (new tab, copy, share, save image, open in Safari), long press
   on reload (desktop/mobile version, reload without cache), "Add bookmark" in the share sheet,
   private browsing (no history or cache, cookies restored afterwards), search suggestions from
-  DuckDuckGo while typing.
+  DuckDuckGo while typing, a reader view that extracts the article of a page into a clean layout,
+  long press on a tab (close others, duplicate), pull to refresh.
 - Planned: tab strip on iPhone.
 
 ## Building (GitHub Actions)

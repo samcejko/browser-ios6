@@ -18,7 +18,7 @@ WOFF2_FILES := vendor/woff2/src/woff2_dec.cc vendor/woff2/src/woff2_common.cc ve
                vendor/woff2/src/table_tags.cc vendor/woff2/src/variable_length.cc
 BROTLI_FILES := $(wildcard vendor/brotli/c/common/*.c) $(wildcard vendor/brotli/c/dec/*.c)
 # libwebp decoder (encoder dsp files are removed by CI)
-WEBP_FILES := $(wildcard vendor/libwebp/src/dec/*.c) $(wildcard vendor/libwebp/src/dsp/*.c) $(wildcard vendor/libwebp/src/utils/*.c)
+WEBP_FILES := $(wildcard vendor/libwebp/src/dec/*.c) $(wildcard vendor/libwebp/src/dsp/*.c) $(wildcard vendor/libwebp/src/utils/*.c) $(wildcard vendor/libwebp/src/demux/*.c)
 
 Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm) \
                  vendor/mbedtls_glue.c vendor/cxx_glue.cc \

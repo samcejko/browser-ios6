@@ -2,10 +2,49 @@
 #import "BRCommon.h"
 
 #include "webp/decode.h"
+#include "webp/demux.h"
+#include <stdlib.h>
+#include <string.h>
 
 static void BRFreeWebPBuffer(void *info, const void *data, size_t size)
 {
     WebPFree((void *)data);
+}
+
+static void BRFreeMallocBuffer(void *info, const void *data, size_t size)
+{
+    free((void *)data);
+}
+
+// Animated WebP: the first frame composed on the canvas (the old engine shows a still image).
+static uint8_t *BRFirstAnimationFrame(const uint8_t *bytes, size_t length, int *width, int *height)
+{
+    WebPAnimDecoderOptions options;
+    if (!WebPAnimDecoderOptionsInit(&options)) return NULL;
+    options.color_mode = MODE_RGBA;
+    options.use_threads = 0;
+    WebPData webpData;
+    webpData.bytes = bytes;
+    webpData.size = length;
+    WebPAnimDecoder *decoder = WebPAnimDecoderNew(&webpData, &options);
+    if (!decoder) return NULL;
+    WebPAnimInfo info;
+    uint8_t *frame = NULL;
+    int timestamp = 0;
+    uint8_t *copy = NULL;
+    if (WebPAnimDecoderGetInfo(decoder, &info) && info.canvas_width > 0 && info.canvas_height > 0 &&
+        (long long)info.canvas_width * info.canvas_height <= 16 * 1024 * 1024 &&
+        WebPAnimDecoderGetNext(decoder, &frame, &timestamp) && frame) {
+        size_t size = (size_t)info.canvas_width * info.canvas_height * 4;
+        copy = (uint8_t *)malloc(size);
+        if (copy) {
+            memcpy(copy, frame, size);
+            *width = (int)info.canvas_width;
+            *height = (int)info.canvas_height;
+        }
+    }
+    WebPAnimDecoderDelete(decoder);
+    return copy;
 }
 
 @implementation BRImageConverter
@@ -27,13 +66,16 @@ static void BRFreeWebPBuffer(void *info, const void *data, size_t size)
         BRLog(@"WebP too large: %dx%d", width, height);
         return nil;
     }
-    uint8_t *rgba = WebPDecodeRGBA((const uint8_t *)data.bytes, data.length, &width, &height);
+    WebPBitstreamFeatures features;
+    BOOL animated = WebPGetFeatures((const uint8_t *)data.bytes, data.length, &features) == VP8_STATUS_OK && features.has_animation;
+    uint8_t *rgba = animated ? BRFirstAnimationFrame((const uint8_t *)data.bytes, data.length, &width, &height)
+                             : WebPDecodeRGBA((const uint8_t *)data.bytes, data.length, &width, &height);
     if (!rgba) {
-        BRLog(@"WebP decode failed (%lu bytes)", (unsigned long)data.length);
+        BRLog(@"WebP decode failed (%lu bytes%@)", (unsigned long)data.length, animated ? @", animated" : @"");
         return nil;
     }
     size_t stride = (size_t)width * 4;
-    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, rgba, stride * (size_t)height, BRFreeWebPBuffer);
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, rgba, stride * (size_t)height, animated ? BRFreeMallocBuffer : BRFreeWebPBuffer);
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
     CGImageRef image = CGImageCreate((size_t)width, (size_t)height, 8, 32, stride, colorSpace,
                                      kCGBitmapByteOrderDefault | kCGImageAlphaLast, provider, NULL, false, kCGRenderingIntentDefault);
