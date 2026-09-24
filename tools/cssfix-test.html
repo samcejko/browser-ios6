@@ -64,7 +64,7 @@ var cases = [
   ['supports flex', '@supports (display:flex) and (--v:1){.a{xx:1}}', '.a{xx:1}'],
   ['supports selector', '@supports selector(:has(a)){.x{yy:1}}@supports selector(:is(a, b)){.z{yy:2}}@supports selector(::part(x)){.w{yy:3}}@supports not selector(:has(*)){.v{yy:4}}@supports selector(::slotted(x)){.u{yy:5}}', '.x{yy:1}\n.z{yy:2}\n.w{yy:3}\n.u{yy:5}'],
   ['margin-trim, custom states, autofill', '.c{margin-trim:block}.d{margin-trim:inline-start block-end}x-y:state(open){xa:1}input:autofill{xb:2}',
-   '.c{margin-trim:block}\n.c > :first-child{margin-top:0 !important}\n.c > :last-child{margin-bottom:0 !important}\n.d{margin-trim:inline-start block-end}\n.d > :first-child{margin-left:0 !important}\n.d > :last-child{margin-bottom:0 !important}\nx-y.br-state-open{xa:1}\ninput:-webkit-autofill{xb:2}'],
+   '.c{margin-trim:block;counter-reset:br-dv-hpjx7w 1}\n.c > :first-child{margin-top:0 !important}\n.c > :last-child{margin-bottom:0 !important}\n.d{margin-trim:inline-start block-end;counter-reset:br-dv-13o47nx 1}\n.d > :first-child{margin-left:0 !important}\n.d > :last-child{margin-bottom:0 !important}\nx-y.br-state-open{xa:1}\ninput:-webkit-autofill{xb:2}\n/*br-manifest:{"has":[],"cq":[],"dv":[{"h":"hpjx7w","p":"margin-trim","v":"block","s":[".c"],"sp":[100]},{"h":"13o47nx","p":"margin-trim","v":"inline-start block-end","s":[".d"],"sp":[100]}]}*/'],
   ['layer unwrap', '@layer base;@layer base{.a{xx:1}}', '.a{xx:1}'],
   ['container to class', '@container (min-width:1px){.a{xx:1}}', '.br-cq-1dhtovu .a{xx:1}\n/*br-manifest:{"has":[],"cq":[{"h":"1dhtovu","name":"","cond":"(min-width:1px)"}]}*/'],
   ['media range', '@media (width >= 600px) and (hover:hover){.a{xx:1}}', '@media (min-width: 600px) and (max-width: 0px){.a{xx:1}}'],

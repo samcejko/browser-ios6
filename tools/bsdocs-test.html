@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>bootstrap docs replay</title>
+<script>
+window.__errors = [];
+window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+</script>
+<script src="../Resources/cssfix.js"></script>
+</head>
+<body>
+<script>
+// A real page (samples/bsdocs: getbootstrap.com buttons docs) replayed through the rewriter the way the app does it:
+// the HTML first, then each stylesheet with the page's variables and scoped names so far; the manifests are merged
+// (with the stylesheet index) and the rewritten styles go inline, so the desktop browser renders what the old engine
+// would get. Scripts are left out.
+var get = function (url) { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(null); return x.responseText; };
+var base = '/samples/bsdocs/';
+var html = get(base + 'buttons.html');
+var sheetsSrc = ['bootstrap.min.css', '_slug_.CJzlHdSW.css'];
+var t0 = performance.now();
+var pageVars = {}, merged = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], sheets: [], vars: {} };
+var addManifest = function (m, source) {
+  if (!m) return;
+  var si = merged.sheets.indexOf(source);
+  if (si < 0) { merged.sheets.push(source); si = merged.sheets.length - 1; }
+  ['has', 'cq', 'dv', 'pt', 'cv', 'sc'].forEach(function (k) { (m[k] || []).forEach(function (e) { if (k === 'cv') e.si = si; merged[k].push(e); }); });
+};
+var run = function (kind, text, source) {
+  var r = JSON.parse(CSSFix.run(kind, text, pageVars, { viewportWidth: 1024 }));
+  for (var k in r.vars) pageVars[k] = r.vars[k];
+  if (r.scoped && r.scoped.length) pageVars[' scoped'] = ((pageVars[' scoped'] || '') + ' ' + r.scoped.join(' ')).trim();
+  addManifest(r.manifest, source);
+  return r.out.replace(/\n?\/\*br-manifest:[\s\S]*$/, '').replace(/\n?<!--br-manifest:[\s\S]*-->\s*$/, '');
+};
+var page = run('html', html.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<link[^>]*rel="stylesheet"[^>]*>/gi, ''), location.href.split('#')[0]);
+var styles = sheetsSrc.map(function (s) { return '<style>/*br*/' + run('css', get(base + s), location.href.split('#')[0]) + '</style>'; }).join('');
+window.__rewriteMs = Math.round(performance.now() - t0);
+for (var k in pageVars) if (k !== ' scoped') merged.vars[k] = pageVars[k];
+window.__manifest = merged;
+window.__brManifestURL = 'data:application/json,' + encodeURIComponent(JSON.stringify(merged));
+var body = /<body[^>]*>([\s\S]*)<\/body>/i.exec(page);
+document.write(styles + (body ? body[1] : page));
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+<script>
+// The same body with the ORIGINAL stylesheets in an iframe: the desktop engine resolves the custom properties itself,
+// so every element the shim set a value on can be compared with what the engine computes there.
+window.compareWithNative = function (cb) {
+  var ifr = document.createElement('iframe');
+  ifr.style.cssText = 'position:absolute;left:-5000px;top:0;width:' + innerWidth + 'px;height:' + innerHeight + 'px';
+  var orig = sheetsSrc.map(function (s) { return '<style>' + get(base + s) + '</style>'; }).join('');
+  var b = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html.replace(/<script\b[\s\S]*?<\/script>/gi, ''));
+  var bodyTag = /<body[^>]*>/i.exec(html), htmlTag = /<html[^>]*>/i.exec(html);
+  ifr.srcdoc = '<!DOCTYPE html>' + (htmlTag ? htmlTag[0] : '<html>') + '<head>' + orig + '</head>' + (bodyTag ? bodyTag[0] : '<body>') + (b ? b[1] : '') + '</body></html>';
+  ifr.onload = function () {
+    // element paths that ignore style/script/iframe elements (the replay has its styles inline in the body)
+    var SKIP = /^(STYLE|SCRIPT|IFRAME|LINK)$/;
+    var pathOf = function (el) { var p = []; for (var n = el; n && n.parentNode && n !== document.body; n = n.parentNode) { var i = 0; for (var s = n.previousElementSibling; s; s = s.previousElementSibling) if (!SKIP.test(s.tagName)) i++; p.unshift(i); } return p; };
+    var doc = ifr.contentDocument;
+    var find = function (p) { var n = doc.body; for (var i = 0; i < p.length && n; i++) { var k = -1, c = n.firstElementChild; for (; c; c = c.nextElementSibling) { if (SKIP.test(c.tagName)) continue; if (++k === p[i]) break; } n = c; } return n; };
+    var ours = document.querySelectorAll('*'), checked = 0, mismatches = [];
+    // every element with a declaration using a scoped custom property (set by the shim or left to the stylesheet)
+    var LONG = { border: ['border-top-color', 'border-top-width', 'border-top-style'], padding: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+                 margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'], 'border-radius': ['border-top-left-radius'], background: ['background-color'],
+                 'border-color': ['border-top-color'], font: ['font-size', 'font-weight'], outline: ['outline-color'] };
+    for (var i = 0; i < ours.length; i++) {
+      var el = ours[i], rec = el.__brCV;
+      if (!rec || !rec.u) continue;
+      var twin = find(pathOf(el));
+      if (!twin) continue;
+      var a = getComputedStyle(el), bcs = ifr.contentWindow.getComputedStyle(twin), props = {};
+      for (var key in rec.u) {
+        if (!rec.u.hasOwnProperty(key) || rec.u[key].ps) continue;
+        var up = rec.u[key].p, list = LONG[up] || [up];
+        for (var li = 0; li < list.length; li++) props[list[li]] = 1;
+      }
+      for (var p in props) {
+        if (!props.hasOwnProperty(p) || /transition|^-webkit-|^--/.test(p)) continue;
+        checked++;
+        var va = a.getPropertyValue(p), vb = bcs.getPropertyValue(p);
+        if (va !== vb) mismatches.push((el.tagName + '.' + (el.className || '').split(/\s+/).slice(0, 3).join('.')) + ' ' + p + ': ours ' + va + ' / native ' + vb);
+      }
+    }
+    cb({ checked: checked, mismatches: mismatches.length, sample: mismatches.slice(0, 25) });
+  };
+  document.body.appendChild(ifr);
+};
+</script>
+</body>
+</html>

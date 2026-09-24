@@ -3069,6 +3069,26 @@
                 if (GAP_PAINT.test(p)) { gapPaint = true; continue; }
                 if (p === 'field-sizing') { fieldSizing(el, trim(v).toLowerCase()); continue; }
                 if (SVG_GEOM[p]) { svgGeometry(el, p, v); continue; }
+                if (p === 'margin-trim') {
+                    // the margins of the first / last in-flow child at the container's edges become zero; inherit takes
+                    // the parent's value
+                    var mt = trim(v).toLowerCase();
+                    for (var mp = el.parentNode; mt === 'inherit' && mp && mp.nodeType === 1; mp = mp.parentNode) mt = mp.__brDV && mp.__brDV.gen === recGen && mp.__brDV.props['margin-trim'] ? trim(mp.__brDV.props['margin-trim'].v).toLowerCase() : 'none';
+                    if (mt === 'none' || mt === 'initial' || mt === 'unset' || mt === 'inherit') continue;
+                    var kids = [];
+                    for (var kc = el.firstElementChild || el.firstChild; kc; kc = kc.nextSibling) {
+                        if (kc.nodeType !== 1) continue;
+                        var kcs = getComputedStyle(kc);
+                        if (kcs.display !== 'none' && kcs.position !== 'absolute' && kcs.position !== 'fixed' && kcs['float'] === 'none') kids.push(kc);
+                    }
+                    if (!kids.length) continue;
+                    var first = kids[0], last = kids[kids.length - 1];
+                    if (/\bblock\b|block-start/.test(mt)) setProp(first, 'margin-top', '0px');
+                    if (/\bblock\b|block-end/.test(mt)) setProp(last, 'margin-bottom', '0px');
+                    if (/\binline\b|inline-start/.test(mt)) setProp(first, 'margin-left', '0px');
+                    if (/\binline\b|inline-end/.test(mt)) setProp(last, 'margin-right', '0px');
+                    continue;
+                }
                 if (p === 'text-decoration-color') {
                     // decorations are painted in the text stroke colour (see pushDecorationColor in cssfix.js)
                     var dcv = evalValue(el, p, v, null);
@@ -3314,8 +3334,18 @@
             if (memo.v.hasOwnProperty(name)) return memo.v[name];
             memo.v[name] = null;   // a reference cycle makes the property invalid
             var rec = el.__brCV, own = rec && rec.g === gen ? rec.d[name] : null, val;
-            if (!own && el.__brCVi && el.__brCVi.d.hasOwnProperty(name)) own = { v: el.__brCVi.d[name] };
-            if (own) val = substitute(own.v, el, depth + 1);
+            // the style attribute (and style.setProperty of scripts, the later write) beats the stylesheets, unless a
+            // rule has !important and the inline declaration does not
+            var inl = el.__brCVi, cs0 = el.style, cp = cs0 && cs0.__brCP, iv, ii = false;
+            if (cp && cp.hasOwnProperty(name)) { iv = cp[name]; ii = !!(cs0.__brCPi && cs0.__brCPi[name]); }
+            else if (inl && inl.d.hasOwnProperty(name)) { iv = inl.d[name]; ii = !!inl.di[name]; }
+            if (iv !== undefined && iv !== null && (!own || !own.i || ii)) own = { v: iv };
+            // CSS-wide keywords: initial is the guaranteed-invalid value (or the registered initial value), inherit and
+            // unset take the parent's value
+            var kw = own ? trim(own.v).toLowerCase() : '';
+            if (kw === 'inherit' || kw === 'unset' || kw === 'revert' || kw === 'revert-layer') own = null;
+            if (kw === 'initial') val = registered[name] ? registered[name].init : null;
+            else if (own) val = substitute(own.v, el, depth + 1);
             else if (registered[name] && !registered[name].inh) val = registered[name].init;
             else val = el.parentNode && el.parentNode.nodeType === 1 ? resolveVar(el.parentNode, name, depth + 1) : initialOf(name);
             if ((val === null || val === undefined) && registered[name]) val = registered[name].init;
@@ -3402,29 +3432,29 @@
             var cache = el.__brCVi;
             // once we (or anything else) changed the style, the engine serialises it without the declarations it does
             // not know: the parsed ones stay until the page writes new custom properties or var()s into the attribute
-            if (cache && (cache.attr === attr || !/--|var\(|inherit\(/.test(attr))) {
-                if (el.style.__brCP) for (var n0 in el.style.__brCP) if (el.style.__brCP.hasOwnProperty(n0)) cache.d[n0] = el.style.__brCP[n0];
-                return cache;
-            }
-            var info = { attr: attr, out: null, d: {}, u: [] }, parts = attr.split(';'), statics = {};
+            if (cache && (cache.attr === attr || !/--|var\(|inherit\(/.test(attr))) return cache;
+            var info = { attr: attr, out: null, d: {}, di: {}, u: [] }, parts = attr.split(';'), statics = {};
             for (var i = 0; i < parts.length; i++) {
                 var c = parts[i].indexOf(':');
                 if (c < 0) continue;
-                var p = trim(parts[i].slice(0, c)).toLowerCase(), v = trim(parts[i].slice(c + 1)), imp = /!important\s*$/i.test(v);
+                var p = trim(parts[i].slice(0, c)), v = trim(parts[i].slice(c + 1)), imp = /!important\s*$/i.test(v);
                 v = trim(v.replace(/\s*!important\s*$/i, ''));
-                if (p.indexOf('--') === 0) { info.d[p] = v; continue; }
+                if (p.indexOf('--') === 0) { info.d[p] = v; if (imp) info.di[p] = 1; continue; }   // custom property names keep their case
+                p = p.toLowerCase();
                 if (/(^|[^\w-])(var|inherit)\(/i.test(v)) info.u.push({ p: p, v: v, st: statics.hasOwnProperty(p) ? statics[p] : null, i: imp, sp: 1e8, o: 1e9, ps: null, inl: true });
                 else statics[p] = v;
             }
-            if (el.style.__brCP) for (var n in el.style.__brCP) if (el.style.__brCP.hasOwnProperty(n)) info.d[n] = el.style.__brCP[n];
             if (!el.__brCVi) inlineEls.push(el);
             el.__brCVi = info;
+            try { el.style.__brOwner = el; } catch (e) {}   // style.getPropertyValue('--x') answers from the attribute
             return info;
         };
         // ---- one pass over the page
+        var lastPending = [];
         var run = function () {
             gen++;
             stats.passes++;
+            var tRun = Date.now();
             var classes = docClasses(), mediaCache = {}, users = [], i, b, k, r, list, el, rec;
             var mediaOk = function (m) {
                 if (!m) return true;
@@ -3459,7 +3489,7 @@
                             if (!rec.user) { rec.user = true; users.push(el); }
                             for (var u = 0; u < r.u.length; u++) {
                                 var key = (sel.pseudo || '') + '|' + r.u[u][0];
-                                var cu = { p: r.u[u][0], v: r.u[u][1], st: r.u[u][3], sp: spec, o: r.o, i: r.u[u][2], ps: sel.pseudo, sel: sel.base }, curU = rec.u[key];
+                                var cu = { p: r.u[u][0], v: r.u[u][1], st: r.u[u][3], sp: spec, o: r.o, i: r.u[u][2], ps: sel.pseudo, sel: sel.base, rk: r.key }, curU = rec.u[key];
                                 if (!curU || beats(cu, curU)) rec.u[key] = cu;
                             }
                         }
@@ -3467,6 +3497,7 @@
                 }
             }
             stats.rules = matched;
+            stats.tCollect = Date.now() - tRun;
             // style attributes (and style.setProperty('--x') of scripts)
             var inl = [], seen = [];
             try { inl = document.querySelectorAll('[style*="--"], [style*="var("], [style*="inherit("]'); } catch (x2) {}
@@ -3503,6 +3534,8 @@
                 }
             }
             pending.sort(function (a, c) { return a.use.sp - c.use.sp || a.use.o - c.use.o; });
+            stats.tResolve = Date.now() - tRun;
+            lastPending = pending;
             var t1 = Date.now();
             apply(pending);
             writePseudo();
@@ -3566,6 +3599,25 @@
             }
             frozen = [];
         };
+        // the longhands a shorthand declaration sets, as the engine parses them (a shorthand another rule wins in part
+        // goes in as the longhands this rule still wins)
+        var scratch = null;
+        var longhandValues = function (decls, props) {
+            if (!scratch) scratch = document.createElement('div');
+            var st = scratch.style, out = [], k;
+            st.cssText = '';
+            for (k = 0; k < decls.length; k++) st.setProperty(decls[k][0], decls[k][1], '');
+            for (k = 0; k < props.length; k++) { var v = st.getPropertyValue(props[k]); if (v) out.push([props[k], v]); }
+            return out;
+        };
+        // what the element computes against what the rule's static value gives: every longhand the same (the rule wins),
+        // some of them (another rule wins the others), none
+        var decide = function (it, now) {
+            var same = [];
+            for (var k = 0; k < it.props.length; k++) if (now[k] === it.before[k]) same.push(it.props[k]);
+            it.ok = same.length === it.props.length;
+            it.part = !it.ok && same.length ? same : null;
+        };
         var apply = function (pending) {
             var work = [], keep = [], slow = [], i, k, it, cs;
             for (i = 0; i < pending.length; i++) {
@@ -3573,7 +3625,8 @@
                 it.decls = fixDecl(it.use.p, it.raw);
                 if (it.use.ps) { pseudoRule(it); continue; }
                 var cache = it.el.__brCVc && it.el.__brCVc[it.key];
-                if (cache && cache.raw === it.raw && cache.st === it.use.st && !isDirty(it.el)) { it.ok = cache.ok; keep.push(it); continue; }
+                if (cache && cache.raw === it.raw && cache.st === it.use.st && !isDirty(it.el)) { it.ok = cache.ok; it.part = cache.part; keep.push(it); continue; }
+                it.prevPart = cache ? cache.part : null;
                 work.push(it);
                 if (it.use.inl || it.use.st === null || it.use.st === undefined) { it.ok = true; continue; }
                 it.fb = fixDecl(it.use.p, it.use.st);
@@ -3587,6 +3640,7 @@
                 freeze(it.el);   // the new value appears at once instead of fading in (and a restore does not animate)
                 if (it.fb) for (k = 0; k < it.fb.length; k++) restoreInline(it.el, it.fb[k][0]);
                 for (k = 0; k < it.decls.length; k++) restoreInline(it.el, it.decls[k][0]);
+                if (it.prevPart) for (k = 0; k < it.prevPart.length; k++) restoreInline(it.el, it.prevPart[k]);
             }
             // what the stylesheets give the element now, against what the rule's own value computes to
             for (i = 0; i < work.length; i++) {
@@ -3602,27 +3656,112 @@
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (!it.check) continue;
-                if (it.own) { it.ok = false; continue; }
+                if (it.own) { it.ok = false; it.part = null; continue; }
                 var pv = probeValues(it.fb, it.props);
                 if (pv === null) { slow.push(it); continue; }
-                it.ok = true;
-                for (k = 0; k < pv.length; k++) if (pv[k] !== it.before[k]) { it.ok = false; break; }
+                decide(it, pv);
             }
             if (slow.length) slowCheck(slow);
+            sentinelCheck(work);
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (!it.el.__brCVc) it.el.__brCVc = {};
-                it.el.__brCVc[it.key] = { raw: it.raw, st: it.use.st, ok: it.ok };
-                if (!it.ok) { stats.skipped++; continue; }
+                it.el.__brCVc[it.key] = { raw: it.raw, st: it.use.st, ok: it.ok, part: it.ok ? null : it.part || null };
+                var set = it.ok ? it.decls : it.part ? longhandValues(it.decls, it.part) : null;
+                if (!set) { stats.skipped++; continue; }
                 stats.applied++;
-                for (k = 0; k < it.decls.length; k++) setInline(it.el, it.decls[k][0], it.decls[k][1], it.use.i);
+                for (k = 0; k < set.length; k++) setInline(it.el, set[k][0], set[k][1], it.use.i);
             }
             for (i = 0; i < keep.length; i++) {
                 it = keep[i];
-                if (it.ok) for (k = 0; k < it.decls.length; k++) keepInline(it, it.decls[k][0], it.decls[k][1]);
+                var kept = it.ok ? it.decls : it.part ? longhandValues(it.decls, it.part) : [];
+                for (k = 0; k < kept.length; k++) keepInline(it, kept[k][0], kept[k][1]);
             }
             restoreStale();
             thaw();
+        };
+        // ---- ties: the stylesheet gives the element the rule's substituted value, but another rule with the same value
+        // may be the one winning. The rule's own declaration gets a unique value in the CSSOM for a moment: when the
+        // element shows it, the rule wins. (Rules of stylesheets the CSSOM does not expose keep the probe's answer.)
+        var cssomIndex = null, lastSentinels = [];
+        var normSel = function (s) { return String(s).replace(/["']/g, '').replace(/\s+/g, '').toLowerCase(); };
+        var cssomRules = function (key) {
+            if (!cssomIndex) {
+                cssomIndex = {};
+                var walk = function (list, depth) {
+                    if (!list || depth > 6) return;
+                    for (var i = 0; i < list.length; i++) {
+                        var r = list[i];
+                        if (r.type === 1) { var k = normSel(r.selectorText); (cssomIndex[k] = cssomIndex[k] || []).push(r); }
+                        else if (r.cssRules) walk(r.cssRules, depth + 1);
+                    }
+                };
+                for (var s = 0; s < document.styleSheets.length; s++) {
+                    var sheet = document.styleSheets[s], rs = null;
+                    if (sheet.ownerNode && sheet.ownerNode.id === 'br-cv-pseudo') continue;
+                    try { rs = sheet.cssRules; } catch (e) { rs = null; }
+                    walk(rs, 0);
+                }
+            }
+            return cssomIndex[key] || [];
+        };
+        var LENGTH_PROP = /^((margin|padding)-(top|right|bottom|left)|width|height|(min|max)-(width|height)|top|right|bottom|left|border-(top|right|bottom|left)-width|font-size|line-height|letter-spacing|word-spacing|text-indent|outline-width|border-(top|bottom)-(left|right)-radius|-webkit-column-gap)$/;
+        var sentinelFor = function (prop, id) {
+            if (/(^|-)color$/.test(prop)) return 'rgb(1, ' + (2 + (id >> 8)) + ', ' + (id & 255) + ')';
+            if (prop === 'box-shadow') return 'rgb(1, ' + (2 + (id >> 8)) + ', ' + (id & 255) + ') 0px 0px 0px 0px';
+            if (LENGTH_PROP.test(prop)) return (7001 + id) + 'px';
+            return null;
+        };
+        var sentinelCheck = function (work) {
+            var groups = {}, list = [], id = 0, i, k, it, g;
+            cssomIndex = null;
+            for (i = 0; i < work.length; i++) {
+                it = work[i];
+                if (it.use.inl || it.use.ps || (it.ok === false && !it.part) || !it.use.rk) continue;
+                var props = it.part || it.props || [];
+                if (!props.length) for (k = 0; k < it.decls.length; k++) props = props.concat(LONGHANDS[it.decls[k][0]] || [it.decls[k][0]]);
+                var prop = null;
+                for (k = 0; k < props.length && !prop; k++) if (sentinelFor(props[k], 0)) prop = props[k];
+                if (!prop) continue;
+                var key = it.use.rk + '|' + prop;
+                g = groups[key];
+                if (!g) {
+                    var rules = cssomRules(it.use.rk);
+                    if (!rules.length) continue;
+                    g = groups[key] = { rules: rules, prop: prop, items: [], id: ++id };
+                    g.sentinel = sentinelFor(prop, g.id);
+                    g.mark = LENGTH_PROP.test(prop) ? String(7001 + g.id) : g.sentinel.replace(/\).*$/, ')');   // a length, or the rgb() part
+                    list.push(g);
+                }
+                g.items.push(it);
+            }
+            if (!list.length) return;
+            for (i = 0; i < list.length; i++) {
+                g = list[i];
+                g.saved = [];
+                for (k = 0; k < g.rules.length; k++) {
+                    var st = g.rules[k].style;
+                    g.saved.push([st.getPropertyValue(g.prop), st.getPropertyPriority(g.prop)]);
+                    try { st.setProperty(g.prop, g.sentinel, g.saved[k][1] || (g.items[0].use.i ? 'important' : '')); } catch (e) {}
+                }
+            }
+            lastSentinels = [];
+            for (i = 0; i < list.length; i++) {
+                g = list[i];
+                for (k = 0; k < g.items.length; k++) {
+                    it = g.items[k];
+                    var v = getComputedStyle(it.el).getPropertyValue(g.prop) || '';
+                    if (v.indexOf(g.mark) < 0) { it.ok = false; it.part = null; }
+                    if (lastSentinels.length < 1000) lastSentinels.push(g.prop + ' ' + g.mark + ' -> ' + v + ' (' + it.el.tagName + ' ' + g.rules.length + ' rules)');
+                }
+            }
+            for (i = 0; i < list.length; i++) {
+                g = list[i];
+                for (k = 0; k < g.rules.length; k++) {
+                    var st2 = g.rules[k].style;
+                    try { if (g.saved[k][0]) st2.setProperty(g.prop, g.saved[k][0], g.saved[k][1]); else st2.removeProperty(g.prop); } catch (e2) {}
+                }
+            }
         };
         // an unchanged decision: our inline value stays (unless a script replaced it meanwhile: then the page's stays)
         var keepInline = function (it, p, v) {
@@ -3630,7 +3769,7 @@
             if (el.__brCVSet && el.__brCVSet.hasOwnProperty(p)) {
                 if (el.style.getPropertyValue(p) === el.__brCVVal[p]) { el.__brCVSet[p] = gen; return; }
                 delete el.__brCVSet[p]; delete el.__brCVOrig[p]; delete el.__brCVVal[p];
-                if (el.__brCVc && el.__brCVc[it.key]) el.__brCVc[it.key].ok = false;
+                if (el.__brCVc && el.__brCVc[it.key]) { el.__brCVc[it.key].ok = false; el.__brCVc[it.key].part = null; }
                 return;
             }
             freeze(el);
@@ -3650,8 +3789,10 @@
             for (i = 0; i < checks.length; i++) {
                 it = checks[i];
                 cs = getComputedStyle(it.el);
-                it.ok = !it.own;
-                for (k = 0; k < it.props.length && it.ok; k++) if (cs.getPropertyValue(it.props[k]) !== it.before[k]) it.ok = false;
+                var now = [];
+                for (k = 0; k < it.props.length; k++) now.push(cs.getPropertyValue(it.props[k]));
+                decide(it, now);
+                if (it.own) { it.ok = false; it.part = null; }
             }
             for (i = 0; i < checks.length; i++) {
                 it = checks[i];
@@ -3740,8 +3881,10 @@
             var origSet = CSDp.setProperty, origGet = CSDp.getPropertyValue, origRemove = CSDp.removeProperty;
             CSDp.setProperty = function (name, value, priority) {
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
-                    if (!this.__brCP) this.__brCP = {};
-                    this.__brCP[name] = String(value);
+                    if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
+                    // an empty value removes the declaration (null: removed, the attribute's value no longer counts)
+                    this.__brCP[name] = value === null || value === undefined || String(value) === '' ? null : String(value);
+                    this.__brCPi[name] = String(priority || '').toLowerCase() === 'important';
                     cpUsed = true;
                     dirtyAll = true;
                     schedule();
@@ -3751,16 +3894,20 @@
             };
             CSDp.getPropertyValue = function (name) {
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
-                    if (this.__brCP && this.__brCP.hasOwnProperty(name)) return this.__brCP[name];
+                    if (this.__brCP && this.__brCP.hasOwnProperty(name)) return this.__brCP[name] === null ? '' : this.__brCP[name];
                     if (this.__brEl) { var v = computedVar(this.__brEl, name); return v === null ? '' : v; }
+                    var owner = this.__brOwner;
+                    if (owner && owner.__brCVi && owner.__brCVi.d.hasOwnProperty(name)) return owner.__brCVi.d[name];
                     return '';
                 }
                 return origGet.apply(this, arguments);
             };
             CSDp.removeProperty = function (name) {
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
-                    var old = this.__brCP && this.__brCP.hasOwnProperty(name) ? this.__brCP[name] : '';
-                    if (this.__brCP) delete this.__brCP[name];
+                    var old = this.getPropertyValue(name);
+                    if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
+                    this.__brCP[name] = null;
+                    cpUsed = true;
                     dirtyAll = true;
                     schedule();
                     return old;
@@ -3826,6 +3973,7 @@
                     if (e.r) { registered[e.r[0]] = { init: e.r[1], inh: !!e.r[2] }; continue; }
                     if (!e.s) continue;
                     e.o = (e.si !== undefined && ranks[e.si] !== undefined ? ranks[e.si] : 0) * 100000 + i;
+                    e.key = normSel(e.s.join(','));   // finds the rule in the CSSOM (see sentinelCheck)
                     e.sel = [];
                     for (var b = 0; b < e.s.length; b++) e.sel.push(prepareSelector(e.s[b]));
                     rules.push(e);
@@ -3835,7 +3983,27 @@
             },
             apply: function () { if (rules.length) pass(); },
             resolve: function (el, name) { return computedVar(el, name); },
-            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, applyMs: stats.tApply, pending: stats.pending }; }
+            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, collectMs: stats.tCollect, resolveMs: stats.tResolve, applyMs: stats.tApply, pending: stats.pending }; },
+            sentinels: function () { return lastSentinels; },
+            // the decision steps for one declaration of an element (diagnosis)
+            explain: function (el, prop) {
+                var use = el.__brCV && el.__brCV.u['|' + prop];
+                if (!use) return null;
+                var raw = substitute(use.v, el, 0), fb = use.st === null ? null : fixDecl(use.p, use.st), props = [];
+                if (fb) for (var k = 0; k < fb.length; k++) props = props.concat(LONGHANDS[fb[k][0]] || [fb[k][0]]);
+                var cs = getComputedStyle(el), before = [];
+                for (k = 0; k < props.length; k++) before.push(cs.getPropertyValue(props[k]));
+                return { raw: raw, st: use.st, decls: fixDecl(use.p, raw), fb: fb, props: props, before: before, probe: fb ? probeValues(fb, props) : null, inline: el.getAttribute('style') };
+            },
+            // what the last pass had to set (for diagnosis): element, property, per-element value, stylesheet value
+            sample: function (n) {
+                var out = [];
+                for (var i = 0; i < lastPending.length && out.length < (n || 20); i++) {
+                    var it = lastPending[i], el = it.el;
+                    out.push((el.tagName || '') + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className ? '.' + el.className.split(/\s+/).slice(0, 3).join('.') : '') + ' ' + it.use.p + ': ' + it.raw + ' <- ' + it.use.st + (it.part ? ' (only ' + it.part.join(', ') + ')' : it.ok === false ? ' (not applied)' : ''));
+                }
+                return out;
+            }
         };
     })();
     // ---- Scroll snap, smooth scrolling and balanced text, driven by the rewriter's counter-reset markers

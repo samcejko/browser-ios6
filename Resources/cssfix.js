@@ -157,7 +157,8 @@ var CSSFix = (function () {
             if (!seg) return;
             var colon = seg.indexOf(':');
             if (colon <= 0) return;
-            var p = trim(seg.slice(0, colon)).toLowerCase();
+            var p = trim(seg.slice(0, colon));
+            if (p.charAt(0) !== '-' || p.charAt(1) !== '-') p = p.toLowerCase();   // custom property names are case-sensitive
             var v = trim(seg.slice(colon + 1));
             var imp = false;
             var m = /!\s*important\s*$/i.exec(v);
@@ -488,7 +489,9 @@ var CSSFix = (function () {
             else if (name in ctx.root) val = ctx.root[name];
             else if (name in ctx.other) val = ctx.other[name];
             else if (ctx.initial && name in ctx.initial) val = ctx.initial[name];
-            else if (fallback !== null) val = fallback;
+            // "--x: initial" is the guaranteed-invalid value (and inherit/unset cannot be known here): the fallback applies
+            if (val !== null && /^\s*(initial|inherit|unset|revert|revert-layer)\s*$/i.test(val)) val = null;
+            if (val === null && fallback !== null) val = fallback;
             if (val === null) return null;
             v = v.slice(0, at) + trim(val) + v.slice(close + 1);
         }
@@ -1155,7 +1158,7 @@ var CSSFix = (function () {
     // computes the value for each element. Inline style attributes are found through the br-dv-<hash> marker.
     var DV_PROPS = { 'anchor-name': 1, 'anchor-scope': 1, 'position-anchor': 1, 'position-area': 1, 'inset-area': 1, 'position-try': 1,
         'position-try-fallbacks': 1, 'position-try-options': 1, 'position-try-order': 1, 'position-visibility': 1,
-        cx: 1, cy: 1, r: 1, rx: 1, ry: 1, x: 1, y: 1, d: 1, 'field-sizing': 1 };
+        cx: 1, cy: 1, r: 1, rx: 1, ry: 1, x: 1, y: 1, d: 1, 'field-sizing': 1, 'margin-trim': 1 };
     var DV_FN = /(?:^|[^\w-])(anchor|anchor-size|attr|calc-size|sibling-index|sibling-count|container-progress|toggle)\(/i;
     // CSS Speech: the read-aloud feature of the shim speaks with these (they go to the manifest like deferred values,
     // the shim keeps them per element instead of setting them). Values are checked against the module's grammar.
@@ -1321,6 +1324,10 @@ var CSSFix = (function () {
     // a column rule the multi-column engine draws by itself: one value, no list
     function nativeColumnRule(p, v) { return /^column-rule(-(color|style|width))?$/.test(p) && !/repeat\(/i.test(v) && (p === 'column-rule' || splitTop(trim(v), ' ').length === 1); }
     function isDeferred(p, v) {
+        if (p === 'margin-trim') {
+            var mtv = trim(v).toLowerCase();
+            return isGlobalKeyword(mtv) || mtv === 'unset' || /^(none|block|inline)$/.test(mtv) || /^((block-start|inline-start|block-end|inline-end)(\s+|$))+$/.test(mtv);
+        }
         if (DV_PROPS[p]) return true;
         if (SPEECH_PROPS[p]) return validSpeechValue(p, v);
         if (BOX_PAINT_PROPS.test(p)) return validBoxPaintValue(p, v);
@@ -2947,6 +2954,12 @@ var CSSFix = (function () {
         }
         if ((translate || rotate || scale) && !hasTransform) {
             var parts = [];
+            // the individual transforms are composed into transform here: inherit takes the parent's composed transform,
+            // none / initial / unset contribute nothing (all of them nothing: no transform)
+            var tkw = function (x) { x = x ? trim(x).toLowerCase() : null; return x === 'initial' || x === 'unset' || x === 'revert' ? 'none' : x; };
+            translate = tkw(translate); rotate = tkw(rotate); scale = tkw(scale);
+            if (translate === 'inherit' || rotate === 'inherit' || scale === 'inherit') { push(out, '-webkit-transform', 'inherit', false); push(out, 'transform', 'inherit', false); translate = rotate = scale = null; }
+            else if ((!translate || translate === 'none') && (!rotate || rotate === 'none') && (!scale || scale === 'none')) { push(out, '-webkit-transform', 'none', false); push(out, 'transform', 'none', false); translate = rotate = scale = null; }
             if (translate && translate !== 'none') {
                 var tt = splitWS(translate);
                 parts.push(tt.length > 2 ? 'translate3d(' + tt[0] + ', ' + tt[1] + ', ' + tt[2] + ')' : tt.length > 1 ? 'translate(' + tt[0] + ', ' + tt[1] + ')' : 'translate(' + tt[0] + ')');
