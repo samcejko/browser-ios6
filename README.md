@@ -28,7 +28,10 @@ the app around it:
   `text-align`, flex `gap` becomes margins between the items, a lone `margin-left: auto` on a flex
   item becomes 0 (the 2009 model hands that margin all the free space, which left Google's result
   text 0 px wide), `position: sticky` is prefixed, `text-rendering: optimizeLegibility` and
-  `font-feature-settings` are dropped. The start page links a bundled **CSS3 test** page
+  `font-feature-settings` are dropped, `clamp()`/`min()`/`max()` are evaluated when their units
+  are px, vw, vh, rem or em, `aspect-ratio` travels through a `counter-reset` marker that a shim
+  turns into a height for media elements and empty boxes, and `fit-content`/`max-content`/
+  `min-content` widths become shrink-to-fit tables. The start page links a bundled **CSS3 test** page
   (`https://ios6-browser.invalid/csstest.html`, served through the rewriter) that measures what the
   engine really renders after the rewrite; css3test.com itself no longer runs on ES5 engines.
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small

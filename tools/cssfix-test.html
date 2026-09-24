@@ -49,7 +49,7 @@ var cases = [
   ['nesting skipped', '.a{color:red;.b{color:blue}}', '.a{color:red}'],
   ['comments strings', '.a{content:"/* not a comment */";/* real */color:red}', '.a{content:"/* not a comment */";color:red}'],
   ['env', '.a{padding-top:env(safe-area-inset-top,20px);padding-bottom:env(safe-area-inset-bottom)}', '.a{padding-top:20px;padding-bottom:0px}'],
-  ['sizing keywords', '.a{width:fit-content;height:max-content}', '.a{width:-webkit-fit-content;height:-webkit-max-content}'],
+  ['sizing keywords', '.a{width:fit-content;height:max-content}.b{display:flex;width:min-content}.c{inline-size:min-content}', '.a{display:table;width:auto;width:-webkit-fit-content;height:-webkit-max-content}\n.b{display:-webkit-box;width:-webkit-min-content}\n.c{display:table;width:1px;width:-webkit-min-content}'],
   ['unset', '.a{color:unset;margin:unset}', '.a{color:inherit;margin:initial}'],
   ['individual transforms', '.a{translate:10px 20px;rotate:45deg}', '.a{-webkit-transform:translate(10px, 20px) rotate(45deg);transform:translate(10px, 20px) rotate(45deg)}'],
   ['display grid to block', '.a{display:grid;gap:8px}', '.a{display:block;gap:8px}'],

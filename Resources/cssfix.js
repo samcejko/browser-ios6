@@ -753,9 +753,10 @@ var CSSFix = (function () {
         var local = null, i, d;
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
-        var autoLeft = false, autoRight = false;
+        var autoLeft = false, autoRight = false, hasDisplay = false;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
+            if (d.p === 'display') hasDisplay = true;
             if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') { if (!local) local = {}; local[d.p] = d.v; }
             else if ((d.p === 'flex-wrap' || d.p === 'flex-flow') && /wrap/i.test(d.v) && !/nowrap/i.test(d.v)) wrap = true;
             else if (d.p === 'object-fit') objectFit = d.v.toLowerCase();
@@ -870,6 +871,15 @@ var CSSFix = (function () {
                     push(out, p, v, imp);
                     continue;
                 }
+                case 'width': case 'inline-size':
+                    // the engine has no intrinsic sizing keywords: a table shrinks to fit its content (and never
+                    // below the min-content width, which "width: 1px" then asks for)
+                    if (!hasDisplay && !keyframe && (lv === '-webkit-fit-content' || lv === '-webkit-max-content' || lv === '-webkit-min-content')) {
+                        push(out, 'display', 'table', imp);
+                        push(out, 'width', lv === '-webkit-min-content' ? '1px' : 'auto', imp);
+                    }
+                    push(out, 'width', v, imp);
+                    continue;
                 case 'margin-left': case 'margin-inline-start':
                     push(out, 'margin-left', (flexPush && autoLeft && lv === 'auto') ? '0' : v, imp);
                     continue;
