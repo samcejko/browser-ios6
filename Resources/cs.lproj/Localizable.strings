@@ -118,7 +118,10 @@
 "Forget site passwords" = "Zapomenout hesla k webům";
 "Open in background" = "Otevřít na pozadí";
 "Recently closed" = "Nedávno zavřené";
+"Allow ads on this site" = "Povolit reklamy na tomto webu";
+"Block ads on this site" = "Blokovat reklamy na tomto webu";
 "View source" = "Zdrojový kód";
+"Translate page" = "Přeložit stránku";
 "Source of %@" = "Zdrojový kód – %@";
 "Home page" = "Domovská stránka";
 "Start page" = "Úvodní stránka";

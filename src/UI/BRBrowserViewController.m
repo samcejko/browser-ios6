@@ -49,6 +49,9 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) UIButton *findDoneButton;
 @property (nonatomic, strong) UIView *progressView;                    // blue fill in the address field
 @property (nonatomic, strong) UIButton *lockButton;
+@property (nonatomic, strong) UIButton *readerButton;                  // shown when the page looks like an article
+@property (nonatomic) BOOL readerAvailable;
+@property (nonatomic) BOOL readerShown;                                // the reader's own document is on screen
 @property (nonatomic, strong) UIDocumentInteractionController *documentController;
 @property (nonatomic, strong) UIView *topBar;
 @property (nonatomic, strong) UIImageView *topBarBackground;
@@ -126,7 +129,7 @@ static const CGFloat BRControlHeight = 30;
 @end
 
 // Our own entries in the share sheet: reader, find on page, save as PDF (drawn icons, a block each)
-typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument, BRActivityIconCode };
+typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument, BRActivityIconCode, BRActivityIconTranslate };
 
 @interface BRActionActivity : UIActivity
 @property (nonatomic, copy) NSString *title;
@@ -164,6 +167,9 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
         [handle stroke];
     } else if (self.icon == BRActivityIconCode) {
         [@"</>" drawInRect:CGRectMake(0, side * 0.3, side, side * 0.4) withFont:[UIFont boldSystemFontOfSize:side * 0.3] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
+    } else if (self.icon == BRActivityIconTranslate) {
+        [@"A" drawInRect:CGRectMake(side * 0.12, side * 0.2, side * 0.4, side * 0.5) withFont:[UIFont boldSystemFontOfSize:side * 0.38] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
+        [@"Ž" drawInRect:CGRectMake(side * 0.48, side * 0.36, side * 0.4, side * 0.5) withFont:[UIFont boldSystemFontOfSize:side * 0.3] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
     } else {
         // a sheet with a folded corner and "PDF" letters
         CGFloat x = side * 0.27, y = side * 0.16, w = side * 0.46, h = side * 0.62, fold = side * 0.13;
@@ -328,10 +334,18 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
     self.progressView.hidden = YES;
     [self.urlField addSubview:self.progressView];
 
-    // padlock for https pages (tap for the connection details)
+    // padlock for https pages (tap for the connection details) and the reader button, both inside the left view
     self.lockButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.lockButton.frame = CGRectMake(0, 0, 26, BRControlHeight);
+    self.lockButton.frame = CGRectMake(6, 0, 24, BRControlHeight);
+    self.lockButton.hidden = YES;
     [self.lockButton addTarget:self action:@selector(showConnectionInfo) forControlEvents:UIControlEventTouchUpInside];
+    [self.fieldLeftView addSubview:self.lockButton];
+    self.readerButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.readerButton.frame = CGRectMake(6, 0, 26, BRControlHeight);
+    self.readerButton.hidden = YES;
+    self.readerButton.accessibilityLabel = L(@"Reader");
+    [self.readerButton addTarget:self action:@selector(showReader) forControlEvents:UIControlEventTouchUpInside];
+    [self.fieldLeftView addSubview:self.readerButton];
 
     [self loadTabs];
     [self applyTheme];
@@ -423,6 +437,7 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
     [self.bookmarksButton setImage:[theme bookmarksImage] forState:UIControlStateNormal];
     [self.shareButton setImage:[theme shareImage] forState:UIControlStateNormal];
     [self.lockButton setImage:[theme lockImage] forState:UIControlStateNormal];
+    [self.readerButton setImage:[theme readerImage] forState:UIControlStateNormal];
     self.progressView.backgroundColor = [theme progressColor];
     [self.tabBar applyTheme];
     if (self.findBar) [self applyThemeToFindBar];
@@ -965,6 +980,9 @@ static void BRWebThreadLock(void)
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:host delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
     [sheet addButtonWithTitle:L(@"Reload without cache")];
     [sheet addButtonWithTitle:[BRSettings userAgentModeForHost:host] == 0 ? L(@"Request desktop version") : L(@"Request mobile version")];
+    if (host.length && [BRSettings adBlockEnabled]) {
+        [sheet addButtonWithTitle:[BRSettings adBlockDisabledForHost:host] ? L(@"Block ads on this site") : L(@"Allow ads on this site")];
+    }
     sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
     sheet.tag = 101;
     CGRect rect = [self.view convertRect:self.reloadButton.bounds fromView:self.reloadButton];
@@ -1031,6 +1049,7 @@ static void BRWebThreadLock(void)
     }
     if (self.loading) [self.webView stopLoading];   // a page still loading must not steal the tab with a late redirect
     self.currentURL = url;
+    self.readerShown = NO;
     [self updateAddressFieldWithURL:url];
     if (self.currentTab < self.tabs.count) {
         // show the new host in the tab strip right away; the title follows when the page has loaded
@@ -1252,15 +1271,33 @@ static void BRWebThreadLock(void)
     if (p > [self currentProgress]) [self setProgress:p animated:YES];
 }
 
+// Padlock and reader button at the left end of the address field
 - (void)updateLockIcon
 {
     NSURL *url = self.webView.request.URL ?: self.currentURL;
     BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"https"] && [[BRURLProtocol lastMainDocumentTLSInfo] length] > 0;
-    if (secure) {
-        if (self.urlField.leftView != self.lockButton) self.urlField.leftView = self.lockButton;
-    } else if (self.urlField.leftView != self.fieldLeftView) {
+    BOOL reader = self.readerAvailable && !self.readerShown;
+    CGFloat x = 6;
+    self.lockButton.hidden = !secure;
+    self.readerButton.hidden = !reader;
+    if (secure) { self.lockButton.frame = CGRectMake(x, 0, 24, BRControlHeight); x += 24; }
+    if (reader) { self.readerButton.frame = CGRectMake(x, 0, 26, BRControlHeight); x += 26; }
+    CGFloat width = (secure || reader) ? x + 2 : 8;
+    if (self.fieldLeftView.bounds.size.width != width) {
+        self.fieldLeftView.frame = CGRectMake(0, 0, width, BRControlHeight);
+        self.urlField.leftView = nil;   // the field measures the left view only when it is set
         self.urlField.leftView = self.fieldLeftView;
     }
+}
+
+// Pages with several long paragraphs get the reader button
+- (void)detectArticle
+{
+    NSURL *url = self.webView.request.URL;
+    BOOL http = [[url.scheme lowercaseString] hasPrefix:@"http"];
+    NSInteger n = http ? [[self.webView stringByEvaluatingJavaScriptFromString:
+        @"(function(){var p=document.getElementsByTagName('p'),n=0;for(var i=0;i<p.length&&n<6;i++){if((p[i].textContent||'').replace(/\\s+/g,' ').length>140)n++;}return n;})()"] integerValue] : 0;
+    self.readerAvailable = n >= 4;
 }
 
 - (void)showConnectionInfo
@@ -1287,15 +1324,24 @@ static void BRWebThreadLock(void)
     [self applyTextSize];
 }
 
-// "Dark pages": the whole page is inverted with a CSS filter, pictures and video inverted back
+// "Dark pages": a dark stylesheet forced onto the page (the engine skips CSS filters on areas as large as a page,
+// so inverting is not an option). Pictures keep their colours; every box gets a dark background and light text.
 - (void)applyPageStyle
 {
     BOOL dark = [BRSettings pagesDark];
+    NSString *css = @"html{background:#121212 !important;background-image:none !important}"
+                     "body,body *:not(img):not(video):not(canvas):not(svg):not(picture):not(iframe):not(object):not(embed)"
+                     "{background-color:#171717 !important;color:#d6d6d6 !important;border-color:#3a3a3a !important;text-shadow:none !important;box-shadow:none !important}"
+                     "body{background-image:none !important}"
+                     // :not(#br-x) lifts these above the catch-all rule (id specificity), the id never exists
+                     "a:not(#br-x),a:not(#br-x) *{color:#8ab4f8 !important}"
+                     "input:not(#br-x),textarea:not(#br-x),select:not(#br-x),button:not(#br-x){background-color:#2a2a2a !important;color:#eee !important;border:1px solid #555 !important}"
+                     "::-webkit-input-placeholder{color:#888 !important}mark:not(#br-x){background-color:#5a4a00 !important}"
+                     "code:not(#br-x),pre:not(#br-x),kbd:not(#br-x){background-color:#222 !important;color:#e8e8e8 !important}";
     NSString *js = [NSString stringWithFormat:
-        @"(function(on){var s=document.getElementById('br-darkpage');if(!on){if(s)s.parentNode.removeChild(s);return;}"
+        @"(function(on,css){var s=document.getElementById('br-darkpage');if(!on){if(s)s.parentNode.removeChild(s);return;}"
          "if(!s){s=document.createElement('style');s.id='br-darkpage';(document.head||document.documentElement).appendChild(s);}"
-         "s.textContent='html{-webkit-filter:invert(1) hue-rotate(180deg) !important;background:#fff}img,video,canvas,picture,svg,iframe,[style*=\"background-image\"]{-webkit-filter:invert(1) hue-rotate(180deg) !important}';})(%@)",
-        dark ? @"true" : @"false"];
+         "s.textContent=css;})(%@,%@)", dark ? @"true" : @"false", [self jsStringLiteral:css]];
     [self.webView stringByEvaluatingJavaScriptFromString:js];
 }
 
@@ -1703,6 +1749,27 @@ static void BRWebThreadLock(void)
     return s;
 }
 
+#pragma mark - Translate
+
+// Google Translate's website proxy: the page comes back translated on the server, which the old engine handles
+// (host.name becomes host-name.translate.goog, dashes are doubled)
+- (void)translateCurrentPage
+{
+    NSURL *page = self.webView.request.URL ?: self.currentURL;
+    NSString *host = [page.host lowercaseString];
+    if (!host.length || ![[page.scheme lowercaseString] hasPrefix:@"http"]) return;
+    NSString *proxyHost = [[host stringByReplacingOccurrencesOfString:@"-" withString:@"--"] stringByReplacingOccurrencesOfString:@"." withString:@"-"];
+    NSString *language = [[[NSLocale preferredLanguages] firstObject] componentsSeparatedByString:@"-"].firstObject ?: @"en";
+    if (!language.length) language = @"en";
+    NSString *pathAndQuery = page.path.length ? page.path : @"/";
+    pathAndQuery = [[NSString stringWithFormat:@"%@%@", [pathAndQuery stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @"/",
+                     page.query.length ? [@"?" stringByAppendingString:page.query] : @""] copy];
+    NSString *joiner = page.query.length ? @"&" : @"?";
+    NSString *target = [NSString stringWithFormat:@"https://%@.translate.goog%@%@_x_tr_sl=auto&_x_tr_tl=%@&_x_tr_hl=%@", proxyHost, pathAndQuery, joiner, language, language];
+    NSURL *url = [NSURL URLWithString:target];
+    if (url) [self loadURL:url];
+}
+
 #pragma mark - Print, view source
 
 - (void)printPage
@@ -1834,6 +1901,7 @@ static void BRWebThreadLock(void)
     // images that fail to load (lazy-loading placeholders, blocked hosts) leave no gaps
     [html appendString:@"</div><script>(function(){var imgs=document.images;for(var i=0;i<imgs.length;i++){imgs[i].onerror=function(){if(this.parentNode)this.parentNode.removeChild(this);};"
                         "if(imgs[i].complete&&imgs[i].naturalWidth===0&&imgs[i].parentNode)imgs[i].parentNode.removeChild(imgs[i]);}})();</script></body></html>"];
+    self.readerShown = YES;
     [self.webView loadHTMLString:html baseURL:pageURL];
     BRLog(@"Reader: %@ (%lu chars)", article[@"title"], (unsigned long)[article[@"html"] length]);
 }
@@ -1868,6 +1936,15 @@ static void BRWebThreadLock(void)
         source.icon = BRActivityIconCode;
         source.action = ^{ [weakSelf showSource]; };
         [activities addObjectsFromArray:@[reader, find, pdf, source]];
+        NSURL *page = self.webView.request.URL ?: self.currentURL;
+        if ([[page.scheme lowercaseString] hasPrefix:@"http"] && ![[page.host lowercaseString] hasSuffix:@".translate.goog"]) {
+            BRActionActivity *translate = [[BRActionActivity alloc] init];
+            translate.title = L(@"Translate page");
+            translate.type = @"com.samcejko.browser.translate";
+            translate.icon = BRActivityIconTranslate;
+            translate.action = ^{ [weakSelf translateCurrentPage]; };
+            [activities addObject:translate];
+        }
         [shared addObject:[self.webView viewPrintFormatter]];   // brings the system "Print" entry (AirPrint)
     }
     UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:shared applicationActivities:activities];
@@ -1978,6 +2055,10 @@ static void BRWebThreadLock(void)
         NSString *pick = [sheet buttonTitleAtIndex:index];
         if ([pick isEqualToString:L(@"Reload without cache")]) {
             [self reloadIgnoringCache];
+        } else if ([pick isEqualToString:L(@"Allow ads on this site")] || [pick isEqualToString:L(@"Block ads on this site")]) {
+            NSString *host = (self.webView.request.URL ?: self.currentURL).host;
+            [BRSettings setAdBlockDisabled:[pick isEqualToString:L(@"Allow ads on this site")] forHost:host];
+            [self reloadIgnoringCache];
         } else {
             // per site, like Safari's "request desktop website"
             NSString *host = (self.webView.request.URL ?: self.currentURL).host;
@@ -2078,6 +2159,7 @@ static void BRWebThreadLock(void)
         BOOL mainFrame = [url isEqual:request.mainDocumentURL] || navigationType != UIWebViewNavigationTypeOther;
         if (mainFrame && ![scheme isEqualToString:@"about"] && ![scheme isEqualToString:@"applewebdata"]) {
             self.currentURL = url;
+            self.readerShown = NO;
             [self updateAddressFieldWithURL:url];
         }
         return YES;
@@ -2107,6 +2189,7 @@ static void BRWebThreadLock(void)
     if (self.loadCount == 0) {
         self.httpFallbackURL = nil;
         [self setProgress:1 animated:YES];
+        [self detectArticle];
         [self updateLockIcon];
         [self applyTextSize];
         if ([BRSettings pagesDark]) [self applyPageStyle];

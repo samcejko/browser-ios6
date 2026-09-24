@@ -339,6 +339,21 @@ static UIImage *BRBarImage(UIColor *top, UIColor *bottom, UIColor *line, CGFloat
     }];
 }
 
+- (UIImage *)readerImage
+{
+    return [self cachedImage:@"reader" builder:^UIImage *{
+        CGSize size = CGSizeMake(18, 18);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+        UIColor *color = self.dark ? RGB(200, 200, 206) : RGB(70, 110, 180);
+        [color setFill];
+        CGFloat widths[4] = { 14, 10, 14, 8 };
+        for (int i = 0; i < 4; i++) [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(2, 3 + i * 3.5, widths[i], 2) cornerRadius:1] fill];
+        UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return img;
+    }];
+}
+
 - (UIImage *)plusImage
 {
     return [self cachedImage:@"plus" builder:^UIImage *{

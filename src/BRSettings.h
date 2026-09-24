@@ -7,6 +7,8 @@
 + (void)setVerifyTLS:(BOOL)verify;
 + (BOOL)adBlockEnabled;                  // default YES
 + (void)setAdBlockEnabled:(BOOL)enabled;
++ (BOOL)adBlockDisabledForHost:(NSString *)host;        // per-site exception ("allow ads on this site")
++ (void)setAdBlockDisabled:(BOOL)disabled forHost:(NSString *)host;
 + (BOOL)cssFixEnabled;                   // default YES: rewrite modern CSS for the old engine
 + (void)setCSSFixEnabled:(BOOL)enabled;
 + (BOOL)jsFixEnabled;                    // default YES: JavaScript polyfills injected into pages

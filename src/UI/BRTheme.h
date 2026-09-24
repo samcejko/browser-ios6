@@ -30,6 +30,7 @@ extern NSString * const BRThemeDidChangeNotification;
 - (UIImage *)bookmarksImage;                  // open book, like Safari
 - (UIImage *)shareImage;                      // tray with an arrow
 - (UIImage *)lockImage;                       // padlock for https pages
+- (UIImage *)readerImage;                     // text lines: "reader available" in the address field
 - (UIColor *)progressColor;                   // fill of the loading bar in the address field
 - (UIImage *)plusImage;
 - (UIImage *)closeTabImage;

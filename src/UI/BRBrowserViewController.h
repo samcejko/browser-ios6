@@ -10,6 +10,8 @@
 - (NSString *)evaluateJavaScript:(NSString *)code;   // in the current page (debugging over SSH)
 - (void)showReader;                                  // article view of the current page
 - (void)savePageAsPDF;                               // into Documents/Downloads
+- (void)showSource;                                  // the page's HTML in a monospaced view
+- (void)translateCurrentPage;                        // through Google Translate's website proxy
 - (void)applyTheme;
 // debugging over SSH: the WebKit history behind the back/forward buttons, and the pending login dialog
 - (NSString *)historyDescription;

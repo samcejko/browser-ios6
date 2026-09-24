@@ -339,7 +339,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 
     // 0b. Ad and tracker blocking (never for the main document)
     BOOL subresource = request.mainDocumentURL && ![url isEqual:request.mainDocumentURL];
-    if (subresource && [BRSettings adBlockEnabled] && [BRAdBlock shouldBlockHost:url.host]) {
+    if (subresource && [BRSettings adBlockEnabled] && ![BRSettings adBlockDisabledForHost:request.mainDocumentURL.host] && [BRAdBlock shouldBlockHost:url.host]) {
         [BRAdBlock noteBlockedRequest];
         [self serveBlockedResponse];
         return;

@@ -86,12 +86,46 @@ static NSString *BRHostKey(NSString *host)
     return h;
 }
 
++ (BOOL)adBlockDisabledForHost:(NSString *)host
+{
+    NSString *key = BRHostKey(host);
+    if (!key.length) return NO;
+    return [[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"BRAdBlockHosts"][key] boolValue];
+}
+
++ (void)setAdBlockDisabled:(BOOL)disabled forHost:(NSString *)host
+{
+    NSString *key = BRHostKey(host);
+    if (!key.length) return;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *hosts = [[d dictionaryForKey:@"BRAdBlockHosts"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (disabled) hosts[key] = @YES; else [hosts removeObjectForKey:key];
+    [d setObject:hosts forKey:@"BRAdBlockHosts"];
+    [d synchronize];
+}
+
+// Sites that refuse the iOS 6 identity outright but render (well enough) as a current iPad
+static NSInteger BRBuiltInUserAgentMode(NSString *hostKey)
+{
+    // Google search answers "your browser is no longer supported" to Safari 6; the modern page renders its results
+    if ([hostKey hasPrefix:@"google."] || [hostKey rangeOfString:@".google."].location != NSNotFound) return 2;
+    return -1;
+}
+
++ (NSInteger)defaultUserAgentModeForHost:(NSString *)host
+{
+    NSInteger global = [self userAgentMode];
+    if (global != 0) return global;
+    NSInteger builtIn = BRBuiltInUserAgentMode(BRHostKey(host));
+    return builtIn >= 0 ? builtIn : global;
+}
+
 + (NSInteger)userAgentModeForHost:(NSString *)host
 {
     NSDictionary *overrides = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"BRUserAgentHosts"];
     NSNumber *m = overrides[BRHostKey(host)];
     if (m && [m integerValue] >= 0 && [m integerValue] <= 2) return [m integerValue];
-    return [self userAgentMode];
+    return [self defaultUserAgentModeForHost:host];
 }
 
 + (void)setUserAgentMode:(NSInteger)mode forHost:(NSString *)host
@@ -100,7 +134,7 @@ static NSString *BRHostKey(NSString *host)
     if (!key.length) return;
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSMutableDictionary *overrides = [[d dictionaryForKey:@"BRUserAgentHosts"] mutableCopy] ?: [NSMutableDictionary dictionary];
-    if (mode < 0 || mode == [self userAgentMode]) [overrides removeObjectForKey:key];
+    if (mode < 0 || mode == [self defaultUserAgentModeForHost:host]) [overrides removeObjectForKey:key];
     else overrides[key] = @(mode);
     [d setObject:overrides forKey:@"BRUserAgentHosts"];
     [d synchronize];

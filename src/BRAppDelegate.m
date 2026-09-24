@@ -150,6 +150,21 @@
         [self.browserViewController savePageAsPDF];
         return YES;
     }
+    if ([target isEqualToString:@"source"]) {
+        [self.browserViewController showSource];
+        return YES;
+    }
+    if ([target isEqualToString:@"translate"]) {
+        [self.browserViewController translateCurrentPage];
+        return YES;
+    }
+    if ([target isEqualToString:@"pasteboard"]) {
+        // browser:pasteboard writes the general pasteboard text to tmp/eval.txt (clipboard shims)
+        NSString *text = [UIPasteboard generalPasteboard].string ?: @"";
+        [text writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"Pasteboard: %@", text.length > 200 ? [text substringToIndex:200] : text);
+        return YES;
+    }
     if ([target isEqualToString:@"history"]) {
         // browser:history logs WebKit's back/forward lists (the long-press menu of the arrows) to tmp/eval.txt
         NSString *result = [self.browserViewController historyDescription];
