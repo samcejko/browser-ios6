@@ -847,13 +847,14 @@ var CSSFix = (function () {
     // ---- manifest for the page shim: :has() selectors and @container queries the engine cannot evaluate are
     // rewritten to classes (.br-has-<hash>, .br-cq-<hash>) that shims-extra.js toggles on the elements; the
     // entries travel in a trailing comment of the rewritten output and the app hands them to the page.
-    var g_manifest = null;
+    var g_manifest = null, g_suppressManifest = false;   // suppressed while @supports selector() is only being evaluated
     function manifestHash(s) {
         var h = 5381;
         for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
         return h.toString(36);
     }
     function manifestAdd(kind, entry) {
+        if (g_suppressManifest) return;
         if (!g_manifest) g_manifest = { has: [], cq: [], seen: {} };
         var key = kind + ':' + entry.h;
         if (g_manifest.seen[key]) return;
@@ -2016,7 +2017,14 @@ var CSSFix = (function () {
         terms.push(cond.slice(start));
         if (terms.length === 1) {
             var t = trim(terms[0]);
-            if (/^selector\(/i.test(t)) return !/:has\(|:is\(|:where\(|:focus-visible|::part|:host|::slotted|:nth-child\([^)]*of/i.test(t);
+            if (/^selector\(/i.test(t)) {
+                // supported when the rewriter can turn it into something the engine parses (natively or emulated)
+                var selInner = trim(t.slice(9, t.lastIndexOf(')') > 9 ? t.lastIndexOf(')') : t.length)), selOk = false, prevSuppress = g_suppressManifest;
+                g_suppressManifest = true;
+                try { selOk = fixSelectorList(selInner).length > 0; } catch (e) { selOk = false; }
+                g_suppressManifest = prevSuppress;
+                return selOk;
+            }
             if (/^font-tech\(|^font-format\(/i.test(t)) return false;
             if (t.charAt(0) === '(') return evalSupports(t);
             if (/^not\s/i.test(t)) return !evalSupports(t.slice(4));

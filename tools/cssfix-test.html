@@ -55,6 +55,7 @@ var cases = [
   ['supports grid dropped', '@supports (display:grid){.a{x:1}}.b{y:2}', '.b{y:2}'],
   ['supports not grid unwrapped', '@supports not (display:grid){.a{x:1}}', '.a{x:1}'],
   ['supports flex', '@supports (display:flex) and (--v:1){.a{x:1}}', '.a{x:1}'],
+  ['supports selector', '@supports selector(:has(a)){.x{y:1}}@supports selector(:is(a, b)){.z{y:2}}@supports selector(::part(x)){.w{y:3}}@supports not selector(:has(*)){.v{y:4}}', '.x{y:1}\n.z{y:2}'],
   ['layer unwrap', '@layer base;@layer base{.a{x:1}}', '.a{x:1}'],
   ['container to class', '@container (min-width:1px){.a{x:1}}', '.br-cq-1dhtovu .a{x:1}\n/*br-manifest:{"has":[],"cq":[{"h":"1dhtovu","name":"","cond":"(min-width:1px)"}]}*/'],
   ['media range', '@media (width >= 600px) and (hover:hover){.a{x:1}}', '@media (min-width: 600px) and (max-width: 0px){.a{x:1}}'],
