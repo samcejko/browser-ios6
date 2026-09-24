@@ -783,9 +783,17 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
-    } else if ([path isEqualToString:@"/csstest.html"]) {
-        // bundled test page served like a web page: it goes through the CSS rewriter and gets the polyfills
-        NSString *file = [[NSBundle mainBundle] pathForResource:@"csstest" ofType:@"html"];
+    } else if ([path isEqualToString:@"/browserscore.js"] || [path isEqualToString:@"/cssfix.js"]) {
+        // the browserscore runner and the CSS rewriter itself (the runner asks it what a page would get)
+        NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"js"];
+        body = file ? [NSData dataWithContentsOfFile:file] : nil;
+    } else if ([path isEqualToString:@"/browserscore-features.js"]) {
+        // flattened browserscore/features definitions, generated at build time
+        NSString *file = [[NSBundle mainBundle] pathForResource:@"browserscore-features" ofType:@"js" inDirectory:@"js"];
+        body = file ? [NSData dataWithContentsOfFile:file] : nil;
+    } else if ([path isEqualToString:@"/csstest.html"] || [path isEqualToString:@"/browserscore.html"]) {
+        // bundled test pages served like web pages: they go through the CSS rewriter and get the polyfills
+        NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"html"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
         type = @"text/html; charset=utf-8";
         if (body && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>Browserscore dev</title>
+<style>
+body { font-family: sans-serif; margin: 16px; }
+#bs-score { font-size: 32px; font-weight: bold; }
+.spec .head { padding: 4px 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+.spec .head .pct { display: inline-block; width: 60px; font-weight: bold; }
+.spec .detail { padding: 4px 8px 8px; font-size: 13px; }
+.emu { color: #7a5a00; } .miss { color: #a33; }
+</style>
+</head>
+<body>
+<h1>Browserscore dev harness</h1>
+<p>Loads the feature definitions straight from a checkout served as <code>/repo/</code>, converts them in the browser and runs the same ES5 runner the app ships.</p>
+<div id="bs-score">…</div>
+<div id="bs-status">…</div>
+<pre id="bs-summary"></pre>
+<div id="bs-results"></div>
+<script src="../Resources/cssfix.js"></script>
+<script type="module">
+import { convertAll } from './browserscore-convert.mjs';
+import * as specs from '/repo/specs.js';
+const data = convertAll(specs);
+window.BROWSERSCORE_FEATURES = data;
+const tests = data.reduce((n, s) => n + s.total, 0);
+document.getElementById('bs-summary').textContent = data.length + ' specs, ' + tests + ' tests; kinds: ' + JSON.stringify(data.reduce((acc, s) => { for (const f of s.features) { if (f.gate) acc[f.gate.k] = (acc[f.gate.k] || 0) + 1; for (const t of f.tests) acc[t.k] = (acc[t.k] || 0) + 1; } return acc; }, {}));
+const s = document.createElement('script');
+s.src = '../Resources/browserscore.js';
+document.body.appendChild(s);
+</script>
+</body>
+</html>

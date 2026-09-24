@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Browserscore</title>
+<style>
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 16px; background: #f2f2f5; color: #333; -webkit-text-size-adjust: 100%; }
+h1 { font-size: 24px; margin: 8px 0 4px; color: #2b5fb3; }
+#bs-score { font-size: 40px; font-weight: bold; margin: 6px 0 2px; }
+#bs-status, .intro { color: #888; font-size: 13px; margin-bottom: 10px; }
+h2 { font-size: 14px; color: #888; margin: 18px 4px 6px; text-transform: uppercase; letter-spacing: .5px; font-weight: normal; }
+.spec { background: #fff; border: 1px solid #ddd; margin-bottom: -1px; }
+.spec .head { padding: 9px 12px; font-size: 15px; cursor: pointer; }
+.spec .head .pct { display: inline-block; width: 58px; font-weight: bold; color: #1a8a2e; }
+.spec.has-missing .head .pct { color: #b8860b; }
+.spec .head i { float: right; color: #999; font-style: normal; font-size: 12px; }
+.spec .detail { padding: 4px 12px 10px; font-size: 13px; border-top: 1px dashed #eee; }
+.spec .detail p { margin: 6px 0; line-height: 1.45; word-break: break-word; }
+.emu { color: #7a5a00; }
+.miss { color: #a33; }
+.all { color: #1a8a2e; }
+</style>
+</head>
+<body>
+<h1>Browserscore</h1>
+<div id="bs-score">…</div>
+<div id="bs-status">Načítám testy…</div>
+<p class="intro">Definice testů z browserscore.dev (nástupce css3test.com, MIT). Každá vlastnost, hodnota, selektor, @-pravidlo, dotaz na média a JS rozhraní se zkusí nejdřív přímo v enginu iOS 6 a pak přes přepisovač CSS této aplikace. „Přes přepis“ znamená, že přepisovač umí zápis nahradit něčím, co engine přijme; jde o přiblížení, ne o zaručeně shodné vykreslení. Klepnutím na specifikaci se ukáže, co chybí.</p>
+<div id="bs-results"></div>
+<script src="https://ios6-browser.invalid/cssfix.js"></script>
+<script src="https://ios6-browser.invalid/browserscore-features.js"></script>
+<script src="https://ios6-browser.invalid/browserscore.js"></script>
+</body>
+</html>
