@@ -941,6 +941,22 @@
             return c;
         };
     }
+    // Form controls and replaced elements styled with display:flex (Google's search box) become 2009 boxes after
+    // the CSS rewrite, which draws their text outside the control: they go back to block / inline-block.
+    var unboxControls = function () {
+        try {
+            var controls = document.querySelectorAll('textarea, input, select, button, img, video, canvas, iframe');
+            for (var i = 0; i < controls.length; i++) {
+                var c = controls[i];
+                if (c.__brUnboxed) continue;
+                var disp = getComputedStyle(c).display;
+                if (disp === '-webkit-box') { c.style.display = 'block'; c.__brUnboxed = true; }
+                else if (disp === '-webkit-inline-box') { c.style.display = 'inline-block'; c.__brUnboxed = true; }
+            }
+        } catch (e) {}
+    };
+    onReady(unboxControls);
+    onSettled(unboxControls);
     // The engine knows WebGL only under its experimental name; pages ask for 'webgl' (and 'webgl2', which does not exist here)
     if (HCp && HCp.getContext && !HCp.__brGLAlias) {
         HCp.__brGLAlias = true;

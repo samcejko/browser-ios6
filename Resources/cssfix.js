@@ -695,10 +695,31 @@ var CSSFix = (function () {
         return { grow: grow === null ? '1' : grow, basis: basis };
     }
 
+    // [leftIsAuto, rightIsAuto] for a margin / margin-inline shorthand value
+    function autoMarginSides(prop, value) {
+        var mv = splitWS(value);
+        if (!mv.length) return [false, false];
+        if (prop === 'margin-inline') return [mv[0] === 'auto', (mv.length > 1 ? mv[1] : mv[0]) === 'auto'];
+        if (mv.length === 1) return [mv[0] === 'auto', mv[0] === 'auto'];
+        if (mv.length < 4) return [mv[1] === 'auto', mv[1] === 'auto'];
+        return [mv[3] === 'auto', mv[1] === 'auto'];
+    }
+
+    // the margin shorthand with the lone auto side replaced by 0
+    function replaceAutoMargin(value, leftIsTheAutoSide) {
+        var mv = splitWS(value);
+        if (mv.length === 1) return value;                       // "margin: auto" centres, left alone
+        if (mv.length < 4) { if (mv[1] !== 'auto') return value; mv = [mv[0], mv[1], mv.length > 2 ? mv[2] : mv[0], mv[1]]; }
+        if (leftIsTheAutoSide && mv[3] === 'auto') mv[3] = '0';
+        if (!leftIsTheAutoSide && mv[1] === 'auto') mv[1] = '0';
+        return mv.join(' ');
+    }
+
     function fixDeclarations(decls, ctx, keyframe) {
         var local = null, i, d;
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
+        var autoLeft = false, autoRight = false;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') { if (!local) local = {}; local[d.p] = d.v; }
@@ -708,7 +729,20 @@ var CSSFix = (function () {
             // a column flex container is plain block stacking; the 2009 box model lays nested boxes out
             // repeatedly and deeply nested flex pages (seznam.cz) never finished, so columns stay blocks
             if ((d.p === 'flex-direction' || d.p === 'flex-flow') && /column/i.test(d.v)) columnFlex = true;
+            // horizontal auto margins: which sides does the rule set to auto?
+            var mvl = trim(d.v).toLowerCase();
+            if (d.p === 'margin-left' || d.p === 'margin-inline-start') { if (mvl === 'auto') autoLeft = true; }
+            else if (d.p === 'margin-right' || d.p === 'margin-inline-end') { if (mvl === 'auto') autoRight = true; }
+            else if (d.p === 'margin' || d.p === 'margin-inline') {
+                var ms = autoMarginSides(d.p, mvl);
+                if (ms[0]) autoLeft = true;
+                if (ms[1]) autoRight = true;
+            }
         }
+        // "margin-left: auto" on one side only is how flex items are pushed to the far end. The 2009 box model
+        // resolves that auto margin to all the free space before the flexible siblings get theirs (Google's
+        // result text ended up 0 px wide next to its thumbnail), so the lone auto margin becomes 0.
+        var flexPush = autoLeft !== autoRight;
         var out = [];
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
@@ -791,6 +825,23 @@ var CSSFix = (function () {
                 case 'text-align':
                     push(out, p, lv === 'start' ? 'left' : lv === 'end' ? 'right' : v, imp);
                     continue;
+                case 'margin-left': case 'margin-inline-start':
+                    push(out, 'margin-left', (flexPush && autoLeft && lv === 'auto') ? '0' : v, imp);
+                    continue;
+                case 'margin-right': case 'margin-inline-end':
+                    push(out, 'margin-right', (flexPush && autoRight && lv === 'auto') ? '0' : v, imp);
+                    continue;
+                case 'margin':
+                    push(out, p, flexPush ? replaceAutoMargin(lv, autoLeft) : v, imp);
+                    continue;
+                case 'margin-inline': {
+                    var miv = splitWS(lv), miStart = miv[0], miEnd = miv.length > 1 ? miv[1] : miv[0];
+                    if (flexPush && autoLeft && miStart === 'auto') miStart = '0';
+                    if (flexPush && autoRight && miEnd === 'auto') miEnd = '0';
+                    push(out, 'margin-left', miStart, imp);
+                    push(out, 'margin-right', miEnd, imp);
+                    continue;
+                }
                 case 'overflow': case 'overflow-x': case 'overflow-y':
                     push(out, p, lv === 'overlay' ? 'auto' : lv === 'clip' ? 'hidden' : v, imp);
                     continue;
