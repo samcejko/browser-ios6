@@ -9,6 +9,9 @@ extern NSString * const BRJSEngineDidResetNotification;
 @interface BRJSEngine : NSObject
 
 + (instancetype)shared;
+// A second engine (own thread and context) for lowering scripts, so that stylesheets and documents are not held up
+// behind a large script (the iPad 2 has two cores).
++ (instancetype)transpiler;
 
 @property (nonatomic, readonly) BOOL available;
 

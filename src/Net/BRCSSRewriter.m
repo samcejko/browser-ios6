@@ -77,7 +77,8 @@ static NSString *BRTranspileTag(void)
 @implementation BRCSSRewriter {
     BOOL _loaded;
     BOOL _loadFailed;
-    BOOL _jsfixLoaded;
+    BOOL _jsfixLoaded;                  // in the rewriter's engine (inline scripts of documents)
+    BOOL _jsfixLoadedTranspiler;        // in the transpiler engine (script files)
     BOOL _jsfixFailed;
     NSCache *_transpiled;               // cache key -> lowered script (empty data: unchanged)
     NSMutableDictionary *_pageVars;     // page key -> NSMutableDictionary of --name: value
@@ -103,7 +104,8 @@ static CGFloat g_devicePixelRatio = 1;
     CGRect screen = [UIScreen mainScreen].bounds;
     g_viewportWidth = MIN(screen.size.width, screen.size.height);   // portrait width: the wider layout of the two is fine
     g_devicePixelRatio = [UIScreen mainScreen].scale ?: 1;          // read here, on the main thread
-    [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; if ([BRSettings transpileEnabled]) [r ensureJSFixLoaded]; }];
+    [[BRJSEngine shared] performAsync:^{ [r ensureLoaded]; if ([BRSettings transpileEnabled]) [r ensureJSFixIn:[BRJSEngine shared]]; }];
+    [[BRJSEngine transpiler] performAsync:^{ if ([BRSettings transpileEnabled]) [r ensureJSFixIn:[BRJSEngine transpiler]]; }];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{ @autoreleasepool { [BRCSSRewriter pruneTranspiledCache]; } });
 }
 
@@ -201,16 +203,18 @@ static CGFloat g_devicePixelRatio = 1;
 
 - (void)engineDidReset:(NSNotification *)note
 {
-    _loaded = NO;   // posted on the engine thread
-    _jsfixLoaded = NO;
+    // posted on the engine's own thread
+    if (note.object == [BRJSEngine transpiler]) _jsfixLoadedTranspiler = NO;
+    else { _loaded = NO; _jsfixLoaded = NO; }
 }
 
-// engine queue only: acorn and the transpiler, loaded on the first script that needs them
-- (BOOL)ensureJSFixLoaded
+// the engine's queue only: acorn and the transpiler, loaded on the first script that needs them (the rewriter's
+// engine for inline scripts of documents, the transpiler engine for script files)
+- (BOOL)ensureJSFixIn:(BRJSEngine *)engine
 {
-    if (_jsfixLoaded) return YES;
+    BOOL *loaded = engine == [BRJSEngine transpiler] ? &_jsfixLoadedTranspiler : &_jsfixLoaded;
+    if (*loaded) return YES;
     if (_jsfixFailed) return NO;
-    BRJSEngine *engine = [BRJSEngine shared];
     if (!engine.available) { _jsfixFailed = YES; return NO; }
     NSBundle *b = [NSBundle mainBundle];
     NSString *acornPath = [b pathForResource:@"acorn" ofType:@"js" inDirectory:@"js"] ?: [b pathForResource:@"acorn" ofType:@"js"];
@@ -226,14 +230,15 @@ static CGFloat g_devicePixelRatio = 1;
     if (![engine evaluateScript:acorn sourceName:@"acorn.js"] || ![engine evaluateScript:fix sourceName:@"jsfix.js"]) { _jsfixFailed = YES; return NO; }
     NSString *probe = [engine callFunction:@"JSFix.run" arguments:@[@"let f = (a = 1) => `${a}`;", @"{\"force\":true}"]];
     if (!probe.length) { BRLog(@"jsfix.js self test failed"); _jsfixFailed = YES; return NO; }
-    _jsfixLoaded = YES;
-    BRLog(@"jsfix.js loaded in %ld ms", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+    *loaded = YES;
+    BRLog(@"jsfix.js loaded in %ld ms (%@)", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), engine == [BRJSEngine transpiler] ? @"scripts" : @"documents");
     return YES;
 }
 
-// engine queue only: the ES5 text of a script, nil when it needs nothing (or cannot be lowered)
+// the transpiler engine's queue only: the ES5 text of a script, nil when it needs nothing (or cannot be lowered)
 - (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url
 {
+    BRJSEngine *engine = [BRJSEngine transpiler];
     unsigned long crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
     NSString *key = [NSString stringWithFormat:@"%08lx-%lx-%@", crc, (unsigned long)data.length, BRTranspileTag()];
@@ -249,7 +254,7 @@ static CGFloat g_devicePixelRatio = 1;
         }
     }
     if (cached) return cached.length ? cached : nil;
-    if (![self ensureJSFixLoaded]) return nil;
+    if (![self ensureJSFixIn:engine]) return nil;
     NSString *used = nil;
     NSString *text = BRDecode(data, charset.length ? charset : nil, &used);
     if (!text) return nil;
@@ -259,7 +264,6 @@ static CGFloat g_devicePixelRatio = 1;
         NSData *oj = [NSJSONSerialization dataWithJSONObject:@{ @"url": url.absoluteString } options:0 error:NULL];
         if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     }
-    BRJSEngine *engine = [BRJSEngine shared];
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
     long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
     NSData *out = result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
@@ -273,7 +277,7 @@ static CGFloat g_devicePixelRatio = 1;
     [_transpiled setObject:store forKey:key cost:store.length + 64];
     if (!private) {
         [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
-        [store writeToFile:path atomically:NO];
+        [store writeToFile:path atomically:YES];
     }
     if (data.length > 200000) [engine collectGarbage];
     return out;
@@ -399,16 +403,21 @@ static NSString *BRPageKey(NSURL *url)
           sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion
 {
     if (!completion) return;
+    if ([kind isEqualToString:@"js"]) {
+        // scripts on the transpiler engine: stylesheets and documents do not wait behind them
+        [[BRJSEngine transpiler] performAsync:^{
+            @autoreleasepool {
+                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL] : nil;
+                if (lowered) completion(lowered, @"utf-8");
+                else completion(data, charset);
+            }
+        }];
+        return;
+    }
     [[BRJSEngine shared] performAsync:^{
         @autoreleasepool {
             NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
             NSString *used = nil;
-            if ([kind isEqualToString:@"js"]) {
-                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL] : nil;
-                if (lowered) completion(lowered, @"utf-8");
-                else completion(data, charset);
-                return;
-            }
             if (![self ensureLoaded]) { completion(data, charset); return; }
             NSString *declared = charset.length ? charset : BRSniffCharset(data, kind);
             NSString *text = BRDecode(data, declared, &used);
@@ -427,7 +436,7 @@ static NSString *BRPageKey(NSURL *url)
                 if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
                 if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;
                 // inline scripts in ES2015+ syntax: lowered by the transpiler in the same context
-                if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixLoaded]) opts[@"transpile"] = @YES;
+                if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixIn:[BRJSEngine shared]]) opts[@"transpile"] = @YES;
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

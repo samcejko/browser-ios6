@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>custom elements test</title>
+<script>
+// the old engine has no customElements: take Chrome's away before the shims run
+try { Object.defineProperty(window, 'customElements', { value: undefined, configurable: true, writable: true }); } catch (e) { window.__stripError = String(e); }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<my-greet name="static"></my-greet>
+<div id="host"></div>
+<script>
+// a custom element written as a class (lowered like the network layer does), used in three ways: parsed markup,
+// document.createElement and new
+var src = [
+  'var log = [];',
+  'class MyGreet extends HTMLElement {',
+  '  static get observedAttributes() { return ["name"]; }',
+  '  count = 0;',
+  '  constructor() { super(); this.greeting = "hi"; log.push("ctor"); }',
+  '  connectedCallback() { this.count++; this.textContent = this.greeting + " " + (this.getAttribute("name") || "?") + " " + this.count; log.push("connected"); }',
+  '  attributeChangedCallback(n, o, v) { log.push("attr:" + n + "=" + v); }',
+  '}',
+  'customElements.define("my-greet", MyGreet);',
+  'window.__ceLog = log; window.MyGreet = MyGreet;'
+].join('\n');
+var lowered = JSFix.transpile(src, {});
+(0, eval)(lowered);
+var results = {};
+results.markup = document.querySelector('my-greet').textContent;
+var a = document.createElement('my-greet');
+results.createdHasGreeting = a.greeting === 'hi' && a instanceof MyGreet;
+a.setAttribute('name', 'created');
+document.getElementById('host').appendChild(a);
+var b = new MyGreet();
+results.newIsElement = b.nodeType === 1 && b.tagName === 'MY-GREET' && b instanceof MyGreet && b.greeting === 'hi';
+b.setAttribute('name', 'newed');
+document.getElementById('host').appendChild(b);
+setTimeout(function () {
+  results.createdText = a.textContent;
+  results.newText = b.textContent;
+  document.getElementById('host').removeChild(a);
+  setTimeout(function () {
+    document.getElementById('host').appendChild(a);
+    setTimeout(function () {
+      results.reconnected = a.textContent;
+      results.log = window.__ceLog.join(',');
+      results.stripError = window.__stripError || null;
+      window.__ceResults = results;
+      document.title = 'ce done';
+    }, 50);
+  }, 50);
+}, 50);
+</script>
+</body>
+</html>

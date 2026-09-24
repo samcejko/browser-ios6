@@ -10,6 +10,10 @@ typedef const void *JSVal;
 typedef void *JSObj;
 
 static JSCtx (*p_JSGlobalContextCreate)(void *cls);
+// (optional) a context group per engine: without one this JavaScriptCore may give every context of an app that does
+// not link it the same shared VM, which two threads must not use at once
+static void *(*p_JSContextGroupCreate)(void);
+static JSCtx (*p_JSGlobalContextCreateInGroup)(void *group, void *cls);
 static void (*p_JSGlobalContextRelease)(JSCtx ctx);
 static JSVal (*p_JSEvaluateScript)(JSCtx ctx, JSStr script, JSObj thisObject, JSStr sourceURL, int startingLineNumber, JSVal *exception);
 static JSStr (*p_JSStringCreateWithCFString)(CFStringRef string);
@@ -71,6 +75,8 @@ static BOOL BRResolveJSC(void)
     RESOLVE(JSValueToObject);
     RESOLVE(JSGarbageCollect);
 #undef RESOLVE
+    p_JSContextGroupCreate = BRLookup(handle, "JSContextGroupCreate");
+    p_JSGlobalContextCreateInGroup = BRLookup(handle, "JSGlobalContextCreateInGroup");
     resolved = YES;
     return YES;
 }
@@ -82,6 +88,7 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
     NSCondition *_condition;
     NSMutableArray *_queue;
     JSCtx _ctx;
+    void *_group;       // this engine's context group (kept for the contexts made after a reset)
     BOOL _available;
 }
 
@@ -89,11 +96,19 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
 {
     static BRJSEngine *engine;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ engine = [[BRJSEngine alloc] init]; });
+    dispatch_once(&once, ^{ engine = [[BRJSEngine alloc] initWithName:@"com.samcejko.browser.js"]; });
     return engine;
 }
 
-- (instancetype)init
++ (instancetype)transpiler
+{
+    static BRJSEngine *engine;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ engine = [[BRJSEngine alloc] initWithName:@"com.samcejko.browser.js2"]; });
+    return engine;
+}
+
+- (instancetype)initWithName:(NSString *)name
 {
     self = [super init];
     if (self) {
@@ -101,7 +116,7 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
         _condition = [[NSCondition alloc] init];
         _queue = [NSMutableArray array];
         _thread = [[NSThread alloc] initWithTarget:self selector:@selector(threadMain) object:nil];
-        _thread.name = @"com.samcejko.browser.js";
+        _thread.name = name;
         _thread.stackSize = 16 * 1024 * 1024;   // Babel's traversal recurses far deeper than the 512 KB default allows
         [_thread start];
     }
@@ -275,7 +290,11 @@ static NSString * const BRContextPrelude =
 {
     if (!_available) return NO;
     if (!_ctx) {
-        _ctx = p_JSGlobalContextCreate(NULL);
+        if (p_JSContextGroupCreate && p_JSGlobalContextCreateInGroup) {
+            if (!_group) _group = p_JSContextGroupCreate();
+            _ctx = _group ? p_JSGlobalContextCreateInGroup(_group, NULL) : NULL;
+        }
+        if (!_ctx) _ctx = p_JSGlobalContextCreate(NULL);
         if (!_ctx) {
             BRLog(@"JSGlobalContextCreate failed");
             return NO;

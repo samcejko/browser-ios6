@@ -220,6 +220,7 @@
     BRLog(@"Memory warning at %ld MB", (long)BRResidentMemoryMB());
     [[BRConnectionPool shared] drain];
     [[BRJSEngine shared] resetContext];   // the CSS rewriter context is recreated on the next use
+    [[BRJSEngine transpiler] resetContext];
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application

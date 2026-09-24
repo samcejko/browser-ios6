@@ -835,9 +835,13 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
-    } else if ([path isEqualToString:@"/browserscore.js"] || [path isEqualToString:@"/cssfix.js"]) {
-        // the browserscore runner and the CSS rewriter itself (the runner asks it what a page would get)
+    } else if ([path isEqualToString:@"/browserscore.js"] || [path isEqualToString:@"/cssfix.js"] || [path isEqualToString:@"/jsfix.js"]) {
+        // the browserscore runner, the CSS rewriter itself (the runner asks it what a page would get) and the
+        // transpiler (for tests on the device)
         NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"js"];
+        body = file ? [NSData dataWithContentsOfFile:file] : nil;
+    } else if ([path isEqualToString:@"/acorn.js"]) {
+        NSString *file = [[NSBundle mainBundle] pathForResource:@"acorn" ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
     } else if ([path isEqualToString:@"/browserscore-features.js"]) {
         // flattened browserscore/features definitions, generated at build time

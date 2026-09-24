@@ -402,27 +402,46 @@
         var list = [root].concat(Array.prototype.slice.call(root.querySelectorAll ? root.querySelectorAll('*') : []));
         for (var i = 0; i < list.length; i++) if (list[i].__brUpgraded && list[i].disconnectedCallback) try { list[i].disconnectedCallback(); } catch (e) {}
     }
-    function upgradeElement(el) {
+    // connecting: the element was just inserted (an upgraded one gets connectedCallback again)
+    function upgradeElement(el, connecting) {
         var name = el.tagName ? el.tagName.toLowerCase() : '';
         var isAttr = el.getAttribute && el.getAttribute('is');
         var ctor = registry[name] || (isAttr && registry[isAttr.toLowerCase()]);
-        if (!ctor || el.__brUpgraded) return;
+        if (!ctor) return;
+        if (el.__brUpgraded) {
+            if (connecting && el.connectedCallback) try { el.connectedCallback(); } catch (e0) {}
+            return;
+        }
         el.__brUpgraded = true;
-        try { if (Object.setPrototypeOf) Object.setPrototypeOf(el, ctor.prototype); else el.__proto__ = ctor.prototype; } catch (e) {}
-        try { ctor.call(el); } catch (e2) {}   // ES5 constructors initialise fields; classes cannot be called and are skipped
+        if (!el.__brConstructed) {
+            // (classes are lowered to ES5 by the network layer: their constructors can be called on the element)
+            try { if (Object.setPrototypeOf) Object.setPrototypeOf(el, ctor.prototype); else el.__proto__ = ctor.prototype; } catch (e) {}
+            try { ctor.call(el); } catch (e2) { if (window.console && console.error) console.error(e2); }
+        }
         try {
             var observed = ctor.observedAttributes || [];
             for (var i = 0; i < observed.length; i++) if (el.hasAttribute(observed[i]) && el.attributeChangedCallback) el.attributeChangedCallback(observed[i], null, el.getAttribute(observed[i]), null);
+            // later changes of the observed attributes
+            if (observed.length && el.attributeChangedCallback && window.MutationObserver) {
+                var attrObserver = new MutationObserver(function (records) {
+                    for (var r = 0; r < records.length; r++) {
+                        var an = records[r].attributeName;
+                        try { el.attributeChangedCallback(an, records[r].oldValue, el.getAttribute(an), null); } catch (e5) { if (window.console && console.error) console.error(e5); }
+                    }
+                });
+                attrObserver.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: Array.prototype.slice.call(observed) });
+                el.__brAttrObserver = attrObserver;
+            }
         } catch (e3) {}
         try { if (el.connectedCallback && document.documentElement.contains(el)) el.connectedCallback(); } catch (e4) {}
     }
-    function upgradeTree(root) {
+    function upgradeTree(root, connecting) {
         if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) return;
-        if (root.nodeType === 1) upgradeElement(root);
+        if (root.nodeType === 1) upgradeElement(root, connecting);
         var all = root.querySelectorAll ? root.querySelectorAll('*') : [];
         for (var i = 0; i < all.length; i++) {
             var t = all[i].tagName.toLowerCase();
-            if (t.indexOf('-') >= 0 || all[i].hasAttribute('is')) upgradeElement(all[i]);
+            if (t.indexOf('-') >= 0 || all[i].hasAttribute('is')) upgradeElement(all[i], connecting);
         }
     }
     if (!window.customElements || window.customElements.__brStub) {
@@ -447,7 +466,15 @@
             upgrade: function (root) { upgradeTree(root); }
         };
         try { window.customElements = registryAPI; } catch (e) { try { Object.defineProperty(window, 'customElements', { value: registryAPI, configurable: true }); } catch (e2) {} }
-        observeAdded(function (el) { if (Object.keys(registry).length) upgradeTree(el); });
+        observeAdded(function (el) { if (Object.keys(registry).length) upgradeTree(el, true); });
+        // document.createElement('my-el') of a defined element runs its constructor at once (as the native API does)
+        var ceCreate = document.createElement, ceNativeCreate = ceCreate;
+        document.createElement = function (name) {
+            var el = ceCreate.apply(document, arguments);
+            var n = typeof name === 'string' ? name.toLowerCase() : '';
+            if (n.indexOf('-') > 0 && registry[n]) upgradeElement(el, false);
+            return el;
+        };
         // :defined (rewritten to :not(.br-undefined)): custom elements without a definition carry the class; only on
         // pages whose styles use :defined (the manifest block turns this on)
         window.__brMarkUndefined = function (root) {
@@ -466,7 +493,20 @@
             var callable = false;
             try { NativeHTMLElement.call(document.createElement('div')); callable = true; } catch (e) {}
             if (callable) return;
-            var Wrapped = function HTMLElement() { return this; };
+            // called on the element being upgraded it is that element; `new MyElement()` gets a real element of the name
+            // the class was defined with (the constructor continues on it)
+            var Wrapped = function HTMLElement() {
+                var isElement = false;
+                try { isElement = !!this && this.nodeType === 1; } catch (e4) {}   // (newer engines throw on a non-node)
+                if (!this || isElement) return this;
+                var proto = Object.getPrototypeOf(this), name = null;
+                for (var k in registry) if (registry.hasOwnProperty(k) && registry[k].prototype === proto) { name = k; break; }
+                if (!name) return this;
+                var el = ceNativeCreate.call(document, name);
+                el.__brConstructed = true;
+                try { el.__proto__ = proto; } catch (e3) {}
+                return el;
+            };
             Wrapped.prototype = NativeHTMLElement.prototype;
             try { Object.defineProperty(Wrapped, 'name', { value: 'HTMLElement' }); } catch (e2) {}
             window.HTMLElement = Wrapped;
