@@ -182,7 +182,7 @@
     if (!navigator.sendBeacon) navigator.sendBeacon = function (url, data) { try { var x = new XMLHttpRequest(); x.open('POST', url, true); x.send(data); } catch (e) {} return true; };
     if (!navigator.languages) try { navigator.languages = [navigator.language || 'en']; } catch (e4) {}
     if (!navigator.connection) navigator.connection = { effectiveType: '3g', saveData: false, addEventListener: function () {} };
-    if (!navigator.clipboard) navigator.clipboard = { writeText: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; }, readText: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; } };
+    // navigator.clipboard is provided by shims-extra.js (writes go to the app)
     if (!navigator.serviceWorker) navigator.serviceWorker = { register: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; }, getRegistrations: function () { return window.Promise ? window.Promise.resolve([]) : null; }, addEventListener: function () {}, controller: null, ready: window.Promise ? new window.Promise(function () {}) : null };
     if (!navigator.storage) navigator.storage = { estimate: function () { return window.Promise ? window.Promise.resolve({ quota: 0, usage: 0 }) : null; } };
     if (!('onLine' in navigator)) navigator.onLine = true;

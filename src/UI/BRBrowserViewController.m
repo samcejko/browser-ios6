@@ -126,7 +126,7 @@ static const CGFloat BRControlHeight = 30;
 @end
 
 // Our own entries in the share sheet: reader, find on page, save as PDF (drawn icons, a block each)
-typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument };
+typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument, BRActivityIconCode };
 
 @interface BRActionActivity : UIActivity
 @property (nonatomic, copy) NSString *title;
@@ -162,6 +162,8 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
         handle.lineWidth = side * 0.09;
         handle.lineCapStyle = kCGLineCapRound;
         [handle stroke];
+    } else if (self.icon == BRActivityIconCode) {
+        [@"</>" drawInRect:CGRectMake(0, side * 0.3, side, side * 0.4) withFont:[UIFont boldSystemFontOfSize:side * 0.3] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
     } else {
         // a sheet with a folded corner and "PDF" letters
         CGFloat x = side * 0.27, y = side * 0.16, w = side * 0.46, h = side * 0.62, fold = side * 0.13;
@@ -599,8 +601,11 @@ static NSCache *BRFaviconCache(void)
     if (!iconURL) iconURL = [NSURL URLWithString:[NSString stringWithFormat:@"%@://%@/favicon.ico", pageURL.scheme, pageURL.host]];
     if (!iconURL) return;
     [BRFaviconCache() setObject:[NSNull null] forKey:host];   // fetch in progress; replaced by the image or left as a marker
+    NSMutableURLRequest *iconRequest = [NSMutableURLRequest requestWithURL:iconURL cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:20];
+    iconRequest.mainDocumentURL = pageURL;   // a subresource of the page, not a new main document
+    [iconRequest setValue:@"image/*" forHTTPHeaderField:@"Accept"];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        NSData *data = [NSData dataWithContentsOfURL:iconURL];
+        NSData *data = [NSURLConnection sendSynchronousRequest:iconRequest returningResponse:NULL error:NULL];
         UIImage *image = data.length ? [UIImage imageWithData:data] : nil;
         UIImage *small = nil;
         if (image && image.size.width > 0 && image.size.height > 0) {
@@ -778,6 +783,33 @@ static NSCache *BRFaviconCache(void)
     sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
     sheet.tag = 102;
     [sheet showFromRect:[self.view convertRect:rect fromView:bar] inView:self.view animated:YES];
+}
+
+// Long press on the plus button: the recently closed tabs, newest first
+- (void)tabBar:(BRTabBar *)bar didLongPressPlusFromRect:(CGRect)rect
+{
+    if (!self.closedTabs.count) return;
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:L(@"Recently closed") delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    for (NSDictionary *t in [self.closedTabs reverseObjectEnumerator]) {
+        NSString *title = [self displayTitleForTab:t];
+        if (title.length > 60) title = [[title substringToIndex:57] stringByAppendingString:@"..."];
+        [sheet addButtonWithTitle:title];
+    }
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    sheet.tag = 104;
+    [sheet showFromRect:[self.view convertRect:rect fromView:bar] inView:self.view animated:YES];
+}
+
+- (void)reopenClosedTabAtReverseIndex:(NSInteger)index
+{
+    if (index < 0 || (NSUInteger)index >= self.closedTabs.count || self.tabs.count >= 12) return;
+    NSUInteger real = self.closedTabs.count - 1 - (NSUInteger)index;
+    NSDictionary *closed = self.closedTabs[real];
+    [self.closedTabs removeObjectAtIndex:real];
+    [self storeCurrentTabState];
+    NSUInteger at = MIN(self.currentTab + 1, self.tabs.count);
+    [self.tabs insertObject:[closed mutableCopy] atIndex:at];
+    [self openTabAtIndex:at];
 }
 
 - (void)handleTabMenuChoice:(NSString *)choice
@@ -1671,6 +1703,38 @@ static void BRWebThreadLock(void)
     return s;
 }
 
+#pragma mark - Print, view source
+
+- (void)printPage
+{
+    if (![UIPrintInteractionController isPrintingAvailable]) return;
+    UIPrintInteractionController *controller = [UIPrintInteractionController sharedPrintController];
+    UIPrintInfo *info = [UIPrintInfo printInfo];
+    info.outputType = UIPrintInfoOutputGeneral;
+    info.jobName = self.currentTitle.length ? self.currentTitle : ((self.webView.request.URL ?: self.currentURL).host ?: @"Page");
+    controller.printInfo = info;
+    controller.showsPageRange = YES;
+    controller.printFormatter = [self.webView viewPrintFormatter];
+    CGRect rect = self.shareButton.superview ? [self.view convertRect:self.shareButton.frame fromView:self.shareButton.superview] : CGRectMake(20, 20, 1, 1);
+    if (BRIsPad()) [controller presentFromRect:rect inView:self.view animated:YES completionHandler:nil];
+    else [controller presentAnimated:YES completionHandler:nil];
+}
+
+// The page's HTML (as the engine holds it now) in a monospaced view
+- (void)showSource
+{
+    NSString *source = [self.webView stringByEvaluatingJavaScriptFromString:@"document.documentElement.outerHTML"] ?: @"";
+    NSURL *pageURL = self.webView.request.URL ?: self.currentURL;
+    if (source.length > 1500000) source = [[source substringToIndex:1500000] stringByAppendingString:@"\n\n[...]"];
+    BOOL dark = [BRTheme shared].isDark;
+    NSMutableString *html = [NSMutableString string];
+    [html appendFormat:@"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>%@</title>", BRHTMLEscape([NSString stringWithFormat:L(@"Source of %@"), pageURL.host ?: @""])];
+    [html appendFormat:@"<style>body{margin:0;padding:12px;background:%@;color:%@;font:12px Menlo,Courier,monospace}pre{white-space:pre-wrap;word-wrap:break-word;margin:0}"
+                        ".u{font-family:Helvetica,sans-serif;color:#888;margin-bottom:8px;word-break:break-all}</style></head><body>", dark ? @"#1c1c1e" : @"#fff", dark ? @"#ddd" : @"#222"];
+    [html appendFormat:@"<div class=\"u\">%@</div><pre>%@</pre></body></html>", BRHTMLEscape(pageURL.absoluteString ?: @""), BRHTMLEscape(source)];
+    [self.webView loadHTMLString:html baseURL:nil];
+}
+
 #pragma mark - Save as PDF
 
 // Renders the page with the print formatter into an A4 PDF in the downloads folder.
@@ -1798,7 +1862,12 @@ static void BRWebThreadLock(void)
         pdf.type = @"com.samcejko.browser.pdf";
         pdf.icon = BRActivityIconDocument;
         pdf.action = ^{ [weakSelf savePageAsPDF]; };
-        [activities addObjectsFromArray:@[reader, find, pdf]];
+        BRActionActivity *source = [[BRActionActivity alloc] init];
+        source.title = L(@"View source");
+        source.type = @"com.samcejko.browser.source";
+        source.icon = BRActivityIconCode;
+        source.action = ^{ [weakSelf showSource]; };
+        [activities addObjectsFromArray:@[reader, find, pdf, source]];
         [shared addObject:[self.webView viewPrintFormatter]];   // brings the system "Print" entry (AirPrint)
     }
     UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:shared applicationActivities:activities];
@@ -1859,6 +1928,7 @@ static void BRWebThreadLock(void)
     if (href.length) {
         [sheet addButtonWithTitle:L(@"Open")];
         [sheet addButtonWithTitle:L(@"Open in new tab")];
+        if (self.tabs.count < 12) [sheet addButtonWithTitle:L(@"Open in background")];
         [sheet addButtonWithTitle:L(@"Copy link")];
         [sheet addButtonWithTitle:L(@"Share link")];
         [sheet addButtonWithTitle:L(@"Open in Safari")];
@@ -1876,8 +1946,11 @@ static void BRWebThreadLock(void)
 
 - (void)saveImageAtURL:(NSURL *)url
 {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:60];
+    request.mainDocumentURL = self.webView.request.URL ?: self.currentURL;
+    [request setValue:@"image/*" forHTTPHeaderField:@"Accept"];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSData *data = [NSData dataWithContentsOfURL:url];   // goes through BRURLProtocol (WebP is converted there)
+        NSData *data = [NSURLConnection sendSynchronousRequest:request returningResponse:NULL error:NULL];   // through BRURLProtocol (WebP converted there)
         UIImage *image = data.length ? [UIImage imageWithData:data] : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (image) UIImageWriteToSavedPhotosAlbum(image, nil, NULL, NULL);
@@ -1895,6 +1968,10 @@ static void BRWebThreadLock(void)
     }
     if (sheet.tag == 103) {
         [self goToHistoryItemAtIndex:index];
+        return;
+    }
+    if (sheet.tag == 104) {
+        [self reopenClosedTabAtReverseIndex:index];
         return;
     }
     if (sheet.tag == 101) {
@@ -1918,6 +1995,7 @@ static void BRWebThreadLock(void)
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     if ([choice isEqualToString:L(@"Open")] && link) [self loadURL:link];
     else if ([choice isEqualToString:L(@"Open in new tab")] && link) [self openURLInNewTab:link];
+    else if ([choice isEqualToString:L(@"Open in background")] && link) [self openURLInBackgroundTab:link title:text];
     else if ([choice isEqualToString:L(@"Copy link")] && link) { pasteboard.string = href; }
     else if ([choice isEqualToString:L(@"Share link")] && link) [self shareURL:link title:text fromRect:self.shareButton.frame inView:self.shareButton.superview];
     else if ([choice isEqualToString:L(@"Open in Safari")] && link) [[UIApplication sharedApplication] openURL:link];
@@ -1925,6 +2003,16 @@ static void BRWebThreadLock(void)
     else if ([choice isEqualToString:L(@"Copy image address")] && image) { pasteboard.string = img; }
     else if ([choice isEqualToString:L(@"Save image")] && image) [self saveImageAtURL:image];
     self.pressedLink = nil;
+}
+
+// A tab entry right after the current one; it loads when the user switches to it (one live web view).
+- (void)openURLInBackgroundTab:(NSURL *)url title:(NSString *)title
+{
+    if (!url || self.tabs.count >= 12) return;
+    NSUInteger at = MIN(self.currentTab + 1, self.tabs.count);
+    [self.tabs insertObject:[@{ @"url": url.absoluteString ?: @"", @"title": title.length ? title : (url.host ?: @"") } mutableCopy] atIndex:at];
+    [self updateTabsButton];
+    [self saveTabs];
 }
 
 // window.open() and target="_blank" links arrive from shims-extra.js as brtab:<percent-encoded URL>
@@ -1956,6 +2044,17 @@ static void BRWebThreadLock(void)
     if ([scheme isEqualToString:@"brlog"]) {
         NSString *spec = url.absoluteString.length > 6 ? [url.absoluteString substringFromIndex:6] : @"";
         BRLog(@"Page: %@", [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec);
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brcopy"]) {
+        // navigator.clipboard.writeText / execCommand('copy') from shims-extra.js
+        NSString *spec = url.absoluteString.length > 7 ? [url.absoluteString substringFromIndex:7] : @"";
+        NSString *text = [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec;
+        if (text.length) [UIPasteboard generalPasteboard].string = text;
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brprint"]) {
+        [self printPage];
         return NO;
     }
     if ([scheme isEqualToString:@"brshare"]) {

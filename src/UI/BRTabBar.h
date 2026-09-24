@@ -8,6 +8,7 @@
 - (void)tabBarDidRequestNewTab:(BRTabBar *)bar;
 @optional
 - (void)tabBar:(BRTabBar *)bar didLongPressTabAtIndex:(NSUInteger)index fromRect:(CGRect)rect;   // rect in the bar's coordinates
+- (void)tabBar:(BRTabBar *)bar didLongPressPlusFromRect:(CGRect)rect;                              // recently closed tabs
 @end
 
 // Safari (iPad, iOS 6) style tab strip under the address bar: drawn tabs, a close mark on the

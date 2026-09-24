@@ -97,6 +97,15 @@
     for (i = heads.length - 1; i >= 0; i--) {
         if ((heads[i].textContent || '').replace(/\s+/g, ' ').trim() === (title || '').replace(/\s+/g, ' ').trim()) heads[i].parentNode.removeChild(heads[i]);
     }
+    // inline elements that touch each other without whitespace ("Name" + "Role") get a space between them
+    var inlines = clone.querySelectorAll('span,a,time,b,strong,em,i');
+    for (i = 0; i < inlines.length; i++) {
+        var cur = inlines[i], nxt = cur.nextSibling;
+        if (!nxt || nxt.nodeType !== 1 || !cur.parentNode || !/^(SPAN|A|TIME|B|STRONG|EM|I)$/.test(nxt.tagName)) continue;
+        var left = cur.textContent || '', right = nxt.textContent || '';
+        if (!left || !right || /\s$/.test(left) || /^\s/.test(right) || /[,.;:!?)\-]$/.test(left) || /^[,.;:!?)\-]/.test(right)) continue;
+        cur.parentNode.insertBefore(doc.createTextNode(' '), nxt);
+    }
     var bylineEl = doc.querySelector('[rel="author"], .author, .byline, [itemprop="author"], meta[name="author"]');
     var byline = bylineEl ? (bylineEl.content || bylineEl.textContent || '').replace(/\s+/g, ' ').slice(0, 120) : '';
     var html = clone.innerHTML;

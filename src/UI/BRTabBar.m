@@ -35,6 +35,9 @@ static const CGFloat BRPlusWidth = 34;
         [self addSubview:self.scrollView];
         self.plusButton = [UIButton buttonWithType:UIButtonTypeCustom];
         [self.plusButton addTarget:self action:@selector(plusTapped) forControlEvents:UIControlEventTouchUpInside];
+        UILongPressGestureRecognizer *plusPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(plusPressed:)];
+        plusPress.minimumPressDuration = 0.5;
+        [self.plusButton addGestureRecognizer:plusPress];
         [self addSubview:self.plusButton];
         self.closeButton = [UIButton buttonWithType:UIButtonTypeCustom];
         [self.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -155,6 +158,14 @@ static const CGFloat BRPlusWidth = 34;
 - (void)plusTapped
 {
     [self.delegate tabBarDidRequestNewTab:self];
+}
+
+- (void)plusPressed:(UILongPressGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    if ([self.delegate respondsToSelector:@selector(tabBar:didLongPressPlusFromRect:)]) {
+        [self.delegate tabBar:self didLongPressPlusFromRect:[self convertRect:self.plusButton.bounds fromView:self.plusButton]];
+    }
 }
 
 @end

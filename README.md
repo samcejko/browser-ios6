@@ -51,7 +51,14 @@ the app around it:
   on reload (desktop/mobile version remembered per site, reload without cache), "Add bookmark" in the share sheet,
   private browsing (no history or cache, cookies restored afterwards), search suggestions from
   DuckDuckGo while typing, a reader view that extracts the article of a page into a clean layout,
-  long press on a tab (close others, duplicate), pull to refresh.
+  long press on a tab (close others, duplicate, reopen a closed tab), pull to refresh, swipe in
+  from the screen edge for back/forward, long press on the arrows for the history behind them,
+  "Search" and "Share" in the text selection menu, `javascript:` bookmarklets in the address bar,
+  international domain names (punycode), HTTP Basic authentication dialogs, printing (AirPrint) and
+  "Save as PDF" from the share sheet, "Find on page" in the share sheet.
+- **Privacy settings**: third-party cookies blocked (like Safari), Do Not Track / Global Privacy
+  Control headers, cookie banners of the common consent services hidden by injected CSS, an image
+  switch for slow connections, and an inverted "dark pages" mode.
 - Planned: tab strip on iPhone.
 
 ## Building (GitHub Actions)
@@ -90,4 +97,7 @@ Local helpers (Windows PowerShell, no git required; settings in `tools/local.jso
 
 Debugging over SSH: `uiopen browser:https://example.com` opens a page, `uiopen browser:snapshot`
 writes the current screen to the app's `tmp/screen.png`, and `/var/log/syslog` carries the app's log
-lines (`[Browser]`: main documents, DNS fallbacks, connect timeouts, load times, memory).
+lines (`[Browser]`: main documents, DNS fallbacks, connect timeouts, load times, memory). More
+commands: `browser:eval?js=`, `browser:evalfile?path=`, `browser:dump`, `browser:set?key=&value=&type=`,
+`browser:reader`, `browser:pdf`, `browser:history`, `browser:goback?n=`, `browser:type?text=`,
+`browser:auth?user=&password=`.

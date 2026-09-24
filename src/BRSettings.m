@@ -251,8 +251,24 @@ static void BRSetBoolSetting(NSString *key, BOOL value)
     return [NSURL URLWithString:[base stringByAppendingString:q ?: @""]];
 }
 
++ (NSString *)homePageURLString
+{
+    NSString *s = [[NSUserDefaults standardUserDefaults] stringForKey:@"BRHomePage"];
+    return [[NSURL URLWithString:s ?: @""].scheme.lowercaseString hasPrefix:@"http"] ? s : nil;
+}
+
++ (void)setHomePageURLString:(NSString *)urlString
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (urlString.length) [d setObject:urlString forKey:@"BRHomePage"];
+    else [d removeObjectForKey:@"BRHomePage"];
+    [d synchronize];
+}
+
 + (NSURL *)homeURL
 {
+    NSString *custom = [self homePageURLString];
+    if (custom) return [NSURL URLWithString:custom];
     return [[NSBundle mainBundle] URLForResource:@"home" withExtension:@"html"];
 }
 

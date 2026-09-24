@@ -49,7 +49,9 @@
 + (void)setPagesDark:(BOOL)enabled;
 
 + (NSURL *)searchURLForQuery:(NSString *)query;
-+ (NSURL *)homeURL;                      // the bundled start page
-+ (BOOL)isHomeURL:(NSURL *)url;
++ (NSURL *)homeURL;                      // the chosen home page, or the bundled start page
++ (BOOL)isHomeURL:(NSURL *)url;          // the bundled start page (address bar stays empty for it)
++ (NSString *)homePageURLString;         // nil = the bundled start page
++ (void)setHomePageURLString:(NSString *)urlString;
 
 @end

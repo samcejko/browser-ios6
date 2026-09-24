@@ -26,6 +26,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowUserAgent = 0,
     BRFeatureRowSearchEngine,
     BRFeatureRowTextSize,
+    BRFeatureRowHomePage,
     BRFeatureRowLoadImages,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
@@ -163,6 +164,11 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
             case BRFeatureRowTextSize:
                 [self configureChoiceCell:cell title:L(@"Text size") value:[NSString stringWithFormat:@"%ld %%", (long)[BRSettings textSizePercent]]];
                 break;
+            case BRFeatureRowHomePage: {
+                NSString *home = [BRSettings homePageURLString];
+                [self configureChoiceCell:cell title:L(@"Home page") value:home ? ([NSURL URLWithString:home].host ?: home) : L(@"Start page")];
+                break;
+            }
             case BRFeatureRowLoadImages:
                 cell.textLabel.text = L(@"Load images");
                 cell.accessoryView = [self switchWithValue:[BRSettings loadImages] tag:tag];
@@ -270,13 +276,18 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == BRSettingsSectionFeatures &&
-        (indexPath.row == BRFeatureRowUserAgent || indexPath.row == BRFeatureRowSearchEngine || indexPath.row == BRFeatureRowTextSize)) {
-        NSString *title = indexPath.row == BRFeatureRowUserAgent ? L(@"Page version") : indexPath.row == BRFeatureRowSearchEngine ? L(@"Search engine") : L(@"Text size");
+        (indexPath.row == BRFeatureRowUserAgent || indexPath.row == BRFeatureRowSearchEngine || indexPath.row == BRFeatureRowTextSize || indexPath.row == BRFeatureRowHomePage)) {
+        NSString *title = indexPath.row == BRFeatureRowUserAgent ? L(@"Page version") : indexPath.row == BRFeatureRowSearchEngine ? L(@"Search engine") :
+                          indexPath.row == BRFeatureRowHomePage ? L(@"Home page") : L(@"Text size");
         UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
         if (indexPath.row == BRFeatureRowUserAgent) {
             for (NSInteger m = 0; m <= 2; m++) [sheet addButtonWithTitle:[BRSettings userAgentModeTitle:m]];
         } else if (indexPath.row == BRFeatureRowSearchEngine) {
             for (NSInteger e = 0; e < [BRSettings searchEngineCount]; e++) [sheet addButtonWithTitle:[BRSettings searchEngineTitle:e]];
+        } else if (indexPath.row == BRFeatureRowHomePage) {
+            [sheet addButtonWithTitle:L(@"Built-in start page")];
+            NSURL *current = [BRURLProtocol lastMainDocumentURL];
+            if (current.host.length) [sheet addButtonWithTitle:[NSString stringWithFormat:@"%@ (%@)", L(@"Current page"), current.host]];
         } else {
             for (NSNumber *p in [self textSizes]) [sheet addButtonWithTitle:[NSString stringWithFormat:@"%@ %%", p]];
         }
@@ -321,6 +332,9 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
     } else if (actionSheet.tag == BRFeatureRowSearchEngine) {
         if (buttonIndex >= [BRSettings searchEngineCount]) return;
         [BRSettings setSearchEngine:buttonIndex];
+    } else if (actionSheet.tag == BRFeatureRowHomePage) {
+        if (buttonIndex == 0) [BRSettings setHomePageURLString:nil];
+        else [BRSettings setHomePageURLString:[BRURLProtocol lastMainDocumentURL].absoluteString];
     } else if (actionSheet.tag == BRFeatureRowTextSize) {
         NSArray *sizes = [self textSizes];
         if ((NSUInteger)buttonIndex >= sizes.count) return;

@@ -174,9 +174,17 @@
     }
     if ([target isEqualToString:@"snapshot"]) {
         // browser:snapshot writes the screen to tmp/screen.png (checking the UI over SSH)
-        UIView *view = self.browserViewController.view;
-        UIGraphicsBeginImageContextWithOptions(view.bounds.size, YES, 1.0);
-        [view.layer renderInContext:UIGraphicsGetCurrentContext()];
+        // every visible window (alerts and action sheets live in windows of their own)
+        CGSize size = [UIScreen mainScreen].bounds.size;
+        UIGraphicsBeginImageContextWithOptions(size, YES, 1.0);
+        CGContextRef ctx = UIGraphicsGetCurrentContext();
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.hidden || w.alpha <= 0) continue;
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, w.frame.origin.x, w.frame.origin.y);
+            [w.layer renderInContext:ctx];
+            CGContextRestoreGState(ctx);
+        }
         UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"screen.png"];

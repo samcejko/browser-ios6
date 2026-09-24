@@ -95,9 +95,18 @@
         return sendToApp('brtab', url);
     }
     function frameExists(name) { try { return !!window.frames[name]; } catch (e) { return false; } }
+    // Popup blocking: window.open only counts within a moment of a tap, click or key press
+    var lastGesture = 0, blockedPopups = 0;
+    function noteGesture() { lastGesture = Date.now(); }
+    var gestureEvents = ['touchend', 'click', 'keydown', 'mouseup', 'submit'];
+    for (var ge = 0; ge < gestureEvents.length; ge++) document.addEventListener(gestureEvents[ge], noteGesture, true);
     window.open = function (url, name, features) {
         if (name === '_self' || name === '_top' || name === '_parent') { if (url) window.location.href = url; return window; }
         if (name && frameExists(name)) { try { window.frames[name].location.href = url; } catch (e) {} return window.frames[name]; }
+        if (Date.now() - lastGesture > 2000) {
+            if (blockedPopups++ < 3) sendToApp('brlog', 'Popup blocked: ' + String(url || '').slice(0, 200));
+            return null;
+        }
         if (!url || url === 'about:blank' || String(url).charAt(0) === '#') url = '';
         var fake = { closed: false, focus: noop, blur: noop, postMessage: noop, opener: window, name: name || '', addEventListener: noop, removeEventListener: noop,
                      document: { write: noop, writeln: noop, close: noop, open: noop, body: null, title: '' } };
@@ -148,6 +157,27 @@
         };
         navigator.canShare = function (data) { return !!(data && (data.url || data.text || data.title)); };
     }
+    // Clipboard writes go to the system pasteboard through the app; window.print() opens the print dialog
+    navigator.clipboard = {
+        writeText: function (text) { return sendToApp('brcopy', String(text)) ? resolved() : rejectWith('NotAllowedError', 'copy failed')(); },
+        write: function () { return rejectWith('NotAllowedError', 'only text can be copied')(); },
+        readText: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); },
+        read: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); }
+    };
+    window.print = function () { sendToApp('brprint', '1'); };
+    try {
+        var execCommandOrig = document.execCommand;
+        document.execCommand = function (cmd) {
+            var r = false;
+            try { r = execCommandOrig.apply(document, arguments); } catch (e) {}
+            if (String(cmd).toLowerCase() === 'copy') {
+                var t = String(window.getSelection()), a = document.activeElement;
+                if (!t && a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && typeof a.selectionStart === 'number') t = String(a.value || '').substring(a.selectionStart, a.selectionEnd);
+                if (t) { sendToApp('brcopy', t); r = true; }
+            }
+            return r;
+        };
+    } catch (e) {}
 
     // ---- Pointer events: touches and mouse events are mirrored as pointer events
     if (!window.PointerEvent) {

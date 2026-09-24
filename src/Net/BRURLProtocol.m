@@ -806,7 +806,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *accept = BRHeader(self.request.allHTTPHeaderFields, @"Accept") ?: @"";
     NSData *body = [NSData data];
     NSString *type = @"text/javascript";
-    if ([accept rangeOfString:@"image"].location != NSNotFound) {
+    if ([accept rangeOfString:@"image"].location != NSNotFound || BRLooksLikeImageRequest(self.request)) {
         body = [NSData dataWithBytes:BRBlankGIF length:sizeof(BRBlankGIF)];
         type = @"image/gif";
     } else if ([accept rangeOfString:@"text/css"].location != NSNotFound) {

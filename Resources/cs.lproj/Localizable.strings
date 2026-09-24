@@ -116,4 +116,12 @@
 "Load images" = "Načítat obrázky";
 "Dark pages" = "Tmavé stránky";
 "Forget site passwords" = "Zapomenout hesla k webům";
+"Open in background" = "Otevřít na pozadí";
+"Recently closed" = "Nedávno zavřené";
+"View source" = "Zdrojový kód";
+"Source of %@" = "Zdrojový kód – %@";
+"Home page" = "Domovská stránka";
+"Start page" = "Úvodní stránka";
+"Built-in start page" = "Vestavěná úvodní stránka";
+"Current page" = "Aktuální stránka";
 "Site passwords forgotten." = "Hesla k webům byla zapomenuta.";
