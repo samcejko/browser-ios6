@@ -1212,6 +1212,31 @@ var CSSFix = (function () {
         return Math.min(count, 8);
     }
 
+    // What a flex container rule asks for that the 2009 box model cannot do by itself: wrapping and gaps.
+    function flexContainerInfo(decls, ctx) {
+        var info = { flex: false, wrap: false, column: false, rowGap: null, colGap: null, justify: null };
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, v = resolveVars(decls[i].v, null, ctx);
+            if (v === null) continue;
+            var lv = trim(v).toLowerCase();
+            if (p === 'display' && /^(inline-)?flex$/.test(lv)) info.flex = true;
+            else if ((p === 'flex-wrap' || p === 'flex-flow') && /wrap/.test(lv) && !/nowrap/.test(lv)) info.wrap = true;
+            else if ((p === 'flex-direction' || p === 'flex-flow') && /column/.test(lv)) info.column = true;
+            else if (p === 'gap') { var g = splitWS(lv); info.rowGap = g[0]; info.colGap = g.length > 1 ? g[1] : g[0]; }
+            else if (p === 'row-gap') info.rowGap = lv;
+            else if (p === 'column-gap') info.colGap = lv;
+            else if (p === 'justify-content') info.justify = lv;
+        }
+        if (info.rowGap === '0' || info.rowGap === '0px' || info.rowGap === 'normal') info.rowGap = null;
+        if (info.colGap === '0' || info.colGap === '0px' || info.colGap === 'normal') info.colGap = null;
+        return info;
+    }
+
+    function halfLength(v) {
+        var m = /^([\d.]+)([a-z%]*)$/i.exec(v);
+        return m ? (Math.round(parseFloat(m[1]) * 50) / 100) + m[2] : v;
+    }
+
     function transformRules(rules, ctx, keyframe) {
         var out = [];
         for (var i = 0; i < rules.length; i++) {
@@ -1223,6 +1248,24 @@ var CSSFix = (function () {
                 if (!decls.length) continue;
                 out.push({ t: 'q', sel: sels.join(','), decls: decls });
                 if (!keyframe) {
+                    var fi = flexContainerInfo(r.decls, ctx);
+                    if (fi.flex) {
+                        var childSel = [], gapSel = [], gs;
+                        for (gs = 0; gs < sels.length; gs++) { childSel.push(sels[gs] + ' > *'); gapSel.push(sels[gs] + ' > * + *'); }
+                        if (fi.wrap && !fi.column) {
+                            // wrapping rows: inline-blocks wrap like flex items sized by their content; justify-content becomes text-align
+                            var wrapDecls = [{ p: 'display', v: 'inline-block', imp: false }, { p: 'vertical-align', v: 'top', imp: false }];
+                            if (fi.rowGap || fi.colGap) wrapDecls.push({ p: 'margin', v: halfLength(fi.rowGap || '0') + ' ' + halfLength(fi.colGap || '0'), imp: false });
+                            out.push({ t: 'q', sel: childSel.join(','), decls: wrapDecls });
+                            var ta = fi.justify === 'center' ? 'center' : (fi.justify === 'flex-end' || fi.justify === 'end' || fi.justify === 'right') ? 'right' :
+                                     (fi.justify === 'space-between' || fi.justify === 'space-around' || fi.justify === 'space-evenly') ? 'justify' : null;
+                            if (ta) out.push({ t: 'q', sel: sels.join(','), decls: [{ p: 'text-align', v: ta, imp: false }] });
+                        } else if (fi.column && fi.rowGap) {
+                            out.push({ t: 'q', sel: gapSel.join(','), decls: [{ p: 'margin-top', v: fi.rowGap, imp: false }] });
+                        } else if (!fi.column && fi.colGap) {
+                            out.push({ t: 'q', sel: gapSel.join(','), decls: [{ p: 'margin-left', v: fi.colGap, imp: false }] });
+                        }
+                    }
                     var columns = gridColumns(r.decls, ctx);
                     if (columns > 1) {
                         // CSS grid does not exist here: the children float into equal columns instead of piling up

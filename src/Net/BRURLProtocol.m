@@ -783,6 +783,21 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
+    } else if ([path isEqualToString:@"/csstest.html"]) {
+        // bundled test page served like a web page: it goes through the CSS rewriter and gets the polyfills
+        NSString *file = [[NSBundle mainBundle] pathForResource:@"csstest" ofType:@"html"];
+        body = file ? [NSData dataWithContentsOfFile:file] : nil;
+        type = @"text/html; charset=utf-8";
+        if (body && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
+            self.done = YES;
+            self.rewriteKind = @"html";
+            self.rewriteBuffer = [body mutableCopy];
+            self.rewriteCharset = @"utf-8";
+            self.pendingStatus = 200;
+            self.pendingHeaderFields = @{ @"Content-Type": type, @"Cache-Control": @"no-store" };
+            [self finishRewrite];
+            return;
+        }
     }
     self.done = YES;
     if (!body) {

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Test CSS3</title>
+<style>
+:root { --accent: rgb(0 90 200); --pad: 12px; --gap: 20px; }
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 16px; background: #f2f2f5; color: #333; -webkit-text-size-adjust: 100%; }
+h1 { font-size: 24px; margin: 8px 0 4px; color: #2b5fb3; }
+.score { font-size: 40px; font-weight: bold; margin: 6px 0 2px; }
+.sub { color: #888; font-size: 13px; margin-bottom: 14px; }
+ul { list-style: none; padding: 0; margin: 0 0 20px; }
+li { background: #fff; border: 1px solid #ddd; margin-bottom: -1px; padding: 9px 12px; font-size: 15px; }
+li:first-child { border-radius: 8px 8px 0 0; }
+li:last-child { border-radius: 0 0 8px 8px; }
+li b { display: inline-block; width: 34px; }
+li.ok b { color: #1a8a2e; }
+li.fail b { color: #c0392b; }
+li i { color: #888; font-size: 12px; font-style: normal; margin-left: 6px; }
+h2 { font-size: 14px; color: #888; margin: 18px 4px 6px; text-transform: uppercase; letter-spacing: .5px; font-weight: normal; }
+#fixtures { position: absolute; left: -2000px; top: 0; width: 300px; }
+.fx { margin-bottom: 4px; }
+.child { height: 20px; background: #ccc; }
+/* ---- fixtures using modern CSS ---- */
+#t-var { color: var(--accent); padding: var(--pad); }
+#t-calc { width: calc(100% - 100px); }
+#t-flex { display: flex; }
+#t-flex .a { flex: 1; }
+#t-flex .b { width: 100px; }
+#t-push { display: flex; }
+#t-push .a { flex: 1 1 100%; min-width: 0; }
+#t-push .b { margin-left: auto; width: 100px; }
+#t-col { display: flex; flex-direction: column; }
+#t-wrap { display: flex; flex-wrap: wrap; }
+#t-wrap .child { width: 120px; }
+#t-gap { display: flex; gap: var(--gap); }
+#t-gap .child { width: 100px; }
+#t-justify { display: flex; justify-content: center; }
+#t-justify .child { width: 100px; }
+#t-align { display: flex; align-items: center; height: 60px; }
+#t-align .child { height: 20px; width: 100px; }
+#t-order { display: flex; }
+#t-order .a { order: 2; width: 100px; }
+#t-order .b { order: 1; width: 100px; }
+#t-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+#t-sticky { position: sticky; top: 0; }
+#t-gradient { background: linear-gradient(to right, red, blue); height: 20px; }
+#t-rgb { color: rgb(0 128 0 / 1); }
+#t-hex8 { color: #00ff0080; }
+#t-hsl { color: hsl(120 100% 25%); }
+#t-oklch { color: oklch(62.8% 0.2577 29.23); }
+#t-mix { color: color-mix(in srgb, red 50%, blue); }
+#t-min { width: min(100px, 50%); }
+#t-clamp { font-size: clamp(10px, 4vw, 30px); }
+#t-vw { width: 50vw; }
+#t-dvh { height: 10dvh; }
+#t-transform { transform: translateX(20px); width: 100px; }
+#t-transform3d { transform: rotateX(30deg); width: 100px; }
+#t-translate { translate: 15px 0; width: 100px; }
+#t-transition { transition: opacity .3s; }
+#t-animation { animation: t-spin 1s linear infinite; }
+@keyframes t-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+@supports (display: flex) { #t-supports { color: rgb(1, 2, 3); } }
+@supports not (display: nonsense-value) { #t-supports-not { color: rgb(4, 5, 6); } }
+@layer tests { #t-layer { color: rgb(7, 8, 9); } }
+:is(#t-is, .nothing) { color: rgb(10, 11, 12); }
+:where(#t-where) { color: rgb(13, 14, 15); }
+#t-not:not(.x, .y) { color: rgb(16, 17, 18); }
+#t-logical { margin-inline-start: 30px; padding-block: 5px; }
+#t-inset { position: relative; inset: 5px 0 0 7px; }
+#t-inline-size { inline-size: 120px; }
+@media (width >= 1px) { #t-media-range { color: rgb(19, 20, 21); } }
+@media (min-resolution: 1dppx) { #t-media-res { color: rgb(22, 23, 24); } }
+#t-columns { columns: 2; }
+#t-filter { filter: grayscale(1); }
+#t-fit { width: fit-content; }
+#t-min-content { width: min-content; }
+#t-env { padding-top: env(safe-area-inset-top, 9px); }
+#t-imageset { background-image: image-set(url("data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==") 1x); height: 10px; }
+#t-unset-parent { color: rgb(25, 26, 27); }
+#t-unset { color: unset; }
+#t-text-align { text-align: start; }
+#t-overflow-clip { overflow: clip; }
+#t-radius { border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.3); opacity: .9; }
+#t-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#t-box-sizing { box-sizing: border-box; width: 100px; padding: 10px; border: 1px solid #000; }
+#t-nth li:nth-child(2n) { color: rgb(28, 29, 30); }
+#t-before::before { content: "x"; }
+#t-aspect { aspect-ratio: 2 / 1; width: 200px; }
+#t-object-fit { width: 100px; height: 50px; object-fit: cover; }
+#t-inline-flex-a, #t-inline-flex-b { display: inline-flex; width: 100px; height: 20px; }
+#t-user-select { user-select: none; }
+#t-appearance { appearance: none; }
+#t-placeholder::placeholder { color: rgb(31, 32, 33); }
+#t-focus-visible:focus-visible { outline: 2px solid red; }
+#t-position-fixed { position: fixed; }
+#t-rem { width: 10rem; }
+#t-mask { -webkit-mask-image: linear-gradient(#000, transparent); mask-image: linear-gradient(#000, transparent); }
+#t-clip-path { clip-path: circle(50%); }
+#t-backdrop { backdrop-filter: blur(4px); }
+#t-contents { display: contents; }
+#t-scroll { scroll-behavior: smooth; }
+</style>
+</head>
+<body>
+<h1>Test CSS3</h1>
+<div class="score" id="score">…</div>
+<div class="sub" id="sub">Měří, jak stránka opravdu vykreslí moderní CSS po přepisu v prohlížeči (ne co engine "zná").</div>
+<div id="results"></div>
+<div id="fixtures">
+  <div class="fx" id="t-var">var</div>
+  <div class="fx" id="t-calc">calc</div>
+  <div class="fx" id="t-flex"><div class="child a"></div><div class="child b"></div></div>
+  <div class="fx" id="t-push"><div class="child a">Dlouhý text, který se musí vejít vedle obrázku, i když má obrázek automatický okraj</div><div class="child b"></div></div>
+  <div class="fx" id="t-col"><div class="child"></div><div class="child"></div></div>
+  <div class="fx" id="t-wrap"><div class="child"></div><div class="child"></div><div class="child"></div><div class="child"></div></div>
+  <div class="fx" id="t-gap"><div class="child"></div><div class="child"></div></div>
+  <div class="fx" id="t-justify"><div class="child"></div></div>
+  <div class="fx" id="t-align"><div class="child"></div></div>
+  <div class="fx" id="t-order"><div class="child a"></div><div class="child b"></div></div>
+  <div class="fx" id="t-grid"><div class="child"></div><div class="child"></div><div class="child"></div></div>
+  <div class="fx" id="t-sticky">sticky</div>
+  <div class="fx" id="t-gradient"></div>
+  <div class="fx" id="t-rgb">rgb</div><div class="fx" id="t-hex8">hex8</div><div class="fx" id="t-hsl">hsl</div><div class="fx" id="t-oklch">oklch</div><div class="fx" id="t-mix">mix</div>
+  <div class="fx" id="t-min">min</div><div class="fx" id="t-clamp">clamp</div><div class="fx" id="t-vw">vw</div><div class="fx" id="t-dvh">dvh</div>
+  <div class="fx" id="t-transform">tr</div><div class="fx" id="t-transform3d">tr3d</div><div class="fx" id="t-translate">translate</div>
+  <div class="fx" id="t-transition">transition</div><div class="fx" id="t-animation">animation</div>
+  <div class="fx" id="t-supports">supports</div><div class="fx" id="t-supports-not">supports not</div><div class="fx" id="t-layer">layer</div>
+  <div class="fx" id="t-is">is</div><div class="fx" id="t-where">where</div><div class="fx" id="t-not">not</div>
+  <div class="fx" id="t-logical">logical</div><div class="fx" id="t-inset">inset</div><div class="fx" id="t-inline-size">inline-size</div>
+  <div class="fx" id="t-media-range">media</div><div class="fx" id="t-media-res">media res</div>
+  <div class="fx" id="t-columns">columns</div><div class="fx" id="t-filter">filter</div><div class="fx" id="t-fit">fit</div><div class="fx" id="t-min-content">a b</div>
+  <div class="fx" id="t-env">env</div><div class="fx" id="t-imageset"></div>
+  <div class="fx" id="t-unset-parent"><span id="t-unset">unset</span></div>
+  <div class="fx" id="t-text-align">align</div><div class="fx" id="t-overflow-clip">clip</div><div class="fx" id="t-radius">radius</div>
+  <div class="fx" id="t-ellipsis">Velmi dlouhý text, který se určitě nevejde na jeden řádek v šířce tři sta pixelů, opravdu ne</div>
+  <div class="fx" id="t-box-sizing">box</div>
+  <ul id="t-nth"><li>1</li><li>2</li></ul>
+  <div class="fx" id="t-before">before</div>
+  <div class="fx" id="t-aspect"></div>
+  <img id="t-object-fit" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" alt="">
+  <div><span id="t-inline-flex-a"></span><span id="t-inline-flex-b"></span></div>
+  <div class="fx" id="t-user-select">sel</div><div class="fx" id="t-appearance">app</div>
+  <input id="t-placeholder" placeholder="x">
+  <a id="t-focus-visible" href="#">f</a>
+  <div class="fx" id="t-rem">rem</div><div class="fx" id="t-mask">mask</div><div class="fx" id="t-clip-path">clip</div><div class="fx" id="t-backdrop">backdrop</div>
+  <div class="fx" id="t-contents"><span>c</span></div><div class="fx" id="t-scroll">s</div>
+  <div class="fx" id="t-position-fixed">fixed</div>
+</div>
+<script>
+(function () {
+  function $(id) { return document.getElementById(id); }
+  function cs(id) { return getComputedStyle($(id)); }
+  function rect(el) { return el.getBoundingClientRect(); }
+  function near(a, b, tol) { return Math.abs(a - b) <= (tol || 3); }
+  function rgb(s) { var m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(s || ''); return m ? [+m[1], +m[2], +m[3]] : null; }
+  function isColor(id, r, g, b, tol) { var c = rgb(cs(id).color); return !!c && near(c[0], r, tol || 4) && near(c[1], g, tol || 4) && near(c[2], b, tol || 4); }
+  var W = 300;
+  var groups = [
+    ['Rozvržení', [
+      ['CSS proměnné (var)', function () { return isColor('t-var', 0, 90, 200) && cs('t-var').paddingLeft === '12px'; }],
+      ['calc()', function () { return near(rect($('t-calc')).width, W - 100); }],
+      ['flexbox: řádek, flex: 1', function () { var a = rect($('t-flex').children[0]), b = rect($('t-flex').children[1]); return near(a.width, W - 100) && near(a.top, b.top); }],
+      ['flexbox: text vedle prvku s margin-left: auto', function () { var a = rect($('t-push').children[0]); return a.width > 150; }],
+      ['flexbox: sloupec', function () { var c = $('t-col').children; return rect(c[1]).top > rect(c[0]).top && near(rect(c[0]).width, W); }],
+      ['flexbox: zalamování (flex-wrap)', function () { var c = $('t-wrap').children; return near(rect(c[0]).top, rect(c[1]).top) && rect(c[2]).top > rect(c[0]).top; }],
+      ['flexbox: mezery (gap)', function () { var c = $('t-gap').children; return near(rect(c[1]).left - rect(c[0]).right, 20); }],
+      ['flexbox: justify-content: center', function () { var c = rect($('t-justify').children[0]), p = rect($('t-justify')); return near(c.left - p.left, (W - 100) / 2, 4); }],
+      ['flexbox: align-items: center', function () { var c = rect($('t-align').children[0]), p = rect($('t-align')); return near(c.top - p.top, 20, 4); }],
+      ['flexbox: order', function () { var c = $('t-order').children; return rect(c[1]).left < rect(c[0]).left; }],
+      ['grid: tři sloupce', function () { var c = $('t-grid').children; return near(rect(c[0]).top, rect(c[2]).top) && near(rect(c[0]).width, W / 3, 4); }],
+      ['position: sticky', function () { var p = cs('t-sticky').position; return p === 'sticky' || p === '-webkit-sticky'; }],
+      ['inline-flex', function () { return near(rect($('t-inline-flex-a')).top, rect($('t-inline-flex-b')).top) && rect($('t-inline-flex-b')).left > rect($('t-inline-flex-a')).left; }],
+      ['aspect-ratio', function () { return near(rect($('t-aspect')).height, 100); }],
+      ['display: contents', function () { return cs('t-contents').display === 'contents'; }]
+    ]],
+    ['Jednotky a hodnoty', [
+      ['min() / max()', function () { return near(rect($('t-min')).width, 100); }],
+      ['clamp()', function () { var f = parseFloat(cs('t-clamp').fontSize); return f >= 10 && f <= 30; }],
+      ['vw', function () { return near(rect($('t-vw')).width, window.innerWidth / 2, 4); }],
+      ['dvh', function () { return near(rect($('t-dvh')).height, window.innerHeight / 10, 4); }],
+      ['rem', function () { return near(rect($('t-rem')).width, 160); }],
+      ['fit-content', function () { var w = rect($('t-fit')).width; return w > 0 && w < W - 20; }],
+      ['min-content', function () { var w = rect($('t-min-content')).width; return w > 0 && w < 60; }],
+      ['env()', function () { var p = cs('t-env').paddingTop; return p === '9px' || p === '0px'; }],
+      ['inset', function () { return cs('t-inset').left === '7px' && cs('t-inset').top === '5px'; }],
+      ['logické vlastnosti (margin-inline-start)', function () { return cs('t-logical').marginLeft === '30px' && cs('t-logical').paddingTop === '5px'; }],
+      ['inline-size', function () { return near(rect($('t-inline-size')).width, 120); }],
+      ['unset', function () { return isColor('t-unset', 25, 26, 27); }],
+      ['text-align: start', function () { return cs('t-text-align').textAlign === 'left' || cs('t-text-align').textAlign === 'start'; }],
+      ['overflow: clip', function () { var o = cs('t-overflow-clip').overflow; return o === 'hidden' || o === 'clip'; }],
+      ['box-sizing: border-box', function () { return near(rect($('t-box-sizing')).width, 100); }]
+    ]],
+    ['Barvy a pozadí', [
+      ['rgb() s mezerami', function () { return isColor('t-rgb', 0, 128, 0); }],
+      ['#rrggbbaa', function () { var c = rgb(cs('t-hex8').color); return !!c && c[1] === 255 && /rgba/.test(cs('t-hex8').color); }],
+      ['hsl() s mezerami', function () { return isColor('t-hsl', 0, 128, 0, 6); }],
+      ['oklch()', function () { return isColor('t-oklch', 255, 0, 0, 12) || /oklch|color\(/.test(cs('t-oklch').color); }],
+      ['color-mix()', function () { return isColor('t-mix', 128, 0, 128, 12) || /color\(|color-mix/.test(cs('t-mix').color); }],
+      ['linear-gradient()', function () { return /gradient/.test(cs('t-gradient').backgroundImage); }],
+      ['image-set()', function () { return cs('t-imageset').backgroundImage !== 'none'; }],
+      ['border-radius, box-shadow, opacity', function () { var s = cs('t-radius'); return s.borderTopLeftRadius === '8px' && s.boxShadow !== 'none' && near(parseFloat(s.opacity), 0.9, 0.01); }],
+      ['object-fit (přes polyfill)', function () { return cs('t-object-fit').backgroundImage !== 'none' || cs('t-object-fit').objectFit === 'cover'; }],
+      ['filter', function () { var s = cs('t-filter'); return /grayscale/.test(s.webkitFilter || s.filter || ''); }],
+      ['mask-image', function () { var s = cs('t-mask'); return (s.webkitMaskImage || s.maskImage || 'none') !== 'none'; }],
+      ['clip-path', function () { var s = cs('t-clip-path'); return (s.webkitClipPath || s.clipPath || 'none') !== 'none'; }],
+      ['backdrop-filter', function () { var s = cs('t-backdrop'); return !!(s.webkitBackdropFilter || s.backdropFilter); }]
+    ]],
+    ['Transformace a animace', [
+      ['transform (bez prefixu)', function () { return near(rect($('t-transform')).left - rect($('fixtures')).left, 20); }],
+      ['transform 3D', function () { var s = cs('t-transform3d'); return /matrix3d/.test(s.webkitTransform || s.transform || ''); }],
+      ['translate (samostatná vlastnost)', function () { return near(rect($('t-translate')).left - rect($('fixtures')).left, 15); }],
+      ['transition (bez prefixu)', function () { var s = cs('t-transition'); return /opacity/.test(s.webkitTransitionProperty || s.transitionProperty || ''); }],
+      ['animation + @keyframes', function () { var s = cs('t-animation'); return /t-spin/.test(s.webkitAnimationName || s.animationName || ''); }]
+    ]],
+    ['Selektory a pravidla', [
+      ['@supports', function () { return isColor('t-supports', 1, 2, 3); }],
+      ['@supports not', function () { return isColor('t-supports-not', 4, 5, 6); }],
+      ['@layer', function () { return isColor('t-layer', 7, 8, 9); }],
+      [':is()', function () { return isColor('t-is', 10, 11, 12); }],
+      [':where()', function () { return isColor('t-where', 13, 14, 15); }],
+      [':not() se seznamem', function () { return isColor('t-not', 16, 17, 18); }],
+      ['@media (width >= …)', function () { return isColor('t-media-range', 19, 20, 21); }],
+      ['@media (min-resolution: 1dppx)', function () { return isColor('t-media-res', 22, 23, 24); }],
+      [':nth-child()', function () { return rgb(getComputedStyle($('t-nth').children[1]).color)[0] === 28; }],
+      ['::before s content', function () { return (getComputedStyle($('t-before'), '::before').content || '').indexOf('x') >= 0; }],
+      ['columns', function () { var s = cs('t-columns'); return (s.webkitColumnCount || s.columnCount) === '2'; }],
+      ['text-overflow: ellipsis', function () { return cs('t-ellipsis').textOverflow === 'ellipsis'; }],
+      ['user-select / appearance', function () { var a = cs('t-user-select'), b = cs('t-appearance'); return (a.webkitUserSelect || a.userSelect) === 'none' && (b.webkitAppearance || b.appearance) === 'none'; }],
+      ['position: fixed', function () { return cs('t-position-fixed').position === 'fixed'; }]
+    ]]
+  ];
+  function run() {
+    var total = 0, passed = 0, html = '';
+    for (var g = 0; g < groups.length; g++) {
+      html += '<h2>' + groups[g][0] + '</h2><ul>';
+      var tests = groups[g][1];
+      for (var i = 0; i < tests.length; i++) {
+        var ok = false, note = '';
+        try { ok = !!tests[i][1](); } catch (e) { ok = false; note = e.message; }
+        total++;
+        if (ok) passed++;
+        html += '<li class="' + (ok ? 'ok' : 'fail') + '"><b>' + (ok ? 'OK' : 'NE') + '</b>' + tests[i][0] + (note ? '<i>' + note.replace(/</g, '&lt;') + '</i>' : '') + '</li>';
+      }
+      html += '</ul>';
+    }
+    $('results').innerHTML = html;
+    $('score').textContent = passed + ' z ' + total;
+    document.title = 'Test CSS3: ' + passed + '/' + total;
+    $('sub').textContent = Math.round(passed * 100 / total) + ' % moderních vlastností CSS se na této stránce vykreslí správně (měřeno z rozvržení a spočítaných stylů).';
+  }
+  if (document.readyState === 'complete') setTimeout(run, 300);
+  else window.addEventListener('load', function () { setTimeout(run, 300); }, false);
+})();
+</script>
+</body>
+</html>
