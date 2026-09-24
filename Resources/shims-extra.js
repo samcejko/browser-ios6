@@ -796,6 +796,8 @@
             u.__id = 'u' + (++uidSeq) + '-' + Math.random().toString(36).slice(2, 8);
             u.__started = false;
             var lang = u.lang || (u.voice && u.voice.lang) || (document.documentElement && document.documentElement.lang) || navigator.language || '';
+            // an engine that never reports the end does not hold up the queue for ever
+            u.__deadline = Date.now() + 10000 + u.text.length * 150 / Math.max(0.1, u.rate || 1);
             request('speak', { id: u.__id, text: u.text, lang: lang, rate: u.rate, pitch: u.pitch, volume: u.volume });
             if (!pollTimer) pollTimer = setTimeout(poll, 100);
         };
@@ -820,6 +822,7 @@
                     else if (e.type === 'end') { base.charIndex = u.text.length; finish(u, 'end', base); }
                     else if (e.type === 'error') { base.error = 'synthesis-failed'; finish(u, 'error', base); }
                 }
+                if (current && !paused && current.__deadline && Date.now() > current.__deadline) finish(current, 'error', { error: 'synthesis-failed', utterance: current, charIndex: 0, elapsedTime: 0 });
                 if (current || queue.length) pollTimer = setTimeout(poll, current ? 120 : 400);
             });
         };
@@ -2665,6 +2668,222 @@
             }
             if (val.toLowerCase() === 'auto') el.removeAttribute(p); else el.setAttribute(p, val);
         };
+        // ---- CSS Borders 4 box painter: corner shapes (superellipses), border-shape, border-clip, border-limit. The box
+        // becomes two SVGs: its outline as the element's mask and its border as a background layer above the element's
+        // own backgrounds; the engine's border keeps its widths (the layout) but becomes transparent.
+        var BOX_PAINT = /^(corner-.*-?shape|border-shape|border-limit|border-clip(-.*)?)$/;
+        var CORNER_K = { round: 1, scoop: -1, bevel: 0, notch: -Infinity, square: Infinity, squircle: 2 };
+        var cornerK = function (tok) {
+            tok = trim(tok).toLowerCase();
+            if (CORNER_K.hasOwnProperty(tok)) return CORNER_K[tok];
+            var m = /^superellipse\(\s*(-?infinity|[+-]?\d*\.?\d+)\s*\)$/.exec(tok);
+            if (!m) return null;
+            return m[1] === 'infinity' ? Infinity : m[1] === '-infinity' ? -Infinity : parseFloat(m[1]);
+        };
+        // which corners [tl, tr, br, bl] a corner property sets, and how its 1-4 values spread over them
+        var CORNER_TARGETS = { 'corner-shape': [0, 1, 2, 3], 'corner-top-shape': [0, 1], 'corner-right-shape': [1, 2], 'corner-bottom-shape': [3, 2],
+            'corner-left-shape': [0, 3], 'corner-block-start-shape': [0, 1], 'corner-block-end-shape': [3, 2], 'corner-inline-start-shape': [0, 3],
+            'corner-inline-end-shape': [1, 2], 'corner-top-left-shape': [0], 'corner-top-right-shape': [1], 'corner-bottom-right-shape': [2],
+            'corner-bottom-left-shape': [3], 'corner-start-start-shape': [0], 'corner-start-end-shape': [1], 'corner-end-end-shape': [2], 'corner-end-start-shape': [3] };
+        var cornerShapes = function (props) {
+            var ks = [1, 1, 1, 1], win = [null, null, null, null], any = false;
+            var better = function (a, b) { return !b || (a.imp && !b.imp) || (!!a.imp === !!b.imp && (a.spec > b.spec || (a.spec === b.spec && a.order >= b.order))); };
+            for (var p in props) {
+                if (!props.hasOwnProperty(p) || !CORNER_TARGETS[p]) continue;
+                var targets = CORNER_TARGETS[p], vals = splitTop(trim(props[p].v), ' '), spread;
+                if (targets.length === 4) spread = [vals[0], vals[1] || vals[0], vals[2] || vals[0], vals[3] || vals[1] || vals[0]];
+                else if (targets.length === 2) spread = [vals[0], vals[1] || vals[0]];
+                else spread = [vals[0]];
+                for (var i = 0; i < targets.length; i++) {
+                    var k = cornerK(spread[i] || ''), c = targets[i];
+                    if (k === null || !better(props[p], win[c])) continue;
+                    ks[c] = k; win[c] = props[p]; any = true;
+                }
+            }
+            return any ? ks : null;
+        };
+        var BOX_MANAGED = ['-webkit-mask-image', '-webkit-mask-size', '-webkit-mask-repeat', '-webkit-mask-position', '-webkit-mask-origin', '-webkit-mask-clip',
+            'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius',
+            'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+            'background-image', 'background-size', 'background-position', 'background-repeat', 'background-origin', 'background-clip'];
+        var f1 = function (n) { return Math.round(n * 10) / 10; };
+        // points of one corner from (u = 0, v = ry) to (u = rx, v = 0) in the corner's own axes, mapped into the box
+        var cornerPoints = function (cx, cy, dx, dy, rx, ry, k, reverse) {
+            var pts = [];
+            if (rx <= 0.01 || ry <= 0.01) pts.push([0, 0]);
+            else if (k === Infinity) pts.push([0, ry], [0, 0], [rx, 0]);
+            else if (k === -Infinity) pts.push([0, ry], [rx, ry], [rx, 0]);
+            else {
+                var e = Math.pow(2, Math.abs(k)), n = k === 0 ? 1 : 20;
+                for (var i = 0; i <= n; i++) {
+                    var t = i / n * Math.PI / 2, c = Math.pow(Math.cos(t), 2 / e), s = Math.pow(Math.sin(t), 2 / e);
+                    pts.push(k >= 0 ? [rx - rx * c, ry - ry * s] : [rx * s, ry * c]);
+                }
+            }
+            var out = [];
+            for (var j = 0; j < pts.length; j++) out.push([cx + dx * pts[j][0], cy + dy * pts[j][1]]);
+            if (reverse) out.reverse();
+            return out;
+        };
+        // the outline of a box (x0, y0, x1, y1) with radii [[rx, ry] x 4] and corner shapes, clockwise from the top-left
+        var boxPath = function (x0, y0, x1, y1, r, ks) {
+            var pts = [].concat(
+                cornerPoints(x0, y0, 1, 1, r[0][0], r[0][1], ks[0], false),
+                cornerPoints(x1, y0, -1, 1, r[1][0], r[1][1], ks[1], true),
+                cornerPoints(x1, y1, -1, -1, r[2][0], r[2][1], ks[2], false),
+                cornerPoints(x0, y1, 1, -1, r[3][0], r[3][1], ks[3], true));
+            var d = 'M' + f1(pts[0][0]) + ' ' + f1(pts[0][1]);
+            for (var i = 1; i < pts.length; i++) d += 'L' + f1(pts[i][0]) + ' ' + f1(pts[i][1]);
+            return d + 'Z';
+        };
+        var radiusPair = function (v, w, h) {
+            var parts = trim(v || '0').split(/\s+/), conv = function (s, base) { return /%$/.test(s) ? parseFloat(s) * base / 100 : num(s); };
+            return [conv(parts[0], w), conv(parts.length > 1 ? parts[1] : parts[0], h)];
+        };
+        // visible intervals of one side from border-clip ("10px 20px 1fr": alternately drawn and not, from the start)
+        var clipIntervals = function (v, len) {
+            var toks = splitTop(trim(v || 'normal').toLowerCase(), ' ');
+            if (!toks.length || toks[0] === 'normal') return null;
+            var fixed = 0, frs = 0, sizes = [], i, pos = 0, out = [];
+            for (i = 0; i < toks.length; i++) {
+                var m = /^(\d*\.?\d+)(px|%|fr|em|rem)?$/.exec(toks[i]);
+                var sz = { fr: 0, px: 0 };
+                if (m && m[2] === 'fr') { sz.fr = parseFloat(m[1]); frs += sz.fr; }
+                else if (m && m[2] === '%') sz.px = parseFloat(m[1]) * len / 100;
+                else if (m && (m[2] === 'em' || m[2] === 'rem')) sz.px = parseFloat(m[1]) * 16;
+                else if (m) sz.px = parseFloat(m[1]);
+                fixed += sz.px;
+                sizes.push(sz);
+            }
+            var free = Math.max(0, len - fixed);
+            for (i = 0; i < sizes.length && pos < len; i++) {
+                var l = sizes[i].fr ? free * sizes[i].fr / frs : sizes[i].px;
+                if (i % 2 === 0) out.push([pos, Math.min(len, pos + l)]);
+                pos += l;
+            }
+            if (!frs && pos < len && sizes.length % 2 === 0) out.push([pos, len]);   // an even list repeats: the rest is drawn
+            return out;
+        };
+        var paintBox = function (el, props) {
+            var ks = cornerShapes(props) || [1, 1, 1, 1];
+            var shapeV = props['border-shape'] ? trim(props['border-shape'].v).toLowerCase() : 'none';
+            var limitV = props['border-limit'] ? trim(props['border-limit'].v).toLowerCase() : 'all';
+            var clips = {}, sides = ['top', 'right', 'bottom', 'left'], logical = { 'block-start': 'top', 'inline-end': 'right', 'block-end': 'bottom', 'inline-start': 'left' };
+            if (props['border-clip']) for (var s0 = 0; s0 < 4; s0++) clips[sides[s0]] = props['border-clip'];
+            for (var lp in logical) if (logical.hasOwnProperty(lp) && props['border-clip-' + lp]) clips[logical[lp]] = props['border-clip-' + lp];
+            for (var s1 = 0; s1 < 4; s1++) if (props['border-clip-' + sides[s1]]) clips[sides[s1]] = props['border-clip-' + sides[s1]];
+            // the page's own box, without what an earlier pass set
+            for (var u = 0; u < BOX_MANAGED.length; u++) unsetProp(el, BOX_MANAGED[u]);
+            var cs = getComputedStyle(el), w = el.offsetWidth, h = el.offsetHeight;
+            if (!w || !h) return;
+            var bw = [], bc = [];
+            for (var s = 0; s < 4; s++) {
+                var st = cs.getPropertyValue('border-' + sides[s] + '-style');
+                bw.push(st === 'none' || st === 'hidden' ? 0 : num(cs.getPropertyValue('border-' + sides[s] + '-width')));
+                bc.push(cs.getPropertyValue('border-' + sides[s] + '-color'));
+            }
+            var r = [radiusPair(cs.borderTopLeftRadius, w, h), radiusPair(cs.borderTopRightRadius, w, h), radiusPair(cs.borderBottomRightRadius, w, h), radiusPair(cs.borderBottomLeftRadius, w, h)];
+            // radii that do not fit are scaled down together (CSS Backgrounds)
+            var fit = Math.min(1, w / Math.max(1e-6, r[0][0] + r[1][0]), w / Math.max(1e-6, r[3][0] + r[2][0]), h / Math.max(1e-6, r[0][1] + r[3][1]), h / Math.max(1e-6, r[1][1] + r[2][1]));
+            if (fit < 1) for (var ri = 0; ri < 4; ri++) { r[ri][0] *= fit; r[ri][1] *= fit; }
+            var outer, inner;
+            if (shapeV !== 'none' && shapeV.indexOf('(') > 0) {
+                outer = shapePath(shapeV, w, h);
+                if (!outer) return;
+                inner = null;
+            } else {
+                outer = boxPath(0, 0, w, h, r, ks);
+                var ir = [[Math.max(0, r[0][0] - bw[3]), Math.max(0, r[0][1] - bw[0])], [Math.max(0, r[1][0] - bw[1]), Math.max(0, r[1][1] - bw[0])],
+                          [Math.max(0, r[2][0] - bw[1]), Math.max(0, r[2][1] - bw[2])], [Math.max(0, r[3][0] - bw[3]), Math.max(0, r[3][1] - bw[2])]];
+                inner = boxPath(bw[3], bw[0], w - bw[1], h - bw[2], ir, ks);
+            }
+            var svg = function (body) { return 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' + body + '</svg>') + '")'; };
+            // the border: the ring between the outlines (or the shape's stroke), per side when colours, clips or limits differ
+            var ringD = inner ? outer + inner : outer, strokeW = Math.max(bw[0], bw[1], bw[2], bw[3]);
+            var drawRing = function (color) { return inner ? '<path d="' + ringD + '" fill-rule="evenodd" fill="' + color + '"/>' : '<path d="' + outer + '" fill="none" stroke="' + color + '" stroke-width="' + strokeW + '"/>'; };
+            var tri = { top: '0,0 ' + w + ',0 ' + w / 2 + ',' + h / 2, right: w + ',0 ' + w + ',' + h + ' ' + w / 2 + ',' + h / 2,
+                        bottom: w + ',' + h + ' 0,' + h + ' ' + w / 2 + ',' + h / 2, left: '0,' + h + ' 0,0 ' + w / 2 + ',' + h / 2 };
+            var limit = /^(all|(sides|corners)(\s+(\S+))?|(top|right|bottom|left)\s+(\S+))$/.exec(limitV) || ['all', 'all'];
+            var defs = '', body = '', sameColor = bc[0] === bc[1] && bc[1] === bc[2] && bc[2] === bc[3], plain = sameColor && limit[1] === 'all';
+            for (var side in clips) if (clips.hasOwnProperty(side)) plain = false;
+            if (plain) body = drawRing(bc[0]);
+            else {
+                for (var si = 0; si < 4; si++) {
+                    var sd = sides[si], len = si % 2 ? h : w, horizontal = si % 2 === 0, vis = [[0, len]];
+                    var rStart = horizontal ? r[si === 0 ? 0 : 3][0] : r[si === 1 ? 1 : 0][1], rEnd = horizontal ? r[si === 0 ? 1 : 2][0] : r[si === 1 ? 2 : 3][1];
+                    var lim = function (v, base) { return v === undefined ? null : (/%$/.test(v) ? parseFloat(v) * base / 100 : evalLength(v, el, base) ? evalLength(v, el, base).n : num(v)); };
+                    if (limit[2] === 'sides') { var sl = lim(limit[4], len); var a = sl === null ? rStart : (len - sl) / 2, b = sl === null ? len - rEnd : (len + sl) / 2; vis = [[a, b]]; }
+                    else if (limit[2] === 'corners') { var cl = lim(limit[4], len); vis = [[0, rStart + (cl || 0)], [len - rEnd - (cl || 0), len]]; }
+                    else if (limit[5]) { var tl2 = lim(limit[6], len); vis = limit[5] === sd ? [[(len - tl2) / 2, (len + tl2) / 2]] : []; }
+                    if (clips[sd]) { var ci = clipIntervals(clips[sd].v, len); if (ci) vis = ci; }
+                    if (!vis.length) continue;
+                    var rects = '';
+                    for (var vi = 0; vi < vis.length; vi++) {
+                        var p0 = vis[vi][0], p1 = vis[vi][1];
+                        if (p1 <= p0) continue;
+                        rects += horizontal ? '<rect x="' + f1(p0) + '" y="0" width="' + f1(p1 - p0) + '" height="' + h + '"/>' : '<rect x="0" y="' + f1(p0) + '" width="' + w + '" height="' + f1(p1 - p0) + '"/>';
+                    }
+                    defs += '<clipPath id="s' + si + '"><polygon points="' + tri[sd] + '"/></clipPath><clipPath id="v' + si + '">' + rects + '</clipPath>';
+                    body += '<g clip-path="url(#s' + si + ')"><g clip-path="url(#v' + si + ')">' + drawRing(bc[si]) + '</g></g>';
+                }
+            }
+            var ringImage = svg((defs ? '<defs>' + defs + '</defs>' : '') + body);
+            var maskImage = svg(inner ? '<path d="' + outer + '" fill="#000"/>' : '<path d="' + outer + '" fill="#000" stroke="#000" stroke-width="' + strokeW + '"/>');
+            // the border layer goes above the element's own background layers
+            var layers = function (prop, ours) { var cur = cs.getPropertyValue(prop); return cur && cur !== 'none' && cs.backgroundImage !== 'none' ? ours + ', ' + cur : ours; };
+            setProp(el, 'background-image', layers('background-image', ringImage));
+            setProp(el, 'background-size', layers('background-size', w + 'px ' + h + 'px'));
+            setProp(el, 'background-position', layers('background-position', '0px 0px'));
+            setProp(el, 'background-repeat', layers('background-repeat', 'no-repeat'));
+            setProp(el, 'background-origin', layers('background-origin', 'border-box'));
+            setProp(el, 'background-clip', layers('background-clip', 'border-box'));
+            for (var c2 = 0; c2 < 4; c2++) setProp(el, 'border-' + sides[c2] + '-color', 'transparent');
+            setProp(el, 'border-top-left-radius', '0px'); setProp(el, 'border-top-right-radius', '0px');
+            setProp(el, 'border-bottom-right-radius', '0px'); setProp(el, 'border-bottom-left-radius', '0px');
+            setProp(el, '-webkit-mask-image', maskImage);
+            setProp(el, '-webkit-mask-size', w + 'px ' + h + 'px');
+            setProp(el, '-webkit-mask-repeat', 'no-repeat');
+            setProp(el, '-webkit-mask-position', '0px 0px');
+            setProp(el, '-webkit-mask-origin', 'border-box');
+            setProp(el, '-webkit-mask-clip', 'border-box');
+        };
+        // border-shape: a basic shape in the border box as an SVG path
+        var shapePath = function (v, w, h) {
+            var m = /^(inset|circle|ellipse|polygon|path|rect|xywh)\(([\s\S]*)\)/.exec(v);
+            if (!m) return null;
+            var args = m[2], len = function (s, base) { s = trim(s); return /%$/.test(s) ? parseFloat(s) * base / 100 : num(s); };
+            var pos = function (s) {   // "at x y" -> [x, y]
+                var at = /\bat\s+(.+)$/.exec(s), t = at ? trim(at[1]).split(/\s+/) : ['center'];
+                var kw = { left: 0, center: 50, right: 100, top: 0, bottom: 100 };
+                var xs = t[0], ys = t[1] || 'center';
+                if (xs === 'top' || xs === 'bottom') { var tmp = xs; xs = ys; ys = tmp; }
+                return [kw.hasOwnProperty(xs) ? kw[xs] * w / 100 : len(xs, w), kw.hasOwnProperty(ys) ? kw[ys] * h / 100 : len(ys, h)];
+            };
+            switch (m[1]) {
+                case 'inset': case 'rect': case 'xywh': {
+                    var parts = args.split(/\s+round\s+/), n = trim(parts[0]).split(/\s+/), x0, y0, x1, y1;
+                    if (m[1] === 'inset') { var e = [n[0], n[1] || n[0], n[2] || n[0], n[3] || n[1] || n[0]]; y0 = len(e[0], h); x1 = w - len(e[1], w); y1 = h - len(e[2], h); x0 = len(e[3], w); }
+                    else if (m[1] === 'rect') { y0 = len(n[0], h); x1 = n[1] === 'auto' ? w : len(n[1], w); y1 = n[2] === 'auto' ? h : len(n[2], h); x0 = n[3] === 'auto' ? 0 : len(n[3], w); }
+                    else { x0 = len(n[0], w); y0 = len(n[1], h); x1 = x0 + len(n[2], w); y1 = y0 + len(n[3], h); }
+                    var rr = parts[1] ? trim(parts[1]).split(/\s+/) : ['0'], ra = [rr[0], rr[1] || rr[0], rr[2] || rr[0], rr[3] || rr[1] || rr[0]], bw2 = x1 - x0, bh2 = y1 - y0;
+                    return boxPath(x0, y0, x1, y1, [[len(ra[0], bw2), len(ra[0], bh2)], [len(ra[1], bw2), len(ra[1], bh2)], [len(ra[2], bw2), len(ra[2], bh2)], [len(ra[3], bw2), len(ra[3], bh2)]], [1, 1, 1, 1]);
+                }
+                case 'circle': case 'ellipse': {
+                    var c = pos(args), radii = trim(args.replace(/\bat\s+.+$/, '')).split(/\s+/), dd = function (s, base) { return s === 'closest-side' || !s ? null : len(s, base); };
+                    var rx = dd(radii[0], w), ry = m[1] === 'circle' ? rx : dd(radii[1], h);
+                    if (rx === null) rx = m[1] === 'circle' ? Math.min(c[0], w - c[0], c[1], h - c[1]) : Math.min(c[0], w - c[0]);
+                    if (ry === null) ry = m[1] === 'circle' ? rx : Math.min(c[1], h - c[1]);
+                    return 'M' + f1(c[0] - rx) + ' ' + f1(c[1]) + 'A' + f1(rx) + ' ' + f1(ry) + ' 0 1 0 ' + f1(c[0] + rx) + ' ' + f1(c[1]) + 'A' + f1(rx) + ' ' + f1(ry) + ' 0 1 0 ' + f1(c[0] - rx) + ' ' + f1(c[1]) + 'Z';
+                }
+                case 'polygon': {
+                    var list = args.replace(/^\s*(nonzero|evenodd)\s*,/, '').split(','), d = '';
+                    for (var i = 0; i < list.length; i++) { var xy = trim(list[i]).split(/\s+/); d += (i ? 'L' : 'M') + f1(len(xy[0], w)) + ' ' + f1(len(xy[1], h)); }
+                    return d + 'Z';
+                }
+                case 'path': { var q = /["']([^"']*)["']/.exec(args); return q ? q[1] : null; }
+            }
+            return null;
+        };
         var INDIVIDUAL_TRANSFORM = { rotate: 1, scale: 1, translate: 1 };
         var SPEECH = { speak: 1, 'speak-as': 1, pause: 1, 'pause-before': 1, 'pause-after': 1, rest: 1, 'rest-before': 1, 'rest-after': 1, cue: 1,
             'cue-before': 1, 'cue-after': 1, 'voice-family': 1, 'voice-rate': 1, 'voice-pitch': 1, 'voice-range': 1, 'voice-volume': 1, 'voice-stress': 1,
@@ -2688,11 +2907,12 @@
             return out;
         };
         var applyGeneral = function (rec) {
-            var el = rec.el, props = rec.props;
+            var el = rec.el, props = rec.props, boxPaint = false;
             for (var p in props) {
                 if (!props.hasOwnProperty(p) || POSITION_PROPS[p] || SELF_ALIGN[p]) continue;
                 var v = props[p].v;
                 if (SPEECH[p]) continue;   // kept in the record for the read-aloud feature (see speechOf)
+                if (BOX_PAINT.test(p)) { boxPaint = true; continue; }
                 if (p === 'field-sizing') { fieldSizing(el, trim(v).toLowerCase()); continue; }
                 if (SVG_GEOM[p]) { svgGeometry(el, p, v); continue; }
                 if (p === 'text-decoration-color') {
@@ -2715,6 +2935,7 @@
                     if (val !== null) setProp(el, lh[i][0], val);
                 }
             }
+            if (boxPaint) { try { paintBox(el, props); } catch (e) {} }
         };
         var needsPositioning = function (props) {
             for (var p in props) {

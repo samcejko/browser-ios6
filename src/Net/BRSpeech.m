@@ -6,10 +6,14 @@
 
 // VSSpeechSynthesizer (iOS 6 VoiceServices, private): the selectors are called through objc_msgSend with explicit
 // signatures and the return values of the setters and start/stop calls are ignored (they return an NSError or nothing).
+// Everything runs on a thread of its own with a run loop: the engine talks to the voiced daemon and may wait for it,
+// which must never hold up the main thread (UIWebView waits for the main thread in turn).
 static NSString * const BRVoiceServicesPath = @"/System/Library/PrivateFrameworks/VoiceServices.framework/VoiceServices";
+static NSString * const BRVoiceResourcesPath = @"/System/Library/PrivateFrameworks/VoiceServices.framework/TTSResources";
 static const NSUInteger BRMaxSpeechEvents = 400;
 
 @implementation BRSpeech {
+    NSThread *_thread;
     Class _synthClass;
     BOOL _loaded;
     float _defaultRate, _defaultPitch, _defaultVolume;
@@ -17,9 +21,9 @@ static const NSUInteger BRMaxSpeechEvents = 400;
     NSData *_info;                    // cached infoJSON
     NSMutableArray *_events;          // guarded by @synchronized (self)
     NSInteger _seq;
-    // one synthesizer per utterance (main thread only): its delegate callbacks then belong to that utterance
+    // one synthesizer per utterance (speech thread only): its delegate callbacks then belong to that utterance
     id _current;
-    NSMutableArray *_live;            // synthesizers still speaking or stopping
+    NSMutableArray *_live;
     NSMutableDictionary *_ids;        // synthesizer pointer -> utterance id
     NSMutableDictionary *_starts;     // synthesizer pointer -> start time
 }
@@ -30,8 +34,7 @@ static const NSUInteger BRMaxSpeechEvents = 400;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         s = [[BRSpeech alloc] init];
-        // the framework is loaded and asked for its voices on the main thread, where it later speaks
-        dispatch_async(dispatch_get_main_queue(), ^{ [s loadEngine]; });
+        [s perform:^{ [s loadEngine]; }];
     });
     return s;
 }
@@ -45,8 +48,29 @@ static const NSUInteger BRMaxSpeechEvents = 400;
         _ids = [NSMutableDictionary dictionary];
         _starts = [NSMutableDictionary dictionary];
         _defaultRate = 1; _defaultPitch = 1; _defaultVolume = 1;
+        _thread = [[NSThread alloc] initWithTarget:self selector:@selector(threadMain) object:nil];
+        _thread.name = @"BRSpeech";
+        [_thread start];
     }
     return self;
+}
+
+- (void)threadMain
+{
+    @autoreleasepool {
+        // a port keeps the run loop alive between the blocks performed on it
+        [[NSRunLoop currentRunLoop] addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
+        while (YES) {
+            @autoreleasepool { [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]]; }
+        }
+    }
+}
+
+- (void)runBlock:(dispatch_block_t)block { block(); }
+
+- (void)perform:(dispatch_block_t)block
+{
+    [self performSelector:@selector(runBlock:) onThread:_thread withObject:[block copy] waitUntilDone:NO];
 }
 
 - (BOOL)available
@@ -61,24 +85,49 @@ static float BRFloatGetter(id obj, SEL sel, float fallback)
     return (v > 0 && v < 1000) ? v : fallback;
 }
 
-// main thread
+// language codes of a collection the engine returned (strings, or objects / dictionaries with a language)
+static NSArray *BRLanguageCodes(id value)
+{
+    NSMutableArray *out = [NSMutableArray array];
+    id list = value;
+    if ([value isKindOfClass:[NSSet class]]) list = [value allObjects];
+    else if ([value isKindOfClass:[NSOrderedSet class]]) list = [value array];
+    else if ([value isKindOfClass:[NSDictionary class]]) list = [value allKeys];
+    if (![list isKindOfClass:[NSArray class]]) return out;
+    for (id item in list) {
+        NSString *code = nil;
+        if ([item isKindOfClass:[NSString class]]) code = item;
+        else if ([item isKindOfClass:[NSDictionary class]]) code = item[@"language"] ?: item[@"languageCode"];
+        else if ([item respondsToSelector:NSSelectorFromString(@"languageCode")]) code = ((id (*)(id, SEL))objc_msgSend)(item, NSSelectorFromString(@"languageCode"));
+        if ([code isKindOfClass:[NSString class]] && code.length && ![out containsObject:code]) [out addObject:code];
+    }
+    return out;
+}
+
+// speech thread
 - (void)loadEngine
 {
     if (_loaded) return;
     _loaded = YES;
     NSMutableArray *voices = [NSMutableArray array];
+    BRLog(@"speech: loading VoiceServices");
     if (dlopen(BRVoiceServicesPath.fileSystemRepresentation, RTLD_LAZY)) {
         Class cls = NSClassFromString(@"VSSpeechSynthesizer");
         if (cls && [cls instancesRespondToSelector:NSSelectorFromString(@"startSpeakingString:withLanguageCode:")]) {
-            id probe = [[cls alloc] init];
-            _defaultRate = BRFloatGetter(probe, NSSelectorFromString(@"rate"), 1);
-            _defaultPitch = BRFloatGetter(probe, NSSelectorFromString(@"pitch"), 1);
-            _defaultVolume = BRFloatGetter(probe, NSSelectorFromString(@"volume"), 1);
             SEL langs = NSSelectorFromString(@"availableLanguageCodes");
             id codes = [cls respondsToSelector:langs] ? ((id (*)(id, SEL))objc_msgSend)(cls, langs) : nil;
-            if ([codes isKindOfClass:[NSArray class]]) _languages = [codes copy];
+            _languages = BRLanguageCodes(codes);
+            BRLog(@"speech: availableLanguageCodes -> %@ (%lu)", NSStringFromClass([codes class]), (unsigned long)_languages.count);
             @synchronized (self) { _synthClass = cls; }
         }
+    }
+    // the installed voices are folders of the framework (one per language), whatever the engine reports
+    if (!_languages.count) {
+        NSMutableArray *dirs = [NSMutableArray array];
+        for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:BRVoiceResourcesPath error:NULL] ?: @[]) {
+            if ([name rangeOfString:@"-"].location != NSNotFound && [name rangeOfString:@"."].location == NSNotFound) [dirs addObject:name];
+        }
+        _languages = [dirs sortedArrayUsingSelector:@selector(compare:)];
     }
     if (!_synthClass) BRLog(@"speech: VoiceServices is not available");
     NSArray *preferred = [NSLocale preferredLanguages];
@@ -86,7 +135,6 @@ static float BRFloatGetter(id obj, SEL sel, float fallback)
     NSLocale *display = [NSLocale currentLocale];
     BOOL defaultTaken = NO;
     for (NSString *code in _languages) {
-        if (![code isKindOfClass:[NSString class]]) continue;
         NSString *tag = [code stringByReplacingOccurrencesOfString:@"_" withString:@"-"];
         NSString *name = [display displayNameForKey:NSLocaleIdentifier value:[tag stringByReplacingOccurrencesOfString:@"-" withString:@"_"]] ?: tag;
         BOOL isDefault = !defaultTaken && [[tag lowercaseString] hasPrefix:[[systemLang substringToIndex:MIN((NSUInteger)2, systemLang.length)] lowercaseString]];
@@ -96,7 +144,7 @@ static float BRFloatGetter(id obj, SEL sel, float fallback)
     NSDictionary *info = @{ @"available": @(_synthClass != nil), @"voices": voices, @"rate": @(_defaultRate), @"pitch": @(_defaultPitch), @"volume": @(_defaultVolume) };
     NSData *json = [NSJSONSerialization dataWithJSONObject:info options:0 error:NULL];
     @synchronized (self) { _info = json; }
-    BRLog(@"speech: %lu voices, rate %.2f pitch %.2f volume %.2f", (unsigned long)voices.count, _defaultRate, _defaultPitch, _defaultVolume);
+    BRLog(@"speech: %lu voices", (unsigned long)voices.count);
 }
 
 - (NSData *)infoJSON
@@ -130,31 +178,31 @@ static float BRFloatGetter(id obj, SEL sel, float fallback)
 
 static NSValue *BRKey(id synth) { return [NSValue valueWithNonretainedObject:synth]; }
 
-- (NSString *)idOf:(id)synth { return _ids[BRKey(synth)]; }
-- (NSTimeInterval)elapsedOf:(id)synth { NSNumber *t = _starts[BRKey(synth)]; return t ? [NSDate timeIntervalSinceReferenceDate] - t.doubleValue : 0; }
+- (NSString *)idOf:(id)synth { @synchronized (self) { return _ids[BRKey(synth)]; } }
+- (NSTimeInterval)elapsedOf:(id)synth { NSNumber *t; @synchronized (self) { t = _starts[BRKey(synth)]; } return t ? [NSDate timeIntervalSinceReferenceDate] - t.doubleValue : 0; }
 
 - (void)forget:(id)synth
 {
     if (!synth) return;
-    [_ids removeObjectForKey:BRKey(synth)];
-    [_starts removeObjectForKey:BRKey(synth)];
-    [_live removeObject:synth];
-    if (synth == _current) _current = nil;
+    @synchronized (self) {
+        [_ids removeObjectForKey:BRKey(synth)];
+        [_starts removeObjectForKey:BRKey(synth)];
+        [_live removeObject:synth];
+        if (synth == _current) _current = nil;
+    }
 }
 
-#pragma mark - Speaking (requests arrive on the network threads and are carried out on the main thread)
+#pragma mark - Speaking (requests arrive on the network threads and are carried out on the speech thread)
 
 // "cs" -> "cs-CZ" among the installed voices; nil when none fits (the engine then speaks the system language)
 - (NSString *)languageCodeFor:(NSString *)lang
 {
     if (!lang.length) return nil;
     NSString *want = [[lang stringByReplacingOccurrencesOfString:@"_" withString:@"-"] lowercaseString];
-    NSString *prefixMatch = nil;
+    NSString *primary = [want componentsSeparatedByString:@"-"][0], *prefixMatch = nil;
     for (NSString *code in _languages) {
-        if (![code isKindOfClass:[NSString class]]) continue;
         NSString *c = [[code stringByReplacingOccurrencesOfString:@"_" withString:@"-"] lowercaseString];
         if ([c isEqualToString:want]) return code;
-        NSString *primary = [want componentsSeparatedByString:@"-"][0];
         if (!prefixMatch && [c hasPrefix:[primary stringByAppendingString:@"-"]]) prefixMatch = code;
     }
     return prefixMatch;
@@ -162,7 +210,7 @@ static NSValue *BRKey(id synth) { return [NSValue valueWithNonretainedObject:syn
 
 - (void)speak:(NSString *)text utteranceId:(NSString *)uid lang:(NSString *)lang rate:(float)rate pitch:(float)pitch volume:(float)volume
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    [self perform:^{
         [self loadEngine];
         if (!self->_synthClass || !uid.length) { [self addEvent:@"error" utterance:uid charIndex:0 elapsed:0]; return; }
         if (self->_current) [self stopSynth:self->_current];
@@ -174,18 +222,28 @@ static NSValue *BRKey(id synth) { return [NSValue valueWithNonretainedObject:syn
         float p = MAX(0.0f, MIN(2.0f, pitch >= 0 ? pitch : 1));
         float v = MAX(0.0f, MIN(1.0f, volume >= 0 ? volume : 1));
         SEL setRate = NSSelectorFromString(@"setRate:"), setPitch = NSSelectorFromString(@"setPitch:"), setVolume = NSSelectorFromString(@"setVolume:");
-        if (r != 1 && [synth respondsToSelector:setRate]) ((void (*)(id, SEL, float))objc_msgSend)(synth, setRate, self->_defaultRate * r);
-        if (p != 1 && [synth respondsToSelector:setPitch]) ((void (*)(id, SEL, float))objc_msgSend)(synth, setPitch, MAX(0.05f, self->_defaultPitch * p));
-        if (v != 1 && [synth respondsToSelector:setVolume]) ((void (*)(id, SEL, float))objc_msgSend)(synth, setVolume, self->_defaultVolume * v);
-        self->_ids[BRKey(synth)] = uid;
-        self->_starts[BRKey(synth)] = @([NSDate timeIntervalSinceReferenceDate]);
-        [self->_live addObject:synth];
-        self->_current = synth;
+        if (r != 1 && [synth respondsToSelector:setRate]) {
+            float base = BRFloatGetter(synth, NSSelectorFromString(@"rate"), 1);
+            ((void (*)(id, SEL, float))objc_msgSend)(synth, setRate, base * r);
+        }
+        if (p != 1 && [synth respondsToSelector:setPitch]) {
+            float base = BRFloatGetter(synth, NSSelectorFromString(@"pitch"), 1);
+            ((void (*)(id, SEL, float))objc_msgSend)(synth, setPitch, MAX(0.05f, base * p));
+        }
+        if (v != 1 && [synth respondsToSelector:setVolume]) ((void (*)(id, SEL, float))objc_msgSend)(synth, setVolume, v);
+        @synchronized (self) {
+            self->_ids[BRKey(synth)] = uid;
+            self->_starts[BRKey(synth)] = @([NSDate timeIntervalSinceReferenceDate]);
+            [self->_live addObject:synth];
+            self->_current = synth;
+        }
         NSString *code = [self languageCodeFor:lang];
         [self addEvent:@"start" utterance:uid charIndex:0 elapsed:0];
         if (!text.length) { [self addEvent:@"end" utterance:uid charIndex:0 elapsed:0]; [self forget:synth]; return; }
+        BRLog(@"speech: speaking %lu chars (%@)", (unsigned long)text.length, code ?: @"system language");
         ((void (*)(id, SEL, id, id))objc_msgSend)(synth, NSSelectorFromString(@"startSpeakingString:withLanguageCode:"), text, code);
-    });
+        BRLog(@"speech: started");
+    }];
 }
 
 - (void)stopSynth:(id)synth
@@ -195,38 +253,40 @@ static NSValue *BRKey(id synth) { return [NSValue valueWithNonretainedObject:syn
     // the utterance ends now for the page (the engine's own callback follows and is then ignored)
     NSString *uid = [self idOf:synth];
     if (uid) [self addEvent:@"end" utterance:uid charIndex:0 elapsed:[self elapsedOf:synth]];
-    [_ids removeObjectForKey:BRKey(synth)];
-    if (synth == _current) _current = nil;
+    @synchronized (self) {
+        [_ids removeObjectForKey:BRKey(synth)];
+        if (synth == _current) _current = nil;
+    }
 }
 
 - (void)cancel
 {
-    dispatch_async(dispatch_get_main_queue(), ^{ if (self->_current) [self stopSynth:self->_current]; });
+    [self perform:^{ if (self->_current) [self stopSynth:self->_current]; }];
 }
 
 - (void)pause
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    [self perform:^{
         id synth = self->_current;
         SEL sel = NSSelectorFromString(@"pauseSpeakingAtNextBoundary:");
         if (!synth || ![synth respondsToSelector:sel]) return;
         ((void (*)(id, SEL, int))objc_msgSend)(synth, sel, 1);   // at the next word
         [self addEvent:@"pause" utterance:[self idOf:synth] charIndex:0 elapsed:[self elapsedOf:synth]];
-    });
+    }];
 }
 
 - (void)resume
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    [self perform:^{
         id synth = self->_current;
         SEL sel = NSSelectorFromString(@"continueSpeaking");
         if (!synth || ![synth respondsToSelector:sel]) return;
         ((void (*)(id, SEL))objc_msgSend)(synth, sel);
         [self addEvent:@"resume" utterance:[self idOf:synth] charIndex:0 elapsed:[self elapsedOf:synth]];
-    });
+    }];
 }
 
-#pragma mark - VSSpeechSynthesizer delegate (main thread)
+#pragma mark - VSSpeechSynthesizer delegate (any thread)
 
 - (void)speechSynthesizer:(id)synth willSpeakRangeOfSpeechString:(NSRange)range
 {

@@ -1244,9 +1244,38 @@ var CSSFix = (function () {
         if (/^(stretch|-webkit-fill-available|fill-available|-moz-available|contain)$/i.test(t) || /^fit-content\([^()]*\)$/i.test(t)) return true;
         return INTRINSIC_CONTENT.test(t) && /^(min|max)-/.test(p);
     }
+    // CSS Borders 4: the shim paints such boxes itself (corner shapes as superellipses, border-shape, border-clip,
+    // border-limit), see the box painter in shims-extra.js
+    var BOX_PAINT_PROPS = /^(corner-shape|corner-(top|right|bottom|left|block-start|block-end|inline-start|inline-end)-shape|corner-(top-left|top-right|bottom-right|bottom-left|start-start|start-end|end-end|end-start)-shape|border-shape|border-limit|border-clip(-(top|right|bottom|left|block-start|block-end|inline-start|inline-end))?)$/;
+    function validBoxPaintValue(p, v) {
+        var lv = trim(v).toLowerCase(), toks = splitTop(lv, ' '), i;
+        if (isGlobalKeyword(lv) || lv === 'unset') return true;
+        if (/^corner-/.test(p)) {
+            var max = p === 'corner-shape' ? 4 : /^corner-(top|right|bottom|left|block-start|block-end|inline-start|inline-end)-shape$/.test(p) ? 2 : 1;
+            if (!toks.length || toks.length > max) return false;
+            for (i = 0; i < toks.length; i++) if (!/^(round|scoop|bevel|notch|square|squircle|superellipse\(\s*(-?infinity|[+-]?\d*\.?\d+)\s*\))$/.test(toks[i])) return false;
+            return true;
+        }
+        if (p === 'border-shape') {
+            if (lv === 'none') return true;
+            var shapes = 0, boxes = 0;
+            for (i = 0; i < toks.length; i++) {
+                if (/^(inset|circle|ellipse|polygon|path|rect|xywh|shape|url)\(/.test(toks[i])) shapes++;
+                else if (/^(margin-box|border-box|padding-box|content-box|fill-box|stroke-box|view-box)$/.test(toks[i])) boxes++;
+                else return false;
+            }
+            return shapes <= 2 && boxes <= 2 && shapes + boxes >= 1;
+        }
+        if (p === 'border-limit') return /^(all|(sides|corners)(\s+[\d.]+(px|%|em|rem))?|(top|right|bottom|left)\s+[\d.]+(px|%|em|rem))$/.test(lv);
+        // border-clip*: normal | [<length-percentage> | <flex>]+
+        if (lv === 'normal') return true;
+        for (i = 0; i < toks.length; i++) if (!/^(\d*\.?\d+(px|%|em|rem|fr)|0)$/.test(toks[i])) return false;
+        return toks.length > 0;
+    }
     function isDeferred(p, v) {
         if (DV_PROPS[p]) return true;
         if (SPEECH_PROPS[p]) return validSpeechValue(p, v);
+        if (BOX_PAINT_PROPS.test(p)) return validBoxPaintValue(p, v);
         if (ANCHOR_CENTER_PROPS[p] && /\banchor-center\b/i.test(v)) return true;
         if (TIMELINE_MIX.test(v)) return true;   // mixes driven by a scroll or view timeline
         if (intrinsicDeferred(p, v)) return true;
