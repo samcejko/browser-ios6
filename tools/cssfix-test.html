@@ -26,6 +26,8 @@ var cases = [
   ['flex child', '.h{flex:1 1 0%;order:2}', '.h{-webkit-box-flex:1;flex:1 1 0%;-webkit-box-ordinal-group:3;order:2}'],
   ['flex basis', '.i{flex:0 0 200px}', '.i{-webkit-box-flex:0;width:200px;flex:0 0 200px}'],
   ['prefix transform', '.j{transform:translateX(10px);transition:transform .3s ease,opacity .2s}', '.j{-webkit-transform:translateX(10px);transform:translateX(10px);-webkit-transition:-webkit-transform .3s ease,opacity .2s;transition:transform .3s ease,opacity .2s}'],
+  ['transitions of unknown properties', '.t{transition-property:color,text-decoration-color,transform,backdrop-filter;transition-duration:.1s,.2s,.3s,.4s}.u{transition:opacity .2s cubic-bezier(.4,0,.2,1),translate .3s}.w{-webkit-transition:-webkit-backdrop-filter 1s linear}.x{transition:all .15s}',
+    '.t{-webkit-transition-property:color, -webkit-user-select, -webkit-transform, -webkit-user-select;transition-property:color,text-decoration-color,transform,backdrop-filter;-webkit-transition-duration:.1s,.2s,.3s,.4s;transition-duration:.1s,.2s,.3s,.4s}\n.u{-webkit-transition:opacity .2s cubic-bezier(.4,0,.2,1), -webkit-user-select .3s;transition:opacity .2s cubic-bezier(.4,0,.2,1),translate .3s}\n.w{-webkit-transition:-webkit-user-select 1s linear}\n.x{-webkit-transition:all .15s;transition:all .15s}'],
   ['calc', '.k{width:calc(100% - 20px)}', '.k{width:-webkit-calc(100% - 20px)}'],
   ['gradient to right', '.l{background:linear-gradient(to right,#fff,#000)}', '.l{background:-webkit-linear-gradient(left, #fff, #000)}'],
   ['gradient angle', '.m{background:linear-gradient(180deg,red 0%,blue 100%)}', '.m{background:-webkit-linear-gradient(270deg, red 0%, blue 100%)}'],

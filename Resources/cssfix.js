@@ -1946,22 +1946,126 @@ var CSSFix = (function () {
     var NON_NEGATIVE = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, padding: 1, 'padding-top': 1,
         'padding-right': 1, 'padding-bottom': 1, 'padding-left': 1, 'inline-size': 1, 'block-size': 1, 'border-width': 1, 'font-size': 1, 'line-height': 1 };
 
-    // animation-range "entry 0% cover 100%" -> [startCode, endCode]; a code is <range index> * 1000 + <percent>
-    var RANGE_NAMES = ['cover', 'contain', 'entry', 'exit', 'entry-crossing', 'exit-crossing'];
-    function animationRangeCodes(p, lv) {
-        var toks = lv.split(/\s+/), points = [], i;
-        for (i = 0; i < toks.length; i++) {
-            var t = toks[i], ni = RANGE_NAMES.indexOf(t);
-            if (ni >= 0) { var pct = /^-?[\d.]+%$/.test(toks[i + 1] || '') ? parseFloat(toks[i + 1]) : null; if (pct !== null) i++; points.push({ n: ni, pct: pct }); }
-            else if (/^-?[\d.]+%$/.test(t)) points.push({ n: 0, pct: parseFloat(t) });
-            else if (t === 'normal') points.push(null);
-            else return [null, null];   // lengths and other forms are not emulated
+    // ---- transitions of properties the old engine does not know crash its animation code (WebCore null
+    // dereference on some pages, found on astro.build): such names become one it knows and never animates
+    // (replaced rather than dropped, so the duration and delay lists stay aligned). OLD_ENGINE_PROPS: the property
+    // names of the iOS 6 engine, read from the device (for (k in element.style)).
+    var OLD_ENGINE_PROPS = 'alignment-baseline,background,background-attachment,background-clip,background-color,background-image,background-origin,background-position,' +
+        'background-position-x,background-position-y,background-repeat,background-repeat-x,background-repeat-y,background-size,baseline-shift,border,' +
+        'border-bottom,border-bottom-color,border-bottom-left-radius,border-bottom-right-radius,border-bottom-style,border-bottom-width,' +
+        'border-collapse,border-color,border-image,border-image-outset,border-image-repeat,border-image-slice,border-image-source,border-image-width,' +
+        'border-left,border-left-color,border-left-style,border-left-width,border-radius,border-right,border-right-color,border-right-style,' +
+        'border-right-width,border-spacing,border-style,border-top,border-top-color,border-top-left-radius,border-top-right-radius,border-top-style,' +
+        'border-top-width,border-width,bottom,box-shadow,box-sizing,caption-side,clear,clip,clip-path,clip-rule,color,color-interpolation,' +
+        'color-interpolation-filters,color-profile,color-rendering,content,counter-increment,counter-reset,cursor,direction,display,dominant-baseline,' +
+        'empty-cells,enable-background,fill,fill-opacity,fill-rule,filter,float,flood-color,flood-opacity,font,font-family,font-size,font-stretch,' +
+        'font-style,font-variant,font-weight,glyph-orientation-horizontal,glyph-orientation-vertical,height,image-rendering,kerning,left,' +
+        'letter-spacing,lighting-color,line-height,list-style,list-style-image,list-style-position,list-style-type,margin,margin-bottom,margin-left,' +
+        'margin-right,margin-top,marker,marker-end,marker-mid,marker-start,mask,max-height,max-width,min-height,min-width,opacity,orphans,outline,' +
+        'outline-color,outline-offset,outline-style,outline-width,overflow,overflow-x,overflow-y,padding,padding-bottom,padding-left,padding-right,' +
+        'padding-top,page,page-break-after,page-break-before,page-break-inside,pointer-events,position,quotes,resize,right,shape-rendering,size,speak,' +
+        'src,stop-color,stop-opacity,stroke,stroke-dasharray,stroke-dashoffset,stroke-linecap,stroke-linejoin,stroke-miterlimit,stroke-opacity,' +
+        'stroke-width,table-layout,text-align,text-anchor,text-decoration,text-indent,text-line-through,text-line-through-color,' +
+        'text-line-through-mode,text-line-through-style,text-line-through-width,text-overflow,text-overline,text-overline-color,text-overline-mode,' +
+        'text-overline-style,text-overline-width,text-rendering,text-shadow,text-transform,text-underline,text-underline-color,text-underline-mode,' +
+        'text-underline-style,text-underline-width,top,unicode-bidi,unicode-range,vector-effect,vertical-align,visibility,-webkit-animation,' +
+        '-webkit-animation-delay,-webkit-animation-direction,-webkit-animation-duration,-webkit-animation-fill-mode,-webkit-animation-iteration-count,' +
+        '-webkit-animation-name,-webkit-animation-play-state,-webkit-animation-timing-function,-webkit-appearance,-webkit-aspect-ratio,' +
+        '-webkit-backface-visibility,-webkit-background-clip,-webkit-background-composite,-webkit-background-origin,-webkit-background-size,' +
+        '-webkit-border-after,-webkit-border-after-color,-webkit-border-after-style,-webkit-border-after-width,-webkit-border-before,' +
+        '-webkit-border-before-color,-webkit-border-before-style,-webkit-border-before-width,-webkit-border-end,-webkit-border-end-color,' +
+        '-webkit-border-end-style,-webkit-border-end-width,-webkit-border-fit,-webkit-border-horizontal-spacing,-webkit-border-image,' +
+        '-webkit-border-radius,-webkit-border-start,-webkit-border-start-color,-webkit-border-start-style,-webkit-border-start-width,' +
+        '-webkit-border-vertical-spacing,-webkit-box-align,-webkit-box-direction,-webkit-box-flex,-webkit-box-flex-group,-webkit-box-lines,' +
+        '-webkit-box-ordinal-group,-webkit-box-orient,-webkit-box-pack,-webkit-box-reflect,-webkit-box-shadow,-webkit-color-correction,' +
+        '-webkit-column-axis,-webkit-column-break-after,-webkit-column-break-before,-webkit-column-break-inside,-webkit-column-count,' +
+        '-webkit-column-gap,-webkit-column-progression,-webkit-column-rule,-webkit-column-rule-color,-webkit-column-rule-style,' +
+        '-webkit-column-rule-width,-webkit-column-span,-webkit-column-width,-webkit-columns,-webkit-composition-fill-color,' +
+        '-webkit-composition-frame-color,-webkit-filter,-webkit-font-feature-settings,-webkit-font-kerning,-webkit-font-size-delta,' +
+        '-webkit-font-smoothing,-webkit-font-variant-ligatures,-webkit-grid-column,-webkit-grid-columns,-webkit-grid-row,-webkit-grid-rows,' +
+        '-webkit-highlight,-webkit-hyphenate-character,-webkit-hyphenate-limit-after,-webkit-hyphenate-limit-before,-webkit-hyphenate-limit-lines,' +
+        '-webkit-hyphens,-webkit-line-align,-webkit-line-box-contain,-webkit-line-break,-webkit-line-clamp,-webkit-line-grid,-webkit-line-snap,' +
+        '-webkit-locale,-webkit-logical-height,-webkit-logical-width,-webkit-margin-after,-webkit-margin-after-collapse,-webkit-margin-before,' +
+        '-webkit-margin-before-collapse,-webkit-margin-bottom-collapse,-webkit-margin-collapse,-webkit-margin-end,-webkit-margin-start,' +
+        '-webkit-margin-top-collapse,-webkit-marquee,-webkit-marquee-direction,-webkit-marquee-increment,-webkit-marquee-repetition,' +
+        '-webkit-marquee-speed,-webkit-marquee-style,-webkit-mask,-webkit-mask-attachment,-webkit-mask-box-image,-webkit-mask-box-image-outset,' +
+        '-webkit-mask-box-image-repeat,-webkit-mask-box-image-slice,-webkit-mask-box-image-source,-webkit-mask-box-image-width,-webkit-mask-clip,' +
+        '-webkit-mask-composite,-webkit-mask-image,-webkit-mask-origin,-webkit-mask-position,-webkit-mask-position-x,-webkit-mask-position-y,' +
+        '-webkit-mask-repeat,-webkit-mask-repeat-x,-webkit-mask-repeat-y,-webkit-mask-size,-webkit-match-nearest-mail-blockquote-color,' +
+        '-webkit-max-logical-height,-webkit-max-logical-width,-webkit-min-logical-height,-webkit-min-logical-width,-webkit-nbsp-mode,' +
+        '-webkit-overflow-scrolling,-webkit-padding-after,-webkit-padding-before,-webkit-padding-end,-webkit-padding-start,-webkit-perspective,' +
+        '-webkit-perspective-origin,-webkit-perspective-origin-x,-webkit-perspective-origin-y,-webkit-print-color-adjust,-webkit-rtl-ordering,' +
+        '-webkit-svg-shadow,-webkit-tap-highlight-color,-webkit-text-combine,-webkit-text-decorations-in-effect,-webkit-text-emphasis,' +
+        '-webkit-text-emphasis-color,-webkit-text-emphasis-position,-webkit-text-emphasis-style,-webkit-text-fill-color,-webkit-text-orientation,' +
+        '-webkit-text-security,-webkit-text-size-adjust,-webkit-text-stroke,-webkit-text-stroke-color,-webkit-text-stroke-width,-webkit-touch-callout,' +
+        '-webkit-transform,-webkit-transform-origin,-webkit-transform-origin-x,-webkit-transform-origin-y,-webkit-transform-origin-z,' +
+        '-webkit-transform-style,-webkit-transition,-webkit-transition-delay,-webkit-transition-duration,-webkit-transition-property,' +
+        '-webkit-transition-timing-function,-webkit-user-drag,-webkit-user-modify,-webkit-user-select,-webkit-writing-mode,white-space,widows,width,' +
+        'word-break,word-spacing,word-wrap,writing-mode,z-index,zoom';
+    var OLD_PROPS_SET = null;
+    var TRANSITION_WORDS = { ease: 1, linear: 1, 'ease-in': 1, 'ease-out': 1, 'ease-in-out': 1, 'step-start': 1, 'step-end': 1, initial: 1, inherit: 1,
+                             unset: 1, normal: 1, 'allow-discrete': 1 };
+    function safeTransitionProps(value, shorthand) {
+        if (!OLD_PROPS_SET) { OLD_PROPS_SET = {}; var names = OLD_ENGINE_PROPS.split(','); for (var n = 0; n < names.length; n++) OLD_PROPS_SET[names[n]] = 1; }
+        var parts = splitTop(value, ','), changed = false;
+        for (var i = 0; i < parts.length; i++) {
+            var toks = splitWS(trim(parts[i]));
+            for (var j = 0; j < toks.length; j++) {
+                var t = toks[j].toLowerCase();
+                if (!/^-{0,2}[a-z][\w-]*$/.test(t) || (shorthand && TRANSITION_WORDS[t])) continue;   // durations, timing functions
+                if (t !== 'all' && t !== 'none' && !OLD_PROPS_SET[t]) { toks[j] = '-webkit-user-select'; changed = true; }
+                if (shorthand) break;   // (one property per transition)
+            }
+            parts[i] = toks.join(' ');
         }
-        var code = function (pt, defPct) { return pt ? pt.n * 1000 + Math.max(0, Math.min(100, Math.round(pt.pct === null ? defPct : pt.pct))) : null; };
-        if (p === 'animation-range-start') return [code(points[0], 0), null];
-        if (p === 'animation-range-end') return [null, code(points[0], 100)];
-        if (points.length === 1) return [code(points[0], 0), points[0] && points[0].pct === null ? code(points[0], 100) : null];
-        return [code(points[0], 0), code(points[1], 100)];
+        return changed ? parts.join(', ') : value;
+    }
+
+    // animation-range "entry 0% cover 100%" -> [startCode, endCode, startPx, endPx]; a code is <range index> * 1000 +
+    // <percent>, a length is a px offset along the range (then the percent part is 0); normal is cover 0% / cover 100%
+    var RANGE_NAMES = ['cover', 'contain', 'entry', 'exit', 'entry-crossing', 'exit-crossing'];
+    var rangeLength = function (t) {
+        var m = /^(-?[\d.]+)(px|rem|em)$/.exec(t);
+        return m ? Math.round(parseFloat(m[1]) * (m[2] === 'px' ? 1 : 16)) : null;
+    };
+    function animationRangeCodes(p, lv) {
+        var toks = splitWS(lv), points = [], i;
+        for (i = 0; i < toks.length; i++) {
+            var t = toks[i], ni = RANGE_NAMES.indexOf(t), next = toks[i + 1] || '';
+            if (ni >= 0) {
+                var pt = { n: ni, pct: null, px: null };
+                if (/^-?[\d.]+%$/.test(next)) { pt.pct = parseFloat(next); i++; }
+                else if (rangeLength(next) !== null) { pt.px = rangeLength(next); i++; }
+                points.push(pt);
+            }
+            else if (/^-?[\d.]+%$/.test(t)) points.push({ n: 0, pct: parseFloat(t), px: null });
+            else if (rangeLength(t) !== null) points.push({ n: 0, pct: null, px: rangeLength(t) });
+            else if (t === 'normal') points.push({ n: 0, pct: null, px: null, normal: true });
+            else return [null, null, null, null];
+        }
+        var code = function (pt, defPct) { return pt ? pt.n * 1000 + (pt.px !== null ? 0 : Math.max(0, Math.min(100, Math.round(pt.pct === null ? defPct : pt.pct)))) : null; };
+        var px = function (pt) { return pt && pt.px !== null ? pt.px : null; };
+        if (p === 'animation-range-start') return [code(points[0], 0), null, px(points[0]), null];
+        if (p === 'animation-range-end') return [null, code(points[0], 100), null, px(points[0])];
+        if (points.length === 1) {
+            // one range name alone covers that whole range; a single offset only sets the start
+            var only = points[0], whole = only && only.pct === null && only.px === null;
+            return [code(only, 0), whole ? code(only, 100) : null, px(only), null];
+        }
+        return [code(points[0], 0), code(points[1], 100), px(points[0]), px(points[1])];
+    }
+    // view-timeline-inset "auto | <length-percentage>{1,2}" -> markers (px, or percent of the scrollport)
+    function timelineInsetMarkers(v, markers) {
+        var t = splitWS(v);
+        if (!t.length || t.length > 2) return false;
+        for (var i = 0; i < 2; i++) {
+            var tok = t[i] !== undefined ? t[i] : t[0], side = i ? 'e' : 's';
+            if (tok === 'auto') continue;
+            if (/^-?[\d.]+%$/.test(tok)) markers.push('br-vtip-' + side + ' ' + Math.round(parseFloat(tok)));
+            else if (rangeLength(tok) !== null || tok === '0') markers.push('br-vti-' + side + ' ' + (tok === '0' ? 0 : rangeLength(tok)));
+            else return false;
+        }
+        return true;
     }
 
     // ---- clip-path basic shapes -> -webkit-mask-image SVG. Percentages map onto a stretched 100x100 viewBox,
@@ -2733,10 +2837,13 @@ var CSSFix = (function () {
                 }
                 case 'transition': case 'transition-property': {
                     var tv = v.replace(/(^|[\s,])(transform|filter|mask|clip-path|backdrop-filter)\b/g, '$1-webkit-$2');
-                    push(out, '-webkit-' + p, tv, imp);
+                    push(out, '-webkit-' + p, isGlobalKeyword(lv) ? v : safeTransitionProps(tv, p === 'transition'), imp);
                     push(out, p, v, imp);
                     continue;
                 }
+                case '-webkit-transition': case '-webkit-transition-property':
+                    push(out, p, isGlobalKeyword(lv) ? v : safeTransitionProps(v, p === '-webkit-transition'), imp);
+                    continue;
                 case 'background-clip': case '-webkit-background-clip':
                     if (lv === 'text') push(out, '-webkit-background-clip', 'text', imp);
                     push(out, p, v, imp);
@@ -2843,17 +2950,48 @@ var CSSFix = (function () {
                     var tnl = splitTop(lv, ',');
                     for (var tni = 0; tni < tnl.length; tni++) {
                         var tnt = splitWS(trim(tnl[tni]));
+                        if (tnt.length === 1 && tnt[0] === 'none') { markers.push('br-tl-none 1'); continue; }   // (no timeline: nothing to drive)
                         if (tnt.length && /^--[\w-]+$/.test(tnt[0])) markers.push((p.indexOf('scroll') === 0 ? 'br-stl-' : 'br-vtl-') + tnt[0].slice(2) + ' 1');
                         if (/\b(inline|x)\b/.test(tnl[tni])) markers.push('br-tl-src-inline 1');
+                        // view-timeline: name, axis and inset in any order after the name
+                        if (p === 'view-timeline' && tnt.length > 1) {
+                            var insetToks = [];
+                            for (var tii = 1; tii < tnt.length; tii++) if (!/^(block|inline|x|y)$/.test(tnt[tii])) insetToks.push(tnt[tii]);
+                            if (insetToks.length) timelineInsetMarkers(insetToks.join(' '), markers);
+                        }
                     }
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'scroll-timeline-axis': case 'view-timeline-axis': {
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    var axes = splitTop(lv, ','), axisOk = true;
+                    for (var axi = 0; axi < axes.length; axi++) if (!/^(block|inline|x|y)$/.test(trim(axes[axi]))) axisOk = false;
+                    if (axisOk && !isGlobalKeyword(lv)) markers.push(/^(inline|x)$/.test(trim(axes[0])) ? 'br-tl-src-inline 1' : 'br-tl-src-block 1');
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'view-timeline-inset': {
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    else timelineInsetMarkers(trim(splitTop(lv, ',')[0]), markers);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'timeline-scope': {
+                    // named timelines are found anywhere in the document here, so every scope works
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    else if (/^(none|all|--[\w-]+(\s*,\s*--[\w-]+)*)$/.test(lv)) markers.push('br-tls 1');
                     push(out, p, v, imp);
                     continue;
                 }
                 case 'animation-range': case 'animation-range-start': case 'animation-range-end': {
                     if (isGlobalKeyword(lv)) markerKeyword = lv;
-                    var arc = animationRangeCodes(p, lv);
+                    // (several animations: the first range drives them all)
+                    var arc = animationRangeCodes(p, trim(splitTop(lv, ',')[0]));
                     if (arc[0] !== null) markers.push('br-ar-s ' + arc[0]);
                     if (arc[1] !== null) markers.push('br-ar-e ' + arc[1]);
+                    if (arc[2] !== null) markers.push('br-arpx-s ' + arc[2]);
+                    if (arc[3] !== null) markers.push('br-arpx-e ' + arc[3]);
                     push(out, p, v, imp);
                     continue;
                 }

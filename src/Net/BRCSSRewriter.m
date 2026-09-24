@@ -227,6 +227,10 @@ static CGFloat g_devicePixelRatio = 1;
         return NO;
     }
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    // Unicode property tables for \p{...} (optional: without them such patterns stay RegExp constructor calls)
+    NSString *uniPath = [b pathForResource:@"unicode-props" ofType:@"js" inDirectory:@"js"];
+    NSString *uni = uniPath ? [NSString stringWithContentsOfFile:uniPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+    if (uni.length) [engine evaluateScript:uni sourceName:@"unicode-props.js"];
     if (![engine evaluateScript:acorn sourceName:@"acorn.js"] || ![engine evaluateScript:fix sourceName:@"jsfix.js"]) { _jsfixFailed = YES; return NO; }
     NSString *probe = [engine callFunction:@"JSFix.run" arguments:@[@"let f = (a = 1) => `${a}`;", @"{\"force\":true}"]];
     if (!probe.length) { BRLog(@"jsfix.js self test failed"); _jsfixFailed = YES; return NO; }

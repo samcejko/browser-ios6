@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>new Function lowering test</title>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="gen-unicode.js"></script>
+<script src="../Resources/jsfix.js"></script>
+<script>
+// the old engine refuses ES2015+ bodies in new Function: a stand-in that does the same, wrapped by the shim
+var RealFunction = Function;
+window.Function = function Function() {
+  var body = String(arguments[arguments.length - 1]);
+  if (/=>|\bconst\b|\blet\b|\bclass\b|`|\?\.|\basync\b/.test(body)) throw new SyntaxError('Unexpected token (old engine)');
+  return RealFunction.apply(this, arguments);
+};
+window.Function.prototype = RealFunction.prototype;
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out"></pre>
+<script>
+var results = [];
+var check = function (name, fn, expected) {
+  var got;
+  try { got = fn(); } catch (e) { got = 'threw ' + e.message; }
+  Promise.resolve(got).then(function (v) {
+    var ok = JSON.stringify(v) === JSON.stringify(expected);
+    results.push((ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ' expected ' + JSON.stringify(expected) + ' got ' + JSON.stringify(v)));
+    document.getElementById('out').textContent = results.join('\n');
+    if (results.length === 5) document.title = results.every(function (r) { return r.indexOf('PASS') === 0; }) ? 'function PASS' : 'function FAIL';
+  });
+};
+check('plain body still native', function () { return new Function('a', 'b', 'return a + b')(2, 3); }, 5);
+check('arrow body lowered', function () { return new Function('a', 'return [a, a + 1].map(x => x * 2)')(20); }, [40, 42]);
+check('class and template', function () { return new Function('class A { constructor(n) { this.n = n; } s() { return `n=${this.n}`; } } return new A(7).s();')(); }, 'n=7');
+check('async body (AsyncFunction route)', function () { return Function('return (async () => { await null; return 9; })()')(); }, 9);
+check('instanceof Function', function () { return new Function('return 1') instanceof Function; }, true);
+</script>
+</body>
+</html>

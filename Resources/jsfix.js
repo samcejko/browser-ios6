@@ -38,6 +38,20 @@
             while (!(s = next()).done) a.push(s.value);
             return a;
         },
+        // for await (x of it): the async iterator of it, or its sync iterator with each value awaited
+        __br_asyncIter: function (x) {
+            if (x == null) throw new TypeError(x + ' is not async iterable');
+            var AS = typeof Symbol === 'function' ? Symbol.asyncIterator : null;
+            if (AS && x[AS] != null) return x[AS]();
+            if (typeof x['@@asyncIterator'] === 'function') return x['@@asyncIterator']();
+            var next = __br_iter(x);
+            return {
+                next: function () {
+                    var s = next(), done = s.done;
+                    return Promise.resolve(s.value).then(function (v) { return { done: done, value: v }; });
+                }
+            };
+        },
         // array destructuring: arrays as they are, other iterables read up to n items (all when n < 0)
         __br_arr: function (x, n) {
             if (Object.prototype.toString.call(x) === '[object Array]') return x;
@@ -353,6 +367,9 @@
             Gp.next = function (arg) { return this._invoke('next', arg); };
             Gp['throw'] = function (arg) { return this._invoke('throw', arg); };
             Gp['return'] = function (arg) { return this._invoke('return', arg); };
+            // an async function's or async generator's machine: awaited values ({__await}) resume it, other yields
+            // resolve the pending next(); calls are queued
+            var asyncIterSym = typeof Symbol === 'function' && Symbol.asyncIterator ? Symbol.asyncIterator : '@@asyncIterator';
             var AsyncIterator = function (gen, P) {
                 var invoke = function (method, arg, resolve, reject) {
                     var record = tryCatch(gen[method], gen, arg);
@@ -364,16 +381,27 @@
                     }
                     P.resolve(value).then(function (v) { result.value = v; resolve(result); }, function (err) { invoke('throw', err, resolve, reject); });
                 };
-                this.next = function (arg) { return new P(function (resolve, reject) { invoke('next', arg, resolve, reject); }); };
+                var previous = null;
+                this._invoke = function (method, arg) {
+                    var call = function () { return new P(function (resolve, reject) { invoke(method, arg, resolve, reject); }); };
+                    return (previous = previous ? previous.then(call, call) : call());
+                };
             };
+            AsyncIterator.prototype.next = function (arg) { return this._invoke('next', arg); };
+            AsyncIterator.prototype['throw'] = function (arg) { return this._invoke('throw', arg); };
+            AsyncIterator.prototype['return'] = function (arg) { return this._invoke('return', arg); };
+            AsyncIterator.prototype[asyncIterSym] = function () { return this; };
+            if (asyncIterSym !== '@@asyncIterator') AsyncIterator.prototype['@@asyncIterator'] = AsyncIterator.prototype[asyncIterSym];
+            var promiseImpl = function () { return G.Promise || (typeof Promise !== 'undefined' ? Promise : null); };
             var rt = {
                 wrap: wrap,
                 awrap: function (arg) { return { __await: arg }; },
                 async: function (innerFn, outerFn, self, tryLocs) {
-                    var P = G.Promise || (typeof Promise !== 'undefined' ? Promise : null);
-                    var it = new AsyncIterator(wrap(innerFn, outerFn, self, tryLocs), P);
+                    var it = new AsyncIterator(wrap(innerFn, outerFn, self, tryLocs), promiseImpl());
                     return it.next().then(function (r) { return r.done ? r.value : it.next(); });
                 },
+                // async function*: the async iterator itself
+                asyncGen: function (innerFn, outerFn, self, tryLocs) { return new AsyncIterator(wrap(innerFn, outerFn, self, tryLocs), promiseImpl()); },
                 // for (k in o) around a yield: the keys when the loop starts, skipping those deleted meanwhile
                 keys: function (object) {
                     var keys = [];
@@ -392,7 +420,7 @@
             return rt;
         }
     };
-    var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
+    var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
                          __br_super: ['__br_isNative', '__br_new'] };
 
     // ------------------------------------------------------------------------------------------------ small utilities
@@ -516,29 +544,156 @@
         cp -= 0x10000;
         return '\\u' + hex4(0xD800 + (cp >> 10)) + '\\u' + hex4(0xDC00 + (cp & 0x3FF));
     };
-    // the u flag: \u{...} escapes become \uXXXX or surrogate pairs; null when the pattern needs real unicode mode
-    // (astral characters in classes, property escapes)
-    var lowerUnicodeRegex = function (p) {
-        if (/\\[pP]\{/.test(p)) return null;
-        var out = '', inClass = false, i, c, code, e, cp;
-        for (i = 0; i < p.length; i++) {
-            c = p.charAt(i);
-            code = p.charCodeAt(i);
-            if (c === '\\') {
-                if (p.charAt(i + 1) === 'u' && p.charAt(i + 2) === '{') {
-                    e = p.indexOf('}', i);
-                    cp = parseInt(p.slice(i + 3, e), 16);
-                    if (cp > 0xFFFF) { if (inClass) return null; out += '(?:' + surrogates(cp) + ')'; }
-                    else out += '\\u' + hex4(cp);
-                    i = e;
-                    continue;
-                }
-                out += c + p.charAt(i + 1); i++; continue;
+    // ---- the u flag. Property escapes (\p{...}) come from JSFIX_UNICODE (Resources/js/unicode-props.js, generated at
+    // build time by tools/gen-unicode.js); code point sets are written as a BMP class plus surrogate pair alternatives,
+    // astral characters and ranges likewise, "." matches a whole surrogate pair. null when the pattern cannot be
+    // lowered (then it stays a RegExp constructor call, which fails only when that code runs).
+    var GC_ALIAS = { Letter: 'L', Uppercase_Letter: 'Lu', Lowercase_Letter: 'Ll', Titlecase_Letter: 'Lt', Modifier_Letter: 'Lm', Other_Letter: 'Lo',
+        Mark: 'M', Combining_Mark: 'M', Nonspacing_Mark: 'Mn', Spacing_Mark: 'Mc', Enclosing_Mark: 'Me', Number: 'N', Decimal_Number: 'Nd', digit: 'Nd',
+        Letter_Number: 'Nl', Other_Number: 'No', Punctuation: 'P', punct: 'P', Connector_Punctuation: 'Pc', Dash_Punctuation: 'Pd', Open_Punctuation: 'Ps',
+        Close_Punctuation: 'Pe', Initial_Punctuation: 'Pi', Final_Punctuation: 'Pf', Other_Punctuation: 'Po', Symbol: 'S', Math_Symbol: 'Sm',
+        Currency_Symbol: 'Sc', Modifier_Symbol: 'Sk', Other_Symbol: 'So', Separator: 'Z', Space_Separator: 'Zs', Line_Separator: 'Zl',
+        Paragraph_Separator: 'Zp', Control: 'Cc', cntrl: 'Cc', Format: 'Cf', Private_Use: 'Co' };
+    var BIN_ALIAS = { Alpha: 'Alphabetic', space: 'White_Space', EPres: 'Emoji_Presentation', EMod: 'Emoji_Modifier', EBase: 'Emoji_Modifier_Base',
+        EComp: 'Emoji_Component', ExtPict: 'Extended_Pictographic', Upper: 'Uppercase', Lower: 'Lowercase', IDS: 'ID_Start', IDC: 'ID_Continue',
+        Dia: 'Diacritic', Ideo: 'Ideographic', RI: 'Regional_Indicator' };
+    var SCRIPT_ALIAS = { Latn: 'Latin', Grek: 'Greek', Cyrl: 'Cyrillic', Armn: 'Armenian', Hebr: 'Hebrew', Arab: 'Arabic', Deva: 'Devanagari',
+        Beng: 'Bengali', Geor: 'Georgian', Hang: 'Hangul', Hira: 'Hiragana', Kana: 'Katakana', Hani: 'Han', Zyyy: 'Common', Zinh: 'Inherited', Qaai: 'Inherited' };
+    var uniCache = {};
+    // the code point ranges [start, end, start, end...] of a property, null when unknown
+    var uniRanges = function (spec) {
+        var key, eq = spec.indexOf('=');
+        if (eq >= 0) {
+            var k = spec.slice(0, eq), v = spec.slice(eq + 1);
+            if (k === 'gc' || k === 'General_Category') key = GC_ALIAS[v] || v;
+            else if (k === 'sc' || k === 'Script' || k === 'scx' || k === 'Script_Extensions') key = 'Script=' + (SCRIPT_ALIAS[v] || v);
+            else return null;
+        } else key = GC_ALIAS[spec] || BIN_ALIAS[spec] || spec;
+        if (hasOwn.call(uniCache, key)) return uniCache[key];
+        var tables = root.JSFIX_UNICODE, enc = tables && hasOwn.call(tables, key) ? tables[key] : null;
+        if (enc === null) return null;
+        var out = [], prev = 0, parts = enc ? enc.split(',') : [];
+        for (var i = 0; i < parts.length; i++) {
+            var dash = parts[i].indexOf('-'), s = prev + parseInt(dash < 0 ? parts[i] : parts[i].slice(0, dash), 36);
+            var e = dash < 0 ? s : s + parseInt(parts[i].slice(dash + 1), 36);
+            out.push(s, e);
+            prev = e;
+        }
+        uniCache[key] = out;
+        return out;
+    };
+    // the complement of ranges within the BMP (surrogates excluded)
+    var bmpComplement = function (r) {
+        var out = [], next = 0;
+        for (var i = 0; i < r.length && r[i] <= 0xFFFF; i += 2) { if (r[i] > next) out.push(next, r[i] - 1); next = r[i + 1] + 1; }
+        if (next <= 0xFFFF) out.push(next, 0xFFFF);
+        return out;
+    };
+    var cpEsc = function (cp) { return '\\u' + hex4(cp); };
+    // surrogate pair alternatives for astral ranges [s, e, ...]
+    var astralSource = function (r) {
+        var alts = [];
+        for (var i = 0; i < r.length; i += 2) {
+            var s = r[i] - 0x10000, e = r[i + 1] - 0x10000, hs = 0xD800 + (s >> 10), ls = 0xDC00 + (s & 0x3FF), he = 0xD800 + (e >> 10), le = 0xDC00 + (e & 0x3FF);
+            if (hs === he) { alts.push(cpEsc(hs) + (ls === le ? cpEsc(ls) : '[' + cpEsc(ls) + '-' + cpEsc(le) + ']')); continue; }
+            alts.push(cpEsc(hs) + '[' + cpEsc(ls) + '-\\udfff]');
+            if (he - hs > 1) alts.push('[' + cpEsc(hs + 1) + (he - hs > 2 ? '-' + cpEsc(he - 1) : '') + '][\\udc00-\\udfff]');
+            alts.push(cpEsc(he) + '[\\udc00-' + cpEsc(le) + ']');
+        }
+        return alts.join('|');
+    };
+    // a set of code points as one regular expression atom
+    var setAtom = function (bmpItems, astral) {
+        var cls = bmpItems.length ? '[' + bmpItems.join('') + ']' : '';
+        if (!astral.length) return cls || '[^\\s\\S]';
+        return '(?:' + (cls ? cls + '|' : '') + astralSource(astral) + ')';
+    };
+    var splitRanges = function (r, bmpItems, astral) {
+        for (var i = 0; i < r.length; i += 2) {
+            var s = r[i], e = r[i + 1];
+            if (s <= 0xFFFF) { var be = Math.min(e, 0xFFFF); bmpItems.push(s === be ? cpEsc(s) : cpEsc(s) + '-' + cpEsc(be)); }
+            if (e > 0xFFFF) astral.push(Math.max(s, 0x10000), e);
+        }
+    };
+    var SIMPLE_ESC = { n: 10, r: 13, t: 9, v: 11, f: 12, '0': 0 };
+    // one escape at p[i] === "\\": {end, cp} for a character, {end, ranges, neg} for \p, {end, raw} for \d \w \s and friends
+    var readEscape = function (p, i, inClass) {
+        var c = p.charAt(i + 1), m;
+        if (c === 'u' && p.charAt(i + 2) === '{') { var e = p.indexOf('}', i); return { end: e + 1, cp: parseInt(p.slice(i + 3, e), 16) }; }
+        if (c === 'u' && /^[0-9a-fA-F]{4}$/.test(p.substr(i + 2, 4))) {
+            var hi = parseInt(p.substr(i + 2, 4), 16);
+            if (hi >= 0xD800 && hi <= 0xDBFF && p.substr(i + 6, 2) === '\\u' && /^[dD][c-fC-F][0-9a-fA-F]{2}$/.test(p.substr(i + 8, 4))) {
+                return { end: i + 12, cp: 0x10000 + ((hi - 0xD800) << 10) + (parseInt(p.substr(i + 8, 4), 16) - 0xDC00) };
             }
-            if (code >= 0xD800 && code <= 0xDBFF) { if (inClass) return null; out += '(?:' + c + p.charAt(i + 1) + ')'; i++; continue; }
-            if (inClass) { if (c === ']') inClass = false; out += c; continue; }
-            if (c === '[') { inClass = true; out += c; continue; }
-            out += c;
+            return { end: i + 6, cp: hi };
+        }
+        if ((c === 'p' || c === 'P') && p.charAt(i + 2) === '{') {
+            var close = p.indexOf('}', i), r = uniRanges(p.slice(i + 3, close));
+            if (!r) return null;
+            return { end: close + 1, ranges: r, neg: c === 'P' };
+        }
+        if (c === 'x' && /^[0-9a-fA-F]{2}$/.test(p.substr(i + 2, 2))) return { end: i + 4, cp: parseInt(p.substr(i + 2, 2), 16) };
+        if (c === 'c' && /[A-Za-z]/.test(p.charAt(i + 2))) return { end: i + 3, cp: p.charCodeAt(i + 2) % 32 };
+        if (/[dDwWsS]/.test(c) || (!inClass && /[bB1-9k]/.test(c))) {
+            if (!inClass && /[1-9]/.test(c)) { m = /^\d+/.exec(p.slice(i + 1)); return { end: i + 1 + m[0].length, raw: '\\' + m[0] }; }
+            return { end: i + 2, raw: '\\' + c };
+        }
+        if (inClass && c === 'b') return { end: i + 2, cp: 8 };
+        if (hasOwn.call(SIMPLE_ESC, c)) return { end: i + 2, cp: SIMPLE_ESC[c] };
+        return { end: i + 2, cp: p.charCodeAt(i + 1) };   // identity escape (\. \/ \- ...)
+    };
+    // one character (or escape) at p[i]: as readEscape; a surrogate pair is one code point
+    var readAtom = function (p, i, inClass) {
+        if (p.charAt(i) === '\\') return readEscape(p, i, inClass);
+        var code = p.charCodeAt(i);
+        if (code >= 0xD800 && code <= 0xDBFF && i + 1 < p.length) {
+            var lo = p.charCodeAt(i + 1);
+            if (lo >= 0xDC00 && lo <= 0xDFFF) return { end: i + 2, cp: 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00) };
+        }
+        return { end: i + 1, cp: code };
+    };
+    var lowerUnicodeRegex = function (p) {
+        var out = '', i = 0, n = p.length, a, items, astral;
+        while (i < n) {
+            var c = p.charAt(i);
+            if (c === '[') {
+                var neg = p.charAt(i + 1) === '^', j = i + (neg ? 2 : 1);
+                items = []; astral = [];
+                while (j < n && p.charAt(j) !== ']') {
+                    a = readAtom(p, j, true);
+                    if (!a) return null;
+                    j = a.end;
+                    if (a.cp !== undefined && p.charAt(j) === '-' && j + 1 < n && p.charAt(j + 1) !== ']') {
+                        var b = readAtom(p, j + 1, true);
+                        if (b && b.cp !== undefined) { splitRanges([a.cp, b.cp], items, astral); j = b.end; continue; }
+                    }
+                    if (a.cp !== undefined) splitRanges([a.cp, a.cp], items, astral);
+                    else if (a.raw) items.push(a.raw);
+                    else splitRanges(a.neg ? bmpComplement(a.ranges) : a.ranges, items, astral);
+                }
+                if (j >= n) return null;
+                i = j + 1;
+                // (a negated class leaves astral characters out: approximation)
+                out += neg ? '[^' + items.join('') + ']' : setAtom(items, astral);
+                continue;
+            }
+            if (c === '\\') {
+                a = readEscape(p, i, false);
+                if (!a) return null;
+                if (a.raw) out += a.raw;
+                else if (a.ranges) {
+                    items = []; astral = [];
+                    if (a.neg) { splitRanges(bmpComplement(a.ranges), items, astral); out += '(?:' + setAtom(items, []) + '|[\\ud800-\\udbff][\\udc00-\\udfff])'; }
+                    else { splitRanges(a.ranges, items, astral); out += setAtom(items, astral); }
+                } else if (a.cp > 0xFFFF) out += '(?:' + surrogates(a.cp) + ')';
+                else out += p.slice(i, a.end).indexOf('\\u{') === 0 ? cpEsc(a.cp) : p.slice(i, a.end);
+                i = a.end;
+                continue;
+            }
+            if (c === '.') { out += '(?:[\\ud800-\\udbff][\\udc00-\\udfff]|[^\\n\\r\\u2028\\u2029])'; i++; continue; }
+            a = readAtom(p, i, false);
+            out += a.cp > 0xFFFF ? '(?:' + p.slice(i, a.end) + ')' : p.slice(i, a.end);
+            i = a.end;
         }
         return out;
     };
@@ -850,10 +1005,18 @@
             case 'FunctionExpression': case 'ArrowFunctionExpression': d = this.fn(n, p, s); break;
             case 'ArrayExpression': d = this.list(n.elements, n, s); break;
             case 'ObjectExpression':
+                var seenKeys = {};
                 for (i = 0; i < n.properties.length; i++) {
                     var pr = n.properties[i], pd = false;
                     pr.$p = n;
                     if (pr.type === 'SpreadElement') { this.v(pr.argument, pr, s); pr.$d = true; d = true; continue; }
+                    // a key defined twice is an error in ES5 strict code (and for getters/setters everywhere): from the
+                    // first repetition on the properties are defined one by one
+                    if (!pr.computed && n.$dupAt === undefined) {
+                        var pk = '$' + (pr.key.type === 'Identifier' ? pr.key.name : String(pr.key.value));
+                        if (seenKeys[pk] && !(seenKeys[pk] !== 'init' && pr.kind !== 'init' && seenKeys[pk] !== pr.kind)) { n.$dupAt = i; d = true; }
+                        seenKeys[pk] = seenKeys[pk] && seenKeys[pk] !== pr.kind ? 'both' : pr.kind;
+                    }
                     if (pr.computed) { this.v(pr.key, pr, s); pd = true; }
                     else if (pr.key.type === 'Literal' && literalDirty(pr.key)) pd = true;
                     if (pr.method || pr.shorthand) pd = true;
@@ -1239,7 +1402,7 @@
         if (flags.indexOf('u') >= 0) { var u = lowerUnicodeRegex(pat); if (u !== null) { pat = u; flags = flags.replace('u', ''); } }
         var code;
         // what the old engine cannot do stays a constructor call: a SyntaxError only when that code runs
-        if (/[yvd]/.test(flags) || flags.indexOf('u') >= 0 || /\(\?<[=!]|\\[pP]\{/.test(pat)) { code = 'new RegExp(' + quote(pat) + ',' + quote(flags) + ')'; this.prec = P_CALL; }
+        if (/[yvd]/.test(flags) || flags.indexOf('u') >= 0 || /\(\?<[=!]/.test(pat)) { code = 'new RegExp(' + quote(pat) + ',' + quote(flags) + ')'; this.prec = P_CALL; }
         else code = '/' + pat + '/' + flags;
         if (names) {
             var parts = [];
@@ -1290,7 +1453,7 @@
         for (i = 0; i < n.properties.length; i++) {
             pr = n.properties[i];
             if (pr.type === 'SpreadElement') { dyn = true; tail.push('null', this.E(pr.argument, P_ASSIGN), '3'); continue; }
-            if (pr.computed) dyn = true;
+            if (pr.computed || (n.$dupAt !== undefined && i >= n.$dupAt)) dyn = true;
             var kind = pr.kind === 'get' ? 1 : pr.kind === 'set' ? 2 : 0;
             if (!dyn) {
                 if (!pr.$d) { head.push(this.src.slice(pr.start, pr.end)); continue; }
@@ -2155,7 +2318,6 @@
         return this.rt;
     };
     P.genFunc = function (n, kind, name, o) {
-        if (n.async && n.generator) throw new Unsupported('async generator');
         var outer = this.push(kind, n), i;
         if (o && o.superRef !== undefined) outer.superRef = o.superRef;
         var params = [], pre = '', simple = n.params.length;
@@ -2173,6 +2335,7 @@
         var fdecls = '';
         for (i = 0; i < stmts.length; i++) if (stmts[i].type === 'FunctionDeclaration') { stmts[i].$hoisted = true; fdecls += this.func(stmts[i], 'fn', stmts[i].id.name, null); }
         var cv = this.fresh('_context'), inner = this.push('gen', n), g = inner.gen = new GenState(cv);
+        g.asyncGen = !!(n.async && n.generator);
         for (i = 0; i < stmts.length; i++) this.gStmt(stmts[i], []);
         var resolve = function (s) { return s.replace(LOC_RE, function (m, id) { return String(g.marks[id]); }); };
         var starts = {}, id, machine = '';
@@ -2188,7 +2351,7 @@
         var triesCode = tries.length ? resolve('[' + tries.join(',') + ']') : '';
         this.pop();
         var self = kind === 'arrow' ? this.thisCode() : 'this', rt = this.rtName();
-        var body = 'return ' + rt + '.' + (n.async ? 'async' : 'wrap') + '(function(' + cv + '){' + this.declLine(inner) + 'while(1)switch(' + cv + '.prev=' + cv + '.next){' +
+        var body = 'return ' + rt + '.' + (n.async ? (n.generator ? 'asyncGen' : 'async') : 'wrap') + '(function(' + cv + '){' + this.declLine(inner) + 'while(1)switch(' + cv + '.prev=' + cv + '.next){' +
                    machine + '}},null,' + self + (triesCode ? ',' + triesCode : '') + ');';
         this.pop();
         var head = o && o.accessor ? '' : 'function' + (name ? ' ' + name : '');
@@ -2253,7 +2416,25 @@
                 this.gMark(after);
                 return;
             case 'ForInStatement': case 'ForOfStatement': {
-                if (n.await) throw new Unsupported('for await');
+                if (n.await) {
+                    // for await: each step is the awaited next() of the async iterator
+                    head = this.gLoc(); after = this.gLoc();
+                    it = this.gTemp();
+                    this.gAssign(it, this.h('__br_asyncIter') + '(' + this.gx(n.right, false) + ')');
+                    this.gMark(head);
+                    var resume = this.gLoc();
+                    this.gEmit(g.cv + '.next=' + resume + ';return ' + this.rtName() + '.awrap(' + it + '.next());');
+                    this.gMark(resume);
+                    step = this.gAssign(this.gTemp(), g.cv + '.sent');
+                    this.gJumpIf(step + '.done', after);
+                    this.gEmit(this.forBinding(n.left, step + '.value'));
+                    g.leaps.push({ kind: 'loop', labels: labels, brk: after, cont: head });
+                    this.gStmt(n.body, []);
+                    g.leaps.pop();
+                    this.gJump(head);
+                    this.gMark(after);
+                    return;
+                }
                 head = this.gLoc(); after = this.gLoc();
                 it = this.gTemp();
                 if (n.type === 'ForInStatement') this.gAssign(it, this.rtName() + '.keys(' + this.gx(n.right, false) + ')');
@@ -2382,6 +2563,23 @@
                 after = this.gLoc();
                 var arg = n.argument ? this.gx(n.argument, false) : null;
                 if (n.type === 'AwaitExpression') arg = this.rtName() + '.awrap(' + (arg === null ? 'void 0' : arg) + ')';
+                if (n.delegate && g.asyncGen) {
+                    // yield* in an async generator: await the inner iterator's next() and pass its values on (what the
+                    // consumer sends goes to the inner iterator; its throw/return are not forwarded)
+                    var itT = this.gAssign(this.gTemp(), this.h('__br_asyncIter') + '(' + arg + ')'), recv = this.gAssign(this.gTemp(), 'void 0');
+                    var loopLoc = this.gLoc(), resumeLoc = this.gLoc(), sentLoc = this.gLoc();
+                    this.gMark(loopLoc);
+                    this.gEmit(g.cv + '.next=' + resumeLoc + ';return ' + this.rtName() + '.awrap(' + itT + '.next(' + recv + '));');
+                    this.gMark(resumeLoc);
+                    var stepT = this.gAssign(this.gTemp(), g.cv + '.sent');
+                    this.gJumpIf(stepT + '.done', after);
+                    this.gEmit(g.cv + '.next=' + sentLoc + ';return ' + stepT + '.value;');
+                    this.gMark(sentLoc);
+                    this.gAssign(recv, g.cv + '.sent');
+                    this.gJump(loopLoc);
+                    this.gMark(after);
+                    return stepT + '.value';
+                }
                 if (n.delegate) {
                     var res = this.gTemp();
                     this.gEmit('return ' + g.cv + '.delegateYield(' + arg + ',' + quote(res.slice(g.cv.length + 1)) + ',' + after + ');');
@@ -2490,7 +2688,22 @@
                     this.gEmit(outl.join(',') + ';');
                     return ignore ? null : t;
                 }
-                if (op === '||=' || op === '&&=' || op === '??=') throw new Unsupported('yield in logical assignment');
+                if (op === '||=' || op === '&&=' || op === '??=') {
+                    // the target's parts first, its value tested, the right side only when it is assigned
+                    var ref;
+                    if (n.left.type === 'MemberExpression') {
+                        var objT = n.left.object.type === 'Super' ? this.ctxSuper() : viaTemp(this.gTemp(), n.left.object);
+                        ref = objT + (n.left.computed ? '[' + viaTemp(this.gTemp(), n.left.property) + ']' : this.tail(n.left));
+                    } else ref = this.E(n.left, P_CALL);
+                    after = this.gLoc();
+                    result = this.gAssign(this.gTemp(), ref);
+                    if (op === '||=') this.gJumpIf(result, after);
+                    else if (op === '&&=') this.gJumpIfNot(result, after);
+                    else this.gJumpIf(result + '!=null', after);
+                    this.gAssign(result, ref + '=' + this.gx(n.right, false));
+                    this.gMark(after);
+                    return ignore ? null : result;
+                }
                 lhs = n.left.type === 'MemberExpression' ? (n.left.object.type === 'Super' ? this.ctxSuper() : viaTemp(null, n.left.object)) + (n.left.computed ? '[' + viaTemp(null, n.left.property) + ']' : this.tail(n.left)) : this.E(n.left, P_CALL);
                 if (op === '=') return finish(lhs + '=' + this.gx(n.right, false));
                 var saved = this.gAssign(this.gTemp(), lhs), rhs = this.gx(n.right, false);

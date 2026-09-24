@@ -8,7 +8,7 @@ const vm = require('vm');
 const path = require('path');
 const acorn = require('acorn');
 
-const ctx = vm.createContext({ acorn });
+const ctx = vm.createContext({ acorn, JSFIX_UNICODE: require('./gen-unicode.js')() });
 vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Resources', 'jsfix.js'), 'utf8'), ctx, { filename: 'jsfix.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'jsfix-cases.js'), 'utf8'), ctx, { filename: 'jsfix-cases.js' });
 const JSFix = ctx.JSFix;

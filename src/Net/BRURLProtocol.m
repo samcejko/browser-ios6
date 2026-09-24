@@ -862,8 +862,8 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         // transpiler (for tests on the device)
         NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
-    } else if ([path isEqualToString:@"/acorn.js"]) {
-        NSString *file = [[NSBundle mainBundle] pathForResource:@"acorn" ofType:@"js" inDirectory:@"js"];
+    } else if ([path isEqualToString:@"/acorn.js"] || [path isEqualToString:@"/unicode-props.js"]) {
+        NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
     } else if ([path isEqualToString:@"/browserscore-features.js"]) {
         // flattened browserscore/features definitions, generated at build time

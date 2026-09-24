@@ -4251,12 +4251,19 @@
                 if (!scroller) { max = inline ? document.documentElement.scrollWidth - window.innerWidth : document.documentElement.scrollHeight - window.innerHeight; pos = inline ? window.pageXOffset : window.pageYOffset; }
                 else { max = inline ? scroller.scrollWidth - scroller.clientWidth : scroller.scrollHeight - scroller.clientHeight; pos = inline ? scroller.scrollLeft : scroller.scrollTop; }
                 if (max <= 0) return 0;
-                var sp = pos / max, s0 = d.rsPct, s1 = d.rePct;
-                return s1 === s0 ? 0 : clamp01((sp - s0) / (s1 - s0));
+                // offsets of the range: a percentage of the scroll range or a length (px) from its start
+                var s0 = d.rsPx !== null ? d.rsPx : d.rsPct * max, s1 = d.rePx !== null ? d.rePx : d.rePct * max;
+                return s1 === s0 ? 0 : clamp01((pos - s0) / (s1 - s0));
             }
             var subject = d.subject || d.el, rect = subject.getBoundingClientRect(), vTop, vSize;
             if (!scroller) { vTop = 0; vSize = inline ? window.innerWidth : window.innerHeight; }
             else { var sr = scroller.getBoundingClientRect(); vTop = inline ? sr.left : sr.top; vSize = inline ? scroller.clientWidth : scroller.clientHeight; }
+            // view-timeline-inset shrinks the scrollport the subject is measured against
+            if (d.insetS || d.insetE) {
+                var is = d.insetS ? (d.insetS.pct !== null ? vSize * d.insetS.pct / 100 : d.insetS.px) : 0, ie = d.insetE ? (d.insetE.pct !== null ? vSize * d.insetE.pct / 100 : d.insetE.px) : 0;
+                vTop += is;
+                vSize -= is + ie;
+            }
             var top = (inline ? rect.left : rect.top) - vTop, size = inline ? rect.width : rect.height;
             // the subject's start edge relative to the scrollport start, at 0 % and 100 % of each named range
             var edge = function (name, pct) {
@@ -4269,7 +4276,9 @@
                 }
                 return a + (b - a) * pct;
             };
-            var t0 = edge(d.rsName, d.rsPct), t1 = edge(d.reName, d.rePct);
+            // (a length offset moves that far into its range from the range's start)
+            var t0 = d.rsPx !== null ? edge(d.rsName, 0) - d.rsPx : edge(d.rsName, d.rsPct);
+            var t1 = d.rePx !== null ? edge(d.reName, 0) - d.rePx : edge(d.reName, d.rePct);
             return t0 === t1 ? 0 : clamp01((t0 - top) / (t0 - t1));
         };
         var apply = function () {
@@ -4285,8 +4294,11 @@
             var sources = {}, i, cr, el, m;
             for (i = 0; i < marked.length; i++) {
                 cr = marked[i].cr; el = marked[i].el;
-                var re = /br-(stl|vtl)-([\w-]+)/g;
-                while ((m = re.exec(cr)) !== null) sources[m[1] + ':' + m[2]] = { el: el, inline: cr.indexOf('br-tl-src-inline') >= 0 };
+                var re = /br-(stl|vtl)-([\w-]+)/g, inset = function (side) {
+                    var px = new RegExp('br-vti-' + side + '\\s+(-?\\d+)').exec(cr), pct = new RegExp('br-vtip-' + side + '\\s+(-?\\d+)').exec(cr);
+                    return pct ? { pct: parseInt(pct[1], 10), px: null } : px ? { pct: null, px: parseInt(px[1], 10) } : null;
+                };
+                while ((m = re.exec(cr)) !== null) sources[m[1] + ':' + m[2]] = { el: el, inline: cr.indexOf('br-tl-src-inline') >= 0, insetS: inset('s'), insetE: inset('e') };
             }
             driven = [];
             for (i = 0; i < marked.length; i++) {
@@ -4294,10 +4306,13 @@
                 m = /br-tl-(scroll|view|named-([\w-]+))/.exec(cr);
                 if (!m) continue;
                 var d = { el: el, kind: m[1] === 'view' ? 'view' : 'scroll', inline: cr.indexOf('br-tl-inline') >= 0, source: cr.indexOf('br-tl-root') >= 0 ? 'root' : cr.indexOf('br-tl-self') >= 0 ? el : null, subject: null,
-                          rsName: 'cover', rsPct: 0, reName: 'cover', rePct: 1, lastDelay: null };
+                          rsName: 'cover', rsPct: 0, reName: 'cover', rePct: 1, rsPx: null, rePx: null, insetS: null, insetE: null, lastDelay: null };
+                var pxs = /br-arpx-s\s+(-?\d+)/.exec(cr), pxe = /br-arpx-e\s+(-?\d+)/.exec(cr);
+                if (pxs) d.rsPx = parseInt(pxs[1], 10);
+                if (pxe) d.rePx = parseInt(pxe[1], 10);
                 if (m[2]) {
                     var vt = sources['vtl:' + m[2]], st = sources['stl:' + m[2]];
-                    if (vt) { d.kind = 'view'; d.subject = vt.el; d.inline = vt.inline; }
+                    if (vt) { d.kind = 'view'; d.subject = vt.el; d.inline = vt.inline; d.insetS = vt.insetS; d.insetE = vt.insetE; }
                     else if (st) { d.kind = 'scroll'; d.source = st.el === document.documentElement || st.el === document.body ? 'root' : st.el; d.inline = st.inline; }
                     else continue;
                 }
@@ -5905,6 +5920,66 @@
         }
         if (!window.Viewport) { window.Viewport = function Viewport() {}; defaults('Viewport', { segments: null }); if (!window.viewport) window.viewport = new window.Viewport(); }
     } catch (eCSSOM2) {}
+
+    // ---- This engine keeps DOM attributes on the instances: runtimes that take the getter from the prototype
+    // (Svelte 5: Object.getOwnPropertyDescriptor(Node.prototype, 'firstChild').get.call(node)) get one asking the
+    // instance. (Instance lookups still find the engine's own attribute first, so normal access does not change.)
+    (function () {
+        var sample = document.createElement('div');
+        var add = function (Ctor, names, writable) {
+            var proto = Ctor && Ctor.prototype;
+            if (!proto) return;
+            for (var i = 0; i < names.length; i++) (function (name) {
+                if (Object.getOwnPropertyDescriptor(proto, name) || !(name in sample)) return;
+                var d = { configurable: true, enumerable: true, get: function () { return this === proto ? undefined : this[name]; } };
+                if (writable) d.set = function (v) { if (this !== proto) this[name] = v; };
+                try { Object.defineProperty(proto, name, d); } catch (e) {}
+            })(names[i]);
+        };
+        try {
+            add(window.Node, ['firstChild', 'lastChild', 'nextSibling', 'previousSibling', 'parentNode', 'childNodes', 'nodeType', 'nodeName', 'ownerDocument'], false);
+            add(window.Node, ['textContent', 'nodeValue'], true);
+            add(window.Element, ['firstElementChild', 'lastElementChild', 'nextElementSibling', 'previousElementSibling', 'children', 'childElementCount'], false);
+        } catch (e) {}
+    })();
+
+    // ---- new Function(...) with ES2015+ syntax (template compilers, feature tests, AsyncFunction): when the engine
+    // refuses it, the page loads the transpiler (acorn and jsfix.js from the app, once) and builds the lowered function.
+    // (eval is left alone: a wrapper would turn direct eval into global eval.)
+    (function () {
+        var NativeFunction = window.Function, ready = null;
+        if (!NativeFunction || NativeFunction.__brLowering) return;
+        var load = function (name) {
+            var x = new XMLHttpRequest();
+            x.open('GET', 'https://ios6-browser.invalid/' + name, false);
+            x.send(null);
+            if (x.status === 200 && x.responseText) (0, eval)(x.responseText);
+        };
+        var transpiler = function () {
+            if (ready !== null) return ready;
+            ready = false;
+            try {
+                if (!window.JSFIX_UNICODE) { try { load('unicode-props.js'); } catch (e0) {} }
+                if (!window.acorn) load('acorn.js');
+                if (!window.JSFix) load('jsfix.js');
+                ready = !!(window.acorn && window.JSFix && window.JSFix.transpile);
+            } catch (e) { ready = false; }
+            return ready;
+        };
+        var Lowering = function Function() {
+            try { return NativeFunction.apply(this, arguments); } catch (e) {
+                if (!(e instanceof SyntaxError) || !transpiler()) throw e;
+                var params = Array.prototype.slice.call(arguments, 0, -1).join(','), body = arguments.length ? String(arguments[arguments.length - 1]) : '';
+                var out = null;
+                try { out = window.JSFix.transpile('(function anonymous(' + params + '\n) {\n' + body + '\n});', {}); } catch (e2) { out = null; }
+                if (!out) throw e;
+                return (0, eval)(out);
+            }
+        };
+        Lowering.prototype = NativeFunction.prototype;
+        Lowering.__brLowering = true;
+        try { window.Function = Lowering; } catch (e3) {}
+    })();
 
     // ---- ES modules. The rewriter turns <script type="module"> into __brModules.entry(src) (inline ones into their
     // registration followed by an entry) when the page has no nomodule fallback. Module files are fetched with the

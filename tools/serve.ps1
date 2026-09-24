@@ -13,7 +13,16 @@ while ($listener.IsListening) {
     $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath).TrimStart('/') -replace '/', '\'
     $path = Join-Path $Root $rel
     try {
-        if ((Test-Path $path -PathType Leaf) -and $path.StartsWith($Root)) {
+        if ($ctx.Request.HttpMethod -eq 'POST' -and $rel.StartsWith('save\')) {
+            # test pages save generated files here: POST /save/<name> writes <root>\saved\<name>
+            $name = [IO.Path]::GetFileName($rel)
+            $dir = Join-Path $Root 'saved'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $ms = New-Object IO.MemoryStream
+            $ctx.Request.InputStream.CopyTo($ms)
+            [IO.File]::WriteAllBytes((Join-Path $dir $name), $ms.ToArray())
+            $ctx.Response.StatusCode = 204
+        } elseif ((Test-Path $path -PathType Leaf) -and $path.StartsWith($Root)) {
             $bytes = [IO.File]::ReadAllBytes($path)
             $ext = [IO.Path]::GetExtension($path).ToLower()
             $ctx.Response.ContentType = if ($types[$ext]) { $types[$ext] } else { 'application/octet-stream' }

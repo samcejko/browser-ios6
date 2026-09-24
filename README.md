@@ -73,9 +73,25 @@ the app around it:
   `tools/browserscore-estimate.html` takes a result JSON from the device and estimates what the current
   rewriter would add to it, grouping what is still missing.
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
-  shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
-  TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship
-  ES2015+ bundles without an ES5 fallback do not work.
+  shims) are injected into every page.
+- **Modern JavaScript on the old engine**: `Resources/jsfix.js` is the app's own ES2015–ES2022 to ES5
+  transpiler (Babel and TypeScript ran at about 0.1 KB/s on an iPad 2 and were dropped). It parses with
+  acorn and prints ES5 straight from the tree, lowering while it prints and copying subtrees without newer
+  syntax verbatim: let/const with renames and a function per loop iteration where closures capture the
+  loop variables, arrows (this/arguments aliases), classes (fields, private members, static blocks,
+  `super`, subclasses of built-ins and custom elements), destructuring, default/rest/spread, template
+  literals and tagged templates, for-of, optional chaining, `??`, logical assignment, `**`, numeric
+  separators, regular expression flags s/u and named groups, block functions of strict code, and
+  generators and async functions as state machines on a small regenerator-compatible runtime. Scripts
+  the engine already parses pass through untouched (checked with `new Function`), the rest is lowered on
+  a second JavaScriptCore thread (about 50–100 KB/s on the iPad 2; Bootstrap 5 in 1.3 s) and kept in
+  `Caches/transpiled` by content; inline scripts of documents are lowered by the HTML rewriter. ES
+  modules work too: `<script type="module">` (when the page has no `nomodule` fallback) goes to a loader
+  in the page shim that fetches the graph with an internal marker the network layer strips, gets each
+  module lowered to a registration with live export getters, and links and runs it (import maps, cycles,
+  `export *`, dynamic `import()`, `import.meta`). `tools/jsfix-test.html` (84 cases, also run in CI by
+  `tools/jsfix-ci.js`), `tools/jsfix-bundles.html` (Bootstrap, Vue, Alpine, htmx, Swiper, Chart.js, d3,
+  three.js, mathjs, KaTeX, mermaid...) and `tools/module-test.html` check it in a desktop browser.
 - **Robust connections** on home networks: IPv4 addresses are tried first, the system resolver gets
   a few seconds before the name is asked directly from public DNS servers, answers are cached, every
   address has a short connect budget and the TLS handshake has its own timeout. Main documents never
