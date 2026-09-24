@@ -1221,6 +1221,102 @@ var CSSFix = (function () {
 
     function isGlobalKeyword(lv) { return lv === 'inherit' || lv === 'initial'; }
 
+    // ---- clip-path basic shapes -> -webkit-mask-image SVG. Percentages map onto a stretched 100x100 viewBox,
+    // px values onto an unscaled SVG the size of the box; a shape mixing the two cannot be expressed.
+    var POS_KEYWORDS = { left: 0, top: 0, center: 50, right: 100, bottom: 100 };
+    function clipPathToMask(v) {
+        var m = /^(inset|circle|ellipse|polygon|path|rect|xywh)\(/i.exec(trim(v));
+        if (!m) return null;
+        var open = v.indexOf('('), close = matchParen(v, open);
+        var fn = m[1].toLowerCase(), inner = trim(v.slice(open + 1, close)), rest = trim(v.slice(close + 1)).toLowerCase();
+        var mode = null;   // 'pct' | 'px'
+        var bad = false;
+        var val = function (tok, axis) {   // -> number in the current mode, or sets `bad`
+            tok = String(tok).toLowerCase();
+            if (POS_KEYWORDS.hasOwnProperty(tok)) { if (mode === 'px') { bad = true; return 0; } mode = 'pct'; return POS_KEYWORDS[tok]; }
+            var mm = /^(-?[\d.]+)(px|%)?$/.exec(tok);
+            if (!mm) { bad = true; return 0; }
+            var n = parseFloat(mm[1]), u = mm[2];
+            if (!u && n !== 0) { bad = true; return 0; }
+            if (u) { var want = u === '%' ? 'pct' : 'px'; if (mode && mode !== want) { bad = true; return 0; } mode = want; }
+            return n;
+        };
+        var radiusOf = function (roundPart) {
+            if (!roundPart) return 0;
+            var r = splitWS(trim(roundPart))[0], mm = /^(-?[\d.]+)(px|%)?$/.exec(r || '');
+            if (!mm) return 0;
+            var want = mm[2] === '%' ? 'pct' : 'px';
+            return mode && mode !== want && parseFloat(mm[1]) !== 0 ? 0 : parseFloat(mm[1]);
+        };
+        var shape = '', fillRule = '';
+        var atSplit = function (s) { var p = s.split(/\s+at\s+/i); return { size: trim(p[0]), pos: p[1] ? splitWS(trim(p[1])) : ['50%', '50%'] }; };
+        switch (fn) {
+            case 'circle': {
+                var c = atSplit(inner), rTok = c.size || 'closest-side';
+                if (/^(closest|farthest)-side$/.test(rTok)) { if (mode === 'px') return null; mode = 'pct'; rTok = '50%'; }
+                var cr = val(rTok), cx = val(c.pos[0]), cy = val(c.pos.length > 1 ? c.pos[1] : '50%');
+                shape = "<circle cx='" + cx + "' cy='" + cy + "' r='" + cr + "'/>";
+                break;
+            }
+            case 'ellipse': {
+                var e = atSplit(inner), rs = e.size ? splitWS(e.size) : [];
+                var rxTok = rs[0] || 'closest-side', ryTok = rs[1] || rxTok;
+                if (/^(closest|farthest)-side$/.test(rxTok)) { if (mode === 'px') return null; mode = 'pct'; rxTok = '50%'; }
+                if (/^(closest|farthest)-side$/.test(ryTok)) { if (mode === 'px') return null; mode = 'pct'; ryTok = '50%'; }
+                var erx = val(rxTok), ery = val(ryTok), ecx = val(e.pos[0]), ecy = val(e.pos.length > 1 ? e.pos[1] : '50%');
+                shape = "<ellipse cx='" + ecx + "' cy='" + ecy + "' rx='" + erx + "' ry='" + ery + "'/>";
+                break;
+            }
+            case 'inset': case 'rect': case 'xywh': {
+                var roundAt = inner.search(/\s+round\s+/i), body = roundAt >= 0 ? inner.slice(0, roundAt) : inner, roundPart = roundAt >= 0 ? inner.slice(roundAt).replace(/^\s+round\s+/i, '') : '';
+                var t = splitWS(trim(body)), x, y, w, h;
+                if (fn === 'inset') {
+                    if (mode === 'px') return null;
+                    mode = 'pct';
+                    var ib = expandBox(t), it = val(ib[0]), ir = val(ib[1]), ibt = val(ib[2]), il = val(ib[3]);
+                    x = il; y = it; w = 100 - il - ir; h = 100 - it - ibt;
+                } else if (fn === 'xywh') {
+                    if (t.length < 4) return null;
+                    x = val(t[0]); y = val(t[1]); w = val(t[2]); h = val(t[3]);
+                } else {
+                    if (t.length < 4) return null;
+                    var edge = function (tok, def) { return tok.toLowerCase() === 'auto' ? def : val(tok); };
+                    var rt = edge(t[0], 0), rr = edge(t[1], null), rb = edge(t[2], null), rl = edge(t[3], 0);
+                    if (rr === null || rb === null) { if (mode === 'px') return null; mode = 'pct'; if (rr === null) rr = 100; if (rb === null) rb = 100; }
+                    x = rl; y = rt; w = rr - rl; h = rb - rt;
+                }
+                var rx = radiusOf(roundPart);
+                shape = "<rect x='" + x + "' y='" + y + "' width='" + w + "' height='" + h + "'" + (rx ? " rx='" + rx + "'" : '') + "/>";
+                break;
+            }
+            case 'polygon': {
+                var pts = splitTop(inner, ','), points = [];
+                if (/^(nonzero|evenodd)$/i.test(trim(pts[0]))) { fillRule = trim(pts[0]).toLowerCase(); pts = pts.slice(1); }
+                for (var pi = 0; pi < pts.length; pi++) { var pt = splitWS(trim(pts[pi])); if (pt.length < 2) return null; points.push(val(pt[0]) + ',' + val(pt[1])); }
+                if (points.length < 3) return null;
+                shape = "<polygon points='" + points.join(' ') + "'" + (fillRule ? " fill-rule='" + fillRule + "'" : '') + "/>";
+                break;
+            }
+            case 'path': {
+                var pa = splitTop(inner, ','), dTok = trim(pa[pa.length - 1]);
+                if (pa.length > 1 && /^(nonzero|evenodd)$/i.test(trim(pa[0]))) fillRule = trim(pa[0]).toLowerCase();
+                var dm = /^(["'])([\s\S]*)\1$/.exec(dTok);
+                if (!dm) return null;
+                mode = 'px';
+                shape = "<path d='" + dm[2].replace(/'/g, '') + "'" + (fillRule ? " fill-rule='" + fillRule + "'" : '') + "/>";
+                break;
+            }
+        }
+        if (bad || !shape) return null;
+        if (!mode) mode = 'pct';
+        var svg = "<svg xmlns='http://www.w3.org/2000/svg'" + (mode === 'pct' ? " viewBox='0 0 100 100' preserveAspectRatio='none'" : '') + '>' + shape + '</svg>';
+        var url = 'url("data:image/svg+xml;charset=utf8,' + svg.replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E').replace(/ /g, '%20') + '")';
+        var decls = [['-webkit-mask-image', url], ['-webkit-mask-repeat', 'no-repeat'], ['-webkit-mask-position', '0 0'], ['-webkit-mask-size', mode === 'pct' ? '100% 100%' : 'auto']];
+        var boxKw = /\b(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)\b/.exec(rest);
+        if (boxKw) { var mb = boxKw[1] === 'padding-box' || boxKw[1] === 'content-box' ? boxKw[1] : 'border-box'; decls.push(['-webkit-mask-clip', mb], ['-webkit-mask-origin', mb]); }
+        return decls;
+    }
+
     // the two corners of each css-borders-4 side shorthand, clockwise
     var RADIUS_SIDES = { top: ['border-top-left-radius', 'border-top-right-radius'], right: ['border-top-right-radius', 'border-bottom-right-radius'],
         bottom: ['border-bottom-right-radius', 'border-bottom-left-radius'], left: ['border-bottom-left-radius', 'border-top-left-radius'] };
@@ -1752,6 +1848,15 @@ var CSSFix = (function () {
                     push(out, corners[1], rv2 ? rh2 + ' ' + rv2 : rh2, imp);
                     continue;
                 }
+                case 'clip-path': case '-webkit-clip-path': {
+                    // the engine has no clip-path: basic shapes become an SVG mask image (alpha), which the old
+                    // -webkit-mask-image does render
+                    var maskDecls = clipPathToMask(v);
+                    if (maskDecls) for (var md = 0; md < maskDecls.length; md++) push(out, maskDecls[md][0], maskDecls[md][1], imp);
+                    push(out, '-webkit-clip-path', v, imp);
+                    push(out, 'clip-path', v, imp);
+                    continue;
+                }
                 case 'line-clamp':
                     // the standard property is the old -webkit-line-clamp idiom (which needs the legacy box)
                     if (/^\d+$/.test(lv)) {
@@ -2084,6 +2189,7 @@ var CSSFix = (function () {
         if (colon < 0) return false;
         var p = trim(decl.slice(0, colon)).toLowerCase(), v = trim(decl.slice(colon + 1));
         if (p.charAt(0) === '-' && p.charAt(1) === '-') return true;   // custom properties: resolved statically
+        if (p === 'clip-path' || p === '-webkit-clip-path') return clipPathToMask(v) !== null;   // basic shapes render as masks
         if (p.indexOf('grid') >= 0 || p === 'gap' || p === 'row-gap' || p === 'column-gap' && !/column/.test(v) || p === 'aspect-ratio' || p === 'object-fit' ||
             p === 'backdrop-filter' || p === '-webkit-backdrop-filter' ||
             p === 'overflow' && /clip/i.test(v) || p === 'display' && /grid|contents|flow-root/i.test(v) ||
