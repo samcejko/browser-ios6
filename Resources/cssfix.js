@@ -554,12 +554,46 @@ var CSSFix = (function () {
         return trim(args[0]);
     }
 
+    // viewport of the page being rewritten (set by run()), for clamp()/min()/max() with viewport units
+    var g_viewportWidth = 768, g_viewportHeight = 1024;
+
+    // a single length in px when its unit can be resolved statically (px, vw, vh, vmin, vmax, rem, em, number 0)
+    function evalLengthPx(s) {
+        var m = /^(-?[\d.]+)(px|vw|vh|vmin|vmax|rem|em|)$/i.exec(trim(s));
+        if (!m) return null;
+        var n = parseFloat(m[1]), u = m[2].toLowerCase();
+        if (isNaN(n)) return null;
+        if (u === 'px') return n;
+        if (u === '') return n === 0 ? 0 : null;
+        if (u === 'vw') return n * g_viewportWidth / 100;
+        if (u === 'vh') return n * g_viewportHeight / 100;
+        if (u === 'vmin') return n * Math.min(g_viewportWidth, g_viewportHeight) / 100;
+        if (u === 'vmax') return n * Math.max(g_viewportWidth, g_viewportHeight) / 100;
+        return n * 16;   // rem, em at the usual root size
+    }
+
+    function evalAllPx(args) {
+        var out = [];
+        for (var i = 0; i < args.length; i++) { var v = evalLengthPx(args[i]); if (v === null) return null; out.push(v); }
+        return out;
+    }
+
+    function pxString(n) { return (Math.round(n * 100) / 100) + 'px'; }
+
     function applyFunction(name, inner) {
         switch (name) {
             case 'calc': return '-webkit-calc(' + inner + ')';
-            case 'clamp': { var a = splitTop(inner, ','); return a.length === 3 ? trim(a[1]) : trim(a[0]); }
-            case 'min': return pickMin(splitTop(inner, ','));
-            case 'max': return trim(splitTop(inner, ',')[0]);
+            case 'clamp': {
+                var a = splitTop(inner, ',');
+                if (a.length === 3) {
+                    var cv = evalAllPx(a);
+                    if (cv) return pxString(Math.min(Math.max(cv[1], cv[0]), cv[2]));
+                    return trim(a[1]);
+                }
+                return trim(a[0]);
+            }
+            case 'min': { var mn = splitTop(inner, ','), mnv = evalAllPx(mn); return mnv ? pxString(Math.min.apply(null, mnv)) : pickMin(mn); }
+            case 'max': { var mx = splitTop(inner, ','), mxv = evalAllPx(mx); return mxv ? pxString(Math.max.apply(null, mxv)) : trim(mx[0]); }
             case 'linear-gradient': case 'repeating-linear-gradient':
                 return '-webkit-' + name + '(' + convertLinearGradient(inner) + ')';
             case 'radial-gradient': case 'repeating-radial-gradient':
@@ -825,6 +859,17 @@ var CSSFix = (function () {
                 case 'text-align':
                     push(out, p, lv === 'start' ? 'left' : lv === 'end' ? 'right' : v, imp);
                     continue;
+                case 'aspect-ratio': {
+                    // the engine has no aspect-ratio: the ratio travels in a harmless counter-reset value that
+                    // shims-extra.js reads back from the computed style and turns into a height
+                    var ar = /(?:^|\s)([\d.]+)\s*(?:\/\s*([\d.]+))?\s*$/.exec(lv.replace(/^auto\s*/, ''));
+                    if (ar) {
+                        var arw = parseFloat(ar[1]), arh = ar[2] ? parseFloat(ar[2]) : 1;
+                        if (arw > 0 && arh > 0) push(out, 'counter-reset', 'br-aspect ' + Math.round(arw * 1000) + ' br-aspect-h ' + Math.round(arh * 1000), imp);
+                    }
+                    push(out, p, v, imp);
+                    continue;
+                }
                 case 'margin-left': case 'margin-inline-start':
                     push(out, 'margin-left', (flexPush && autoLeft && lv === 'auto') ? '0' : v, imp);
                     continue;
@@ -1502,6 +1547,8 @@ var CSSFix = (function () {
             else opts = options;
         }
         if (opts && opts.viewportWidth > 0) ctx.viewportWidth = opts.viewportWidth;
+        g_viewportWidth = (opts && opts.viewportWidth > 0) ? opts.viewportWidth : 768;
+        g_viewportHeight = (opts && opts.viewportHeight > 0) ? opts.viewportHeight : Math.round(g_viewportWidth * 4 / 3);
         var out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx);
         return JSON.stringify({ out: out, vars: ctx.root });
     }

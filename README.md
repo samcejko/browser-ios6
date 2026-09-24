@@ -22,9 +22,15 @@ the app around it:
   **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
   very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's
   home page, which now loads in nine seconds.
-- **Layout rescue**: `display: grid` becomes floated equal-width columns, column flex containers become
-  blocks (deeply nested 2009 flexbox layout never finished on some pages), `position: sticky` is
-  prefixed, `text-rendering: optimizeLegibility` and `font-feature-settings` are dropped.
+- **Layout rescue**: `display: grid` becomes floated equal-width columns (12-column systems stack
+  instead), column flex containers become blocks (deeply nested 2009 flexbox layout never finished on
+  some pages), wrapping flex rows become inline-blocks with `justify-content` mapped to
+  `text-align`, flex `gap` becomes margins between the items, a lone `margin-left: auto` on a flex
+  item becomes 0 (the 2009 model hands that margin all the free space, which left Google's result
+  text 0 px wide), `position: sticky` is prefixed, `text-rendering: optimizeLegibility` and
+  `font-feature-settings` are dropped. The start page links a bundled **CSS3 test** page
+  (`https://ios6-browser.invalid/csstest.html`, served through the rewriter) that measures what the
+  engine really renders after the rewrite; css3test.com itself no longer runs on ES5 engines.
 - **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
   shims) are injected into every page. Transpiling modern syntax on the device was tried with Babel and
   TypeScript and measured at roughly 0.1 KB/s with 300 MB of RAM on an iPad 2, so pages that ship

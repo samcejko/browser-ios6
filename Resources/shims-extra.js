@@ -941,6 +941,35 @@
             return c;
         };
     }
+    // aspect-ratio: cssfix stores the ratio in "counter-reset: br-aspect W br-aspect-h H"; media elements and
+    // empty boxes with such a rule get their height from their width (and again when the viewport changes)
+    var aspectTimer = null, aspectElements = [];
+    var applyAspectRatios = function () {
+        try {
+            var all = document.getElementsByTagName('*'), found = [];
+            for (var i = 0; i < all.length && i < 4000; i++) {
+                var el = all[i];
+                var cr = getComputedStyle(el).counterReset || '';
+                if (cr.indexOf('br-aspect') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
+                var m = /br-aspect\s+(\d+)\s+br-aspect-h\s+(\d+)/.exec(cr);
+                if (!m) continue;
+                var tag = el.tagName;
+                var replaced = tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME' || tag === 'CANVAS' || tag === 'EMBED' || tag === 'OBJECT' || tag === 'SVG';
+                if (!replaced && (el.children.length || (el.textContent || '').replace(/\s+/g, '').length)) continue;   // boxes with content keep their own height
+                var w = el.offsetWidth;
+                if (!w) continue;
+                var h = Math.round(w * parseInt(m[2], 10) / parseInt(m[1], 10));
+                if (Math.abs(el.offsetHeight - h) > 1) { el.style.height = h + 'px'; el.__brAspect = true; }
+                found.push(el);
+            }
+            aspectElements = found;
+        } catch (e) {}
+    };
+    var scheduleAspect = function () { if (aspectTimer) return; aspectTimer = setTimeout(function () { aspectTimer = null; applyAspectRatios(); }, 200); };
+    onReady(scheduleAspect);
+    onSettled(scheduleAspect);
+    window.addEventListener('resize', scheduleAspect, false);
+    window.addEventListener('load', scheduleAspect, false);
     // Form controls and replaced elements styled with display:flex (Google's search box) become 2009 boxes after
     // the CSS rewrite, which draws their text outside the control: they go back to block / inline-block.
     var unboxControls = function () {
