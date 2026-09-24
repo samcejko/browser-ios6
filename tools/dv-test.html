@@ -31,6 +31,7 @@ var page = [
   '.w { width: attr(data-w px); height: attr(data-h type(<length>), 40px); background: #9c9; }',
   'li { margin-left: calc(sibling-index() * 10px); }',
   '#box { width: 300px; } .cs { width: calc-size(auto, size - 20px); height: 10px; background: #99c; }',
+  '.fc { width: fit-content; background: #cc9; font: 16px sans-serif; } .mc { width: 10px; min-width: max-content; font: 16px sans-serif; background: #9cc; }',
   'em { font-style: toggle(italic, normal); }',
   'circle { r: 20px; cx: 30px; cy: 25px; }',
   'section { anchor-scope: --s; position: relative; height: 60px; margin-top: 20px; }',
@@ -50,6 +51,7 @@ var page = [
   '<div class="w" id="w1" data-w="123" data-h="17px"></div><div class="w" id="w2" data-w="x"></div>',
   '<ul id="ul"><li>1</li><li>2</li><li id="li3">3</li></ul>',
   '<div id="box"><div class="cs" id="cs1"></div></div>',
+  '<div id="box2" style="width: 400px"><div class="fc" id="fc1">hello world</div><div class="mc" id="mc1">aaa bbb ccc</div><span id="ref1" style="font: 16px sans-serif">hello world</span> <span id="ref2" style="font: 16px sans-serif; white-space: nowrap">aaa bbb ccc</span></div>',
   '<p><em id="em1">outer <em id="em2">inner</em></em></p>',
   '<svg width="100" height="60"><circle id="c1" fill="red"></circle></svg>',
   '<section id="s1"><div class="anc" id="s1a"></div><div class="tip2" id="s1t"></div></section>',
@@ -61,7 +63,7 @@ var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + 
 var html = result.out;
 window.__manifest = CSSFix.readManifest(html);
 var NATIVE_DV = /^(anchor-name|anchor-scope|position-anchor|position-area|position-try|position-try-fallbacks|position-try-order|position-visibility|field-sizing|r|cx|cy|d|x|y)$/i;
-var DV_VALUE = /anchor\(|anchor-size\(|attr\([^)]*(px|type)|calc-size\(|sibling-index\(|sibling-count\(|toggle\(|container-progress\(|anchor-center|mix\(\s*scroll\(/i;
+var DV_VALUE = /anchor\(|anchor-size\(|attr\([^)]*(px|type)|calc-size\(|sibling-index\(|sibling-count\(|toggle\(|container-progress\(|anchor-center|mix\(\s*scroll\(|^\s*(fit-content|max-content|min-content|stretch)\s*$/i;
 html = html.replace(/(^|[;{"]\s*)([a-z-]+)\s*:\s*([^;}"]*)/gi, function (all, pre, p, v) { return NATIVE_DV.test(p) || DV_VALUE.test(v) ? pre : all; });
 window.__rewritten = html;
 window.__brManifestURL = 'data:application/json,' + encodeURIComponent(JSON.stringify(window.__manifest));
@@ -89,6 +91,7 @@ var run = function () {
   var w1 = rect('w1'), w2 = rect('w2'); check('attr(px) and typed attr()', w1.w === 123 && w1.h === 17, JSON.stringify(w1)); check('attr() fallbacks', w2.h === 40, JSON.stringify(w2));
   check('sibling-index()', getComputedStyle(document.getElementById('li3')).marginLeft === '30px', getComputedStyle(document.getElementById('li3')).marginLeft);
   check('calc-size(auto, size - 20px)', rect('cs1').w === 280, JSON.stringify(rect('cs1')));
+  check('width: fit-content, min-width: max-content', Math.abs(rect('fc1').w - rect('ref1').w) <= 1 && Math.abs(rect('mc1').w - rect('ref2').w) <= 1, JSON.stringify([rect('fc1').w, rect('ref1').w, rect('mc1').w, rect('ref2').w]));
   check('toggle()', getComputedStyle(document.getElementById('em1')).fontStyle === 'italic' && getComputedStyle(document.getElementById('em2')).fontStyle === 'normal', getComputedStyle(document.getElementById('em2')).fontStyle);
   var c1 = document.getElementById('c1'); check('SVG geometry properties', c1.getAttribute('r') === '20px' && c1.getAttribute('cx') === '30px', c1.getAttribute('r') + ' ' + c1.getAttribute('cx'));
   var s1a = rect('s1a'), s1t = rect('s1t'), s2a = rect('s2a'), s2t = rect('s2t');

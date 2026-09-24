@@ -4,6 +4,7 @@
 #import "BRCSSRewriter.h"
 #import "BRFontConverter.h"
 #import "BRImageConverter.h"
+#import "BRSpeech.h"
 #import "BRCommon.h"
 #import "BRSettings.h"
 
@@ -794,6 +795,32 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
             if ([pair hasPrefix:@"doc="]) doc = [[pair substringFromIndex:4] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
         }
         body = [[BRCSSRewriter shared] manifestJSONForPageURLString:doc ?: self.request.mainDocumentURL.absoluteString];
+        type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
+    } else if ([path hasPrefix:@"/speech/"]) {
+        // speechSynthesis of the page shim: info (voices), speak / cancel / pause / resume, and the events poll
+        NSMutableDictionary *q = [NSMutableDictionary dictionary];
+        for (NSString *pair in [(self.request.URL.query ?: @"") componentsSeparatedByString:@"&"]) {
+            NSRange eq = [pair rangeOfString:@"="];
+            if (eq.location == NSNotFound) continue;
+            NSString *value = [[pair substringFromIndex:eq.location + 1] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+            if (value) q[[pair substringToIndex:eq.location]] = value;
+        }
+        BRSpeech *speech = [BRSpeech shared];
+        NSString *action = [path substringFromIndex:8];
+        if ([action isEqualToString:@"info"]) body = [speech infoJSON];
+        else if ([action isEqualToString:@"events"]) body = [speech eventsJSONSince:[q[@"since"] integerValue]];
+        else {
+            if ([action isEqualToString:@"speak"]) {
+                [speech speak:q[@"text"] utteranceId:q[@"id"] lang:q[@"lang"]
+                         rate:q[@"rate"] ? [q[@"rate"] floatValue] : 1 pitch:q[@"pitch"] ? [q[@"pitch"] floatValue] : 1
+                       volume:q[@"volume"] ? [q[@"volume"] floatValue] : 1];
+            }
+            else if ([action isEqualToString:@"cancel"]) [speech cancel];
+            else if ([action isEqualToString:@"pause"]) [speech pause];
+            else if ([action isEqualToString:@"resume"]) [speech resume];
+            body = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+        }
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {

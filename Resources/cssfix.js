@@ -1157,20 +1157,109 @@ var CSSFix = (function () {
         'position-try-fallbacks': 1, 'position-try-options': 1, 'position-try-order': 1, 'position-visibility': 1,
         cx: 1, cy: 1, r: 1, rx: 1, ry: 1, x: 1, y: 1, d: 1, 'field-sizing': 1 };
     var DV_FN = /(?:^|[^\w-])(anchor|anchor-size|attr|calc-size|sibling-index|sibling-count|container-progress|toggle)\(/i;
+    // CSS Speech: the read-aloud feature of the shim speaks with these (they go to the manifest like deferred values,
+    // the shim keeps them per element instead of setting them). Values are checked against the module's grammar.
+    var SPEECH_PROPS = { speak: 1, 'speak-as': 1, pause: 1, 'pause-before': 1, 'pause-after': 1, rest: 1, 'rest-before': 1, 'rest-after': 1,
+        cue: 1, 'cue-before': 1, 'cue-after': 1, 'voice-family': 1, 'voice-rate': 1, 'voice-pitch': 1, 'voice-range': 1, 'voice-volume': 1,
+        'voice-stress': 1, 'voice-balance': 1, 'voice-duration': 1 };
+    function validSpeechValue(p, v) {
+        var lv = trim(v).toLowerCase(), toks = splitWS(lv), i, t;
+        if (isGlobalKeyword(lv) || lv === 'unset') return true;
+        var TIME = /^\d*\.?\d+m?s$/, STRENGTH = /^(none|x-weak|weak|medium|strong|x-strong)$/;
+        var pauseValue = function (tk) { return TIME.test(tk) || STRENGTH.test(tk); };
+        var cueValue = function (list) {
+            var a = String(list[0] || '').toLowerCase(), b = String(list[1] || '').toLowerCase();
+            return list.length === 1 && a === 'none' || (/^url\(/.test(a) && (list.length === 1 || (list.length === 2 && /^[+-]?\d*\.?\d+db$/.test(b))));
+        };
+        switch (p) {
+            case 'speak': return /^(auto|never|always)$/.test(lv);
+            case 'speak-as':
+                if (lv === 'normal') return true;
+                for (i = 0; i < toks.length; i++) if (!/^(spell-out|digits|literal-punctuation|no-punctuation)$/.test(toks[i])) return false;
+                return !(toks.indexOf('literal-punctuation') >= 0 && toks.indexOf('no-punctuation') >= 0);
+            case 'pause-before': case 'pause-after': case 'rest-before': case 'rest-after': return toks.length === 1 && pauseValue(toks[0]);
+            case 'pause': case 'rest': return toks.length <= 2 && pauseValue(toks[0]) && (toks.length < 2 || pauseValue(toks[1]));
+            case 'cue-before': case 'cue-after': return cueValue(splitWS(trim(v)));
+            case 'cue': {
+                var cues = splitWS(trim(v)), parts = [], cur = [];
+                for (i = 0; i < cues.length; i++) { if ((/^url\(/i.test(cues[i]) || cues[i] === 'none') && cur.length) { parts.push(cur); cur = []; } cur.push(cues[i].toLowerCase()); }
+                if (cur.length) parts.push(cur);
+                return parts.length >= 1 && parts.length <= 2 && cueValue(parts[0]) && (parts.length < 2 || cueValue(parts[1]));
+            }
+            case 'voice-family': {
+                if (lv === 'preserve') return true;
+                var fams = splitTop(lv, ',');
+                for (i = 0; i < fams.length; i++) {
+                    t = trim(fams[i]);
+                    if (/^(["']).*\1$/.test(t)) continue;
+                    var ft = splitWS(t), gen = /^(child|young|old)?\s*(male|female|neutral)(\s+\d+)?$/.test(t);
+                    if (!gen && !/^[a-z_][\w-]*(\s+[a-z_][\w-]*)*$/.test(t)) return false;
+                    if (!gen && ft.length && /^(child|young|old)$/.test(ft[0]) && ft.length === 1) return false;
+                }
+                return true;
+            }
+            case 'voice-rate': {
+                var kw = 0, pc = 0;
+                for (i = 0; i < toks.length; i++) { if (/^(normal|x-slow|slow|medium|fast|x-fast)$/.test(toks[i])) kw++; else if (/^\d*\.?\d+%$/.test(toks[i])) pc++; else return false; }
+                return kw <= 1 && pc <= 1 && toks.length >= 1;
+            }
+            case 'voice-pitch': case 'voice-range': {
+                var kw2 = 0, num2 = 0, abs = 0, freq = 0;
+                for (i = 0; i < toks.length; i++) {
+                    t = toks[i];
+                    if (/^(x-low|low|medium|high|x-high)$/.test(t)) kw2++;
+                    else if (t === 'absolute') abs++;
+                    else if (/^[+-]?\d*\.?\d+k?hz$/.test(t)) { num2++; freq++; }
+                    else if (/^[+-]?\d*\.?\d+(st|%)$/.test(t)) num2++;
+                    else return false;
+                }
+                if (abs) return abs === 1 && freq === 1 && num2 === 1 && !kw2 && toks.length === 2;
+                return kw2 <= 1 && num2 <= 1 && toks.length >= 1;
+            }
+            case 'voice-volume': {
+                if (lv === 'silent') return true;
+                var kw3 = 0, db = 0;
+                for (i = 0; i < toks.length; i++) { if (/^(x-soft|soft|medium|loud|x-loud)$/.test(toks[i])) kw3++; else if (/^[+-]?\d*\.?\d+db$/.test(toks[i])) db++; else return false; }
+                return kw3 <= 1 && db <= 1 && toks.length >= 1;
+            }
+            case 'voice-stress': return /^(normal|strong|moderate|none|reduced)$/.test(lv);
+            case 'voice-balance': return /^([+-]?\d*\.?\d+|left|center|right|leftwards|rightwards)$/.test(lv);
+            case 'voice-duration': return lv === 'auto' || TIME.test(lv);
+        }
+        return false;
+    }
     var ANCHOR_CENTER_PROPS = { 'justify-self': 1, 'align-self': 1, 'place-self': 1, 'justify-items': 1, 'align-items': 1, 'place-items': 1 };
 
     var TIMELINE_MIX = /(^|[^\w-])(mix|calc-mix|color-mix|cross-fade)\(\s*(scroll\(|view\(|--[\w-]+(\s|,))/i;
+    // intrinsic and stretch sizes the engine has no keyword for: the shim measures them (see measureBasis)
+    var SIZE_PROPS = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, 'inline-size': 1, 'block-size': 1,
+        'min-inline-size': 1, 'min-block-size': 1, 'max-inline-size': 1, 'max-block-size': 1, 'flex-basis': 1 };
+    var INTRINSIC_SIZE = /^(min-content|max-content|fit-content|stretch|-webkit-fill-available|fill-available|-moz-available|-webkit-min-content|-webkit-max-content|-webkit-fit-content|-moz-fit-content|contain|fit-content\([^()]*\))$/i;
+    var INTRINSIC_CONTENT = /^(min-content|max-content|fit-content|-webkit-min-content|-webkit-max-content|-webkit-fit-content|-moz-fit-content)$/i;
+    // sizes that need measuring: stretch / contain / fit-content(limit) anywhere, the content keywords in min-* and
+    // max-* (a width has the table form below, a height with them is plain auto)
+    function intrinsicDeferred(p, v) {
+        if (!SIZE_PROPS[p]) return false;
+        var t = trim(v);
+        if (/^(stretch|-webkit-fill-available|fill-available|-moz-available|contain)$/i.test(t) || /^fit-content\([^()]*\)$/i.test(t)) return true;
+        return INTRINSIC_CONTENT.test(t) && /^(min|max)-/.test(p);
+    }
     function isDeferred(p, v) {
         if (DV_PROPS[p]) return true;
+        if (SPEECH_PROPS[p]) return validSpeechValue(p, v);
         if (ANCHOR_CENTER_PROPS[p] && /\banchor-center\b/i.test(v)) return true;
         if (TIMELINE_MIX.test(v)) return true;   // mixes driven by a scroll or view timeline
+        if (intrinsicDeferred(p, v)) return true;
         if (!DV_FN.test(v)) return false;
         var lv = v.toLowerCase();
         // content is mostly on ::before/::after, which the shim cannot reach: attr() there becomes the engine's own
         // plain attr(name) (see fixValue)
         if (p === 'content' && !/(anchor|calc-size|sibling-|container-progress|toggle)\(/.test(lv)) return false;
-        // calc-size() with a length basis is evaluated statically
-        if (/calc-size\(/.test(lv) && !/(anchor|anchor-size|attr|sibling-|container-progress|toggle)\(/.test(lv) && transformFunctions(v).toLowerCase().indexOf('calc-size(') < 0) return false;
+        // calc-size() with a length basis is evaluated statically (unless that leaves a size to measure)
+        if (/calc-size\(/.test(lv) && !/(anchor|anchor-size|attr|sibling-|container-progress|toggle)\(/.test(lv)) {
+            var tv = trim(transformFunctions(v));
+            if (tv.toLowerCase().indexOf('calc-size(') < 0 && !intrinsicDeferred(p, tv)) return false;
+        }
         return true;
     }
 
@@ -1333,8 +1422,10 @@ var CSSFix = (function () {
     }
 
     // the value to show before the shim runs: anchor()/attr() fallbacks, the keyword basis of calc-size()
-    function deferredFallback(v) {
+    function deferredFallback(v, p) {
         var lv = trim(v).toLowerCase();
+        // an intrinsic keyword: the property's initial value until the shim has measured
+        if (INTRINSIC_SIZE.test(lv)) return /^max-/.test(p || '') ? 'none' : /^min-/.test(p || '') ? '0' : 'auto';
         var cs = /^calc-size\(\s*(auto|stretch)\s*,/.exec(lv);
         if (cs) return cs[1] === 'stretch' ? '-webkit-fill-available' : 'auto';
         var m = /^(anchor|anchor-size|attr)\(([\s\S]*)\)$/i.exec(trim(v));
@@ -1736,6 +1827,8 @@ var CSSFix = (function () {
         });
         var lv = v.toLowerCase();
         if (lv === 'unset' || lv === 'revert' || lv === 'revert-layer') return INHERITED[p] ? 'inherit' : 'initial';
+        // a height sized by its content is what auto already gives
+        if ((p === 'height' || p === 'block-size') && /^(-webkit-)?(fit|max|min)-content$/.test(lv)) return 'auto';
         if (SIZING[p]) {
             if (lv === 'fit-content') return '-webkit-fit-content';
             if (lv === 'max-content') return '-webkit-max-content';
@@ -2175,9 +2268,11 @@ var CSSFix = (function () {
             }
             if (v === null) continue;
             if (/(^|[^\w-])if\(/i.test(v)) { v = resolveIf(p, v, imp, local, ctx); if (v === null) continue; }
-            if (!keyframe && g_manifest !== false && isDeferred(p, v)) {
+            // a width with a content keyword in a rule that sets its own display cannot take the table form: measured
+            var sizedByShim = hasDisplay && (p === 'width' || p === 'inline-size') && INTRINSIC_CONTENT.test(trim(v));
+            if (!keyframe && g_manifest !== false && (isDeferred(p, v) || sizedByShim)) {
                 registerDeferred(ctx, p, v, imp, markers);
-                var dvFallback = deferredFallback(v);
+                var dvFallback = deferredFallback(v, p);
                 if (dvFallback !== null && !DV_PROPS[p]) push(out, p, fixValue(p, dvFallback), imp);
                 push(out, p, v, imp);   // the engine drops it; kept for reference
                 continue;
@@ -3058,6 +3153,9 @@ var CSSFix = (function () {
                  .replace(/:not\(\s*:defined\s*\)|:defined\b/gi, function (m) { manifestAdd('sc', { h: 'defined', k: 'defined' }); return m.charAt(1) === 'n' ? '.br-undefined' : ':not(.br-undefined)'; });
         // custom states (ElementInternals.states in the shim puts .br-state-<name> on the element), autofilled fields,
         // and what never matches here: WebXR overlays, slotted content outside a shadow root
+        // time-dimensional pseudo-classes: the read-aloud feature marks the block being spoken and the ones before/after
+        sel = sel.replace(/:(current|past|future)\(((?:[^()]|\([^()]*\))*)\)/gi, function (m, kind, list) { return ':-webkit-any(' + trim(list) + ').br-' + kind.toLowerCase(); })
+                 .replace(/:(current|past|future)\b(?!\()/gi, function (m, kind) { return '.br-' + kind.toLowerCase(); });
         sel = sel.replace(/:state\(\s*([\w-]+)\s*\)|:--([\w-]+)/gi, function (m, a, b) { return '.br-state-' + (a || b); })
                  .replace(/:autofill\b/gi, ':-webkit-autofill')
                  .replace(/:xr-overlay\b/gi, ':not(*)');

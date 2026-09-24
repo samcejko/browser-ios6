@@ -130,7 +130,7 @@ static const CGFloat BRControlHeight = 30;
 @end
 
 // Our own entries in the share sheet: reader, find on page, save as PDF (drawn icons, a block each)
-typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument, BRActivityIconCode, BRActivityIconTranslate };
+typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument, BRActivityIconCode, BRActivityIconTranslate, BRActivityIconSpeaker };
 
 @interface BRActionActivity : UIActivity
 @property (nonatomic, copy) NSString *title;
@@ -171,6 +171,24 @@ typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivity
     } else if (self.icon == BRActivityIconTranslate) {
         [@"A" drawInRect:CGRectMake(side * 0.12, side * 0.2, side * 0.4, side * 0.5) withFont:[UIFont boldSystemFontOfSize:side * 0.38] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
         [@"Ž" drawInRect:CGRectMake(side * 0.48, side * 0.36, side * 0.4, side * 0.5) withFont:[UIFont boldSystemFontOfSize:side * 0.3] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
+    } else if (self.icon == BRActivityIconSpeaker) {
+        // a loudspeaker with two sound waves
+        UIBezierPath *cone = [UIBezierPath bezierPath];
+        [cone moveToPoint:CGPointMake(side * 0.18, side * 0.40)];
+        [cone addLineToPoint:CGPointMake(side * 0.30, side * 0.40)];
+        [cone addLineToPoint:CGPointMake(side * 0.46, side * 0.26)];
+        [cone addLineToPoint:CGPointMake(side * 0.46, side * 0.74)];
+        [cone addLineToPoint:CGPointMake(side * 0.30, side * 0.60)];
+        [cone addLineToPoint:CGPointMake(side * 0.18, side * 0.60)];
+        [cone closePath];
+        [cone fill];
+        for (int i = 0; i < 2; i++) {
+            CGFloat r = side * (0.12 + i * 0.12);
+            UIBezierPath *wave = [UIBezierPath bezierPathWithArcCenter:CGPointMake(side * 0.50, side * 0.50) radius:r startAngle:-M_PI / 3.5 endAngle:M_PI / 3.5 clockwise:YES];
+            wave.lineWidth = side * 0.055;
+            wave.lineCapStyle = kCGLineCapRound;
+            [wave stroke];
+        }
     } else {
         // a sheet with a folded corner and "PDF" letters
         CGFloat x = side * 0.27, y = side * 0.16, w = side * 0.46, h = side * 0.62, fold = side * 0.13;
@@ -2024,7 +2042,14 @@ static void BRWebThreadLock(void)
         source.type = @"com.samcejko.browser.source";
         source.icon = BRActivityIconCode;
         source.action = ^{ [weakSelf showSource]; };
-        [activities addObjectsFromArray:@[reader, find, pdf, source]];
+        // read aloud with the system voices (the page shim's __brReadAloud; CSS Speech properties of the page apply)
+        BOOL reading = [[self.webView stringByEvaluatingJavaScriptFromString:@"window.__brReadAloud && window.__brReadAloud.state() ? '1' : ''"] length] > 0;
+        BRActionActivity *speak = [[BRActionActivity alloc] init];
+        speak.title = reading ? L(@"Stop reading") : L(@"Read aloud");
+        speak.type = @"com.samcejko.browser.readaloud";
+        speak.icon = BRActivityIconSpeaker;
+        speak.action = ^{ [weakSelf.webView stringByEvaluatingJavaScriptFromString:@"window.__brReadAloud ? String(window.__brReadAloud.toggle()) : ''"]; };
+        [activities addObjectsFromArray:@[reader, speak, find, pdf, source]];
         NSURL *page = self.webView.request.URL ?: self.currentURL;
         if ([[page.scheme lowercaseString] hasPrefix:@"http"] && ![[page.host lowercaseString] hasSuffix:@".translate.goog"]) {
             BRActionActivity *translate = [[BRActionActivity alloc] init];

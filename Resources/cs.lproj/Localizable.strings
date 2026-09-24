@@ -72,6 +72,8 @@
 "Text size" = "Velikost textu";
 "Downloads" = "Stažené";
 "Find on page" = "Najít na stránce";
+"Read aloud" = "Předčítat";
+"Stop reading" = "Zastavit předčítání";
 "Search %@ for “%@”" = "Hledat „%@“ (%@)";
 "Find “%@” on this page" = "Najít „%@“ na této stránce";
 "Done" = "Hotovo";

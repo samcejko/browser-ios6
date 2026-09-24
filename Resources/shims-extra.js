@@ -711,13 +711,396 @@
     if (!window.ImageCapture) window.ImageCapture = function ImageCapture() { throw domException('NotSupportedError', 'ImageCapture is not available'); };
 
     // ---- Speech
-    if (!window.speechSynthesis) {
-        window.speechSynthesis = { speak: function (u) { setTimeout(function () { if (u && u.onerror) u.onerror({ error: 'synthesis-unavailable', utterance: u }); }, 0); }, cancel: noop, pause: noop, resume: noop, getVoices: function () { return []; },
-                                   speaking: false, pending: false, paused: false, onvoiceschanged: null, addEventListener: noop, removeEventListener: noop, dispatchEvent: function () { return true; } };
-        window.SpeechSynthesisUtterance = function SpeechSynthesisUtterance(text) { this.text = text || ''; this.lang = ''; this.voice = null; this.volume = 1; this.rate = 1; this.pitch = 1; this.onstart = this.onend = this.onerror = this.onpause = this.onresume = this.onmark = this.onboundary = null; this.addEventListener = noop; this.removeEventListener = noop; };
-        window.SpeechSynthesisVoice = function SpeechSynthesisVoice() {};
-        window.SpeechSynthesisEvent = function SpeechSynthesisEvent() {};
-    }
+    // Speech synthesis on the system voices (VoiceServices through the app, see BRSpeech.m): utterances queue here and
+    // go to the app one at a time; the app reports the start, word boundaries and the end, which this polls for.
+    if (!window.speechSynthesis) (function () {
+        var BASE = 'https://ios6-browser.invalid/speech/';
+        var voices = [], queue = [], current = null, paused = false, lastSeq = 0, pollTimer = null, uidSeq = 0, voicesAsked = false;
+        var askVoices = function () { if (!voicesAsked) { voicesAsked = true; loadVoices(0); } };
+        var request = function (action, params, cb) {
+            var qs = [];
+            if (params) for (var k in params) if (params.hasOwnProperty(k) && params[k] !== undefined && params[k] !== null) qs.push(k + '=' + encodeURIComponent(params[k]));
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', BASE + action + (qs.length ? '?' + qs.join('&') : ''), true);
+                x.onreadystatechange = function () {
+                    if (x.readyState !== 4 || !cb) return;
+                    var r = null;
+                    try { r = JSON.parse(x.responseText); } catch (e) {}
+                    cb(r);
+                };
+                x.send(null);
+            } catch (e2) { if (cb) cb(null); }
+        };
+        var makeEvent = function (type, props) {
+            var ev;
+            try { ev = document.createEvent('Event'); ev.initEvent(type, false, false); } catch (e) { ev = { type: type }; }
+            for (var k in props) if (props.hasOwnProperty(k)) try { ev[k] = props[k]; } catch (e2) {}
+            return ev;
+        };
+        var fire = function (target, type, props) {
+            var ev = makeEvent(type, props || {});
+            if (typeof target['on' + type] === 'function') try { target['on' + type](ev); } catch (e) {}
+            var ls = target.__l && target.__l[type] ? target.__l[type].slice() : [];
+            for (var i = 0; i < ls.length; i++) try { ls[i].call(target, ev); } catch (e2) {}
+        };
+        var eventTarget = {
+            addEventListener: function (t, f) { if (!this.__l) this.__l = {}; (this.__l[t] = this.__l[t] || []).push(f); },
+            removeEventListener: function (t, f) { var l = this.__l && this.__l[t]; if (!l) return; var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },
+            dispatchEvent: function (e) { fire(this, e.type, {}); return true; }
+        };
+        var SpeechSynthesisVoice = function SpeechSynthesisVoice(v) {
+            this.voiceURI = 'com.apple.voiceservices.' + v.lang; this.name = v.name; this.lang = v.lang; this.localService = true; this['default'] = !!v['default'];
+        };
+        var SpeechSynthesisUtterance = function SpeechSynthesisUtterance(text) {
+            this.text = text === undefined ? '' : String(text); this.lang = ''; this.voice = null; this.volume = 1; this.rate = 1; this.pitch = 1;
+            this.onstart = this.onend = this.onerror = this.onpause = this.onresume = this.onmark = this.onboundary = null;
+        };
+        SpeechSynthesisUtterance.prototype = { constructor: SpeechSynthesisUtterance, addEventListener: eventTarget.addEventListener,
+            removeEventListener: eventTarget.removeEventListener, dispatchEvent: eventTarget.dispatchEvent };
+        var wordLength = function (text, at) { var m = /^[^\s]+/.exec(String(text).slice(at)); return m ? m[0].length : 0; };
+        var synth = {
+            __brStub: false, onvoiceschanged: null,
+            speak: function (u) {
+                if (!u || typeof u.text !== 'string') throw new TypeError('speak() needs a SpeechSynthesisUtterance');
+                askVoices();
+                queue.push(u);
+                next();
+            },
+            cancel: function () {
+                var q = queue;
+                queue = [];
+                for (var i = 0; i < q.length; i++) fire(q[i], 'error', { error: 'canceled', utterance: q[i], charIndex: 0, elapsedTime: 0 });
+                if (current) {
+                    var u = current;
+                    current = null;
+                    request('cancel');
+                    fire(u, 'error', { error: 'interrupted', utterance: u, charIndex: 0, elapsedTime: 0 });
+                }
+                paused = false;
+            },
+            pause: function () { if (paused) return; paused = true; if (current) request('pause'); },
+            resume: function () { if (!paused) return; paused = false; if (current) request('resume'); else next(); },
+            // the system voices arrive a moment later with a voiceschanged event, as in other browsers
+            getVoices: function () { askVoices(); return voices.slice(); },
+            addEventListener: eventTarget.addEventListener, removeEventListener: eventTarget.removeEventListener, dispatchEvent: eventTarget.dispatchEvent
+        };
+        try {
+            Object.defineProperty(synth, 'speaking', { get: function () { return !!current; } });
+            Object.defineProperty(synth, 'pending', { get: function () { return queue.length > 0; } });
+            Object.defineProperty(synth, 'paused', { get: function () { return paused; } });
+        } catch (e) {}
+        var next = function () {
+            if (current || paused || !queue.length) return;
+            var u = current = queue.shift();
+            u.__id = 'u' + (++uidSeq) + '-' + Math.random().toString(36).slice(2, 8);
+            u.__started = false;
+            var lang = u.lang || (u.voice && u.voice.lang) || (document.documentElement && document.documentElement.lang) || navigator.language || '';
+            request('speak', { id: u.__id, text: u.text, lang: lang, rate: u.rate, pitch: u.pitch, volume: u.volume });
+            if (!pollTimer) pollTimer = setTimeout(poll, 100);
+        };
+        var finish = function (u, type, props) {
+            if (current !== u) return;
+            current = null;
+            fire(u, type, props);
+            next();
+        };
+        var poll = function () {
+            pollTimer = null;
+            request('events', { since: lastSeq }, function (events) {
+                if (events) for (var i = 0; i < events.length; i++) {
+                    var e = events[i], u = current;
+                    if (e.seq > lastSeq) lastSeq = e.seq;
+                    if (!u || e.id !== u.__id) continue;
+                    var base = { utterance: u, elapsedTime: e.elapsed || 0, charIndex: e['char'] || 0 };
+                    if (e.type === 'start' && !u.__started) { u.__started = true; fire(u, 'start', base); }
+                    else if (e.type === 'boundary') { base.name = 'word'; base.charLength = wordLength(u.text, base.charIndex); fire(u, 'boundary', base); }
+                    else if (e.type === 'pause') fire(u, 'pause', base);
+                    else if (e.type === 'resume') fire(u, 'resume', base);
+                    else if (e.type === 'end') { base.charIndex = u.text.length; finish(u, 'end', base); }
+                    else if (e.type === 'error') { base.error = 'synthesis-failed'; finish(u, 'error', base); }
+                }
+                if (current || queue.length) pollTimer = setTimeout(poll, current ? 120 : 400);
+            });
+        };
+        var loadVoices = function (tries) {
+            request('info', null, function (info) {
+                if (info && info.loading && tries < 30) { setTimeout(function () { loadVoices(tries + 1); }, 300); return; }
+                voices = [];
+                var list = (info && info.voices) || [];
+                for (var i = 0; i < list.length; i++) voices.push(new SpeechSynthesisVoice(list[i]));
+                if (voices.length) fire(synth, 'voiceschanged', {});
+            });
+        };
+        window.speechSynthesis = synth;
+        window.SpeechSynthesisUtterance = SpeechSynthesisUtterance;
+        window.SpeechSynthesisVoice = SpeechSynthesisVoice;
+        window.SpeechSynthesis = function SpeechSynthesis() { throw new TypeError('Illegal constructor'); };
+        window.SpeechSynthesisEvent = function SpeechSynthesisEvent(type, init) { return makeEvent(type, init || {}); };
+        window.SpeechSynthesisErrorEvent = function SpeechSynthesisErrorEvent(type, init) { return makeEvent(type, init || {}); };
+    })();
+    // ---- Read aloud (the app's menu): the page's main text, block by block, on the system voices, following CSS Speech
+    // (speak, speak-as, pause, rest, cue, voice-*) as the rewriter left it in the manifest; the block being spoken is
+    // :current (class br-current, with its ancestors), the ones read :past, the ones to come :future.
+    (function () {
+        var run = null, raStyle = null;
+        var SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, SVG: 1, CANVAS: 1, IFRAME: 1, OBJECT: 1, VIDEO: 1, AUDIO: 1, SELECT: 1, TEXTAREA: 1, BUTTON: 1, INPUT: 1, NAV: 1 };
+        var BLOCK = /^(block|list-item|table-cell|table-caption|-webkit-box|table|inline-block)$/;
+        var STRENGTH_MS = { none: 0, 'x-weak': 100, weak: 250, medium: 500, strong: 800, 'x-strong': 1200 };
+        var trimS = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var props = function (el) { try { return window.__brDeferred ? window.__brDeferred.speech(el) : {}; } catch (e) { return {}; } };
+        var ms = function (v) {
+            v = trimS(v || '').toLowerCase();
+            if (STRENGTH_MS.hasOwnProperty(v)) return STRENGTH_MS[v];
+            var m = /^(\d*\.?\d+)(m?s)$/.exec(v);
+            return m ? parseFloat(m[1]) * (m[2] === 's' ? 1000 : 1) : 0;
+        };
+        var pair = function (shorthand, before, after) {   // pause / rest: "<before> <after>?"
+            var t = shorthand ? trimS(shorthand).split(/\s+/) : [];
+            return [before !== undefined ? ms(before) : ms(t[0]), after !== undefined ? ms(after) : ms(t.length > 1 ? t[1] : t[0])];
+        };
+        var rateOf = function (v) {
+            var r = 1, t = trimS(v || '').toLowerCase().split(/\s+/);
+            for (var i = 0; i < t.length; i++) {
+                var k = { 'x-slow': 0.5, slow: 0.75, medium: 1, normal: 1, fast: 1.4, 'x-fast': 1.9 }[t[i]];
+                if (k) r *= k; else if (/%$/.test(t[i])) r *= parseFloat(t[i]) / 100;
+            }
+            return Math.max(0.1, Math.min(10, r || 1));
+        };
+        var pitchOf = function (v) {
+            var p = 1, t = trimS(v || '').toLowerCase().split(/\s+/), abs = t.indexOf('absolute') >= 0;
+            for (var i = 0; i < t.length; i++) {
+                var k = { 'x-low': 0.6, low: 0.8, medium: 1, high: 1.25, 'x-high': 1.5 }[t[i]], m;
+                if (k) p *= k;
+                else if ((m = /^([+-]?\d*\.?\d+)(k?)hz$/.exec(t[i]))) { var hz = parseFloat(m[1]) * (m[2] ? 1000 : 1); p = abs ? hz / 150 : p * (150 + hz) / 150; }   // around a 150 Hz voice
+                else if ((m = /^([+-]?\d*\.?\d+)st$/.exec(t[i]))) p *= Math.pow(2, parseFloat(m[1]) / 12);
+                else if ((m = /^([+-]?\d*\.?\d+)%$/.exec(t[i]))) p *= 1 + parseFloat(m[1]) / 100;
+            }
+            return Math.max(0, Math.min(2, p));
+        };
+        var volumeOf = function (v) {   // null: silent
+            var t = trimS(v || '').toLowerCase();
+            if (t === 'silent') return null;
+            var vol = 1, parts = t.split(/\s+/);
+            for (var i = 0; i < parts.length; i++) {
+                var k = { 'x-soft': 0.2, soft: 0.45, medium: 0.7, loud: 0.85, 'x-loud': 1 }[parts[i]], m;
+                if (k) vol = k; else if ((m = /^([+-]?\d*\.?\d+)db$/.exec(parts[i]))) vol *= Math.pow(10, parseFloat(m[1]) / 20);
+            }
+            return Math.max(0, Math.min(1, vol));
+        };
+        var voiceFor = function (family, lang) {
+            var voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+            if (family && family !== 'preserve') {
+                var names = family.split(',');
+                for (var i = 0; i < names.length; i++) {
+                    var n = trimS(names[i]).replace(/^["']|["']$/g, '').toLowerCase();
+                    for (var k = 0; k < voices.length; k++) if (voices[k].name.toLowerCase() === n) return voices[k];
+                }
+            }
+            return null;   // the language picks the voice
+        };
+        // speak-as: spell-out letters, digits one by one, punctuation spoken or left out
+        var speakAs = function (text, how) {
+            how = String(how || '').toLowerCase();
+            if (/spell-out/.test(how)) text = text.replace(/(\S)(?=\S)/g, '$1 ');
+            else if (/digits/.test(how)) text = text.replace(/(\d)(?=\d)/g, '$1 ');
+            if (/no-punctuation/.test(how)) text = text.replace(/[.,;:!?"'()\[\]{}…–—]/g, ' ');
+            return text;
+        };
+        // the main text of the page: an article / main region when there is one with real text, else the body
+        var mainRoot = function () {
+            var best = null, bestLen = 0, cands = document.querySelectorAll('article, main, [role="main"]');
+            for (var i = 0; i < cands.length; i++) { var l = (cands[i].textContent || '').length; if (l > bestLen) { best = cands[i]; bestLen = l; } }
+            return best && bestLen > 400 ? best : document.body;
+        };
+        var rendered = function (el) { return !!(el.getClientRects && el.getClientRects().length); };
+        var segmentsOf = function (root) {
+            var segs = [], blocks = [], cache = [], walker = document.createTreeWalker(root, 4, null, false), node, byBlock = {};
+            var blockOf = function (el) {
+                for (var n = el; n && n !== root; n = n.parentNode) {
+                    if (n.nodeType !== 1) continue;
+                    if (n.__brRAb === undefined) { n.__brRAb = BLOCK.test(getComputedStyle(n).display) ? 1 : 0; cache.push(n); }
+                    if (n.__brRAb) return n;
+                }
+                return root;
+            };
+            while ((node = walker.nextNode())) {
+                var text = node.data;
+                if (!/\S/.test(text)) continue;
+                var parent = node.parentNode, skip = false;
+                for (var a = parent; a && a !== root.parentNode; a = a.parentNode) {
+                    if (a.nodeType !== 1) continue;
+                    if (SKIP[a.nodeName.toUpperCase()] || a.getAttribute('aria-hidden') === 'true' || a.id === 'br-read-aloud') { skip = true; break; }
+                }
+                if (skip) continue;
+                var sp = props(parent);
+                if (sp.speak === 'never') continue;
+                if (sp.speak !== 'always' && !rendered(parent)) continue;
+                var block = blockOf(parent);
+                var seg = block.__brRAseg;
+                if (!seg || seg.run !== run) {
+                    seg = block.__brRAseg = { el: block, text: '', run: run };
+                    segs.push(seg);
+                }
+                seg.text += (seg.text ? ' ' : '') + speakAs(text.replace(/\s+/g, ' '), sp['speak-as']);
+            }
+            for (var c = 0; c < cache.length; c++) cache[c].__brRAb = undefined;
+            // long blocks go in sentence-sized pieces (word boundaries and pausing stay close to the text)
+            var out = [];
+            for (var s = 0; s < segs.length; s++) {
+                var t = trimS(segs[s].text);
+                if (!t) continue;
+                while (t.length > 1200) {
+                    var cut = t.lastIndexOf('. ', 1000);
+                    if (cut < 200) cut = t.lastIndexOf(' ', 1000);
+                    if (cut < 200) cut = 1000;
+                    out.push({ el: segs[s].el, text: t.slice(0, cut + 1), part: true });
+                    t = trimS(t.slice(cut + 1));
+                }
+                out.push({ el: segs[s].el, text: t });
+            }
+            return out;
+        };
+        var langOf = function (el) {
+            for (var n = el; n && n.nodeType === 1; n = n.parentNode) { var l = n.getAttribute('lang') || n.getAttribute('xml:lang'); if (l) return l; }
+            return navigator.language || '';
+        };
+        var mark = function (el, cls, on) { for (var n = el; n && n.nodeType === 1; n = n.parentNode) setStateClass(n, cls, on); };
+        var bar = function () {
+            var b = document.getElementById('br-read-aloud');
+            if (b) return b;
+            b = document.createElement('div');
+            b.id = 'br-read-aloud';
+            b.style.cssText = 'position:fixed;left:50%;bottom:16px;margin-left:-150px;width:300px;z-index:2147483647;background:rgba(30,30,32,.92);color:#fff;' +
+                'font:15px/1.2 "Helvetica Neue",Helvetica,sans-serif;border-radius:22px;padding:6px;box-shadow:0 4px 18px rgba(0,0,0,.35);-webkit-user-select:none;text-align:center';
+            b.innerHTML = '<span data-a="pause" style="display:inline-block;padding:9px 14px">❚❚</span><span data-a="info" style="display:inline-block;padding:9px 10px;min-width:90px;color:#ccc"></span><span data-a="stop" style="display:inline-block;padding:9px 14px">✕</span>';
+            b.addEventListener('click', function (e) {
+                var a = e.target && e.target.getAttribute && e.target.getAttribute('data-a');
+                if (a === 'stop') api.stop();
+                else if (a === 'pause') { if (run && run.paused) api.resume(); else api.pause(); }
+            }, false);
+            document.body.appendChild(b);
+            return b;
+        };
+        var updateBar = function () {
+            var b = document.getElementById('br-read-aloud');
+            if (!b || !run) return;
+            b.querySelector('[data-a="pause"]').textContent = run.paused ? '▶' : '❚❚';
+            b.querySelector('[data-a="info"]').textContent = (run.index + 1) + ' / ' + run.segs.length;
+        };
+        var wait = function (msec, next) { if (msec > 0) setTimeout(next, msec); else next(); };
+        var playCue = function (value, next) {
+            var m = /url\(\s*(["']?)([^"')]+)\1\s*\)\s*([+-]?\d*\.?\d+)?\s*(db)?/i.exec(value || '');
+            if (!m) { next(); return; }
+            var done = false, finish = function () { if (!done) { done = true; next(); } };
+            try {
+                var au = new Audio(m[2]);
+                if (m[3]) au.volume = Math.max(0, Math.min(1, Math.pow(10, parseFloat(m[3]) / 20)));
+                au.addEventListener('ended', finish, false);
+                au.addEventListener('error', finish, false);
+                au.play();
+                setTimeout(finish, 8000);
+            } catch (e) { finish(); }
+        };
+        var scrollTo = function (el) {
+            var r = el.getBoundingClientRect();
+            if (r.top < 0 || r.bottom > window.innerHeight) window.scrollTo(window.pageXOffset, Math.max(0, r.top + window.pageYOffset - window.innerHeight / 3));
+        };
+        var step = function (token) {
+            if (!run || run.token !== token || run.paused) return;
+            var seg = run.segs[run.index];
+            if (!seg) { api.stop(); return; }
+            var prev = run.segs[run.index - 1];
+            if (prev && prev.el !== seg.el) { mark(prev.el, 'br-current', false); setStateClass(prev.el, 'br-ra-block', false); setStateClass(prev.el, 'br-past', true); }
+            setStateClass(seg.el, 'br-future', false);
+            mark(seg.el, 'br-current', true);
+            setStateClass(seg.el, 'br-ra-block', true);
+            scrollTo(seg.el);
+            updateBar();
+            var sp = props(seg.el), first = !prev || prev.el !== seg.el, last = !(run.segs[run.index + 1] && run.segs[run.index + 1].el === seg.el);
+            var pauses = pair(sp.pause, sp['pause-before'], sp['pause-after']), rests = pair(sp.rest, sp['rest-before'], sp['rest-after']);
+            var cueParts = (sp.cue || '').match(/url\([^)]*\)(\s*[+-]?\d*\.?\d+db)?|none/gi) || [];
+            var cueBefore = sp['cue-before'] || cueParts[0], cueAfter = sp['cue-after'] || cueParts[1] || cueParts[0];
+            var vol = volumeOf(sp['voice-volume']);
+            var afterSpeech = function () {
+                if (!run || run.token !== token) return;
+                wait(last ? rests[1] : 0, function () {
+                    (last && cueAfter && cueAfter !== 'none' ? playCue : function (v, n) { n(); })(cueAfter, function () {
+                        wait(last ? pauses[1] : 0, function () {
+                            if (!run || run.token !== token) return;
+                            run.index++;
+                            step(token);
+                        });
+                    });
+                });
+            };
+            wait(first ? pauses[0] : 0, function () {
+                (first && cueBefore && cueBefore !== 'none' ? playCue : function (v, n) { n(); })(cueBefore, function () {
+                    wait(first ? rests[0] : 0, function () {
+                        if (!run || run.token !== token) return;
+                        if (vol === null) { afterSpeech(); return; }   // voice-volume: silent
+                        var u = new window.SpeechSynthesisUtterance(seg.text);
+                        u.lang = langOf(seg.el);
+                        u.rate = rateOf(sp['voice-rate']);
+                        u.pitch = pitchOf(sp['voice-pitch']);
+                        u.volume = vol;
+                        u.voice = voiceFor(sp['voice-family'], u.lang);
+                        u.onend = afterSpeech;
+                        u.onerror = function (e) { if (e && (e.error === 'interrupted' || e.error === 'canceled')) return; afterSpeech(); };
+                        run.utterance = u;
+                        window.speechSynthesis.speak(u);
+                    });
+                });
+            });
+        };
+        var clearMarks = function () {
+            if (!run) return;
+            for (var i = 0; i < run.segs.length; i++) {
+                var el = run.segs[i].el;
+                mark(el, 'br-current', false);
+                setStateClass(el, 'br-past', false); setStateClass(el, 'br-future', false); setStateClass(el, 'br-ra-block', false);
+            }
+        };
+        var api = {
+            start: function () {
+                if (!window.speechSynthesis) return false;
+                api.stop();
+                if (!raStyle) {
+                    raStyle = document.createElement('style');
+                    raStyle.__brOwn = true;
+                    raStyle.textContent = '.br-ra-block{background-color:rgba(255,214,0,.28)!important;box-shadow:0 0 0 4px rgba(255,214,0,.28)!important}';
+                    (document.head || document.documentElement).appendChild(raStyle);
+                }
+                try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e) {}   // the speech properties of the elements
+                run = { token: {}, index: 0, paused: false, segs: [] };
+                run.segs = segmentsOf(mainRoot());
+                if (!run.segs.length) { run = null; return false; }
+                for (var i = 0; i < run.segs.length; i++) setStateClass(run.segs[i].el, 'br-future', true);
+                bar();
+                step(run.token);
+                return true;
+            },
+            stop: function () {
+                if (!run) return;
+                clearMarks();
+                run.token = null;
+                run = null;
+                try { window.speechSynthesis.cancel(); } catch (e) {}
+                var b = document.getElementById('br-read-aloud');
+                if (b && b.parentNode) b.parentNode.removeChild(b);
+            },
+            pause: function () { if (!run || run.paused) return; run.paused = true; try { window.speechSynthesis.pause(); } catch (e) {} updateBar(); },
+            resume: function () {
+                if (!run || !run.paused) return;
+                run.paused = false;
+                if (window.speechSynthesis.speaking) window.speechSynthesis.resume(); else step(run.token);
+                updateBar();
+            },
+            toggle: function () { if (run) { api.stop(); return false; } return api.start(); },
+            state: function () { return run ? { index: run.index, total: run.segs.length, paused: run.paused } : null; }
+        };
+        window.__brReadAloud = api;
+    })();
     if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
         var SpeechRecognition = function SpeechRecognition() { this.continuous = false; this.interimResults = false; this.lang = ''; this.maxAlternatives = 1; this.onresult = this.onerror = this.onend = this.onstart = this.onnomatch = null; };
         SpeechRecognition.prototype.start = function () {
@@ -1635,7 +2018,7 @@
             'inline-size': 'width', 'block-size': 'height', 'min-inline-size': 'min-width', 'min-block-size': 'min-height', 'max-inline-size': 'max-width',
             'max-block-size': 'max-height', 'margin-block-start': 'margin-top', 'margin-block-end': 'margin-bottom', 'margin-inline-start': 'margin-left',
             'margin-inline-end': 'margin-right', 'padding-block-start': 'padding-top', 'padding-block-end': 'padding-bottom',
-            'padding-inline-start': 'padding-left', 'padding-inline-end': 'padding-right' };
+            'padding-inline-start': 'padding-left', 'padding-inline-end': 'padding-right', 'flex-basis': 'width' };
         var SHORT = { inset: ['top', 'right', 'bottom', 'left'], 'inset-block': ['top', 'bottom'], 'inset-inline': ['left', 'right'],
             'margin-block': ['margin-top', 'margin-bottom'], 'margin-inline': ['margin-left', 'margin-right'],
             'padding-block': ['padding-top', 'padding-bottom'], 'padding-inline': ['padding-left', 'padding-right'] };
@@ -1974,8 +2357,20 @@
         };
         var TIMELINE_VALUE = /(^|[^\w-])(mix|calc-mix|color-mix|cross-fade)\(\s*(scroll\(|view\(|--)/i;
         // the value of `prop` for `el` with every element-dependent function computed (st: positioning state or null)
+        // intrinsic size keywords (see INTRINSIC_SIZE in cssfix.js): measured like calc-size(<keyword>, size)
+        var INTRINSIC = /^(min-content|max-content|fit-content|stretch|-webkit-fill-available|fill-available|-moz-available|-webkit-min-content|-webkit-max-content|-webkit-fit-content|-moz-fit-content|contain)$/i;
+        var intrinsicAsCalcSize = function (s) {
+            var t = trim(s).toLowerCase(), fc = /^fit-content\(([^()]*)\)$/.exec(t);
+            // fit-content(limit): max-content, but no more than the limit and no less than min-content
+            if (fc) return 'max(calc-size(min-content, size), min(calc-size(max-content, size), ' + fc[1] + '))';
+            if (!INTRINSIC.test(t)) return s;
+            t = t.replace(/^-(webkit|moz)-/, '');
+            if (t === 'fill-available' || t === 'available' || t === 'contain') t = 'stretch';
+            return 'calc-size(' + t + ', size)';
+        };
         var evalValue = function (el, prop, v, st) {
             var s = String(v);
+            if (/^(width|height|min-|max-|inline-size|block-size|flex-basis)/.test(prop)) s = intrinsicAsCalcSize(s);
             s = replaceFunctions(s, 'sibling-index', function () { return String(siblingIndex(el)); });
             s = replaceFunctions(s, 'sibling-count', function () { return String(siblingCount(el)); });
             s = replaceFunctions(s, 'attr', function (inner) { return attrFn(el, inner, prop); });
@@ -2271,11 +2666,33 @@
             if (val.toLowerCase() === 'auto') el.removeAttribute(p); else el.setAttribute(p, val);
         };
         var INDIVIDUAL_TRANSFORM = { rotate: 1, scale: 1, translate: 1 };
+        var SPEECH = { speak: 1, 'speak-as': 1, pause: 1, 'pause-before': 1, 'pause-after': 1, rest: 1, 'rest-before': 1, 'rest-after': 1, cue: 1,
+            'cue-before': 1, 'cue-after': 1, 'voice-family': 1, 'voice-rate': 1, 'voice-pitch': 1, 'voice-range': 1, 'voice-volume': 1, 'voice-stress': 1,
+            'voice-balance': 1, 'voice-duration': 1 };
+        var SPEECH_INHERITED = { speak: 1, 'speak-as': 1, 'voice-family': 1, 'voice-rate': 1, 'voice-pitch': 1, 'voice-range': 1, 'voice-volume': 1, 'voice-stress': 1, 'voice-balance': 1 };
+        // the speech properties of an element: its own (from the last pass) and the inherited ones of its ancestors
+        var speechOf = function (el) {
+            var out = {}, own = true;
+            for (var n = el; n && n.nodeType === 1; n = n.parentNode) {
+                var rec = n.__brDV;
+                if (rec && rec.gen === recGen) {
+                    for (var p in rec.props) {
+                        if (!rec.props.hasOwnProperty(p) || !SPEECH[p] || out.hasOwnProperty(p)) continue;
+                        var sv = trim(rec.props[p].v), lsv = sv.toLowerCase();
+                        if (lsv === 'inherit' || (lsv === 'unset' && SPEECH_INHERITED[p])) continue;   // the ancestors decide
+                        if (own || SPEECH_INHERITED[p]) out[p] = lsv === 'initial' || lsv === 'unset' ? '' : sv;
+                    }
+                }
+                own = false;
+            }
+            return out;
+        };
         var applyGeneral = function (rec) {
             var el = rec.el, props = rec.props;
             for (var p in props) {
                 if (!props.hasOwnProperty(p) || POSITION_PROPS[p] || SELF_ALIGN[p]) continue;
                 var v = props[p].v;
+                if (SPEECH[p]) continue;   // kept in the record for the read-aloud feature (see speechOf)
                 if (p === 'field-sizing') { fieldSizing(el, trim(v).toLowerCase()); continue; }
                 if (SVG_GEOM[p]) { svgGeometry(el, p, v); continue; }
                 if (p === 'text-decoration-color') {
@@ -2397,6 +2814,7 @@
             },
             needsMarkers: function () { return hasInline; },
             apply: function () { pass(false); },
+            speech: function (el) { return speechOf(el); },
             reposition: function () { pass(true); },
             state: function () { return { entries: entries.length, positioned: positioned.length, anchors: anchors }; }
         };
