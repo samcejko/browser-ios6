@@ -1423,7 +1423,9 @@ static NSCache *BRFaviconCache(void)
     [html appendFormat:@"<div class=\"meta\">%@%@<a href=\"%@\">%@</a></div>", BRHTMLEscape(article[@"byline"] ?: @""), [article[@"byline"] length] ? @" · " : @"",
                         BRHTMLEscape(pageURL.absoluteString ?: @""), BRHTMLEscape(pageURL.host ?: @"")];
     [html appendString:article[@"html"]];
-    [html appendString:@"</div></body></html>"];
+    // images that fail to load (lazy-loading placeholders, blocked hosts) leave no gaps
+    [html appendString:@"</div><script>(function(){var imgs=document.images;for(var i=0;i<imgs.length;i++){imgs[i].onerror=function(){if(this.parentNode)this.parentNode.removeChild(this);};"
+                        "if(imgs[i].complete&&imgs[i].naturalWidth===0&&imgs[i].parentNode)imgs[i].parentNode.removeChild(imgs[i]);}})();</script></body></html>"];
     [self.webView loadHTMLString:html baseURL:pageURL];
     BRLog(@"Reader: %@ (%lu chars)", article[@"title"], (unsigned long)[article[@"html"] length]);
 }
