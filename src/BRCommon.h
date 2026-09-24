@@ -34,3 +34,10 @@ NSString *BRHTMLEscape(NSString *string);
 
 // Resident memory of this process in megabytes (for logging).
 double BRResidentMemoryMB(void);
+
+// Internationalised host names: "háčky.cz" -> "xn--hky-lma8e.cz" (RFC 3492 punycode per label, NFKC + lower case).
+// ASCII-only input is returned unchanged.
+NSString *BRIDNAEncodeHost(NSString *host);
+
+// Standard base64 of arbitrary data (iOS 6 has no public NSData API for it).
+NSString *BRBase64Encode(NSData *data);

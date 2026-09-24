@@ -204,6 +204,7 @@ static NSString *BRPageKey(NSURL *url)
                 NSMutableDictionary *opts = [@{ @"transpile": @NO, @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth) } mutableCopy];
                 // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
                 if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
+                if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;
                 NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
                 if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
             }

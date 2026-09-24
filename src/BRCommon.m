@@ -44,6 +44,87 @@ NSError *BRURLErrorFromError(NSError *error, NSURL *url)
     return [NSError errorWithDomain:NSURLErrorDomain code:code userInfo:info];
 }
 
+#pragma mark - IDNA (punycode)
+
+// RFC 3492 encoder over Unicode code points; returns nil on overflow.
+static NSString *BRPunycodeEncode(const uint32_t *input, NSUInteger length)
+{
+    const uint32_t base = 36, tmin = 1, tmax = 26, skew = 38, damp = 700, initialBias = 72, initialN = 128;
+    NSMutableString *out = [NSMutableString string];
+    uint32_t n = initialN, delta = 0, bias = initialBias;
+    NSUInteger basicCount = 0;
+    for (NSUInteger j = 0; j < length; j++) {
+        if (input[j] < 0x80) { [out appendFormat:@"%c", (char)input[j]]; basicCount++; }
+    }
+    NSUInteger handled = basicCount;
+    if (basicCount) [out appendString:@"-"];
+    while (handled < length) {
+        uint32_t m = 0xFFFFFFFF;
+        for (NSUInteger j = 0; j < length; j++) if (input[j] >= n && input[j] < m) m = input[j];
+        if ((uint64_t)(m - n) * (handled + 1) > 0xFFFFFFFF - delta) return nil;
+        delta += (m - n) * (uint32_t)(handled + 1);
+        n = m;
+        for (NSUInteger j = 0; j < length; j++) {
+            if (input[j] < n) { if (++delta == 0) return nil; }
+            if (input[j] == n) {
+                uint32_t q = delta;
+                for (uint32_t k = base; ; k += base) {
+                    uint32_t t = k <= bias ? tmin : (k >= bias + tmax ? tmax : k - bias);
+                    if (q < t) break;
+                    uint32_t digit = t + (q - t) % (base - t);
+                    [out appendFormat:@"%c", (char)(digit < 26 ? 'a' + digit : '0' + digit - 26)];
+                    q = (q - t) / (base - t);
+                }
+                [out appendFormat:@"%c", (char)(q < 26 ? 'a' + q : '0' + q - 26)];
+                // adapt bias
+                uint32_t d = delta;
+                d = (handled == basicCount) ? d / damp : d / 2;
+                d += d / (uint32_t)(handled + 1);
+                uint32_t k2 = 0;
+                while (d > ((base - tmin) * tmax) / 2) { d /= base - tmin; k2 += base; }
+                bias = k2 + (base - tmin + 1) * d / (d + skew);
+                delta = 0;
+                handled++;
+            }
+        }
+        delta++;
+        n++;
+    }
+    return out;
+}
+
+NSString *BRIDNAEncodeHost(NSString *host)
+{
+    if (!host.length || [host canBeConvertedToEncoding:NSASCIIStringEncoding]) return host;
+    NSMutableArray *labels = [NSMutableArray array];
+    for (NSString *label in [host componentsSeparatedByString:@"."]) {
+        if ([label canBeConvertedToEncoding:NSASCIIStringEncoding]) { [labels addObject:label]; continue; }
+        NSString *mapped = [[label precomposedStringWithCompatibilityMapping] lowercaseString];
+        NSData *utf32 = [mapped dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
+        NSString *encoded = utf32.length ? BRPunycodeEncode((const uint32_t *)utf32.bytes, utf32.length / 4) : nil;
+        if (!encoded.length) return host;   // give up: the URL will fail like before
+        [labels addObject:[@"xn--" stringByAppendingString:encoded]];
+    }
+    return [labels componentsJoinedByString:@"."];
+}
+
+NSString *BRBase64Encode(NSData *data)
+{
+    static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const uint8_t *bytes = data.bytes;
+    NSUInteger length = data.length;
+    NSMutableString *out = [NSMutableString stringWithCapacity:(length + 2) / 3 * 4];
+    for (NSUInteger i = 0; i < length; i += 3) {
+        uint32_t v = (uint32_t)bytes[i] << 16;
+        if (i + 1 < length) v |= (uint32_t)bytes[i + 1] << 8;
+        if (i + 2 < length) v |= bytes[i + 2];
+        [out appendFormat:@"%c%c", table[(v >> 18) & 63], table[(v >> 12) & 63]];
+        [out appendFormat:@"%c", i + 1 < length ? table[(v >> 6) & 63] : '='];
+        [out appendFormat:@"%c", i + 2 < length ? table[v & 63] : '='];
+    }
+    return out;
+}
+
 NSString *BRHTMLEscape(NSString *string)
 {
     if (!string) return @"";

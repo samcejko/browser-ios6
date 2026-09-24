@@ -1340,6 +1340,33 @@ var CSSFix = (function () {
         return tag + html;
     }
 
+    // Consent dialogs of the common cookie-banner services: hidden, and the scroll lock they put on the page lifted.
+    // Only container ids/classes those services generate themselves are listed (no generic words).
+    var COOKIE_BANNER_CSS =
+        '#onetrust-consent-sdk,#onetrust-banner-sdk,.onetrust-pc-dark-filter,#didomi-host,#didomi-popup,.didomi-popup-backdrop,.didomi-popup-container,' +
+        '#CybotCookiebotDialog,#CybotCookiebotDialogBodyUnderlay,#cookiescript_injected,#cookiescript_injected_wrapper,.qc-cmp2-container,#qc-cmp2-container,' +
+        '.qc-cmp-ui-container,[id^="sp_message_container_"],#cmpbox,#cmpbox2,.cmpboxBG,#usercentrics-root,#usercentrics-cmp-ui,#iubenda-cs-banner,' +
+        '.iubenda-cs-container,#BorlabsCookieBox,#truste-consent-track,.truste_overlay,.truste_box_overlay,#consent_blackbar,#cookie-law-info-bar,' +
+        '#cookie-law-info-again,#moove_gdpr_cookie_info_bar,#catapult-cookie-bar,#cookieChoiceInfo,.cc-window.cc-banner,.cc-window.cc-floating,' +
+        '#CookieConsent,#cookieconsent,.js-consent-banner,#gdpr-cookie-message,#cookie-notice,#cookie-consent-banner,#cookie_consent_banner,' +
+        '.szn-cmp-dialog-container,#szn-cmp-dialog-container,szn-cmp-dialog,.cpex-cmp,#cpexCmp,.seznam-cmp,[id^="sp_message_iframe_"],' +
+        '#cookiebanner,#cookieBanner,.cookie-banner,#cookie-bar,#cookieBar,.cookie-bar,#cookies-banner,.cookies-banner,#cookie-modal,.cookie-modal,' +
+        '#cookie-popup,.cookie-popup,#cookieNotice,.cookieNotice,#cookie-message,.cookie-message,#cookies-consent,.cookies-consent,#cookie-consent,.cookie-consent' +
+        '{display:none !important;visibility:hidden !important}' +
+        'html.didomi-popup-open,body.didomi-popup-open,html.sp-message-open,body.sp-message-open,body.cmp-body-lock,body.onetrust-noscroll,' +
+        'html.cookiebot-open,body.cookie-modal-open,body.cc-modal-open,body.qc-cmp-ui-showing,html.qc-cmp-ui-showing,body.cmp-open,html.cmp-open' +
+        '{overflow:auto !important;position:static !important;height:auto !important}';
+
+    function injectCookieBannerCSS(html) {
+        if (!/<html|<head|<body/i.test(html)) return html;
+        var tag = '<style id="br-cookie-banners">' + COOKIE_BANNER_CSS + '</style>';
+        var m = /<\/head\s*>/i.exec(html);
+        if (m) return html.slice(0, m.index) + tag + html.slice(m.index);
+        m = /<body\b[^>]*>/i.exec(html);
+        if (m) return html.slice(0, m.index + m[0].length) + tag + html.slice(m.index + m[0].length);
+        return html + tag;
+    }
+
     function fixHTML(html, ctx, opts) {
         var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi;
         // 1. collect variables from every <style> block first (they usually hold the theme)
@@ -1366,6 +1393,7 @@ var CSSFix = (function () {
         // 4. scripts: inline ones transpiled, polyfill bundle injected first thing in <head>
         html = fixScripts(html, opts);
         if (opts && opts.polyfillURL) html = injectPolyfills(html, opts.polyfillURL);
+        if (opts && opts.hideCookieBanners) html = injectCookieBannerCSS(html);
         return html;
     }
 

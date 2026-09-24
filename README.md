@@ -11,6 +11,8 @@ the app around it:
   HTTP cache are handled by the app.
 - **JavaScript speed**: the binary is signed with the `dynamic-codesigning` entitlement, which enables
   the Nitro JIT inside UIWebView on jailbroken devices.
+- **WebGL**: the iOS 6 engine ships WebGL switched off for apps; the browser turns it on through the
+  web view's WebKit preferences (WebGL 1.0 on the iPad 2's SGX543).
 - **Ad and tracker blocking** by host name (Peter Lowe's list fetched at build time plus a bundled
   base list), which also keeps memory use down on 512 MB devices.
 - **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties,

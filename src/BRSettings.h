@@ -37,6 +37,17 @@
 + (BOOL)privateMode;
 + (void)setPrivateMode:(BOOL)enabled;
 
++ (BOOL)doNotTrack;                      // default NO: sends DNT: 1 and Sec-GPC: 1
++ (void)setDoNotTrack:(BOOL)enabled;
++ (BOOL)blockThirdPartyCookies;          // default YES (like Safari): cookies only for the site shown in the address bar
++ (void)setBlockThirdPartyCookies:(BOOL)enabled;
++ (BOOL)loadImages;                      // default YES; off = data saver, images are served blank
++ (void)setLoadImages:(BOOL)enabled;
++ (BOOL)hideCookieBanners;               // default YES: known consent dialogs are hidden by injected CSS
++ (void)setHideCookieBanners:(BOOL)enabled;
++ (BOOL)pagesDark;                       // default NO: pages are shown inverted (dark) through a CSS filter
++ (void)setPagesDark:(BOOL)enabled;
+
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the bundled start page
 + (BOOL)isHomeURL:(NSURL *)url;

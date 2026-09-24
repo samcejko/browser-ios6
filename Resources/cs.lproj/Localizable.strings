@@ -102,3 +102,18 @@
 "Reload" = "Načíst znovu";
 "Reader" = "Čtečka";
 "No article was found on this page." = "Na této stránce nebyl nalezen žádný článek.";
+
+"Search" = "Hledat";
+"Save as PDF" = "Uložit jako PDF";
+"PDF saved: %@ (%@)" = "PDF uloženo: %@ (%@)";
+"Reopen closed tab" = "Znovu otevřít zavřený panel";
+"Log in" = "Přihlásit";
+"Privacy" = "Soukromí";
+"Block third-party cookies" = "Blokovat cookies třetích stran";
+"Do Not Track" = "Do Not Track (nesledovat)";
+"Hide cookie banners" = "Skrývat cookie lišty";
+"Cookie banners of the common consent services are hidden; the page then behaves as if nothing was agreed to." = "Cookie lišty běžných souhlasových služeb se skryjí; stránka se pak chová, jako by nebylo nic odsouhlaseno.";
+"Load images" = "Načítat obrázky";
+"Dark pages" = "Tmavé stránky";
+"Forget site passwords" = "Zapomenout hesla k webům";
+"Site passwords forgotten." = "Hesla k webům byla zapomenuta.";

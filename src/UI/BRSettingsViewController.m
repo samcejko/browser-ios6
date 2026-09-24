@@ -4,29 +4,46 @@
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRJSEngine.h"
+#import "BRURLProtocol.h"
 #import "BRCommon.h"
 
 typedef NS_ENUM(NSInteger, BRSettingsSection) {
     BRSettingsSectionAppearance = 0,
     BRSettingsSectionFeatures,
+    BRSettingsSectionPrivacy,
     BRSettingsSectionData,
     BRSettingsSectionInfo,
     BRSettingsSectionCount
+};
+
+typedef NS_ENUM(NSInteger, BRAppearanceRow) {
+    BRAppearanceRowDarkTheme = 0,
+    BRAppearanceRowDarkPages,
+    BRAppearanceRowCount
 };
 
 typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowUserAgent = 0,
     BRFeatureRowSearchEngine,
     BRFeatureRowTextSize,
-    BRFeatureRowPrivate,
-    BRFeatureRowAdBlock,
+    BRFeatureRowLoadImages,
     BRFeatureRowCSSFix,
     BRFeatureRowJSFix,
     BRFeatureRowVerifyTLS,
     BRFeatureRowCount
 };
 
-static const NSInteger BRTagDarkTheme = 100;
+typedef NS_ENUM(NSInteger, BRPrivacyRow) {
+    BRPrivacyRowPrivate = 0,
+    BRPrivacyRowAdBlock,
+    BRPrivacyRowThirdPartyCookies,
+    BRPrivacyRowDoNotTrack,
+    BRPrivacyRowCookieBanners,
+    BRPrivacyRowCount
+};
+
+// switch tags: section * 100 + row
+static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 + row; }
 
 @interface BRSettingsViewController () <UIActionSheetDelegate>
 @end
@@ -64,9 +81,10 @@ static const NSInteger BRTagDarkTheme = 100;
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch (section) {
-        case BRSettingsSectionAppearance: return 1;
+        case BRSettingsSectionAppearance: return BRAppearanceRowCount;
         case BRSettingsSectionFeatures: return BRFeatureRowCount;
-        case BRSettingsSectionData: return 2;
+        case BRSettingsSectionPrivacy: return BRPrivacyRowCount;
+        case BRSettingsSectionData: return 3;
         case BRSettingsSectionInfo: return 4;
     }
     return 0;
@@ -77,6 +95,7 @@ static const NSInteger BRTagDarkTheme = 100;
     switch (section) {
         case BRSettingsSectionAppearance: return L(@"Appearance");
         case BRSettingsSectionFeatures: return L(@"Pages");
+        case BRSettingsSectionPrivacy: return L(@"Privacy");
         case BRSettingsSectionData: return L(@"Data");
         case BRSettingsSectionInfo: return L(@"About");
     }
@@ -87,6 +106,9 @@ static const NSInteger BRTagDarkTheme = 100;
 {
     if (section == BRSettingsSectionFeatures) {
         return L(@"The page version tells servers which browser to serve. iPad with iOS 6 gets pages this engine understands best; the modern identity gets current pages that may not work.");
+    }
+    if (section == BRSettingsSectionPrivacy) {
+        return L(@"Cookie banners of the common consent services are hidden; the page then behaves as if nothing was agreed to.");
     }
     return nil;
 }
@@ -100,6 +122,14 @@ static const NSInteger BRTagDarkTheme = 100;
     return sw;
 }
 
+- (void)configureChoiceCell:(UITableViewCell *)cell title:(NSString *)title value:(NSString *)value
+{
+    cell.textLabel.text = title;
+    cell.detailTextLabel.text = value;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     static NSString *cellId = @"cell";
@@ -111,57 +141,74 @@ static const NSInteger BRTagDarkTheme = 100;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     [[BRTheme shared] styleCell:cell];
     if (![BRTheme shared].isDark) cell.textLabel.textColor = [UIColor blackColor];
+    NSInteger section = indexPath.section, row = indexPath.row;
+    NSInteger tag = BRTag(section, row);
 
-    if (indexPath.section == BRSettingsSectionAppearance) {
-        cell.textLabel.text = L(@"Dark theme");
-        cell.accessoryView = [self switchWithValue:[BRSettings darkTheme] tag:BRTagDarkTheme];
-    } else if (indexPath.section == BRSettingsSectionFeatures) {
-        switch (indexPath.row) {
+    if (section == BRSettingsSectionAppearance) {
+        if (row == BRAppearanceRowDarkTheme) {
+            cell.textLabel.text = L(@"Dark theme");
+            cell.accessoryView = [self switchWithValue:[BRSettings darkTheme] tag:tag];
+        } else {
+            cell.textLabel.text = L(@"Dark pages");
+            cell.accessoryView = [self switchWithValue:[BRSettings pagesDark] tag:tag];
+        }
+    } else if (section == BRSettingsSectionFeatures) {
+        switch (row) {
             case BRFeatureRowUserAgent:
-                cell.textLabel.text = L(@"Page version");
-                cell.detailTextLabel.text = [BRSettings userAgentModeTitle:[BRSettings userAgentMode]];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                [self configureChoiceCell:cell title:L(@"Page version") value:[BRSettings userAgentModeTitle:[BRSettings userAgentMode]]];
                 break;
             case BRFeatureRowSearchEngine:
-                cell.textLabel.text = L(@"Search engine");
-                cell.detailTextLabel.text = [BRSettings searchEngineTitle:[BRSettings searchEngine]];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                [self configureChoiceCell:cell title:L(@"Search engine") value:[BRSettings searchEngineTitle:[BRSettings searchEngine]]];
                 break;
             case BRFeatureRowTextSize:
-                cell.textLabel.text = L(@"Text size");
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld %%", (long)[BRSettings textSizePercent]];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                [self configureChoiceCell:cell title:L(@"Text size") value:[NSString stringWithFormat:@"%ld %%", (long)[BRSettings textSizePercent]]];
                 break;
-            case BRFeatureRowPrivate:
-                cell.textLabel.text = L(@"Private browsing");
-                cell.accessoryView = [self switchWithValue:[BRSettings privateMode] tag:BRFeatureRowPrivate];
-                break;
-            case BRFeatureRowAdBlock:
-                cell.textLabel.text = L(@"Block ads and trackers");
-                cell.accessoryView = [self switchWithValue:[BRSettings adBlockEnabled] tag:BRFeatureRowAdBlock];
+            case BRFeatureRowLoadImages:
+                cell.textLabel.text = L(@"Load images");
+                cell.accessoryView = [self switchWithValue:[BRSettings loadImages] tag:tag];
                 break;
             case BRFeatureRowCSSFix:
                 cell.textLabel.text = L(@"Rewrite modern CSS");
-                cell.accessoryView = [self switchWithValue:[BRSettings cssFixEnabled] tag:BRFeatureRowCSSFix];
+                cell.accessoryView = [self switchWithValue:[BRSettings cssFixEnabled] tag:tag];
                 break;
             case BRFeatureRowJSFix:
                 cell.textLabel.text = L(@"JavaScript polyfills");
-                cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:BRFeatureRowJSFix];
+                cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:tag];
                 break;
             case BRFeatureRowVerifyTLS:
                 cell.textLabel.text = L(@"Verify certificates");
-                cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:BRFeatureRowVerifyTLS];
+                cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:tag];
                 break;
         }
-    } else if (indexPath.section == BRSettingsSectionData) {
+    } else if (section == BRSettingsSectionPrivacy) {
+        switch (row) {
+            case BRPrivacyRowPrivate:
+                cell.textLabel.text = L(@"Private browsing");
+                cell.accessoryView = [self switchWithValue:[BRSettings privateMode] tag:tag];
+                break;
+            case BRPrivacyRowAdBlock:
+                cell.textLabel.text = L(@"Block ads and trackers");
+                cell.accessoryView = [self switchWithValue:[BRSettings adBlockEnabled] tag:tag];
+                break;
+            case BRPrivacyRowThirdPartyCookies:
+                cell.textLabel.text = L(@"Block third-party cookies");
+                cell.accessoryView = [self switchWithValue:[BRSettings blockThirdPartyCookies] tag:tag];
+                break;
+            case BRPrivacyRowDoNotTrack:
+                cell.textLabel.text = L(@"Do Not Track");
+                cell.accessoryView = [self switchWithValue:[BRSettings doNotTrack] tag:tag];
+                break;
+            case BRPrivacyRowCookieBanners:
+                cell.textLabel.text = L(@"Hide cookie banners");
+                cell.accessoryView = [self switchWithValue:[BRSettings hideCookieBanners] tag:tag];
+                break;
+        }
+    } else if (section == BRSettingsSectionData) {
         cell.selectionStyle = UITableViewCellSelectionStyleBlue;
         cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
-        cell.textLabel.text = indexPath.row == 0 ? L(@"Clear cache") : L(@"Clear cookies");
+        cell.textLabel.text = row == 0 ? L(@"Clear cache") : row == 1 ? L(@"Clear cookies") : L(@"Forget site passwords");
     } else {
-        switch (indexPath.row) {
+        switch (row) {
             case 0:
                 cell.textLabel.text = L(@"Version");
                 cell.detailTextLabel.text = [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] ?: @"?";
@@ -185,23 +232,38 @@ static const NSInteger BRTagDarkTheme = 100;
 
 - (void)switchChanged:(UISwitch *)sw
 {
-    switch (sw.tag) {
-        case BRTagDarkTheme:
+    NSInteger section = sw.tag / 100, row = sw.tag % 100;
+    BOOL clearCache = NO;
+    if (section == BRSettingsSectionAppearance) {
+        if (row == BRAppearanceRowDarkTheme) {
             [[BRTheme shared] setDark:sw.on];
             [[BRTheme shared] applyToNavigationBar:self.navigationController.navigationBar];
             [[BRTheme shared] applyToTableView:self.tableView];
             [self.tableView reloadData];
-            return;
-        case BRFeatureRowPrivate: [BRSettings setPrivateMode:sw.on]; return;
-        case BRFeatureRowAdBlock: [BRSettings setAdBlockEnabled:sw.on]; break;
-        case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; break;
-        case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; break;
-        case BRFeatureRowVerifyTLS: [BRSettings setVerifyTLS:sw.on]; break;
+        } else {
+            [BRSettings setPagesDark:sw.on];
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"BRPageStyleDidChangeNotification" object:nil];
+        }
+        return;
     }
-    if (sw.tag == BRFeatureRowCSSFix || sw.tag == BRFeatureRowJSFix) {
-        // cached bodies were rewritten with the old settings
-        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    if (section == BRSettingsSectionFeatures) {
+        switch (row) {
+            case BRFeatureRowLoadImages: [BRSettings setLoadImages:sw.on]; break;
+            case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; clearCache = YES; break;
+            case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; clearCache = YES; break;
+            case BRFeatureRowVerifyTLS: [BRSettings setVerifyTLS:sw.on]; break;
+        }
+    } else if (section == BRSettingsSectionPrivacy) {
+        switch (row) {
+            case BRPrivacyRowPrivate: [BRSettings setPrivateMode:sw.on]; break;
+            case BRPrivacyRowAdBlock: [BRSettings setAdBlockEnabled:sw.on]; break;
+            case BRPrivacyRowThirdPartyCookies: [BRSettings setBlockThirdPartyCookies:sw.on]; break;
+            case BRPrivacyRowDoNotTrack: [BRSettings setDoNotTrack:sw.on]; break;
+            case BRPrivacyRowCookieBanners: [BRSettings setHideCookieBanners:sw.on]; clearCache = YES; break;
+        }
     }
+    // cached bodies were rewritten with the old settings
+    if (clearCache) [[NSURLCache sharedURLCache] removeAllCachedResponses];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
@@ -233,10 +295,13 @@ static const NSInteger BRTagDarkTheme = 100;
         [[NSFileManager defaultManager] removeItemAtPath:transpiled error:NULL];
         [[BRJSEngine shared] resetContext];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cache cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
-    } else {
+    } else if (indexPath.row == 1) {
         NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
         for (NSHTTPCookie *c in [jar.cookies copy]) [jar deleteCookie:c];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cookies cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+    } else {
+        [BRURLProtocol forgetCredentials];
+        [[[UIAlertView alloc] initWithTitle:nil message:L(@"Site passwords forgotten.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     }
     [self.tableView reloadData];
 }

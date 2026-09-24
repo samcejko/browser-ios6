@@ -24,7 +24,7 @@
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
     // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
-    static const NSInteger BRCacheFormatVersion = 9;
+    static const NSInteger BRCacheFormatVersion = 10;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
         [cache removeAllCachedResponses];
@@ -144,6 +144,32 @@
     }
     if ([target isEqualToString:@"reader"]) {
         [self.browserViewController showReader];
+        return YES;
+    }
+    if ([target isEqualToString:@"pdf"]) {
+        [self.browserViewController savePageAsPDF];
+        return YES;
+    }
+    if ([target isEqualToString:@"history"]) {
+        // browser:history logs WebKit's back/forward lists (the long-press menu of the arrows) to tmp/eval.txt
+        NSString *result = [self.browserViewController historyDescription];
+        [result ?: @"" writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"History: %@", result);
+        return YES;
+    }
+    if ([target hasPrefix:@"goback?"] || [target hasPrefix:@"type?"] || [target hasPrefix:@"auth?"]) {
+        // browser:goback?n=1 (index into the last browser:history back list), browser:type?text=<address bar text>,
+        // browser:auth?user=u&password=p answers the pending login dialog
+        NSMutableDictionary *q = [NSMutableDictionary dictionary];
+        NSRange qm = [target rangeOfString:@"?"];
+        for (NSString *pair in [[target substringFromIndex:qm.location + 1] componentsSeparatedByString:@"&"]) {
+            NSRange eq = [pair rangeOfString:@"="];
+            if (eq.location == NSNotFound) continue;
+            q[[pair substringToIndex:eq.location]] = [[pair substringFromIndex:eq.location + 1] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @"";
+        }
+        if ([target hasPrefix:@"goback?"]) [self.browserViewController goToHistoryItemAtIndex:[q[@"n"] integerValue]];
+        else if ([target hasPrefix:@"type?"]) [self.browserViewController navigateToTypedText:q[@"text"] ?: @""];
+        else [self.browserViewController answerAuthenticationWithUser:q[@"user"] ?: @"" password:q[@"password"] ?: @""];
         return YES;
     }
     if ([target isEqualToString:@"snapshot"]) {

@@ -82,6 +82,61 @@ static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLRe
 static NSString * const BRCacheMaxAgeKey = @"BRMaxAge";
 static const NSUInteger BRMaxCacheableBody = 2 * 1024 * 1024;
 
+#pragma mark - HTTP authentication (Basic)
+
+static NSString *BRHeader(NSDictionary *headers, NSString *name);
+
+static BRAuthenticationHandler g_authHandler;
+static NSMutableDictionary *g_credentials;          // "https://host:443" -> "Basic base64(user:password)", this session only
+static dispatch_semaphore_t g_authPromptLock;       // one login dialog at a time
+
+static NSString *BRAuthKeyForURL(NSURL *url)
+{
+    NSString *scheme = [url.scheme lowercaseString] ?: @"http";
+    NSInteger port = url.port ? [url.port integerValue] : ([scheme isEqualToString:@"https"] ? 443 : 80);
+    return [NSString stringWithFormat:@"%@://%@:%ld", scheme, [url.host lowercaseString] ?: @"", (long)port];
+}
+
+static NSString *BRStoredAuthorization(NSString *key)
+{
+    @synchronized ([BRURLProtocol class]) { return key ? g_credentials[key] : nil; }
+}
+
+static void BRStoreAuthorization(NSString *key, NSString *value)
+{
+    if (!key) return;
+    @synchronized ([BRURLProtocol class]) {
+        if (!g_credentials) g_credentials = [NSMutableDictionary dictionary];
+        if (value) g_credentials[key] = value; else [g_credentials removeObjectForKey:key];
+    }
+}
+
+static NSString *BRRealmFromChallenge(NSString *challenge)
+{
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"realm\\s*=\\s*\"?([^\",]*)\"?" options:NSRegularExpressionCaseInsensitive error:NULL];
+    NSTextCheckingResult *m = challenge.length ? [re firstMatchInString:challenge options:0 range:NSMakeRange(0, challenge.length)] : nil;
+    return (m && m.numberOfRanges > 1) ? [challenge substringWithRange:[m rangeAtIndex:1]] : @"";
+}
+
+// Third-party check for cookies: the request host must share the registrable domain (last two labels) with the page.
+static BOOL BRSameSite(NSURL *a, NSURL *b)
+{
+    NSString *ha = [a.host lowercaseString], *hb = [b.host lowercaseString];
+    if (!ha.length || !hb.length) return YES;
+    if ([ha isEqualToString:hb]) return YES;
+    NSArray *pa = [ha componentsSeparatedByString:@"."], *pb = [hb componentsSeparatedByString:@"."];
+    if (pa.count < 2 || pb.count < 2) return NO;
+    return [pa[pa.count - 1] isEqualToString:pb[pb.count - 1]] && [pa[pa.count - 2] isEqualToString:pb[pb.count - 2]];
+}
+
+static BOOL BRLooksLikeImageRequest(NSURLRequest *request)
+{
+    NSString *accept = [BRHeader(request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
+    if ([accept hasPrefix:@"image/"]) return YES;
+    NSString *ext = [[request.URL.path pathExtension] lowercaseString] ?: @"";
+    return [@[@"png", @"jpg", @"jpeg", @"gif", @"webp", @"bmp", @"avif", @"jfif"] containsObject:ext];
+}
+
 #pragma mark - Helpers
 
 // Case-insensitive header lookup (NSHTTPURLResponse.allHeaderFields is case-insensitive in practice, plain dictionaries are not).
@@ -198,6 +253,12 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, copy) NSString *rewriteCharset;
 @property (nonatomic, strong) NSDictionary *pendingHeaderFields;
 @property (nonatomic) NSInteger pendingStatus;
+// what went on the wire (a 401 answer repeats the request with credentials)
+@property (nonatomic, copy) NSString *sentMethod;
+@property (nonatomic, strong) NSDictionary *sentHeaders;
+@property (nonatomic, strong) NSData *sentBody;
+@property (nonatomic) BOOL thirdParty;          // cookies are neither sent nor stored
+@property (nonatomic) BOOL authAttempted;       // the user was asked once for this request
 @end
 
 @implementation BRURLProtocol
@@ -205,6 +266,19 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 + (void)registerProtocol
 {
     [NSURLProtocol registerClass:self];
+}
+
++ (void)setAuthenticationHandler:(BRAuthenticationHandler)handler
+{
+    @synchronized (self) {
+        g_authHandler = [handler copy];
+        if (!g_authPromptLock) g_authPromptLock = dispatch_semaphore_create(1);
+    }
+}
+
++ (void)forgetCredentials
+{
+    @synchronized (self) { [g_credentials removeAllObjects]; }
 }
 
 + (NSURL *)lastMainDocumentURL { @synchronized (self) { return g_lastMainURL; } }
@@ -264,11 +338,18 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     }
 
     // 0b. Ad and tracker blocking (never for the main document)
-    if (request.mainDocumentURL && ![url isEqual:request.mainDocumentURL] && [BRSettings adBlockEnabled] && [BRAdBlock shouldBlockHost:url.host]) {
+    BOOL subresource = request.mainDocumentURL && ![url isEqual:request.mainDocumentURL];
+    if (subresource && [BRSettings adBlockEnabled] && [BRAdBlock shouldBlockHost:url.host]) {
         [BRAdBlock noteBlockedRequest];
         [self serveBlockedResponse];
         return;
     }
+    // 0c. Data saver: images are answered with a blank picture
+    if (subresource && ![BRSettings loadImages] && BRLooksLikeImageRequest(request)) {
+        [self serveBlockedResponse];
+        return;
+    }
+    self.thirdParty = subresource && [BRSettings blockThirdPartyCookies] && !BRSameSite(url, request.mainDocumentURL);
 
     // 1. Cache
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
@@ -289,7 +370,9 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 
     // 2. Request headers: WebKit's own, cookies from the shared jar, validators for a stale cache entry
     NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:request.allHTTPHeaderFields ?: @{}];
-    if (request.HTTPShouldHandleCookies && !BRHeader(headers, @"Cookie")) {
+    if (self.thirdParty) {
+        [headers removeObjectForKey:@"Cookie"];
+    } else if (request.HTTPShouldHandleCookies && !BRHeader(headers, @"Cookie")) {
         NSArray *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url];
         if (cookies.count) {
             NSString *cookieHeader = [NSHTTPCookie requestHeaderFieldsWithCookies:cookies][@"Cookie"];
@@ -303,26 +386,77 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
         if (etag.length) headers[@"If-None-Match"] = etag;
         if (lastModified.length) headers[@"If-Modified-Since"] = lastModified;
     }
+    NSString *stored = BRStoredAuthorization(BRAuthKeyForURL(url));
+    if (stored && !BRHeader(headers, @"Authorization")) headers[@"Authorization"] = stored;
     NSData *body = request.HTTPBody ?: BRReadBodyStream(request.HTTPBodyStream);
 
     // 3. Go
+    BOOL mainDocument = !request.mainDocumentURL || [url isEqual:request.mainDocumentURL];
+    if (mainDocument) BRLog(@"%@ %@ (main document)", method, url.absoluteString);
+    self.counted = YES;
+    BRProgressRequestStarted(request);
+    [self sendRequestWithMethod:method headers:headers body:body];
+}
+
+// Starts (or restarts, after a 401) the network request. Callbacks of a superseded request are ignored.
+- (void)sendRequestWithMethod:(NSString *)method headers:(NSDictionary *)headers body:(NSData *)body
+{
+    NSURLRequest *request = self.request;
+    NSURL *url = request.URL;
+    self.sentMethod = method;
+    self.sentHeaders = headers;
+    self.sentBody = body;
     BRHTTPRequest *r = [[BRHTTPRequest alloc] initWithMethod:method URL:url];
     r.headers = headers;
     r.body = body;
     r.verifyTLS = [BRSettings verifyTLS];
     r.connectTimeout = 20;
     r.readTimeout = request.timeoutInterval > 0 ? MAX(20, request.timeoutInterval) : 60;
-    BOOL mainDocument = !request.mainDocumentURL || [url isEqual:request.mainDocumentURL];
-    r.highPriority = mainDocument;
-    if (mainDocument) BRLog(@"%@ %@ (main document)", method, url.absoluteString);
+    r.highPriority = !request.mainDocumentURL || [url isEqual:request.mainDocumentURL];
     __weak BRURLProtocol *weakSelf = self;
-    r.onHeaders = ^(NSInteger status, NSDictionary *hdrs) { [weakSelf handleHeaders:status]; };
-    r.onData = ^(NSData *chunk) { [weakSelf handleData:chunk]; };
-    r.onComplete = ^(NSError *error) { [weakSelf handleComplete:error]; };
+    __weak BRHTTPRequest *weakR = r;
+    r.onHeaders = ^(NSInteger status, NSDictionary *hdrs) { BRURLProtocol *s = weakSelf; if (s && s.httpRequest == weakR) [s handleHeaders:status]; };
+    r.onData = ^(NSData *chunk) { BRURLProtocol *s = weakSelf; if (s && s.httpRequest == weakR) [s handleData:chunk]; };
+    r.onComplete = ^(NSError *error) { BRURLProtocol *s = weakSelf; if (s && s.httpRequest == weakR) [s handleComplete:error]; };
     self.httpRequest = r;
-    self.counted = YES;
-    BRProgressRequestStarted(request);
     [r start];
+}
+
+// A 401 with a Basic challenge: ask the user (once per request) and repeat the request with the answer.
+// Runs on the request's worker thread, which waits for the dialog. Returns YES when the request was restarted.
+- (BOOL)handleAuthenticationChallenge:(NSString *)challenge
+{
+    if (self.authAttempted || !g_authHandler || !g_authPromptLock) return NO;
+    self.authAttempted = YES;
+    NSURL *url = self.request.URL;
+    NSString *key = BRAuthKeyForURL(url);
+    NSString *realm = BRRealmFromChallenge(challenge);
+    if (BRHeader(self.sentHeaders, @"Authorization")) BRStoreAuthorization(key, nil);   // stored credentials were refused
+    dispatch_semaphore_wait(g_authPromptLock, DISPATCH_TIME_FOREVER);
+    NSString *stored = BRStoredAuthorization(key);   // another request may have asked meanwhile
+    if (!stored && !self.stopped) {
+        dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+        __block NSString *user = nil, *password = nil;
+        BRAuthenticationHandler handler = g_authHandler;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            handler(url.host ?: @"", realm, ^(NSString *u, NSString *p) { user = u; password = p; dispatch_semaphore_signal(answered); });
+        });
+        dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_SEC)));
+        if (user.length) {
+            NSData *pair = [[NSString stringWithFormat:@"%@:%@", user, password ?: @""] dataUsingEncoding:NSUTF8StringEncoding];
+            stored = [@"Basic " stringByAppendingString:BRBase64Encode(pair)];
+            BRStoreAuthorization(key, stored);
+        }
+    }
+    dispatch_semaphore_signal(g_authPromptLock);
+    if (!stored || self.stopped) return NO;
+    BRLog(@"Authenticating to %@ (%@)", url.host, realm);
+    NSMutableDictionary *headers = [self.sentHeaders mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSString *k in [headers allKeys]) if ([k caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) [headers removeObjectForKey:k];
+    headers[@"Authorization"] = stored;
+    [self.httpRequest cancel];
+    [self sendRequestWithMethod:self.sentMethod headers:headers body:self.sentBody];
+    return YES;
 }
 
 - (void)noteFinishedForProgress
@@ -369,8 +503,14 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     if (!r) return;
     NSURL *url = self.request.URL;
 
+    // HTTP authentication: ask the user and repeat the request
+    if (status == 401) {
+        NSString *challenge = r.responseHeaders[@"www-authenticate"] ?: @"";
+        if ([[challenge lowercaseString] hasPrefix:@"basic"] && [self handleAuthenticationChallenge:challenge]) return;
+    }
+
     // Cookies go into the shared jar so document.cookie and later requests see them.
-    if (self.request.HTTPShouldHandleCookies && r.setCookieHeaders.count) {
+    if (self.request.HTTPShouldHandleCookies && r.setCookieHeaders.count && !self.thirdParty) {
         NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
         for (NSString *value in r.setCookieHeaders) {
             NSArray *cookies = [NSHTTPCookie cookiesWithResponseHeaderFields:@{ @"Set-Cookie": value } forURL:url];

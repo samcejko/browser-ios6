@@ -911,6 +911,16 @@
             return c;
         };
     }
+    // The engine knows WebGL only under its experimental name; pages ask for 'webgl' (and 'webgl2', which does not exist here)
+    if (HCp && HCp.getContext && !HCp.__brGLAlias) {
+        HCp.__brGLAlias = true;
+        var origGL = HCp.getContext;
+        HCp.getContext = function (type, attrs) {
+            var ctx = origGL.apply(this, arguments);
+            if (!ctx && type === 'webgl') { try { ctx = origGL.call(this, 'experimental-webgl', attrs); } catch (e) {} }
+            return ctx;
+        };
+    }
     // canvas.getContext('bitmaprenderer'): a thin wrapper over the 2D context
     if (HCp && !window.ImageBitmapRenderingContext) {
         var BitmapContext = function ImageBitmapRenderingContext(canvas) { this.canvas = canvas; };

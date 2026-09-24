@@ -1,6 +1,8 @@
 #import "BRBrowserViewController.h"
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
+#include <dlfcn.h>
+#import "BRWebView.h"
 #import "BRSettingsViewController.h"
 #import "BRLibraryViewController.h"
 #import "BRTabsViewController.h"
@@ -32,6 +34,12 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, copy) NSString *pendingSuggestionText;           // last text scheduled for a search suggestion request
 @property (nonatomic) NSUInteger pressedTabIndex;                      // tab under the long press menu
 @property (nonatomic, strong) UIRefreshControl *refreshControl;         // pull to refresh on the page
+@property (nonatomic, strong) NSMutableArray *closedTabs;              // recently closed tabs (url, title), newest last
+@property (nonatomic, strong) UIPanGestureRecognizer *edgePan;         // swipe from the screen edge: back / forward
+@property (nonatomic) NSInteger edgePanDirection;                      // -1 back, 1 forward while a swipe is in progress
+@property (nonatomic, strong) NSArray *historyItems;                   // WebHistoryItem objects behind the history menu
+@property (nonatomic, copy) void (^authCompletion)(NSString *user, NSString *password);   // login dialog in progress
+@property (nonatomic, strong) UIAlertView *authAlert;
 @property (nonatomic, strong) UIView *findBar;
 @property (nonatomic, strong) UIImageView *findBarBackground;
 @property (nonatomic, strong) UITextField *findField;
@@ -47,7 +55,7 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) BRTabBar *tabBar;              // iPad only: Safari style tab strip under the address bar
 @property (nonatomic, strong) UIView *bottomBar;             // iPhone only
 @property (nonatomic, strong) UIImageView *bottomBarBackground;
-@property (nonatomic, strong) UIWebView *webView;
+@property (nonatomic, strong) BRWebView *webView;
 @property (nonatomic, strong) UITextField *urlField;
 @property (nonatomic, strong) UIView *fieldLeftView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -117,23 +125,56 @@ static const CGFloat BRControlHeight = 30;
 }
 @end
 
-// "Reader" entry in the share sheet
-@interface BRReaderActivity : UIActivity
+// Our own entries in the share sheet: reader, find on page, save as PDF (drawn icons, a block each)
+typedef NS_ENUM(NSInteger, BRActivityIcon) { BRActivityIconLines = 0, BRActivityIconMagnifier, BRActivityIconDocument };
+
+@interface BRActionActivity : UIActivity
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *type;
+@property (nonatomic) BRActivityIcon icon;
 @property (nonatomic, copy) void (^action)(void);
 @end
 
-@implementation BRReaderActivity
-- (NSString *)activityType { return @"com.samcejko.browser.reader"; }
-- (NSString *)activityTitle { return L(@"Reader"); }
+@implementation BRActionActivity
+- (NSString *)activityType { return self.type ?: @"com.samcejko.browser.action"; }
+- (NSString *)activityTitle { return self.title; }
 - (UIImage *)activityImage
 {
     CGFloat side = BRIsPad() ? 76 : 60;
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0);
-    [[UIColor colorWithWhite:0.35 alpha:1] setFill];
-    CGFloat x = side * 0.22, w = side * 0.56, y = side * 0.24;
-    for (int i = 0; i < 5; i++) {
-        CGFloat lineW = (i == 0) ? w * 0.7 : (i == 4 ? w * 0.5 : w);
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y + i * side * 0.11, lineW, side * 0.055) cornerRadius:2] fill];
+    UIColor *ink = [UIColor colorWithWhite:0.35 alpha:1];
+    [ink setFill];
+    [ink setStroke];
+    if (self.icon == BRActivityIconLines) {
+        CGFloat x = side * 0.22, w = side * 0.56, y = side * 0.24;
+        for (int i = 0; i < 5; i++) {
+            CGFloat lineW = (i == 0) ? w * 0.7 : (i == 4 ? w * 0.5 : w);
+            [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(x, y + i * side * 0.11, lineW, side * 0.055) cornerRadius:2] fill];
+        }
+    } else if (self.icon == BRActivityIconMagnifier) {
+        CGFloat r = side * 0.2;
+        UIBezierPath *glass = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(side * 0.24, side * 0.22, 2 * r, 2 * r)];
+        glass.lineWidth = side * 0.07;
+        [glass stroke];
+        UIBezierPath *handle = [UIBezierPath bezierPath];
+        [handle moveToPoint:CGPointMake(side * 0.24 + 2 * r - r * 0.25, side * 0.22 + 2 * r - r * 0.25)];
+        [handle addLineToPoint:CGPointMake(side * 0.78, side * 0.78)];
+        handle.lineWidth = side * 0.09;
+        handle.lineCapStyle = kCGLineCapRound;
+        [handle stroke];
+    } else {
+        // a sheet with a folded corner and "PDF" letters
+        CGFloat x = side * 0.27, y = side * 0.16, w = side * 0.46, h = side * 0.62, fold = side * 0.13;
+        UIBezierPath *sheet = [UIBezierPath bezierPath];
+        [sheet moveToPoint:CGPointMake(x, y)];
+        [sheet addLineToPoint:CGPointMake(x + w - fold, y)];
+        [sheet addLineToPoint:CGPointMake(x + w, y + fold)];
+        [sheet addLineToPoint:CGPointMake(x + w, y + h)];
+        [sheet addLineToPoint:CGPointMake(x, y + h)];
+        [sheet closePath];
+        sheet.lineWidth = side * 0.05;
+        [sheet stroke];
+        [@"PDF" drawInRect:CGRectMake(x, y + h * 0.45, w, side * 0.2) withFont:[UIFont boldSystemFontOfSize:side * 0.17] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
     }
     UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
@@ -172,8 +213,21 @@ static const CGFloat BRControlHeight = 30;
     BRTheme *theme = [BRTheme shared];
     self.view.backgroundColor = [theme pageBackgroundColor];
 
-    self.webView = [[UIWebView alloc] initWithFrame:self.view.bounds];
+    self.webView = [[BRWebView alloc] initWithFrame:self.view.bounds];
     self.webView.delegate = self;
+    [BRWebView registerMenuItems];
+    __weak BRBrowserViewController *weakSelf = self;
+    self.webView.onSearchSelection = ^(NSString *text) { [weakSelf loadURL:[BRSettings searchURLForQuery:text]]; };
+    self.webView.onShareSelection = ^(NSString *text) {
+        BRBrowserViewController *strongSelf = weakSelf;
+        if (strongSelf) [strongSelf shareItems:@[text] fromRect:strongSelf.shareButton.frame inView:strongSelf.shareButton.superview];
+    };
+    // HTTP authentication dialogs for the network layer
+    [BRURLProtocol setAuthenticationHandler:^(NSString *host, NSString *realm, void (^completion)(NSString *user, NSString *password)) {
+        BRBrowserViewController *strongSelf = weakSelf;
+        if (strongSelf) [strongSelf promptForCredentialsForHost:host realm:realm completion:completion];
+        else completion(nil, nil);
+    }];
     self.webView.scalesPageToFit = YES;
     self.webView.dataDetectorTypes = UIDataDetectorTypeNone;
     self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers
@@ -238,6 +292,18 @@ static const CGFloat BRControlHeight = 30;
     self.linkPress.minimumPressDuration = 0.6;
     self.linkPress.delegate = self;
     [self.webView addGestureRecognizer:self.linkPress];
+    // swipe in from the left or right edge: back / forward
+    self.edgePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleEdgePan:)];
+    self.edgePan.delegate = self;
+    self.edgePan.maximumNumberOfTouches = 1;
+    [self.webView addGestureRecognizer:self.edgePan];
+    // long press on back / forward: the history behind the button
+    for (UIButton *b in @[self.backButton, self.forwardButton]) {
+        UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(historyMenu:)];
+        press.minimumPressDuration = 0.5;
+        [b addGestureRecognizer:press];
+    }
+    self.closedTabs = [NSMutableArray array];
 
     if (BRIsPad()) {
         for (UIView *v in @[self.backButton, self.forwardButton, self.bookmarksButton, self.shareButton, self.settingsButton]) [self.topBar addSubview:v];
@@ -271,6 +337,7 @@ static const CGFloat BRControlHeight = 30;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageProgress:) name:BRPageProgressNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(textSizeChanged:) name:@"BRTextSizeDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(privateModeChanged:) name:@"BRPrivateModeDidChangeNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageStyleChanged:) name:@"BRPageStyleDidChangeNotification" object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
 
@@ -611,9 +678,30 @@ static NSCache *BRFaviconCache(void)
     [self presentModal:tabsController];
 }
 
+- (void)rememberClosedTab:(NSDictionary *)tab
+{
+    NSString *url = [tab[@"url"] isKindOfClass:[NSString class]] ? tab[@"url"] : @"";
+    if (!url.length || [BRSettings privateMode]) return;
+    [self.closedTabs addObject:@{ @"url": url, @"title": [tab[@"title"] isKindOfClass:[NSString class]] ? tab[@"title"] : @"" }];
+    while (self.closedTabs.count > 10) [self.closedTabs removeObjectAtIndex:0];
+}
+
+- (void)reopenClosedTab
+{
+    NSDictionary *closed = self.closedTabs.lastObject;
+    if (!closed || self.tabs.count >= 12) return;
+    [self.closedTabs removeLastObject];
+    [self storeCurrentTabState];
+    NSUInteger at = MIN(self.currentTab + 1, self.tabs.count);
+    [self.tabs insertObject:[closed mutableCopy] atIndex:at];
+    [self openTabAtIndex:at];
+}
+
 - (void)closeTabAtIndex:(NSUInteger)index
 {
     if (index >= self.tabs.count) return;
+    if (index == self.currentTab) [self storeCurrentTabState];
+    [self rememberClosedTab:self.tabs[index]];
     [self.tabs removeObjectAtIndex:index];
     if (!self.tabs.count) {
         [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
@@ -686,6 +774,7 @@ static NSCache *BRFaviconCache(void)
     if (self.tabs.count > 1) [sheet addButtonWithTitle:L(@"Close other tabs")];
     [sheet addButtonWithTitle:L(@"Duplicate tab")];
     if (index == self.currentTab) [sheet addButtonWithTitle:L(@"Reload")];
+    if (self.closedTabs.count) [sheet addButtonWithTitle:L(@"Reopen closed tab")];
     sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
     sheet.tag = 102;
     [sheet showFromRect:[self.view convertRect:rect fromView:bar] inView:self.view animated:YES];
@@ -701,6 +790,7 @@ static NSCache *BRFaviconCache(void)
         BOOL keepingCurrent = (index == self.currentTab);
         if (!keepingCurrent) [self storeCurrentTabState];
         NSMutableDictionary *keep = self.tabs[index];
+        for (NSDictionary *t in self.tabs) if (t != keep) [self rememberClosedTab:t];
         [self.tabs removeAllObjects];
         [self.tabs addObject:keep];
         self.currentTab = 0;
@@ -715,6 +805,8 @@ static NSCache *BRFaviconCache(void)
         [self openTabAtIndex:index + 1];
     } else if ([choice isEqualToString:L(@"Reload")]) {
         [self reload];
+    } else if ([choice isEqualToString:L(@"Reopen closed tab")]) {
+        [self reopenClosedTab];
     }
 }
 
@@ -728,6 +820,103 @@ static NSCache *BRFaviconCache(void)
 - (void)goForward
 {
     [self.webView goForward];
+}
+
+// WebKit's own history list (private API, every step guarded). Calls into the WebView need the web thread lock,
+// which UIKit takes the same way; it is released at the end of the main run loop cycle.
+static void BRWebThreadLock(void)
+{
+    static void (*lockFn)(void);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lockFn = (void (*)(void))dlsym(RTLD_DEFAULT, "WebThreadLock"); });
+    if (lockFn) lockFn();
+}
+
+- (id)innerWebView
+{
+    SEL webViewSel = NSSelectorFromString(@"webView");
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:self.webView];
+    while (queue.count) {
+        UIView *v = queue[0];
+        [queue removeObjectAtIndex:0];
+        if (v != self.webView && [v respondsToSelector:webViewSel]) return ((id (*)(id, SEL))objc_msgSend)(v, webViewSel);
+        [queue addObjectsFromArray:v.subviews];
+    }
+    return nil;
+}
+
+- (NSArray *)historyItemsBackwards:(BOOL)backwards limit:(int)limit
+{
+    id inner = [self innerWebView];
+    SEL listSel = NSSelectorFromString(@"backForwardList");
+    if (!inner || ![inner respondsToSelector:listSel]) return nil;
+    BRWebThreadLock();
+    id list = ((id (*)(id, SEL))objc_msgSend)(inner, listSel);
+    SEL itemsSel = NSSelectorFromString(backwards ? @"backListWithLimit:" : @"forwardListWithLimit:");
+    if (!list || ![list respondsToSelector:itemsSel]) return nil;
+    NSArray *items = ((id (*)(id, SEL, int))objc_msgSend)(list, itemsSel, limit);
+    if (![items isKindOfClass:[NSArray class]]) return nil;
+    // the back list ends with the most recent page; show that one first
+    return backwards ? [[items reverseObjectEnumerator] allObjects] : items;
+}
+
+- (void)historyMenu:(UILongPressGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    BOOL backwards = (recognizer.view == self.backButton);
+    NSArray *items = [self historyItemsBackwards:backwards limit:10];
+    if (!items.count) return;
+    self.historyItems = items;
+    SEL titleSel = NSSelectorFromString(@"title"), urlSel = NSSelectorFromString(@"URLString");
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:L(@"History") delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    for (id item in items) {
+        NSString *title = [item respondsToSelector:titleSel] ? ((id (*)(id, SEL))objc_msgSend)(item, titleSel) : nil;
+        NSString *urlString = [item respondsToSelector:urlSel] ? ((id (*)(id, SEL))objc_msgSend)(item, urlSel) : nil;
+        if (![title isKindOfClass:[NSString class]] || !title.length) title = [NSURL URLWithString:[urlString isKindOfClass:[NSString class]] ? urlString : @""].host ?: L(@"New tab");
+        if (title.length > 60) title = [[title substringToIndex:57] stringByAppendingString:@"..."];
+        [sheet addButtonWithTitle:title];
+    }
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    sheet.tag = 103;
+    CGRect rect = [self.view convertRect:recognizer.view.bounds fromView:recognizer.view];
+    if (BRIsPad()) [sheet showFromRect:rect inView:self.view animated:YES];
+    else [sheet showInView:self.view];
+}
+
+- (void)goToHistoryItemAtIndex:(NSInteger)index
+{
+    if (index < 0 || (NSUInteger)index >= self.historyItems.count) return;
+    id item = self.historyItems[(NSUInteger)index];
+    self.historyItems = nil;
+    id inner = [self innerWebView];
+    SEL goSel = NSSelectorFromString(@"goToBackForwardItem:");
+    if (!inner || ![inner respondsToSelector:goSel]) return;
+    BRWebThreadLock();
+    ((void (*)(id, SEL, id))objc_msgSend)(inner, goSel, item);
+}
+
+// Edge swipes: only from the outer 30 points, mostly horizontal, and not while the page itself can scroll that way
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer
+{
+    if (recognizer != self.edgePan) return YES;
+    CGPoint p = [self.edgePan locationInView:self.webView];
+    CGPoint v = [self.edgePan velocityInView:self.webView];
+    if (fabs(v.x) < fabs(v.y) * 1.5) return NO;
+    CGFloat width = self.webView.bounds.size.width;
+    UIScrollView *scroll = self.webView.scrollView;
+    if (p.x < 30 && v.x > 0 && scroll.contentOffset.x <= 0 && self.webView.canGoBack) { self.edgePanDirection = -1; return YES; }
+    if (p.x > width - 30 && v.x < 0 && scroll.contentOffset.x + scroll.bounds.size.width >= scroll.contentSize.width - 1 && self.webView.canGoForward) { self.edgePanDirection = 1; return YES; }
+    return NO;
+}
+
+- (void)handleEdgePan:(UIPanGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateEnded) return;
+    CGFloat dx = [recognizer translationInView:self.webView].x;
+    CGFloat vx = [recognizer velocityInView:self.webView].x;
+    if (self.edgePanDirection < 0 && (dx > 70 || vx > 600)) [self goBack];
+    else if (self.edgePanDirection > 0 && (dx < -70 || vx < -600)) [self goForward];
+    self.edgePanDirection = 0;
 }
 
 - (void)reloadOrStop
@@ -790,9 +979,24 @@ static NSCache *BRFaviconCache(void)
     else [self loadURL:[NSURL URLWithString:@"https://lite.duckduckgo.com/lite/"]];
 }
 
+// javascript: addresses (bookmarklets) run in the current page instead of being loaded
+- (void)runBookmarklet:(NSString *)spec
+{
+    NSRange colon = [spec rangeOfString:@":"];
+    NSString *code = colon.location == NSNotFound ? @"" : [spec substringFromIndex:colon.location + 1];
+    code = [code stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: code;
+    if (!code.length) return;
+    NSString *result = [self.webView stringByEvaluatingJavaScriptFromString:code];
+    BRLog(@"Bookmarklet (%lu chars) -> %@", (unsigned long)code.length, result.length > 120 ? [result substringToIndex:120] : result);
+}
+
 - (void)loadURL:(NSURL *)url
 {
     if (!url) return;
+    if ([[url.scheme lowercaseString] isEqualToString:@"javascript"]) {
+        [self runBookmarklet:url.absoluteString];
+        return;
+    }
     if (self.loading) [self.webView stopLoading];   // a page still loading must not steal the tab with a late redirect
     self.currentURL = url;
     [self updateAddressFieldWithURL:url];
@@ -812,10 +1016,30 @@ static NSCache *BRFaviconCache(void)
     NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!t.length) return;
     self.httpFallbackURL = nil;
+    if ([[t lowercaseString] hasPrefix:@"javascript:"]) {
+        [self runBookmarklet:t];
+        return;
+    }
     NSURL *url = nil;
     BOOL hasSpace = [t rangeOfString:@" "].location != NSNotFound;
     BOOL hasScheme = [t rangeOfString:@"://"].location != NSNotFound;
     BOOL looksLikeHost = [t rangeOfString:@"."].location != NSNotFound || [t hasPrefix:@"localhost"];
+    if (!hasSpace && (hasScheme || looksLikeHost) && ![t canBeConvertedToEncoding:NSASCIIStringEncoding]) {
+        // international domain names: the host part goes to punycode, the rest is percent-escaped below
+        NSString *rest = t, *prefix = @"";
+        NSRange schemeRange = [rest rangeOfString:@"://"];
+        if (schemeRange.location != NSNotFound) { prefix = [rest substringToIndex:schemeRange.location + 3]; rest = [rest substringFromIndex:schemeRange.location + 3]; }
+        NSRange slash = [rest rangeOfString:@"/"];
+        NSString *hostPart = slash.location == NSNotFound ? rest : [rest substringToIndex:slash.location];
+        NSString *pathPart = slash.location == NSNotFound ? @"" : [rest substringFromIndex:slash.location];
+        NSRange at = [hostPart rangeOfString:@"@" options:NSBackwardsSearch];
+        NSString *userPart = at.location == NSNotFound ? @"" : [hostPart substringToIndex:at.location + 1];
+        NSString *host = at.location == NSNotFound ? hostPart : [hostPart substringFromIndex:at.location + 1];
+        NSRange colon = [host rangeOfString:@":"];
+        NSString *port = colon.location == NSNotFound ? @"" : [host substringFromIndex:colon.location];
+        if (colon.location != NSNotFound) host = [host substringToIndex:colon.location];
+        t = [NSString stringWithFormat:@"%@%@%@%@%@", prefix, userPart, BRIDNAEncodeHost(host), port, pathPart];
+    }
     if (!hasSpace && hasScheme) {
         url = [NSURL URLWithString:[t stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
     } else if (!hasSpace && looksLikeHost) {
@@ -1029,6 +1253,23 @@ static NSCache *BRFaviconCache(void)
 - (void)textSizeChanged:(NSNotification *)note
 {
     [self applyTextSize];
+}
+
+// "Dark pages": the whole page is inverted with a CSS filter, pictures and video inverted back
+- (void)applyPageStyle
+{
+    BOOL dark = [BRSettings pagesDark];
+    NSString *js = [NSString stringWithFormat:
+        @"(function(on){var s=document.getElementById('br-darkpage');if(!on){if(s)s.parentNode.removeChild(s);return;}"
+         "if(!s){s=document.createElement('style');s.id='br-darkpage';(document.head||document.documentElement).appendChild(s);}"
+         "s.textContent='html{-webkit-filter:invert(1) hue-rotate(180deg) !important;background:#fff}img,video,canvas,picture,svg,iframe,[style*=\"background-image\"]{-webkit-filter:invert(1) hue-rotate(180deg) !important}';})(%@)",
+        dark ? @"true" : @"false"];
+    [self.webView stringByEvaluatingJavaScriptFromString:js];
+}
+
+- (void)pageStyleChanged:(NSNotification *)note
+{
+    [self applyPageStyle];
 }
 
 - (void)privateModeChanged:(NSNotification *)note
@@ -1379,7 +1620,96 @@ static NSCache *BRFaviconCache(void)
 {
     if (alertView.tag == 200 && buttonIndex != alertView.cancelButtonIndex && self.documentController) {
         [self openDocumentController];
+    } else if (alertView.tag == 300) {
+        void (^completion)(NSString *, NSString *) = self.authCompletion;
+        self.authCompletion = nil;
+        self.authAlert = nil;
+        if (!completion) return;
+        if (buttonIndex == alertView.cancelButtonIndex) completion(nil, nil);
+        else completion([alertView textFieldAtIndex:0].text ?: @"", [alertView textFieldAtIndex:1].text ?: @"");
     }
+}
+
+#pragma mark - HTTP authentication
+
+- (void)promptForCredentialsForHost:(NSString *)host realm:(NSString *)realm completion:(void (^)(NSString *user, NSString *password))completion
+{
+    if (self.authCompletion) { completion(nil, nil); return; }   // one dialog at a time
+    self.authCompletion = completion;
+    NSString *message = realm.length ? [NSString stringWithFormat:@"%@\n%@", host, realm] : host;
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Log in") message:message delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Log in"), nil];
+    alert.alertViewStyle = UIAlertViewStyleLoginAndPasswordInput;
+    alert.tag = 300;
+    self.authAlert = alert;
+    BRLog(@"Login dialog for %@ (%@)", host, realm);
+    [alert show];
+}
+
+- (void)answerAuthenticationWithUser:(NSString *)user password:(NSString *)password
+{
+    void (^completion)(NSString *, NSString *) = self.authCompletion;
+    self.authCompletion = nil;
+    [self.authAlert dismissWithClickedButtonIndex:self.authAlert.cancelButtonIndex animated:NO];
+    self.authAlert = nil;
+    if (completion) completion(user, password);
+}
+
+- (NSString *)historyDescription
+{
+    NSMutableString *s = [NSMutableString string];
+    SEL titleSel = NSSelectorFromString(@"title"), urlSel = NSSelectorFromString(@"URLString");
+    NSArray *back = [self historyItemsBackwards:YES limit:10], *forward = [self historyItemsBackwards:NO limit:10];
+    self.historyItems = back;
+    for (NSArray *list in @[back ?: @[], forward ?: @[]]) {
+        [s appendString:list == back ? @"back:" : @" forward:"];
+        for (id item in list) {
+            NSString *title = [item respondsToSelector:titleSel] ? ((id (*)(id, SEL))objc_msgSend)(item, titleSel) : nil;
+            NSString *urlString = [item respondsToSelector:urlSel] ? ((id (*)(id, SEL))objc_msgSend)(item, urlSel) : nil;
+            [s appendFormat:@" [%@ | %@]", title ?: @"", urlString ?: @""];
+        }
+    }
+    return s;
+}
+
+#pragma mark - Save as PDF
+
+// Renders the page with the print formatter into an A4 PDF in the downloads folder.
+- (void)savePageAsPDF
+{
+    UIPrintPageRenderer *renderer = [[UIPrintPageRenderer alloc] init];
+    [renderer addPrintFormatter:[self.webView viewPrintFormatter] startingAtPageAtIndex:0];
+    CGRect paper = CGRectMake(0, 0, 595.2, 841.8);
+    CGRect printable = CGRectInset(paper, 30, 30);
+    [renderer setValue:[NSValue valueWithCGRect:paper] forKey:@"paperRect"];
+    [renderer setValue:[NSValue valueWithCGRect:printable] forKey:@"printableRect"];
+    NSMutableData *pdf = [NSMutableData data];
+    UIGraphicsBeginPDFContextToData(pdf, paper, nil);
+    NSInteger pages = [renderer numberOfPages];
+    for (NSInteger i = 0; i < pages; i++) {
+        UIGraphicsBeginPDFPage();
+        [renderer drawPageAtIndex:i inRect:UIGraphicsGetPDFContextBounds()];
+    }
+    UIGraphicsEndPDFContext();
+    NSString *stem = self.currentTitle.length ? self.currentTitle : ((self.webView.request.URL ?: self.currentURL).host ?: @"page");
+    stem = [[stem componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/\\:*?\"<>|\n\r\t"]] componentsJoinedByString:@"_"];
+    if (stem.length > 80) stem = [stem substringToIndex:80];
+    NSString *dir = [BRDownloader downloadsDirectory];
+    NSString *path = [dir stringByAppendingPathComponent:[stem stringByAppendingPathExtension:@"pdf"]];
+    for (int n = 2; [[NSFileManager defaultManager] fileExistsAtPath:path] && n < 1000; n++) {
+        path = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@ (%d).pdf", stem, n]];
+    }
+    BOOL ok = pages > 0 && [pdf writeToFile:path atomically:YES];
+    BRLog(@"PDF %@: %@ (%ld pages, %lu KB)", ok ? @"saved" : @"failed", path.lastPathComponent, (long)pages, (unsigned long)(pdf.length / 1024));
+    if (!ok) {
+        [[[UIAlertView alloc] initWithTitle:nil message:L(@"The file could not be saved.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+        return;
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:BRDownloadsDidChangeNotification object:nil];
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:nil message:[NSString stringWithFormat:L(@"PDF saved: %@ (%@)"), path.lastPathComponent, [BRDownloader formattedSize:(long long)pdf.length]]
+                                                   delegate:self cancelButtonTitle:L(@"OK") otherButtonTitles:L(@"Open"), nil];
+    alert.tag = 200;
+    self.documentController = [UIDocumentInteractionController interactionControllerWithURL:[NSURL fileURLWithPath:path]];
+    [alert show];
 }
 
 - (void)openDocumentController
@@ -1447,12 +1777,31 @@ static NSCache *BRFaviconCache(void)
 - (void)shareItems:(NSArray *)items fromRect:(CGRect)rect inView:(UIView *)view
 {
     if (!items.count) return;
-    BRReaderActivity *reader = [[BRReaderActivity alloc] init];
     __weak BRBrowserViewController *weakSelf = self;
     BOOL onPage = NO;
     for (id item in items) if ([item isKindOfClass:[NSURL class]] && [[item absoluteString] isEqualToString:(self.webView.request.URL ?: self.currentURL).absoluteString]) onPage = YES;
-    if (onPage) reader.action = ^{ [weakSelf showReader]; };
-    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:@[[[BRBookmarkActivity alloc] init], reader]];
+    NSMutableArray *activities = [NSMutableArray arrayWithObject:[[BRBookmarkActivity alloc] init]];
+    NSMutableArray *shared = [items mutableCopy];
+    if (onPage) {
+        BRActionActivity *reader = [[BRActionActivity alloc] init];
+        reader.title = L(@"Reader");
+        reader.type = @"com.samcejko.browser.reader";
+        reader.icon = BRActivityIconLines;
+        reader.action = ^{ [weakSelf showReader]; };
+        BRActionActivity *find = [[BRActionActivity alloc] init];
+        find.title = L(@"Find on page");
+        find.type = @"com.samcejko.browser.find";
+        find.icon = BRActivityIconMagnifier;
+        find.action = ^{ [weakSelf showFindBarWithText:@""]; };
+        BRActionActivity *pdf = [[BRActionActivity alloc] init];
+        pdf.title = L(@"Save as PDF");
+        pdf.type = @"com.samcejko.browser.pdf";
+        pdf.icon = BRActivityIconDocument;
+        pdf.action = ^{ [weakSelf savePageAsPDF]; };
+        [activities addObjectsFromArray:@[reader, find, pdf]];
+        [shared addObject:[self.webView viewPrintFormatter]];   // brings the system "Print" entry (AirPrint)
+    }
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:shared applicationActivities:activities];
     if (BRIsPad()) {
         [self.sharePopover dismissPopoverAnimated:NO];
         self.sharePopover = [[UIPopoverController alloc] initWithContentViewController:activity];
@@ -1542,6 +1891,10 @@ static NSCache *BRFaviconCache(void)
     if (index < 0 || index == sheet.cancelButtonIndex) return;
     if (sheet.tag == 102) {
         [self handleTabMenuChoice:[sheet buttonTitleAtIndex:index]];
+        return;
+    }
+    if (sheet.tag == 103) {
+        [self goToHistoryItemAtIndex:index];
         return;
     }
     if (sheet.tag == 101) {
@@ -1657,6 +2010,7 @@ static NSCache *BRFaviconCache(void)
         [self setProgress:1 animated:YES];
         [self updateLockIcon];
         [self applyTextSize];
+        if ([BRSettings pagesDark]) [self applyPageStyle];
         NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
         self.currentTitle = title;
         if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [[BRLibrary shared] recordVisit:url title:title];

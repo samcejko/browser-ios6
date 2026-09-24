@@ -214,6 +214,29 @@ static NSString *BRHostKey(NSString *host)
     [[NSNotificationCenter defaultCenter] postNotificationName:@"BRPrivateModeDidChangeNotification" object:nil];
 }
 
+static BOOL BRBoolSetting(NSString *key, BOOL fallback)
+{
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+    return v ? [v boolValue] : fallback;
+}
+
+static void BRSetBoolSetting(NSString *key, BOOL value)
+{
+    [[NSUserDefaults standardUserDefaults] setBool:value forKey:key];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
++ (BOOL)doNotTrack { return BRBoolSetting(@"BRDoNotTrack", NO); }
++ (void)setDoNotTrack:(BOOL)enabled { BRSetBoolSetting(@"BRDoNotTrack", enabled); }
++ (BOOL)blockThirdPartyCookies { return BRBoolSetting(@"BRBlockThirdPartyCookies", YES); }
++ (void)setBlockThirdPartyCookies:(BOOL)enabled { BRSetBoolSetting(@"BRBlockThirdPartyCookies", enabled); }
++ (BOOL)loadImages { return BRBoolSetting(@"BRLoadImages", YES); }
++ (void)setLoadImages:(BOOL)enabled { BRSetBoolSetting(@"BRLoadImages", enabled); }
++ (BOOL)hideCookieBanners { return BRBoolSetting(@"BRHideCookieBanners", YES); }
++ (void)setHideCookieBanners:(BOOL)enabled { BRSetBoolSetting(@"BRHideCookieBanners", enabled); }
++ (BOOL)pagesDark { return BRBoolSetting(@"BRPagesDark", NO); }
++ (void)setPagesDark:(BOOL)enabled { BRSetBoolSetting(@"BRPagesDark", enabled); }
+
 + (NSURL *)searchURLForQuery:(NSString *)query
 {
     NSString *q = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(

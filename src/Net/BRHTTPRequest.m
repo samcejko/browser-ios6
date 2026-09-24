@@ -189,6 +189,7 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     else if (![given containsObject:@"user-agent"]) [s appendFormat:@"User-Agent: %@\r\n", [BRHTTPRequest defaultUserAgent]];
     if (![given containsObject:@"accept"]) [s appendString:@"Accept: */*\r\n"];
     if (![given containsObject:@"accept-language"]) [s appendFormat:@"Accept-Language: %@\r\n", [BRHTTPRequest acceptLanguage]];
+    if ([BRSettings doNotTrack] && ![given containsObject:@"dnt"]) [s appendString:@"DNT: 1\r\nSec-GPC: 1\r\n"];
     [s appendString:@"Accept-Encoding: gzip, deflate\r\n"];
     [s appendString:@"Connection: keep-alive\r\n"];
     if (self.body || [self.method isEqualToString:@"POST"] || [self.method isEqualToString:@"PUT"] || [self.method isEqualToString:@"PATCH"]) {
