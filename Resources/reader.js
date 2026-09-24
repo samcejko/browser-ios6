@@ -65,15 +65,30 @@
         if ((t === 'DIV' || t === 'SECTION') && textLength(b) === 0 && !b.getElementsByTagName('img').length) { b.parentNode.removeChild(b); continue; }
         if (t !== 'P' && t !== 'A' && t !== 'SPAN' && linkDensity(b) > 0.5 && textLength(b) < 300) { b.parentNode.removeChild(b); continue; }
     }
-    // strip attributes that carry site styling or behaviour
-    var nodes = clone.getElementsByTagName('*');
+    // strip attributes that carry site styling or behaviour (a static copy: removals must not skip elements)
+    var nodes = Array.prototype.slice.call(clone.getElementsByTagName('*'));
     for (i = 0; i < nodes.length; i++) {
         var n = nodes[i], attrs = n.attributes, keep = { href: 1, src: 1, alt: 1, title: 1, colspan: 1, rowspan: 1 };
-        for (var a = attrs.length - 1; a >= 0; a--) if (!keep[attrs[a].name]) n.removeAttribute(attrs[a].name);
         if (n.tagName === 'IMG') {
+            // lazy-loaded images: the real picture is in srcset or data-src, src is only a placeholder
             var src = n.getAttribute('src') || '';
-            if (!src || /^data:/.test(src) || /1x1|pixel|spacer/.test(src)) n.parentNode.removeChild(n);
+            var placeholder = !src || /^data:/.test(src) || /1x1|pixel|spacer|blank|placeholder/.test(src);
+            var real = n.getAttribute('data-src') || n.getAttribute('data-original') || n.getAttribute('data-lazy-src') || '';
+            var srcset = n.getAttribute('srcset') || n.getAttribute('data-srcset') || '';
+            if (srcset) {
+                var bestURL = '', bestW = 0, parts = srcset.split(',');
+                for (var s = 0; s < parts.length; s++) {
+                    var m = /^\s*(\S+)\s*(?:(\d+)w)?/.exec(parts[s]);
+                    if (!m) continue;
+                    var w = m[2] ? parseInt(m[2], 10) : 800;
+                    if (w <= 1100 && w > bestW) { bestW = w; bestURL = m[1]; }
+                }
+                if (bestURL && (placeholder || bestW > 400)) real = bestURL;
+            }
+            if (real) { n.setAttribute('src', real); src = real; placeholder = false; }
+            if (placeholder) { if (n.parentNode) n.parentNode.removeChild(n); continue; }
         }
+        for (var a = attrs.length - 1; a >= 0; a--) if (!keep[attrs[a].name]) n.removeAttribute(attrs[a].name);
     }
     var titleEl = doc.querySelector('h1') || doc.querySelector('meta[property="og:title"]');
     var title = titleEl ? (titleEl.content || titleEl.textContent || '') : doc.title;
