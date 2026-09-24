@@ -3,6 +3,8 @@
 #import "BRBrowserViewController.h"
 #import "BRTheme.h"
 #import "BRURLProtocol.h"
+#import "BRHTTPRequest.h"
+#import "BRSettings.h"
 #import "BRTLSSocket.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
@@ -40,6 +42,11 @@
     [defaults setBool:NO forKey:@"WebKitUsesPageCachePreferenceKey"];
     [defaults setBool:YES forKey:@"WebKitDiskImageCacheEnabled"];
     [defaults setInteger:2 * 1024 * 1024 forKey:@"WebKitDiskImageCacheMinimumImageSize"];
+
+    // navigator.userAgent of the web view: the same identity the network layer sends (UIWebView's own
+    // string lacks the Safari token and many sites treat it as an embedded view)
+    NSString *identity = [BRSettings userAgentOverride] ?: [BRHTTPRequest defaultUserAgent];
+    [defaults registerDefaults:@{ @"UserAgent": identity }];
 
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
     [BRURLProtocol registerProtocol];
