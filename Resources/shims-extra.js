@@ -1306,7 +1306,7 @@
     // ---- Scroll snap, smooth scrolling and balanced text, driven by the rewriter's counter-reset markers
     // (br-snap-x/y, br-snap-m, br-snap-pad, br-snap-align on the items, br-smooth, br-balance)
     (function () {
-        var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
+        var raf = function (fn) { return setTimeout(fn, 16); };   // a timer keeps running where requestAnimationFrame would stall
         var ease = function (t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; };
         // animate the scroll position of `target` (window or element) to x/y over `ms`
         var animateScroll = function (target, x, y, ms) {
@@ -1478,6 +1478,99 @@
                 if (cr.indexOf('br-balance') >= 0) balance(el);
             }
         });
+    })();
+    // ---- Scroll-driven animations (markers br-tl-scroll / br-tl-view / br-tl-named-<name>, br-tl-inline/root/self,
+    // ranges br-ar-s / br-ar-e, timeline sources br-stl-<name> / br-vtl-<name>): the animation is paused and
+    // seeked with a negative animation-delay as the scroll position changes.
+    (function () {
+        var raf = function (fn) { return setTimeout(fn, 16); };   // rAF stalls in hidden pages; a timer always runs
+        var RANGE = ['cover', 'contain', 'entry', 'exit', 'entry-crossing', 'exit-crossing'];
+        var driven = [];
+        var clamp01 = function (x) { return x < 0 ? 0 : x > 1 ? 1 : x; };
+        var scrollerOf = function (el, inline) {
+            for (var n = el.parentNode; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentNode) {
+                var cs = getComputedStyle(n), ov = inline ? cs.overflowX : cs.overflowY;
+                if ((ov === 'auto' || ov === 'scroll') && (inline ? n.scrollWidth > n.clientWidth : n.scrollHeight > n.clientHeight)) return n;
+            }
+            return null;   // the viewport
+        };
+        var durationOf = function (el) {
+            var cs = getComputedStyle(el), d = parseFloat(cs.webkitAnimationDuration || cs.animationDuration || '0');
+            if (!(d > 0)) { el.style.webkitAnimationDuration = '1s'; el.style.animationDuration = '1s'; d = 1; }
+            return d;
+        };
+        var progressFor = function (d) {
+            var inline = d.inline, scroller = d.source === 'root' ? null : d.source || scrollerOf(d.subject || d.el, inline);
+            if (d.kind === 'scroll') {
+                var max, pos;
+                if (!scroller) { max = inline ? document.documentElement.scrollWidth - window.innerWidth : document.documentElement.scrollHeight - window.innerHeight; pos = inline ? window.pageXOffset : window.pageYOffset; }
+                else { max = inline ? scroller.scrollWidth - scroller.clientWidth : scroller.scrollHeight - scroller.clientHeight; pos = inline ? scroller.scrollLeft : scroller.scrollTop; }
+                if (max <= 0) return 0;
+                var sp = pos / max, s0 = d.rsPct, s1 = d.rePct;
+                return s1 === s0 ? 0 : clamp01((sp - s0) / (s1 - s0));
+            }
+            var subject = d.subject || d.el, rect = subject.getBoundingClientRect(), vTop, vSize;
+            if (!scroller) { vTop = 0; vSize = inline ? window.innerWidth : window.innerHeight; }
+            else { var sr = scroller.getBoundingClientRect(); vTop = inline ? sr.left : sr.top; vSize = inline ? scroller.clientWidth : scroller.clientHeight; }
+            var top = (inline ? rect.left : rect.top) - vTop, size = inline ? rect.width : rect.height;
+            // the subject's start edge relative to the scrollport start, at 0 % and 100 % of each named range
+            var edge = function (name, pct) {
+                var a, b;
+                switch (name) {
+                    case 'entry': case 'entry-crossing': a = vSize; b = vSize - size; break;
+                    case 'exit': case 'exit-crossing': a = 0; b = -size; break;
+                    case 'contain': a = vSize - size; b = 0; break;
+                    default: a = vSize; b = -size;
+                }
+                return a + (b - a) * pct;
+            };
+            var t0 = edge(d.rsName, d.rsPct), t1 = edge(d.reName, d.rePct);
+            return t0 === t1 ? 0 : clamp01((t0 - top) / (t0 - t1));
+        };
+        var apply = function () {
+            for (var i = 0; i < driven.length; i++) {
+                var d = driven[i], p = progressFor(d);
+                var delay = (-(p * d.duration * 0.999)).toFixed(4) + 's';
+                if (d.lastDelay !== delay) { d.lastDelay = delay; d.el.style.webkitAnimationDelay = delay; d.el.style.animationDelay = delay; }
+            }
+        };
+        var scheduled = false;
+        var onScroll = function () { if (scheduled || !driven.length) return; scheduled = true; raf(function () { scheduled = false; apply(); }); };
+        onMarkers(function (marked) {
+            var sources = {}, i, cr, el, m;
+            for (i = 0; i < marked.length; i++) {
+                cr = marked[i].cr; el = marked[i].el;
+                var re = /br-(stl|vtl)-([\w-]+)/g;
+                while ((m = re.exec(cr)) !== null) sources[m[1] + ':' + m[2]] = { el: el, inline: cr.indexOf('br-tl-src-inline') >= 0 };
+            }
+            driven = [];
+            for (i = 0; i < marked.length; i++) {
+                cr = marked[i].cr; el = marked[i].el;
+                m = /br-tl-(scroll|view|named-([\w-]+))/.exec(cr);
+                if (!m) continue;
+                var d = { el: el, kind: m[1] === 'view' ? 'view' : 'scroll', inline: cr.indexOf('br-tl-inline') >= 0, source: cr.indexOf('br-tl-root') >= 0 ? 'root' : cr.indexOf('br-tl-self') >= 0 ? el : null, subject: null,
+                          rsName: 'cover', rsPct: 0, reName: 'cover', rePct: 1, lastDelay: null };
+                if (m[2]) {
+                    var vt = sources['vtl:' + m[2]], st = sources['stl:' + m[2]];
+                    if (vt) { d.kind = 'view'; d.subject = vt.el; d.inline = vt.inline; }
+                    else if (st) { d.kind = 'scroll'; d.source = st.el === document.documentElement || st.el === document.body ? 'root' : st.el; d.inline = st.inline; }
+                    else continue;
+                }
+                var rs = /br-ar-s\s+(\d+)/.exec(cr), rEnd = /br-ar-e\s+(\d+)/.exec(cr);
+                if (rs) { d.rsName = RANGE[Math.floor(parseInt(rs[1], 10) / 1000)] || 'cover'; d.rsPct = (parseInt(rs[1], 10) % 1000) / 100; }
+                if (rEnd) { d.reName = RANGE[Math.floor(parseInt(rEnd[1], 10) / 1000)] || 'cover'; d.rePct = (parseInt(rEnd[1], 10) % 1000) / 100; }
+                if (d.kind === 'scroll' && rs && rs[1].indexOf('0') !== 0 && d.rsName !== 'cover') { d.rsPct = 0; }   // named ranges mean nothing for scroll timelines
+                d.duration = durationOf(el);
+                el.style.webkitAnimationPlayState = 'paused'; el.style.animationPlayState = 'paused';
+                el.style.webkitAnimationFillMode = 'both'; el.style.animationFillMode = 'both';
+                driven.push(d);
+            }
+            apply();
+        });
+        window.addEventListener('scroll', onScroll, true);
+        window.addEventListener('resize', onScroll, false);
+        window.addEventListener('load', onScroll, false);
+        window.__brScrollDriven = { list: function () { return driven; }, apply: apply, progress: progressFor };
     })();
     // ---- Popover API: [popover] elements, showPopover()/hidePopover()/togglePopover(), popovertarget buttons,
     // light dismiss for auto popovers, ToggleEvent; cssfix rewrites :popover-open to .br-popover-open

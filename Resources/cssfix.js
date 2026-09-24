@@ -1221,6 +1221,24 @@ var CSSFix = (function () {
 
     function isGlobalKeyword(lv) { return lv === 'inherit' || lv === 'initial'; }
 
+    // animation-range "entry 0% cover 100%" -> [startCode, endCode]; a code is <range index> * 1000 + <percent>
+    var RANGE_NAMES = ['cover', 'contain', 'entry', 'exit', 'entry-crossing', 'exit-crossing'];
+    function animationRangeCodes(p, lv) {
+        var toks = lv.split(/\s+/), points = [], i;
+        for (i = 0; i < toks.length; i++) {
+            var t = toks[i], ni = RANGE_NAMES.indexOf(t);
+            if (ni >= 0) { var pct = /^-?[\d.]+%$/.test(toks[i + 1] || '') ? parseFloat(toks[i + 1]) : null; if (pct !== null) i++; points.push({ n: ni, pct: pct }); }
+            else if (/^-?[\d.]+%$/.test(t)) points.push({ n: 0, pct: parseFloat(t) });
+            else if (t === 'normal') points.push(null);
+            else return [null, null];   // lengths and other forms are not emulated
+        }
+        var code = function (pt, defPct) { return pt ? pt.n * 1000 + Math.max(0, Math.min(100, Math.round(pt.pct === null ? defPct : pt.pct))) : null; };
+        if (p === 'animation-range-start') return [code(points[0], 0), null];
+        if (p === 'animation-range-end') return [null, code(points[0], 100)];
+        if (points.length === 1) return [code(points[0], 0), points[0] && points[0].pct === null ? code(points[0], 100) : null];
+        return [code(points[0], 0), code(points[1], 100)];
+    }
+
     // ---- clip-path basic shapes -> -webkit-mask-image SVG. Percentages map onto a stretched 100x100 viewBox,
     // px values onto an unscaled SVG the size of the box; a shape mixing the two cannot be expressed.
     var POS_KEYWORDS = { left: 0, top: 0, center: 50, right: 100, bottom: 100 };
@@ -1846,6 +1864,45 @@ var CSSFix = (function () {
                     var rh2 = rh.length > 1 ? rh[1] : rh[0], rv1 = rv && rv.length ? rv[0] : null, rv2 = rv && rv.length ? (rv.length > 1 ? rv[1] : rv[0]) : null;
                     push(out, corners[0], rv1 ? rh[0] + ' ' + rv1 : rh[0], imp);
                     push(out, corners[1], rv2 ? rh2 + ' ' + rv2 : rh2, imp);
+                    continue;
+                }
+                case 'animation-timeline': {
+                    // scroll-driven animations: the shim pauses the animation and seeks it with a negative delay
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    var tl0 = trim(splitTop(lv, ',')[0]), tlm = /^(scroll|view)\(([^)]*)\)$/.exec(tl0);
+                    if (tlm) {
+                        markers.push('br-tl-' + tlm[1] + ' 1');
+                        if (/\b(inline|x)\b/.test(tlm[2])) markers.push('br-tl-inline 1');
+                        if (/\broot\b/.test(tlm[2])) markers.push('br-tl-root 1');
+                        if (/\bself\b/.test(tlm[2])) markers.push('br-tl-self 1');
+                    } else if (/^--[\w-]+$/.test(tl0)) markers.push('br-tl-named-' + tl0.slice(2) + ' 1');
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'scroll-timeline-name': case 'view-timeline-name': case 'scroll-timeline': case 'view-timeline': {
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    var tnl = splitTop(lv, ',');
+                    for (var tni = 0; tni < tnl.length; tni++) {
+                        var tnt = splitWS(trim(tnl[tni]));
+                        if (tnt.length && /^--[\w-]+$/.test(tnt[0])) markers.push((p.indexOf('scroll') === 0 ? 'br-stl-' : 'br-vtl-') + tnt[0].slice(2) + ' 1');
+                        if (/\b(inline|x)\b/.test(tnl[tni])) markers.push('br-tl-src-inline 1');
+                    }
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'animation-range': case 'animation-range-start': case 'animation-range-end': {
+                    if (isGlobalKeyword(lv)) markerKeyword = lv;
+                    var arc = animationRangeCodes(p, lv);
+                    if (arc[0] !== null) markers.push('br-ar-s ' + arc[0]);
+                    if (arc[1] !== null) markers.push('br-ar-e ' + arc[1]);
+                    push(out, p, v, imp);
+                    continue;
+                }
+                case 'animation-duration': {
+                    // "auto" belongs to scroll timelines; the engine needs a real length to seek in
+                    var adv = lv === 'auto' ? '1s' : v.replace(/\bauto\b/g, '1s');
+                    push(out, '-webkit-animation-duration', adv, imp);
+                    push(out, p, adv, imp);
                     continue;
                 }
                 case 'clip-path': case '-webkit-clip-path': {

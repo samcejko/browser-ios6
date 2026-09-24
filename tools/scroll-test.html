@@ -15,11 +15,15 @@ var source = [
   '.strip { width: 300px; overflow-x: auto; white-space: nowrap; scroll-snap-type: x mandatory; scroll-padding: 0 0 0 10px; }',
   '.strip .item { display: inline-block; width: 200px; height: 80px; margin-right: 20px; background: #ddd; scroll-snap-align: start; }',
   'h1.bal { width: 400px; font-size: 24px; line-height: 30px; text-wrap: balance; }',
-  '.spacer { height: 1500px; }'
+  '.spacer { height: 1500px; }',
+  '@keyframes rv { from { opacity: 0.1; } to { opacity: 1; } }',
+  '.reveal { height: 100px; background: teal; animation: rv linear both; animation-duration: auto; animation-timeline: view(); animation-range: entry 0% entry 100%; }',
+  '.grow { height: 40px; width: 40px; background: purple; animation: gw linear both; animation-duration: auto; animation-timeline: scroll(root); }',
+  '@keyframes gw { from { width: 40px; } to { width: 400px; } }'
 ].join('\n');
 var rewritten = JSON.parse(CSSFix.run('css', source, null, '{"viewportWidth":768}')).out;
 // a desktop browser implements these itself; only the markers must stay so that the shim does the work here
-rewritten = rewritten.replace(/(scroll-snap-type|scroll-snap-align|scroll-behavior|text-wrap|scroll-padding)\s*:[^;}]*;?/g, '');
+rewritten = rewritten.replace(/(scroll-snap-type|scroll-snap-align|scroll-behavior|text-wrap|scroll-padding|animation-timeline|animation-range)\s*:[^;}]*;?/g, '');
 document.write('<style>' + rewritten + '</style>');
 </script>
 <script src="../Resources/shims.js"></script>
@@ -29,6 +33,9 @@ document.write('<style>' + rewritten + '</style>');
 <h1 class="bal" id="h">A fairly long heading that wraps onto several lines in a narrow column</h1>
 <div class="strip" id="strip"><div class="item">1</div><div class="item">2</div><div class="item">3</div><div class="item">4</div><div class="item">5</div></div>
 <a href="#bottom" id="link">to bottom</a>
+<div class="grow" id="grow"></div>
+<div class="spacer"></div>
+<div class="reveal" id="reveal">reveal</div>
 <div class="spacer"></div>
 <p id="bottom">bottom</p>
 <pre id="out">…</pre>
