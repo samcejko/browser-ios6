@@ -14,35 +14,42 @@
     var NEGATIVE = /comment|footer|footnote|header|menu|nav|sidebar|share|social|sponsor|widget|promo|related|breadcrumb|cookie|banner|advert|ad-|-ad|popup|modal|newsletter|login|subscribe/i;
     var POSITIVE = /article|body|content|entry|main|page|post|text|story|blog|column/i;
 
-    // Candidates: elements with several paragraphs of real text
+    // Paragraph text per element (descendants included), then the smallest element that still holds the article
+    function paragraphText(el) {
+        var paragraphs = el.getElementsByTagName('p'), text = 0, longParas = 0;
+        for (var p = 0; p < paragraphs.length; p++) {
+            var len = textLength(paragraphs[p]);
+            text += len;
+            if (len > 80) longParas++;
+        }
+        return { text: text, longParas: longParas };
+    }
     var candidates = [], all = doc.body ? doc.body.getElementsByTagName('*') : [];
     for (var i = 0; i < all.length; i++) {
         var el = all[i], tag = el.tagName;
-        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NAV' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'ASIDE' || tag === 'FORM') continue;
-        var paragraphs = el.getElementsByTagName('p');
-        if (paragraphs.length < 2) continue;
-        var text = 0, longParas = 0;
-        for (var p = 0; p < paragraphs.length; p++) {
-            var len = textLength(paragraphs[p]);
-            if (paragraphs[p].parentNode === el || paragraphs[p].parentNode.parentNode === el) { text += len; if (len > 80) longParas++; }
-        }
-        if (longParas < 2) continue;
-        var score = text * (1 - linkDensity(el));
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NAV' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'ASIDE' || tag === 'FORM' || tag === 'P') continue;
+        var pt = paragraphText(el);
+        if (pt.longParas < 2) continue;
+        var score = pt.text * (1 - linkDensity(el));
         var idClass = (el.id || '') + ' ' + (el.className || '');
         if (NEGATIVE.test(idClass)) score *= 0.4;
         if (POSITIVE.test(idClass)) score *= 1.3;
         if (tag === 'ARTICLE' || tag === 'MAIN') score *= 1.5;
-        candidates.push({ el: el, score: score });
+        candidates.push({ el: el, score: score, text: pt.text });
     }
     if (!candidates.length) return '';
     candidates.sort(function (a, b) { return b.score - a.score; });
     var best = candidates[0].el;
-    // walk up while a parent contains much more text (whole article with several sections)
-    var parent = best.parentNode;
-    while (parent && parent !== doc.body && parent.nodeType === 1) {
-        if (textLength(parent) > textLength(best) * 1.5 && linkDensity(parent) < 0.3 && !NEGATIVE.test((parent.id || '') + ' ' + (parent.className || ''))) best = parent;
-        else break;
-        parent = parent.parentNode;
+    // descend while one child still holds nearly all of the paragraph text (drops page wrappers)
+    for (var guard = 0; guard < 30; guard++) {
+        var total = paragraphText(best).text, next = null;
+        for (var c = 0; c < best.children.length; c++) {
+            var child = best.children[c];
+            if (child.tagName === 'P') continue;
+            if (paragraphText(child).text >= total * 0.85) { next = child; break; }
+        }
+        if (!next) break;
+        best = next;
     }
 
     var clone = best.cloneNode(true);

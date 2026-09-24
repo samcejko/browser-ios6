@@ -7,6 +7,7 @@
 @property (nonatomic) BOOL skipRestore;   // set before the view loads when the app was launched with a URL to open
 - (void)goHome;
 - (NSString *)evaluateJavaScript:(NSString *)code;   // in the current page (debugging over SSH)
+- (void)showReader;                                  // article view of the current page
 - (void)applyTheme;
 
 @end

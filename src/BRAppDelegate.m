@@ -135,6 +135,10 @@
         BRLog(@"DOM dump %@: %@ (%lu chars)", ok ? @"written to" : @"failed for", path, (unsigned long)html.length);
         return YES;
     }
+    if ([target isEqualToString:@"reader"]) {
+        [self.browserViewController showReader];
+        return YES;
+    }
     if ([target isEqualToString:@"snapshot"]) {
         // browser:snapshot writes the screen to tmp/screen.png (checking the UI over SSH)
         UIView *view = self.browserViewController.view;
