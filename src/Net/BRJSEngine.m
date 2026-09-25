@@ -175,6 +175,11 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
     [self performAsync:^{ [self releaseContext:@"reset"]; }];
 }
 
+- (void)releaseContextNow
+{
+    [self releaseContext:@"requested"];
+}
+
 - (void)releaseWhenIdleFor:(NSTimeInterval)seconds aboveMB:(long)minimumMB
 {
     NSUInteger uses = _uses;

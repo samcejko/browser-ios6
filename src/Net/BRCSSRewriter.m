@@ -310,6 +310,67 @@ static CGFloat g_devicePixelRatio = 1;
     return out;
 }
 
++ (void)runTranspileTest:(NSDictionary *)params
+{
+    BRJSEngine *engine = [BRJSEngine transpiler];
+    [engine performAsync:^{
+        @autoreleasepool {
+            NSString *report;
+            NSString *input = params[@"input"] ?: @"", *opts = params[@"opts"].length ? params[@"opts"] : @"{}";
+            NSString *text = [NSString stringWithContentsOfFile:input encoding:NSUTF8StringEncoding error:NULL];
+            [engine releaseContextNow];   // a fresh heap for the measurement
+            long mb0 = (long)BRResidentMemoryMB();
+            NSBundle *b = [NSBundle mainBundle];
+            NSString *uniPath = [b pathForResource:@"unicode-props" ofType:@"js" inDirectory:@"js"];
+            NSString *acornPath = [b pathForResource:@"acorn" ofType:@"js" inDirectory:@"js"] ?: [b pathForResource:@"acorn" ofType:@"js"];
+            NSString *fixPath = [params[@"jsfix"] length] ? params[@"jsfix"] : [b pathForResource:@"jsfix" ofType:@"js"];
+            NSString *uni = uniPath ? [NSString stringWithContentsOfFile:uniPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+            NSString *acorn = acornPath ? [NSString stringWithContentsOfFile:acornPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+            NSString *fix = fixPath ? [NSString stringWithContentsOfFile:fixPath encoding:NSUTF8StringEncoding error:NULL] : nil;
+            if (!text || !acorn || !fix) {
+                report = [NSString stringWithFormat:@"jsfix test: cannot read %@", !text ? input : !acorn ? @"acorn.js" : fixPath];
+            } else {
+                if (uni.length) [engine evaluateScript:uni sourceName:@"unicode-props.js"];
+                [engine evaluateScript:acorn sourceName:@"acorn.js"];
+                [engine evaluateScript:fix sourceName:@"jsfix.js"];
+                [engine evaluateScript:@"var __brStats = function () { return JSON.stringify(JSFix.stats); };" sourceName:@"stats.js"];
+                long mb1 = (long)BRResidentMemoryMB();
+                // the peak from a sampling thread (the run itself is one call)
+                __block long peak = mb1;
+                dispatch_semaphore_t stop = dispatch_semaphore_create(0), stopped = dispatch_semaphore_create(0);
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                    for (;;) {
+                        long m = (long)BRResidentMemoryMB();
+                        if (m > peak) peak = m;
+                        if (!dispatch_semaphore_wait(stop, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC))) break;
+                    }
+                    dispatch_semaphore_signal(stopped);
+                });
+                NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+                NSString *out = [engine callFunction:@"JSFix.run" arguments:@[text, opts]];
+                long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+                dispatch_semaphore_signal(stop);
+                dispatch_semaphore_wait(stopped, DISPATCH_TIME_FOREVER);
+                long mb2 = (long)BRResidentMemoryMB();
+                NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"?";
+                NSString *stats = [engine callFunction:@"__brStats" arguments:@[]] ?: @"?";
+                NSUInteger outLength = out.length;
+                out = nil;
+                [engine collectGarbage];
+                long mb3 = (long)BRResidentMemoryMB();
+                [engine releaseContextNow];
+                long mb4 = (long)BRResidentMemoryMB();
+                report = [NSString stringWithFormat:@"jsfix test %@ (%@, jsfix %@): %ld ms, %lu -> %lu chars (%@); resident %ld MB, with jsfix loaded %ld, "
+                          "peak %ld (+%ld), after the run %ld, after GC %ld, context released %ld; stats %@",
+                          input.lastPathComponent, opts, fixPath.lastPathComponent, ms, (unsigned long)text.length, (unsigned long)outLength, last,
+                          mb0, mb1, peak, peak - mb1, mb2, mb3, mb4, stats];
+            }
+            [report writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            BRLog(@"%@", report);
+        }
+    }];
+}
+
 + (void)pruneTranspiledCache
 {
     NSString *dir = BRTranspiledDirectory(), *suffix = [NSString stringWithFormat:@"-%@.js", BRTranspileTag()];

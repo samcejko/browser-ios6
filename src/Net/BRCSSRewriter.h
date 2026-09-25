@@ -22,6 +22,10 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
           sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion;
 + (void)pruneTranspiledCache;   // keeps Caches/transpiled under its size limit (call off the main thread)
+// Debugging (browser:jsfixtest): lowers the file params[@"input"] on a fresh transpiler context (jsfix.js from
+// params[@"jsfix"] when given, options params[@"opts"]), sampling the resident size every 50 ms; logs time, sizes,
+// the peak and what stays after GC and after the context is gone, and writes the report to tmp/eval.txt.
++ (void)runTranspileTest:(NSDictionary *)params;
 
 // The bundle of polyfills injected into every document (assembled once from Resources/js and shims.js).
 + (NSString *)polyfillURLString;

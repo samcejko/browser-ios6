@@ -147,6 +147,17 @@
         [self.browserViewController showReader];
         return YES;
     }
+    if ([target hasPrefix:@"jsfixtest?"]) {
+        // browser:jsfixtest?input=<file>&opts=<json>&jsfix=<other jsfix.js> measures the transpiler on a file
+        NSMutableDictionary *q = [NSMutableDictionary dictionary];
+        for (NSString *pair in [[target substringFromIndex:@"jsfixtest?".length] componentsSeparatedByString:@"&"]) {
+            NSRange eq = [pair rangeOfString:@"="];
+            if (eq.location == NSNotFound) continue;
+            q[[pair substringToIndex:eq.location]] = [[pair substringFromIndex:eq.location + 1] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @"";
+        }
+        [BRCSSRewriter runTranspileTest:q];
+        return YES;
+    }
     if ([target isEqualToString:@"mem"] || [target isEqualToString:@"mem?relieve=1"]) {
         // browser:mem logs WebKit's memory numbers (to tmp/eval.txt as well); browser:mem?relieve=1 frees first
         if ([target hasSuffix:@"relieve=1"]) [BRMemory relieve:@"requested"];

@@ -825,6 +825,7 @@
         this.proxyShim = false;   // free references to Proxy become __br_Proxy (not the operand of typeof)
         this.bigintShim = false;  // the same for BigInt (and bigint literals call __br_BigInt)
         this.redos = [];          // functions lowered while parsing that must be analysed again (renamed names)
+        this.visits = 0;          // nodes walked (the size of the tree a unit held, for stats)
     };
     var W = Walker.prototype;
     W.inArrow = function () { var f = this.fns[this.fns.length - 1]; return !!(f && f.$arrow); };
@@ -919,17 +920,7 @@
     };
     W.fn = function (n, p, s) {
         n.$p = p;
-        if (n.$raw) {
-            // lowered while parsing (see W.early): the names it takes from outside are references from a function of
-            // its own (closures in loops, renames); whether it changed decides for the code around it
-            var raw = n.$raw, rs = new Scope('function', s, n, s.strict), free = raw.free;
-            raw.node = n;
-            raw.scope = s;
-            for (var j = 0; j < free.length; j++) this.ref({ type: 'Identifier', name: free[j].name, $raw: raw, $w: free[j].w, start: n.start, end: n.end }, rs, false);
-            if (raw.text === null) return false;
-            n.$d = true;
-            return true;
-        }
+        if (n.$raw) return this.rawRefs(n, s);
         var arrow = n.type === 'ArrowFunctionExpression';
         var body = n.body, strict = s.strict || (body.type === 'BlockStatement' && hasUseStrict(body.body));
         var fs = new Scope('function', s, n, strict);
@@ -955,6 +946,7 @@
     };
     W.cls = function (n, p, s) {
         n.$p = p;
+        if (n.$raw) return this.rawRefs(n, s);
         var cs = new Scope('class', s, n, true), i, m;
         // the name inside the class body is its own binding (a declaration's outer binding keeps the id node)
         if (n.id) { this.declare(cs, n.id.name, 'classname', n.type === 'ClassDeclaration' ? { type: 'Identifier', name: n.id.name } : n.id); n.id.$p = n; }
@@ -993,6 +985,7 @@
     W.noWrap = function (s) { for (var x = s; x && !x.isFn; x = x.parent) if (x.node && isLoop(x.node)) x.node.$noWrap = true; };
     W.v = function (n, p, s) {
         n.$p = p;
+        this.visits++;
         var d = false, i, ls;
         switch (n.type) {
             case 'Identifier':
@@ -1324,19 +1317,35 @@
     };
     W.rewalk = function (n) {
         var raw = n.$raw, acorn = root.acorn;
-        var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowReserved: true, locations: false }, this.src, n.start);
+        // (a parser made at position 0 and moved: one made at n.start counts the lines before it, a copy of the text)
+        var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowReserved: true, locations: false }, this.src);
+        p.pos = p.lastTokEnd = p.lastTokStart = n.start;
         p.strict = raw.strict;
         p.nextToken();
+        stats.redos++;
         var fresh = p.parseMaybeAssign();
         if (n.type === 'FunctionDeclaration' && fresh.type === 'FunctionExpression') fresh.type = 'FunctionDeclaration';
+        if (n.type === 'ClassDeclaration' && fresh.type === 'ClassExpression') fresh.type = 'ClassDeclaration';
         if (fresh.type !== n.type || fresh.start !== n.start || fresh.end !== n.end) throw new Unsupported('early-redo');
         raw.fresh = fresh;
         raw.text = null;
         var fns = this.fns;
         this.fns = [];
-        this.fn(fresh, n.$p, raw.scope);
+        if (isClassNode(fresh)) this.cls(fresh, n.$p, raw.scope); else this.fn(fresh, n.$p, raw.scope);
         this.fns = fns;
         markDirty(n);
+    };
+    var isClassNode = function (n) { return n.type === 'ClassDeclaration' || n.type === 'ClassExpression'; };
+    // a function or class lowered while parsing (see W.early): the names it takes from outside are references from a
+    // function of its own (closures in loops, renames); whether it changed decides for the code around it
+    W.rawRefs = function (n, s) {
+        var raw = n.$raw, rs = new Scope('function', s, n, s.strict), free = raw.free;
+        raw.node = n;
+        raw.scope = s;
+        for (var j = 0; j < free.length; j++) this.ref({ type: 'Identifier', name: free[j].name, $raw: raw, $w: free[j].w, start: n.start, end: n.end }, rs, false);
+        if (raw.text === null) return false;
+        n.$d = true;
+        return true;
     };
     // A function the parser just completed, lowered on its own: analysed below a stand-in for the scopes around it
     // (not parsed completely yet), printed, and emptied. It keeps its text (null: unchanged), the free names with
@@ -1344,10 +1353,11 @@
     W.early = function (n, strict, printer) {
         var saved = [this.refs, this.lexicals, this.loops, this.fns, this.imports, this.redos];
         this.refs = []; this.lexicals = []; this.loops = []; this.fns = []; this.imports = []; this.redos = [];
-        var root = new Scope('program', null, null, strict), i, id, e;
+        var root = new Scope('program', null, null, strict), i, id, e, v0 = this.visits;
         var raw = { text: null, free: [], thisAlias: null, argsAlias: null, strict: strict, node: null, scope: null, fresh: null, redo: false };
         try {
-            this.fn(n, null, root);
+            if (isClassNode(n)) this.cls(n, null, root); else this.fn(n, null, root);
+            if (this.visits - v0 > stats.maxUnit) stats.maxUnit = this.visits - v0;
             this.resolve();
             var seen = {};
             for (i = 0; i < this.refs.length; i += 2) {
@@ -1359,6 +1369,9 @@
             }
             if (n.$d) {
                 var out = printer.early(n);
+                // (one flat string instead of a rope of every little piece the printer joined: reading a character
+                // makes the engine copy the text together, and the pieces become garbage)
+                stats.flat = (stats.flat + out.code.charCodeAt(0)) | 0;
                 raw.text = out.code;
                 raw.thisAlias = out.thisAlias;
                 raw.argsAlias = out.argsAlias;
@@ -1367,7 +1380,7 @@
             this.refs = saved[0]; this.lexicals = saved[1]; this.loops = saved[2]; this.fns = saved[3]; this.imports = saved[4]; this.redos = saved[5];
         }
         n.$raw = raw;
-        n.params = [];
+        if (isClassNode(n)) n.superClass = null; else n.params = [];
         n.body = null;
         n.$scope = null;
     };
@@ -1944,7 +1957,7 @@
         var saved = this.ctx, holder = new Ctx('fn', this.program, null), code;
         this.ctx = holder;
         try {
-            code = n.type === 'ArrowFunctionExpression' ? this.func(n, 'arrow', null, null) : this.func(n, 'fn', n.id ? n.id.name : null, null);
+            code = isClassNode(n) ? this.classExpr(n, null) : n.type === 'ArrowFunctionExpression' ? this.func(n, 'arrow', null, null) : this.func(n, 'fn', n.id ? n.id.name : null, null);
         } finally { this.ctx = saved; }
         if (holder.temps.length || holder.ntAlias) throw new Unsupported('early-context');
         return { code: code, thisAlias: holder.thisAlias, argsAlias: holder.argsAlias };
@@ -2024,6 +2037,12 @@
         return parts.join(',');
     };
     P.classExpr = function (n, hint) {
+        if (n.$raw) {
+            if (n.$raw.fresh) return this.classExpr(n.$raw.fresh, hint);
+            var rc = this.rawFunc(n);
+            this.prec = P_CALL;
+            return rc;
+        }
         var name = n.id ? n.id.name : hint && IDENT.test(hint) && !ES5_RESERVED[hint] ? hint : this.fresh('_class');
         var supCode = n.superClass ? this.E(n.superClass, P_ASSIGN) : null;
         var supVar = supCode !== null ? this.fresh('_super') : null;
@@ -2986,7 +3005,13 @@
         if (!onFunction) return acorn.parse(src, options);
         var p = new acorn.Parser(options, src), classes = 0;
         var parseFunction = p.parseFunction, parseArrow = p.parseArrowExpression, parseClass = p.parseClass;
-        p.parseClass = function () { classes++; try { return parseClass.apply(this, arguments); } finally { classes--; } };
+        p.parseClass = function () {
+            var n;
+            classes++;
+            try { n = parseClass.apply(this, arguments); } finally { classes--; }
+            onFunction(n, this.strict, classes > 0);
+            return n;
+        };
         p.parseFunction = function () { var n = parseFunction.apply(this, arguments); onFunction(n, this.strict, classes > 0); return n; };
         p.parseArrowExpression = function () { var n = parseArrow.apply(this, arguments); onFunction(n, this.strict, classes > 0); return n; };
         return p.parse();
@@ -3014,11 +3039,25 @@
         return out;
     };
     // Big scripts are lowered function by function while they are parsed: the whole tree of a 1.5 MB bundle took
-    // over 100 MB in the old engine (the app is killed at about 330 MB). A completed function of EARLY_FN characters
-    // or more is analysed and printed on its own and only its text stays in the tree; arrows that use super or
-    // new.target and functions with private names inside a class body wait for the code around them.
-    var EARLY_SCRIPT = 96 * 1024, EARLY_FN = 512;
-    var EARLY_ARROW_SKIP = /\bsuper\b|\bnew\s*\.\s*target\b/;
+    // over 100 MB in the old engine (the app is killed at about 330 MB). A completed function or class of EARLY_FN
+    // characters or more is analysed and printed on its own and only its text stays in the tree; arrows that use
+    // super or new.target and functions with private names inside a class body wait for the code around them.
+    // (YouTube's base.js, 1.5 MB: the whole tree is 380k nodes; with units from 64 characters on, the biggest unit
+    // holds 36k, and the run is no slower)
+    var EARLY_SCRIPT = 96 * 1024, EARLY_FN = 64;
+    var EARLY_ARROW_SKIP = /\bsuper\b|\bnew\s*\.\s*target\b/g;
+    var positions = function (src, re) {
+        var out = [], m;
+        re.lastIndex = 0;
+        while ((m = re.exec(src)) !== null) out.push(m.index);
+        return out;
+    };
+    // whether a sorted position list has one in [start, end)
+    var occursIn = function (list, start, end) {
+        var lo = 0, hi = list.length;
+        while (lo < hi) { var mid = (lo + hi) >> 1; if (list[mid] < start) lo = mid + 1; else hi = mid; }
+        return lo < list.length && list[lo] < end;
+    };
     var lower = function (src, opts, early) {
         var module = !!opts.module;
         var w = new Walker(src);
@@ -3027,27 +3066,35 @@
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
         var printer = new Printer(src, w, opts), onFunction = null;
         if (early !== false) {
+            var supers = null, hashes = null;
             onFunction = function (n, strict, inClass) {
                 if (n.end - n.start < early) return;
-                if (n.type === 'ArrowFunctionExpression' || inClass) {
-                    var text = src.slice(n.start, n.end);
-                    if (n.type === 'ArrowFunctionExpression' && EARLY_ARROW_SKIP.test(text)) return;
-                    if (inClass && text.indexOf('#') >= 0) return;
-                }
+                // (positions of every super/new.target and #, found once: a binary search per function instead of a
+                // copy of its text)
+                if (n.type === 'ArrowFunctionExpression' && occursIn(supers || (supers = positions(src, EARLY_ARROW_SKIP)), n.start, n.end)) return;
+                if (inClass && occursIn(hashes || (hashes = positions(src, /#/g)), n.start, n.end)) return;
                 w.early(n, strict, printer);
                 stats.early++;
             };
         }
+        // (stats.phases: parse with the early units / walk / resolve / print, ms of the last run)
+        var t0 = new Date().getTime();
         var ast = parse(src, module, onFunction);
-        var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body));
+        var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body)), v0 = w.visits, t1 = new Date().getTime();
         w.stmts(ast.body, ast, ps, false);
+        stats.outer = w.visits - v0;
         if (w.module && !module) throw new Unsupported('module');
+        var t2 = new Date().getTime();
         w.resolve(ast);
-        if (module) return printer.moduleCode(ast, w);
-        var dirty = false;
-        for (var i = 0; i < ast.body.length; i++) if (ast.body[i].$d) { dirty = true; break; }
-        if (!dirty) return null;
-        return printer.programCode(ast);
+        var t3 = new Date().getTime(), out = null;
+        if (module) out = printer.moduleCode(ast, w);
+        else {
+            var dirty = false;
+            for (var i = 0; i < ast.body.length; i++) if (ast.body[i].$d) { dirty = true; break; }
+            if (dirty) out = printer.programCode(ast);
+        }
+        stats.phases = [t1 - t0, t2 - t1, t3 - t2, new Date().getTime() - t3].join('/');
+        return out;
     };
     // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
     // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
@@ -3069,7 +3116,8 @@
     var engineParses = function (src) {
         try { new Function(src); return true; } catch (e) { return false; }   // eslint-disable-line no-new-func
     };
-    var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0 };
+    var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0, redos: 0, maxUnit: 0, outer: 0, flat: 0,
+                  checks: 0, phases: '' };
     // for the app: '' when the engine takes the script as it is (or it cannot be lowered), else the ES5 text;
     // JSFix.last() tells which ("es5", "lowered", or why it failed)
     var run = function (src, optsJSON) {
@@ -3090,7 +3138,9 @@
             stats.last = 'module';
             return mout;
         }
-        if (!opts.force && engineParses(src)) {
+        var tc = new Date().getTime(), parsesAsIs = !opts.force && engineParses(src);
+        stats.checks = new Date().getTime() - tc;
+        if (parsesAsIs) {
             var np = needsProxy(src), nb = needsBigInt(src);
             if (!np && !nb) { stats.skipped++; stats.last = 'es5'; return ''; }
             if (!STANDIN_OWN.test(src)) {
@@ -3111,7 +3161,10 @@
         }
         stats.ms += new Date().getTime() - t0;
         if (out === null) { stats.failed++; stats.last = 'failed: nothing to lower'; return ''; }
-        if (!opts.force && !engineParses(out)) {
+        tc = new Date().getTime();
+        var outParses = opts.force || engineParses(out);
+        stats.checks += new Date().getTime() - tc;
+        if (!outParses) {
             var why = '';
             try { new Function(out); } catch (e3) { why = e3.message; }   // eslint-disable-line no-new-func
             stats.failed++;
