@@ -115,8 +115,8 @@
         WrappedBlob.prototype = NativeBlob.prototype;
         WrappedBlob.__brWrapped = true;
         try { window.Blob = WrappedBlob; } catch (e0) {}
-        // (a slice of a blob whose bytes are known is known too)
-        var nativeSlice = NativeBlob.prototype.slice;
+        // (a slice of a blob whose bytes are known is known too; the old engine has only webkitSlice)
+        var nativeSlice = NativeBlob.prototype.slice || NativeBlob.prototype.webkitSlice;
         if (nativeSlice) {
             NativeBlob.prototype.slice = function (start, end) {
                 var r = nativeSlice.apply(this, arguments), size = this.size;
