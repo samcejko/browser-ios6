@@ -256,6 +256,8 @@ jobs:
           # 2) plain signature, for troubleshooting if the entitlement keeps the app from launching
           "$LDID" -S /tmp/ipa/Payload/Browser.app/Browser
           (cd /tmp/ipa && zip -qr9 "$GITHUB_WORKSPACE/packages/Browser-$VERSION-nojit.ipa" Payload)
+          # the memory tool for SSH (also in the .deb as /usr/bin/brmem)
+          if [ -f .theos/_/usr/bin/brmem ]; then cp .theos/_/usr/bin/brmem packages/brmem; fi
           ls -la packages/
 
       - name: Upload packages
@@ -265,6 +267,7 @@ jobs:
           path: |
             packages/*.ipa
             packages/*.deb
+            packages/brmem
           if-no-files-found: error
 
       - name: Upload build log

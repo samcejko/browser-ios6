@@ -56,6 +56,14 @@ include $(THEOS)/makefiles/application.mk
 # in Foundation and dyld aborts at launch ("Symbol not found ... Expected in CFNetwork"). Pointing the
 # CFNetwork load command at Foundation makes dyld look them up in Foundation (which re-exports CFNetwork
 # on newer systems), then the binary is signed again because the change invalidates the signature.
+# brmem: a command-line tool for the iPad (run over SSH as root) listing every process's resident memory and the
+# system's free/active/inactive/wired pages (jetsam kills the browser when the system as a whole runs short)
+TOOL_NAME := brmem
+brmem_FILES := tools/brmem/brmem.c
+brmem_CFLAGS := -Wall -Wno-unused-parameter
+brmem_INSTALL_PATH := /usr/bin
+include $(THEOS)/makefiles/tool.mk
+
 BROWSER_STAGED_BIN := $(THEOS_STAGING_DIR)/Applications/Browser.app/Browser
 after-stage::
 	install_name_tool -change /System/Library/Frameworks/CFNetwork.framework/CFNetwork /System/Library/Frameworks/Foundation.framework/Foundation "$(BROWSER_STAGED_BIN)"
