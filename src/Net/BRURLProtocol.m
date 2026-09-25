@@ -395,8 +395,9 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         return;
     }
 
-    // 0a. Our own resources (polyfill bundle) live on a reserved host name that never resolves
-    if ([[url.host lowercaseString] isEqualToString:@"ios6-browser.invalid"]) {
+    // 0a. Our own resources (polyfill bundle) live on a reserved host name that never resolves; the polyfill bundle
+    // is also answered on the page's own host (/__br_polyfills-<crc>.js, see BRCSSRewriter)
+    if ([[url.host lowercaseString] isEqualToString:@"ios6-browser.invalid"] || (isGET && [url.path hasPrefix:@"/__br_polyfills"] && [url.path hasSuffix:@".js"])) {
         [self serveInternalResource];
         return;
     }
@@ -921,7 +922,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     NSData *body = nil;
     NSString *type = @"text/javascript; charset=utf-8";
     NSString *cacheControl = @"max-age=31536000";
-    if ([path hasPrefix:@"/polyfills"] && [path hasSuffix:@".js"]) {
+    if (([path hasPrefix:@"/polyfills"] || [path hasPrefix:@"/__br_polyfills"]) && [path hasSuffix:@".js"]) {
         body = [BRCSSRewriter polyfillBundle];
     } else if ([path isEqualToString:@"/worker-polyfills.js"]) {
         body = [BRCSSRewriter workerPolyfills];

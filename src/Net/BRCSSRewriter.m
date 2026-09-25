@@ -20,7 +20,9 @@ static const long BRRoomFloorMB = 55, BRRoomPerMBScript = 45, BRRoomPerMBDocumen
 static volatile NSUInteger g_workGeneration;
 static NSString *BRPageKey(NSURL *url);
 // The bundle is cached by pages for a year, so its URL carries a checksum of the content: a new
-// build with new polyfills gets a new URL instead of the old cached bundle.
+// build with new polyfills gets a new URL instead of the old cached bundle. It is a path on the page's own host
+// (answered by BRURLProtocol for every host): from another origin, an error thrown in a callback run by the
+// polyfills (promise jobs, timers) reached the page only as "Script error.".
 static NSString *g_polyfillURL;
 
 static NSStringEncoding BREncodingForCharset(NSString *charset)
@@ -679,7 +681,7 @@ static NSString *BRPageKey(NSURL *url)
 + (NSString *)polyfillURLString
 {
     [self polyfillBundle];
-    return g_polyfillURL ?: @"https://ios6-browser.invalid/polyfills.js";
+    return g_polyfillURL ?: @"/__br_polyfills.js";
 }
 
 + (NSData *)polyfillBundle
@@ -704,7 +706,7 @@ static NSString *BRPageKey(NSURL *url)
         bundle = d;
         unsigned long crc = crc32(0L, Z_NULL, 0);
         crc = crc32(crc, (const Bytef *)d.bytes, (uInt)d.length);
-        g_polyfillURL = [NSString stringWithFormat:@"https://ios6-browser.invalid/polyfills-%08lx.js", crc];
+        g_polyfillURL = [NSString stringWithFormat:@"/__br_polyfills-%08lx.js", crc];
         BRLog(@"Polyfill bundle assembled: %lu KB (%@)", (unsigned long)(d.length / 1024), g_polyfillURL);
     });
     return bundle;

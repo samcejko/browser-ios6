@@ -5019,8 +5019,9 @@
             idbLoading = true;
             for (var i = 0; i < idbNames.length; i++) try { delete window[idbNames[i]]; } catch (e) {}
             try {
-                var tag = document.querySelector('script[src*="ios6-browser.invalid/polyfills"]');
-                var url = tag ? tag.src.replace(/polyfills(-[0-9a-f]+)?\.js.*$/, 'indexeddbshim$1.js') : 'https://ios6-browser.invalid/indexeddbshim.js';
+                var tag = document.querySelector('script[src*="/__br_polyfills"], script[src*="ios6-browser.invalid/polyfills"]');
+                var crc = tag ? /polyfills(-[0-9a-f]+)?\.js/.exec(tag.src) : null;
+                var url = 'https://ios6-browser.invalid/indexeddbshim' + (crc && crc[1] ? crc[1] : '') + '.js';
                 var x = new XMLHttpRequest();
                 x.open('GET', url, false);
                 x.send(null);

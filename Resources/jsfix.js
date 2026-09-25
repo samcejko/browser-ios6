@@ -2025,7 +2025,8 @@
         if (p.type === 'RestElement') { val = 'Array.prototype.slice.call(arguments,' + i + ')'; p = p.argument; }
         else if (p.type === 'AssignmentPattern') { val = 'arguments.length>' + i + '&&' + arg + '!==void 0?' + arg + ':' + this.E(p.right, P_ASSIGN); p = p.left; }
         else val = arg;
-        if (p.type === 'Identifier') return 'var ' + p.name + '=' + val + ';';
+        // (bname: a parameter named like its function is renamed, see W.avoidNameParam)
+        if (p.type === 'Identifier') return 'var ' + this.bname(p) + '=' + val + ';';
         var list = [];
         this.destructure(p, val, list, 'decl');
         return 'var ' + list.join(',') + ';';

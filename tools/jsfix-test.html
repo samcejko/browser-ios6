@@ -43,6 +43,8 @@ var ES5_PARSE = function (code) {
       var child = function (c) {
         if (!c || typeof c.type !== 'string') return;
         var isFn = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression';
+        // (a function's own body is not a nested block: its statements are at the top of the function)
+        if (isFn && c === n.body) { c.body.forEach(function (s) { walk(s, fnStrict, false); }); return; }
         walk(c, isFn ? fnStrict : strict, isFn ? false : (n.type === 'BlockStatement' || n.type === 'SwitchCase' ? true : (n.type === 'Program' ? false : inBlock)));
       };
       if (Array.isArray(v)) v.forEach(child); else child(v);

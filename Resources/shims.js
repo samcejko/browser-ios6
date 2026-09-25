@@ -603,4 +603,91 @@
     if (!window.CSS.registerProperty) window.CSS.registerProperty = function () {};
     if (!window.CSSStyleSheet.prototype.replaceSync) { window.CSSStyleSheet.prototype.replaceSync = function () {}; window.CSSStyleSheet.prototype.replace = function () { return window.Promise ? window.Promise.resolve(this) : null; }; }
     try { if (!('adoptedStyleSheets' in document)) document.adoptedStyleSheets = []; } catch (e7) {}
+
+    // ---- Interface objects as functions. Most of them are objects in the old engine (typeof Event === 'object'):
+    // Babel's class helpers refuse them as superclasses ("Super expression must either be null or a function") and
+    // feature tests that check typeof fail. Each becomes a function of the same name with the same prototype and
+    // constants; `new` makes the native object (a subclass's instance gets the subclass's prototype). The event
+    // constructors the old engine refuses (MouseEvent, KeyboardEvent, UIEvent, TouchEvent) and the node constructors
+    // (Text, Comment, DocumentFragment, Range, File) are built from the document's factory methods.
+    (function () {
+        var gopn = Object.getOwnPropertyNames, getProto = Object.getPrototypeOf, SKIP = { prototype: 1, length: 1, name: 1, arguments: 1, caller: 1 };
+        var construct = function (Native, a) {
+            switch (a.length) {
+                case 0: return new Native();
+                case 1: return new Native(a[0]);
+                case 2: return new Native(a[0], a[1]);
+                case 3: return new Native(a[0], a[1], a[2]);
+                default: return new Native(a[0], a[1], a[2], a[3]);
+            }
+        };
+        var wrap = function (name, build) {
+            var Native = window[name];
+            if (!Native || typeof Native === 'function' || !Native.prototype) return;
+            var W = null;
+            var make = function (self, args) {
+                var obj = build ? build(args) : construct(Native, args);
+                // (a subclass constructing: its prototype on the native object)
+                if (self && typeof self === 'object' && self !== window && W && self instanceof W && getProto(self) !== W.prototype && obj && typeof obj === 'object') {
+                    try { obj.__proto__ = getProto(self); } catch (e) {}
+                }
+                return obj;
+            };
+            // (a function with the interface's name: code prints and compares constructor names)
+            try { W = Function('make', 'return function ' + name + '() { return make(this, arguments); };')(make); } catch (e0) { W = function () { return make(this, arguments); }; }
+            var keys = [];
+            try { keys = gopn(Native); } catch (e1) { for (var k in Native) keys.push(k); }
+            try { var pk = gopn(Native.prototype); for (var p = 0; p < pk.length; p++) if (/^[A-Z][A-Z0-9_]*$/.test(pk[p])) keys.push(pk[p]); } catch (e2) {}
+            for (var i = 0; i < keys.length; i++) {
+                if (SKIP[keys[i]] || W.hasOwnProperty(keys[i])) continue;
+                try { W[keys[i]] = Native[keys[i]] !== undefined ? Native[keys[i]] : Native.prototype[keys[i]]; } catch (e3) {}
+            }
+            W.prototype = Native.prototype;
+            try { Object.defineProperty(Native.prototype, 'constructor', { value: W, writable: true, configurable: true, enumerable: false }); } catch (e4) { try { Native.prototype.constructor = W; } catch (e5) {} }
+            W.__brNative = Native;
+            try { window[name] = W; } catch (e6) {}
+        };
+        var flag = function (init, key) { return !!(init && init[key]); };
+        var num = function (init, key) { return init && typeof init[key] === 'number' ? init[key] : 0; };
+        wrap('Event');
+        wrap('UIEvent', function (a) { var init = a[1] || {}, e = document.createEvent('UIEvents'); e.initUIEvent(String(a[0]), flag(init, 'bubbles'), flag(init, 'cancelable'), init.view || window, num(init, 'detail')); return e; });
+        wrap('MouseEvent', function (a) {
+            var init = a[1] || {}, e = document.createEvent('MouseEvents');
+            e.initMouseEvent(String(a[0]), flag(init, 'bubbles'), flag(init, 'cancelable'), init.view || window, num(init, 'detail'), num(init, 'screenX'), num(init, 'screenY'),
+                             num(init, 'clientX'), num(init, 'clientY'), flag(init, 'ctrlKey'), flag(init, 'altKey'), flag(init, 'shiftKey'), flag(init, 'metaKey'), num(init, 'button'), init.relatedTarget || null);
+            return e;
+        });
+        wrap('KeyboardEvent', function (a) {
+            var init = a[1] || {}, e = document.createEvent('KeyboardEvent');
+            e.initKeyboardEvent(String(a[0]), flag(init, 'bubbles'), flag(init, 'cancelable'), init.view || window, init.keyIdentifier || '', num(init, 'location'),
+                                flag(init, 'ctrlKey'), flag(init, 'altKey'), flag(init, 'shiftKey'), flag(init, 'metaKey'), false);
+            // (key, code and keyCode as given: the page shims read them back, see shims-extra.js KeyboardEvent.key)
+            var extra = { key: init.key, code: init.code, repeat: !!init.repeat, isComposing: !!init.isComposing };
+            for (var x in extra) if (extra[x] !== undefined) try { Object.defineProperty(e, x, { value: extra[x], configurable: true }); } catch (err) {}
+            return e;
+        });
+        wrap('TouchEvent', function (a) { var init = a[1] || {}, e = document.createEvent('UIEvents'); e.initUIEvent(String(a[0]), flag(init, 'bubbles'), flag(init, 'cancelable'), init.view || window, 0);
+            e.touches = init.touches || []; e.targetTouches = init.targetTouches || []; e.changedTouches = init.changedTouches || []; return e; });
+        var events = ['ErrorEvent', 'PopStateEvent', 'HashChangeEvent', 'AnimationEvent', 'TransitionEvent', 'MessageEvent', 'ProgressEvent', 'CloseEvent', 'StorageEvent', 'WheelEvent',
+                      'CompositionEvent', 'TextEvent', 'BeforeUnloadEvent', 'PageTransitionEvent', 'WebKitAnimationEvent', 'WebKitTransitionEvent', 'OverflowEvent', 'DeviceOrientationEvent', 'DeviceMotionEvent'];
+        for (var ev = 0; ev < events.length; ev++) wrap(events[ev]);
+        var things = ['WebSocket', 'Image', 'Audio', 'Option', 'DOMParser', 'XMLSerializer', 'FileReader', 'MutationObserver', 'WebKitMutationObserver', 'EventSource', 'MessageChannel',
+                      'SharedWorker', 'XPathEvaluator', 'XSLTProcessor', 'ArrayBuffer', 'DataView', 'Node', 'Element', 'Document', 'CharacterData', 'Attr', 'NodeList', 'HTMLCollection',
+                      'SVGElement', 'CSSStyleSheet', 'CSSRule', 'CanvasRenderingContext2D', 'WebGLRenderingContext', 'Storage', 'Selection', 'DOMImplementation', 'TreeWalker', 'NodeIterator'];
+        for (var t = 0; t < things.length; t++) wrap(things[t]);
+        if (window.WebKitMutationObserver && window.MutationObserver && window.MutationObserver.__brNative === window.WebKitMutationObserver.__brNative) window.WebKitMutationObserver = window.MutationObserver;
+        wrap('Text', function (a) { return document.createTextNode(a.length ? String(a[0]) : ''); });
+        wrap('Comment', function (a) { return document.createComment(a.length ? String(a[0]) : ''); });
+        wrap('DocumentFragment', function () { return document.createDocumentFragment(); });
+        wrap('Range', function () { return document.createRange(); });
+        // new File(parts, name, options): a Blob with the name and date, and File's prototype
+        wrap('File', function (a) {
+            var opts = a[2] || {}, b = new window.Blob(a[0] || [], opts.type ? { type: opts.type } : {});
+            try { b.__proto__ = window.File.prototype; } catch (e) {}
+            try { Object.defineProperty(b, 'name', { value: String(a[1]), configurable: true }); } catch (e2) { b.name = String(a[1]); }
+            try { Object.defineProperty(b, 'lastModified', { value: typeof opts.lastModified === 'number' ? opts.lastModified : Date.now(), configurable: true }); } catch (e3) {}
+            try { Object.defineProperty(b, '__brName', { value: String(a[1]), configurable: true }); } catch (e4) {}
+            return b;
+        });
+    })();
 })(window, document);

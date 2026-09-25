@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ctor test</title>
+<script>
+// The interface-object wrappers of shims.js: in a desktop browser the constructors are functions, so this page first
+// turns a few into objects the way the old engine has them (a prototype and constants, not callable).
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+['MouseEvent', 'KeyboardEvent', 'UIEvent', 'Text', 'DocumentFragment', 'Range', 'File'].forEach(function (name) {
+  var N = window[name], o = { prototype: N.prototype };
+  Object.getOwnPropertyNames(N).forEach(function (k) { if (/^[A-Z_]+$/.test(k)) o[k] = N[k]; });
+  window[name] = o;
+});
+</script>
+<script src="../Resources/shims.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+(function () {
+  var out = [], ok = true;
+  var check = function (name, cond, info) { out.push((cond ? 'PASS ' : 'FAIL ') + name + (info !== undefined ? ' (' + info + ')' : '')); if (!cond) ok = false; };
+  check('typeof', typeof MouseEvent === 'function' && typeof Text === 'function' && typeof Range === 'function', typeof MouseEvent);
+  check('name', MouseEvent.name === 'MouseEvent', MouseEvent.name);
+  var e = new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 5, button: 1 });
+  check('MouseEvent', e.type === 'click' && e.bubbles && e.cancelable && e.clientX === 5 && e.button === 1 && e instanceof MouseEvent, e.type + ' ' + e.clientX);
+  var got = null;
+  document.body.addEventListener('click', function (ev) { got = ev; }, false);
+  document.body.dispatchEvent(e);
+  check('dispatch', got === e);
+  var k = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true });
+  check('KeyboardEvent', k.type === 'keydown' && k.key === 'Enter' && k.code === 'Enter' && k instanceof KeyboardEvent, k.key);
+  var u = new UIEvent('resize', { detail: 2 });
+  check('UIEvent', u.type === 'resize' && u.detail === 2);
+  var t = new Text('hi');
+  check('Text', t.nodeType === 3 && t.data === 'hi' && t instanceof Text);
+  check('DocumentFragment', new DocumentFragment().nodeType === 11);
+  check('Range', typeof new Range().setStart === 'function');
+  var f = new File(['abc'], 'a.txt', { type: 'text/plain', lastModified: 5 });
+  check('File', f.name === 'a.txt' && f.size === 3 && f.type === 'text/plain' && f.lastModified === 5 && f instanceof File && f instanceof Blob, f.name + ' ' + f.size);
+  // a Babel-style subclass
+  var Sub = function (type) { var self = MouseEvent.call(this, type, { bubbles: true }) || this; return self; };
+  Sub.prototype = Object.create(MouseEvent.prototype, { constructor: { value: Sub }, extra: { value: function () { return 'x'; } } });
+  Object.setPrototypeOf(Sub, MouseEvent);
+  var s = new Sub('dblclick');
+  check('subclass', s.type === 'dblclick' && s.extra() === 'x' && s instanceof Sub && s instanceof MouseEvent, s.type);
+  check('constants', MouseEvent.prototype.constructor === MouseEvent);
+  check('errors', window.__errors.length === 0, window.__errors.join(' | '));
+  document.title = 'ctor ' + (ok ? 'ok' : 'FAIL');
+  document.getElementById('out').textContent = out.join('\n');
+})();
+</script>
+</body>
+</html>
