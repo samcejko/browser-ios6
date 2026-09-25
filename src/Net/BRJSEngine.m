@@ -1,5 +1,6 @@
 #import "BRJSEngine.h"
 #import "BRCommon.h"
+#import "BRMemory.h"
 
 #include <dlfcn.h>
 #include <malloc/malloc.h>
@@ -32,6 +33,10 @@ static void (*p_JSObjectSetProperty)(JSCtx ctx, JSObj object, JSStr propertyName
 static JSVal (*p_JSObjectGetProperty)(JSCtx ctx, JSObj object, JSStr propertyName, JSVal *exception);
 static JSObj (*p_JSValueToObject)(JSCtx ctx, JSVal value, JSVal *exception);
 static void (*p_JSGarbageCollect)(JSCtx ctx);
+// (optional) native functions for scripts: __brAvailableMB() lets the transpiler give up before iOS runs out of memory
+typedef JSVal (*BRJSNativeFn)(JSCtx ctx, JSObj function, JSObj thisObject, size_t argc, const JSVal argv[], JSVal *exception);
+static JSObj (*p_JSObjectMakeFunctionWithCallback)(JSCtx ctx, JSStr name, BRJSNativeFn callback);
+static JSVal (*p_JSValueMakeNumber)(JSCtx ctx, double number);
 // WTF::releaseFastMallocFreeMemory(): JavaScriptCore's malloc (shared with WebCore) keeps freed pages for reuse; a
 // big transpile leaves ~45 MB of them resident after its heap is gone
 static void (*p_releaseFastMallocFreeMemory)(void);
@@ -82,6 +87,8 @@ static BOOL BRResolveJSC(void)
 #undef RESOLVE
     p_JSContextGroupCreate = BRLookup(handle, "JSContextGroupCreate");
     p_JSContextGroupRelease = BRLookup(handle, "JSContextGroupRelease");
+    p_JSObjectMakeFunctionWithCallback = BRLookup(handle, "JSObjectMakeFunctionWithCallback");
+    p_JSValueMakeNumber = BRLookup(handle, "JSValueMakeNumber");
     p_releaseFastMallocFreeMemory = BRLookup(handle, "_ZN3WTF27releaseFastMallocFreeMemoryEv");
     if (!p_releaseFastMallocFreeMemory) BRLog(@"WTF::releaseFastMallocFreeMemory not found");
     p_JSGlobalContextCreateInGroup = BRLookup(handle, "JSGlobalContextCreateInGroup");
@@ -90,6 +97,11 @@ static BOOL BRResolveJSC(void)
 }
 
 NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotification";
+
+static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, size_t argc, const JSVal argv[], JSVal *exception)
+{
+    return p_JSValueMakeNumber(ctx, (double)[BRMemory availableMB]);
+}
 
 @implementation BRJSEngine {
     NSThread *_thread;
@@ -348,6 +360,13 @@ static NSString * const BRContextPrelude =
             return NO;
         }
         [self evaluateScript:BRContextPrelude sourceName:@"prelude.js"];
+        if (p_JSObjectMakeFunctionWithCallback && p_JSValueMakeNumber) {
+            JSStr name = p_JSStringCreateWithCFString(CFSTR("__brAvailableMB"));
+            JSObj fn = p_JSObjectMakeFunctionWithCallback(_ctx, name, BRAvailableMBCallback);
+            JSVal exc = NULL;
+            if (fn) p_JSObjectSetProperty(_ctx, p_JSContextGetGlobalObject(_ctx), name, (JSVal)fn, 0, &exc);
+            p_JSStringRelease(name);
+        }
     }
     return YES;
 }

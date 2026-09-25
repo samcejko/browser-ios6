@@ -3124,7 +3124,7 @@
     // super or new.target and functions with private names inside a class body wait for the code around them.
     // (YouTube's base.js, 1.5 MB: the whole tree is 380k nodes; with units from 64 characters on, the biggest unit
     // holds 36k, and the run is no slower)
-    var EARLY_SCRIPT = 96 * 1024, EARLY_FN = 64;
+    var EARLY_SCRIPT = 96 * 1024, EARLY_FN = 64, MEMORY_FLOOR_MB = 40;
     var EARLY_ARROW_SKIP = /\bsuper\b|\bnew\s*\.\s*target\b/g;
     var positions = function (src, re) {
         var out = [], m;
@@ -3144,7 +3144,7 @@
         w.proxyShim = opts.proxy !== undefined ? !!opts.proxy : needsProxy(src);
         w.bigintShim = opts.bigint !== undefined ? !!opts.bigint : typeof root.BigInt !== 'function';
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
-        var printer = new Printer(src, w, opts), onFunction = null, onImport = null, units = 0;
+        var printer = new Printer(src, w, opts), onFunction = null, onImport = null, units = 0, checked = 0;
         if (early !== false) {
             var supers = null, hashes = null;
             if (module) {
@@ -3154,6 +3154,9 @@
                 onImport = function (n) { w.moduleDecl(n, w.earlyRoot); };
             }
             onFunction = function (n, strict, inClass) {
+                // (the app's engines have __brAvailableMB: a lowering that would exhaust the iPad gives up, the script
+                // stays as it is and the app survives)
+                if ((++checked & 63) === 0 && typeof root.__brAvailableMB === 'function' && root.__brAvailableMB() < MEMORY_FLOOR_MB) throw new Unsupported('memory');
                 if (n.end - n.start < early) return;
                 if (n.type === 'FunctionDeclaration' && !n.id) return;   // (export default function () {}: moduleCode names it)
                 // (positions of every super/new.target and #, found once: a binary search per function instead of a

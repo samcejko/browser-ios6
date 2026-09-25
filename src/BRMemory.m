@@ -10,8 +10,9 @@
 NSString * const BRMemoryEmergencyNotification = @"BRMemoryEmergencyNotification";
 
 // Levels by what the whole system has available (free + inactive + purgeable). Measured on the iPad 2 (512 MB):
-// with nothing open about 220-250 MB are available; iOS warns and then kills the frontmost app when it runs out.
-static const long BRAvailTightMB = 90, BRAvailCriticalMB = 55, BRAvailEmergencyMB = 32;
+// with nothing open about 220-250 MB are available, iOS warns at 40-60 MB and kills the frontmost app at 15-25 MB
+// (memory can drop 15 MB in a few seconds while a big script is lowered, so the last resort starts well above that).
+static const long BRAvailTightMB = 100, BRAvailCriticalMB = 70, BRAvailEmergencyMB = 45;
 static volatile BOOL g_pageLoading;
 static CFAbsoluteTime g_lastEmergency;
 

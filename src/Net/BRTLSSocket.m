@@ -1,6 +1,8 @@
 #import "BRTLSSocket.h"
 #import "BRCommon.h"
 
+// (the alert a server refused the handshake with is read from the context's private input buffer)
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
 #include "mbedtls/build_info.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/net_sockets.h"
@@ -752,7 +754,13 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
             BRSetError(error, BRErrorTimeout, L(@"TLS handshake timed out."));
             return NO;
         }
-        BRSetError(error, BRErrorTLS, [NSString stringWithFormat:L(@"TLS handshake failed: %@"), BRMbedError(ret)]);
+        NSString *what = BRMbedError(ret);
+        if (ret == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE && _ssl.in_msg) {
+            // which alert the server sent (40 handshake_failure, 47 illegal_parameter, 70 protocol_version,
+            // 71 insufficient_security, 80 internal_error, 112 unrecognized_name ...)
+            what = [what stringByAppendingFormat:@" (alert %d)", (int)_ssl.in_msg[1]];
+        }
+        BRSetError(error, BRErrorTLS, [NSString stringWithFormat:L(@"TLS handshake failed: %@"), what]);
         return NO;
     }
     _connected = YES;

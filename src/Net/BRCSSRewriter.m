@@ -366,6 +366,15 @@ static CGFloat g_devicePixelRatio = 1;
         if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@), %ld -> %ld MB", name, ms, why ?: @"?", mb0, mb1);
     }
     [BRMemory setActivity:nil forKey:@"js"];
+    // given up for lack of memory (see jsfix.js MEMORY_FLOOR_MB): not remembered, a later visit lowers it
+    if (!out || module) {
+        NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
+        if ([last rangeOfString:@"memory"].location != NSNotFound) {
+            BRLog(@"jsfix %@: gave up, the iPad is short of memory (%ld MB available)", name, [BRMemory availableMB]);
+            [engine releaseContextNow];
+            return out;
+        }
+    }
     NSData *store = out ?: [NSData data];
     [_transpiled setObject:store forKey:key cost:store.length + 64];
     if (!private) {
