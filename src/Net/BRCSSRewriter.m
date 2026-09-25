@@ -316,7 +316,7 @@ static CGFloat g_devicePixelRatio = 1;
     [engine performAsync:^{
         @autoreleasepool {
             NSString *report;
-            NSString *input = params[@"input"] ?: @"", *opts = params[@"opts"].length ? params[@"opts"] : @"{}";
+            NSString *input = params[@"input"] ?: @"", *opts = [params[@"opts"] length] ? params[@"opts"] : @"{}";
             NSString *text = [NSString stringWithContentsOfFile:input encoding:NSUTF8StringEncoding error:NULL];
             [engine releaseContextNow];   // a fresh heap for the measurement
             long mb0 = (long)BRResidentMemoryMB();
