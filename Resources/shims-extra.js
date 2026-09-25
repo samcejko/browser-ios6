@@ -173,8 +173,152 @@
             if (result) hide(b, '__brBytes', result);
             return result;
         };
+        // blob.text() / arrayBuffer() / stream() of today's Blob (and File), through FileReader
+        var BP = NativeBlob.prototype;
+        var readAs = function (blob, how) {
+            return new P(function (resolve, reject) {
+                var known = how === 'arraybuffer' ? bytes(blob) : null;
+                if (known) { resolve(known.buffer.slice(known.byteOffset, known.byteOffset + known.length)); return; }
+                var r = new FileReader();
+                r.onload = function () { resolve(r.result); };
+                r.onerror = function () { reject(r.error || domException('NotReadableError', 'The blob could not be read')); };
+                if (how === 'text') r.readAsText(blob, 'utf-8'); else r.readAsArrayBuffer(blob);
+            });
+        };
+        if (P && window.FileReader) {
+            if (!BP.text) BP.text = function () { return readAs(this, 'text'); };
+            if (!BP.arrayBuffer) BP.arrayBuffer = function () { return readAs(this, 'arraybuffer'); };
+            if (!BP.bytes) BP.bytes = function () { return readAs(this, 'arraybuffer').then(function (b) { return new Uint8Array(b); }); };
+            if (!BP.stream && window.ReadableStream) BP.stream = function () {
+                var blob = this;
+                return new window.ReadableStream({ start: function (c) { return readAs(blob, 'arraybuffer').then(function (b) { c.enqueue(new Uint8Array(b)); c.close(); }, function (e) { c.error(e); }); } });
+            };
+        }
         return { bytes: bytes, forURL: function (u) { return urls.hasOwnProperty(u) ? urls[u] : null; } };
     })();
+
+    // ---- FormData: the old engine's FormData has only append(). The entries are kept alongside (from the form's
+    // controls like a submission, and from every append/set/delete) for get/getAll/has/set/delete/entries/keys/values/
+    // forEach; a FormData changed by set or delete is rebuilt when it is sent (see the request wrapper).
+    var FormDataTools = (function () {
+        var NativeFD = window.FormData;
+        if (!NativeFD || NativeFD.__brWrapped) return null;
+        var probe = new NativeFD();
+        if (typeof probe.get === 'function' && typeof probe.entries === 'function' && !window.__brForceXHR) return null;
+        var hideProp = function (obj, name, value) { try { Object.defineProperty(obj, name, { value: value, configurable: true, writable: true, enumerable: false }); } catch (e) { obj[name] = value; } };
+        var isBlob = function (v) { return !!v && typeof v === 'object' && typeof v.size === 'number' && typeof v.type === 'string' && (typeof v.slice === 'function' || typeof v.webkitSlice === 'function'); };
+        var entryValue = function (v, filename) {
+            if (!isBlob(v)) return String(v);
+            if (filename !== undefined) { try { hideProp(v, '__brName', String(filename)); } catch (e) {} }
+            return v;
+        };
+        // the successful controls of a form, as a submission would send them
+        var collect = function (form) {
+            var out = [];
+            if (!form || !form.elements) return out;
+            var els = form.elements;
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i], name = el.name, type = (el.type || '').toLowerCase(), tag = (el.tagName || '').toLowerCase();
+                if (!name || el.disabled) continue;
+                if (tag === 'fieldset' || tag === 'object' || tag === 'output') continue;
+                if (type === 'submit' || type === 'image' || type === 'button' || type === 'reset') continue;   // (the submitter is appended by the constructor)
+                if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
+                if (type === 'file') {
+                    var files = el.files;
+                    if (!files || !files.length) out.push([name, new Blob([], { type: 'application/octet-stream' })]);
+                    else for (var f = 0; f < files.length; f++) out.push([name, files[f]]);
+                    continue;
+                }
+                if (tag === 'select') {
+                    for (var o = 0; o < el.options.length; o++) if (el.options[o].selected && !el.options[o].disabled) out.push([name, el.options[o].value]);
+                    continue;
+                }
+                out.push([name, type === 'checkbox' || type === 'radio' ? (el.hasAttribute('value') ? el.value : 'on') : el.value]);
+            }
+            return out;
+        };
+        var list = function (fd) { if (!fd.__brList) hideProp(fd, '__brList', []); return fd.__brList; };
+        var FD = function FormData(form, submitter) {
+            var fd = form ? new NativeFD(form) : new NativeFD();
+            hideProp(fd, '__brList', collect(form));
+            if (submitter && submitter.name) fd.append(submitter.name, submitter.value || '');
+            return fd;
+        };
+        FD.prototype = NativeFD.prototype;
+        FD.__brWrapped = true;
+        var FP = NativeFD.prototype, nativeAppend = FP.append;
+        FP.append = function (name, value, filename) {
+            list(this).push([String(name), entryValue(value, filename)]);
+            return arguments.length > 2 ? nativeAppend.call(this, name, value, filename) : nativeAppend.call(this, name, value);
+        };
+        FP.get = function (name) { var l = list(this); name = String(name); for (var i = 0; i < l.length; i++) if (l[i][0] === name) return l[i][1]; return null; };
+        FP.getAll = function (name) { var l = list(this), out = []; name = String(name); for (var i = 0; i < l.length; i++) if (l[i][0] === name) out.push(l[i][1]); return out; };
+        FP.has = function (name) { return this.get(name) !== null; };
+        FP['delete'] = function (name) {
+            var l = list(this); name = String(name);
+            for (var i = l.length - 1; i >= 0; i--) if (l[i][0] === name) l.splice(i, 1);
+            hideProp(this, '__brDirty', true);
+        };
+        FP.set = function (name, value, filename) {
+            var l = list(this), done = false; name = String(name);
+            for (var i = 0; i < l.length; i++) {
+                if (l[i][0] !== name) continue;
+                if (!done) { l[i] = [name, entryValue(value, filename)]; done = true; } else { l.splice(i, 1); i--; }
+            }
+            if (!done) l.push([name, entryValue(value, filename)]);
+            hideProp(this, '__brDirty', true);
+        };
+        var iter = function (fd, pick) {
+            var l = list(fd).slice(), i = 0;
+            var it = { next: function () { return i < l.length ? { value: pick(l[i++]), done: false } : { value: undefined, done: true }; } };
+            if (window.Symbol && window.Symbol.iterator) it[window.Symbol.iterator] = function () { return it; };
+            return it;
+        };
+        FP.entries = function () { return iter(this, function (e) { return [e[0], e[1]]; }); };
+        FP.keys = function () { return iter(this, function (e) { return e[0]; }); };
+        FP.values = function () { return iter(this, function (e) { return e[1]; }); };
+        FP.forEach = function (fn, thisArg) { var l = list(this).slice(); for (var i = 0; i < l.length; i++) fn.call(thisArg, l[i][1], l[i][0], this); };
+        if (window.Symbol && window.Symbol.iterator) FP[window.Symbol.iterator] = FP.entries;
+        try { window.FormData = FD; } catch (e0) {}
+        return {
+            // the FormData to send: a changed one is built again from its entries
+            forSending: function (fd) {
+                if (!fd || !fd.__brDirty || !fd.__brList) return fd;
+                var fresh = new NativeFD(), l = fd.__brList;
+                for (var i = 0; i < l.length; i++) {
+                    var v = l[i][1];
+                    if (isBlob(v) && v.__brName) nativeAppend.call(fresh, l[i][0], v, v.__brName); else nativeAppend.call(fresh, l[i][0], v);
+                }
+                return fresh;
+            }
+        };
+    })();
+
+    // form.requestSubmit([submitter]): validation, a cancelable submit event (onsubmit handlers see it), then the
+    // submission with the submitter's name and value
+    if (window.HTMLFormElement && !window.HTMLFormElement.prototype.requestSubmit) {
+        window.HTMLFormElement.prototype.requestSubmit = function (submitter) {
+            if (submitter !== undefined && submitter !== null) {
+                if (!/^(submit|image)$/i.test(submitter.type || '')) throw new TypeError('The specified element is not a submit button.');
+                if (submitter.form !== this) throw domException('NotFoundError', 'The specified element is not owned by this form element.');
+            }
+            if (!this.noValidate && typeof this.checkValidity === 'function' && !this.checkValidity()) return;
+            var ev = document.createEvent('Event');
+            ev.initEvent('submit', true, true);
+            try { ev.submitter = submitter || null; } catch (e) {}
+            if (!this.dispatchEvent(ev)) return;
+            var extra = null;
+            if (submitter && submitter.name) {
+                extra = document.createElement('input');
+                extra.type = 'hidden';
+                extra.name = submitter.name;
+                extra.value = submitter.value || '';
+                this.appendChild(extra);
+            }
+            window.HTMLFormElement.prototype.submit.call(this);
+            if (extra && extra.parentNode) extra.parentNode.removeChild(extra);
+        };
+    }
 
     // ---- XMLHttpRequest with every responseType. The old engine keeps responseType as an own, non-configurable
     // property of each request that takes only '', text, document and arraybuffer ('blob' is ignored, 'json'
@@ -286,6 +430,7 @@
             if (this.__timeout > 0 && this.__async && !nativeTimeout) {
                 this.__timer = setTimeout(function () { self.__timer = null; if (x.readyState !== 4) { self.__timedOut = true; x.abort(); } }, this.__timeout);
             }
+            if (FormDataTools && body) body = FormDataTools.forSending(body);
             return arguments.length ? x.send(body) : x.send();
         };
         XP.abort = function () {

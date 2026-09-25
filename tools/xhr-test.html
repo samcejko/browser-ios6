@@ -186,6 +186,47 @@ if (/[?&]force=all/.test(location.search)) window.__brForceXHR = 'all';
         w.send();
     })();
 
+    // Blob.text / arrayBuffer
+    start();
+    new Blob(['žluť', new Uint8Array([33])]).text().then(function (t) {
+        check('blob.text', t === 'žluť!', t);
+        return new Blob([new Uint8Array([7, 8, 9])]).arrayBuffer();
+    }).then(function (ab) {
+        check('blob.arrayBuffer', new Uint8Array(ab).join(',') === '7,8,9');
+        end();
+    }, function (e) { check('blob methods', false, e && e.message); end(); });
+
+    // FormData from a form, get/getAll/has/set/delete/entries, and a changed one sent
+    (function () {
+        var form = document.createElement('form');
+        form.innerHTML = '<input name="a" value="1"><input type="checkbox" name="c" value="x" checked><input type="checkbox" name="d" checked>' +
+            '<input type="checkbox" name="off"><select name="s" multiple><option value="p" selected>P</option><option value="q" selected>Q</option></select>' +
+            '<textarea name="t">text</textarea><input type="submit" name="go" value="Go"><input name="dis" value="z" disabled>';
+        document.body.appendChild(form);
+        var fd = new FormData(form, form.querySelector('[name=go]'));
+        var keys = [], it = fd.keys(), step;
+        while (!(step = it.next()).done) keys.push(step.value);
+        check('FormData from form', keys.join(',') === 'a,c,d,s,s,t,go' && fd.get('d') === 'on' && fd.getAll('s').join('') === 'pq', keys.join(','));
+        fd.set('a', '2');
+        fd['delete']('t');
+        fd.append('n', 'm');
+        check('FormData set/delete/has', fd.get('a') === '2' && !fd.has('t') && fd.has('n') && fd.getAll('a').length === 1);
+        var pairs = [];
+        fd.forEach(function (v, k) { pairs.push(k + '=' + v); });
+        check('FormData forEach', pairs.join('&') === 'a=2&c=x&d=on&s=p&s=q&go=Go&n=m', pairs.join('&'));
+        document.body.removeChild(form);
+    })();
+
+    // requestSubmit: validation and a cancelable submit event
+    (function () {
+        var form = document.createElement('form'), seen = 0;
+        form.innerHTML = '<input name="q" value="v">';
+        form.onsubmit = function (e) { seen++; e.preventDefault(); return false; };
+        document.body.appendChild(form);
+        try { form.requestSubmit(); check('requestSubmit fires submit', seen === 1, 'seen ' + seen); } catch (e) { check('requestSubmit', false, e.message); }
+        document.body.removeChild(form);
+    })();
+
     // :read-write / :read-only for editable content
     (function () {
         var el = document.createElement('div'), nested = document.createElement('div'), field = document.createElement('input');
