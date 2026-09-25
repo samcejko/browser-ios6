@@ -1557,6 +1557,8 @@ var CSSFix = (function () {
             case 'grad': return { n: n * 0.9, u: 'deg' };
             case 'rad': return { n: n * 180 / Math.PI, u: 'deg' };
             case 'turn': return { n: n * 360, u: 'deg' };
+            case 's': return { n: n, u: 's' };
+            case 'ms': return { n: n / 1000, u: 's' };
         }
         return null;
     }
@@ -2019,6 +2021,32 @@ var CSSFix = (function () {
             parts[i] = toks.join(' ');
         }
         return changed ? parts.join(', ') : value;
+    }
+
+    // ---- translate(calc(A% + B)): the old engine has no calc() inside transform functions (the declaration is dropped),
+    // but translations add up, so it becomes translate(A%) translate(B) when every argument is a percentage plus a
+    // length (the centring idiom translateX(calc(-50% + 10px)))
+    var TRANSLATE_CALC = /\b(translate(?:X|Y|3d)?)\(((?:[^()]|\([^()]*\))*)\)/gi;
+    function splitCalcTranslates(v) {
+        if (!/calc\(/i.test(v)) return v;
+        return v.replace(TRANSLATE_CALC, function (whole, fn, argText) {
+            var args = splitTop(argText, ','), pct = [], len = [], any = false;
+            for (var i = 0; i < args.length; i++) {
+                var a = trim(args[i]), m = /^(?:-webkit-)?calc\((.*)\)$/i.exec(a), pieces = m ? trim(m[1]).split(/\s([+-])\s/) : [a], p = 0, l = 0;
+                if (m) any = true;
+                if (/[()]/.test(pieces.join(''))) return whole;
+                for (var k = 0; k < pieces.length; k += 2) {
+                    var sign = k > 0 && pieces[k - 1] === '-' ? -1 : 1, t = trim(pieces[k]);
+                    if (/^-?\d*\.?\d+%$/.test(t)) { p += sign * parseFloat(t); continue; }
+                    var e = evalExpr(t);
+                    if (!e || (e.u && e.u !== 'px')) return whole;
+                    l += sign * e.n;
+                }
+                pct.push(Math.round(p * 10000) / 10000 + '%');
+                len.push(Math.round(l * 10000) / 10000 + 'px');
+            }
+            return any ? fn + '(' + pct.join(', ') + ') ' + fn + '(' + len.join(', ') + ')' : whole;
+        });
     }
 
     // ---- transitions of -webkit-calc() values crash the old engine: once an element whose transitioned property holds
@@ -2914,7 +2942,7 @@ var CSSFix = (function () {
                 case 'scale': scale = v; continue;
                 case 'transform': {
                     hasTransform = true;
-                    var tfv = v.replace(/\s*perspective\(\s*none\s*\)\s*/gi, ' ').replace(/^\s+|\s+$/g, '') || 'none';
+                    var tfv = splitCalcTranslates(v.replace(/\s*perspective\(\s*none\s*\)\s*/gi, ' ').replace(/^\s+|\s+$/g, '')) || 'none';
                     push(out, '-webkit-transform', tfv, imp);
                     push(out, p, v, imp);
                     continue;
@@ -3166,6 +3194,7 @@ var CSSFix = (function () {
                 push(out, pair[1], pv.length > 1 ? pv[1] : pv[0], imp);
                 continue;
             }
+            if (p === '-webkit-transform') v = splitCalcTranslates(v);
             if (PREFIX[p]) {
                 push(out, '-webkit-' + p, v, imp);
                 push(out, p, v, imp);
