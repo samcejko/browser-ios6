@@ -404,6 +404,11 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     // 1. Cache
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
         NSCachedURLResponse *cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
+        if (cached && ![BRCSSRewriter lazyPartsPresentIn:cached.data]) {
+            // (a lowered chunk whose factories kept for later are gone from the transpiler's cache: loaded again)
+            [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
+            cached = nil;
+        }
         if (cached && [cached.response isKindOfClass:[NSHTTPURLResponse class]] && cached.userInfo[BRCacheStoredAtKey]) {
             if (BRCachedResponseIsFresh(cached) || policy == NSURLRequestReturnCacheDataElseLoad || policy == NSURLRequestReturnCacheDataDontLoad) {
                 [self serveCachedResponse:cached];
@@ -934,6 +939,16 @@ static BOOL BRIsWebPDataURL(NSURL *url)
             body = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
         }
         type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
+    } else if ([path hasPrefix:@"/lazy/"]) {
+        // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request
+        // of the page's stub, answered when it is lowered)
+        NSArray *comps = [[path substringFromIndex:6] componentsSeparatedByString:@"/"];
+        NSString *base = comps.count == 2 ? comps[0] : nil;
+        NSString *file = comps.count == 2 ? comps[1] : nil;
+        if (base.length && [base rangeOfString:@"^[0-9a-f]+-[0-9a-f]+$" options:NSRegularExpressionSearch].location != NSNotFound &&
+            [file rangeOfString:@"^[0-9]+\\.js$" options:NSRegularExpressionSearch].location != NSNotFound)
+            body = [[BRCSSRewriter shared] lazyModuleForBase:base index:[file integerValue]];
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];

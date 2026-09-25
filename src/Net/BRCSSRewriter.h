@@ -45,6 +45,12 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 - (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString;
 // Only what the page lacks: since = "has:<n>,cq:<n>,dv:<n>,pt:<n>,cv:<n>,sc:<n>,vars:<n>,sheets:<n>" (counts it has).
 - (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString since:(NSString *)since;
+// A factory of a webpack chunk the transpiler kept for later (jsfix.js LAZY_*), asked for by the page's stub: lowered
+// now as a program that leaves it in __br_lazyValue (nil when its text is gone). Blocks; any thread but the
+// transpiler engine's.
+- (NSData *)lazyModuleForBase:(NSString *)base index:(NSInteger)index;
+// NO when a lowered chunk keeps factories for later whose texts are gone (it must be lowered again); any thread
++ (BOOL)lazyPartsPresentIn:(NSData *)lowered;
 // The same data without the trailing manifest comment: what WebKit gets (the cache keeps it; GitHub's manifests are
 // 2.3 MB that the engine would otherwise keep and parse as stylesheet text).
 + (NSData *)dataWithoutManifest:(NSData *)data;

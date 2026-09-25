@@ -3216,8 +3216,130 @@
         var F = root.Function.__brNative || root.Function;
         try { F(src); return true; } catch (e) { return false; }
     };
+    // ---- Lazy modules. A webpack chunk `(self.x=self.x||[]).push([[ids],{id:factory,...}])` registers factories that
+    // run only when some module requires them, and a chunk often carries big ones a page never uses (Vimeo's front
+    // page loads a 3.3 MB chunk that is one module: a minute and 170 MB to lower on the iPad). Factories of LAZY_MIN
+    // characters or more become stubs; the app keeps their text and lowers one when the page first calls it (a
+    // synchronous request to https://ios6-browser.invalid/lazy/<key>/<n>.js, see BRCSSRewriter lazyModule).
+    var LAZY_SCRIPT = 256 * 1024, LAZY_MIN = 48 * 1024;
+    var LAZY_HEAD = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*(?:(?:"use strict"|'use strict')\s*;?\s*)?\(\s*(?:self|window|globalThis|this)\s*(?:\.\s*[\w$]+|\[\s*["'][\w$]+["']\s*\])\s*=\s*(?:self|window|globalThis|this)\s*(?:\.\s*[\w$]+|\[\s*["'][\w$]+["']\s*\])\s*\|\|\s*\[\s*\]\s*\)\s*\.\s*push\s*\(\s*\[\s*\[[^\]]{0,400}\]\s*,\s*\{/;
+    var LAZY_REGEX_AFTER = /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/;
+    // the end of a value starting at i (the index of the `,` or `}` that ends it at its own level), -1 when lost;
+    // a small lexer: strings, templates, comments, regular expressions (after punctuation or a keyword) and brackets
+    var skipValue = function (src, i) {
+        var n = src.length, depth = 0, tpl = [], prev = 40, word = '';
+        while (i < n) {
+            var c = src.charCodeAt(i);
+            if (c === 32 || c === 10 || c === 13 || c === 9 || c === 0xa0 || c === 0xfeff || c === 0x2028 || c === 0x2029) { i++; continue; }
+            if (c === 47) {   // /
+                var c2 = src.charCodeAt(i + 1);
+                if (c2 === 47) { i = src.indexOf('\n', i); if (i < 0) return -1; continue; }
+                if (c2 === 42) { i = src.indexOf('*/', i + 2); if (i < 0) return -1; i += 2; continue; }
+                var regex = word ? LAZY_REGEX_AFTER.test(word) : '(,=:[!&|?{};+-*%<>~^}'.indexOf(String.fromCharCode(prev)) >= 0;
+                word = '';
+                if (!regex) { prev = 47; i++; continue; }
+                var cls = false;
+                for (i++; i < n; i++) {
+                    c = src.charCodeAt(i);
+                    if (c === 92) { i++; continue; }
+                    if (c === 10 || c === 13) return -1;
+                    if (cls) { if (c === 93) cls = false; continue; }
+                    if (c === 91) cls = true;
+                    else if (c === 47) break;
+                }
+                i++;
+                while (i < n && /[a-z]/.test(src.charAt(i))) i++;
+                prev = 97;
+                continue;
+            }
+            if (c === 34 || c === 39) {   // " '
+                for (i++; i < n; i++) {
+                    var q = src.charCodeAt(i);
+                    if (q === 92) { i++; continue; }
+                    if (q === c) break;
+                    if (q === 10 || q === 13) return -1;
+                }
+                if (i >= n) return -1;
+                i++; prev = 97; word = '';
+                continue;
+            }
+            if (c === 96 || (c === 125 && tpl.length && tpl[tpl.length - 1] === depth)) {   // ` or the } closing a ${
+                if (c === 125) { tpl.pop(); depth--; }
+                for (i++; i < n; i++) {
+                    var t = src.charCodeAt(i);
+                    if (t === 92) { i++; continue; }
+                    if (t === 96) break;
+                    if (t === 36 && src.charCodeAt(i + 1) === 123) { depth++; tpl.push(depth); i++; break; }
+                }
+                if (i >= n) return -1;
+                i++;
+                prev = t === 96 ? 97 : 123; word = '';
+                continue;
+            }
+            if (c === 40 || c === 91 || c === 123) { depth++; prev = c; word = ''; i++; continue; }
+            if (c === 41 || c === 93 || c === 125) {
+                if (depth === 0) return c === 125 ? i : -1;
+                depth--; prev = c; word = ''; i++;
+                continue;
+            }
+            if (c === 44 && depth === 0) return i;
+            if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 36 || c === 95 || c > 127 || c === 92) {
+                var s = i;
+                while (i < n) {
+                    c = src.charCodeAt(i);
+                    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 36 || c === 95 || c > 127) i++;
+                    else if (c === 92 && src.charCodeAt(i + 1) === 117) i += 2;   // \u escape in a name
+                    else if (c === 46 && s < i && src.charCodeAt(s) >= 48 && src.charCodeAt(s) <= 57) i++;   // 1.5
+                    else break;
+                }
+                word = src.slice(s, i); prev = 97;
+                continue;
+            }
+            prev = c; word = ''; i++;
+        }
+        return -1;
+    };
+    // [[start, end], ...] of the factories to keep for later, or null when src is not such a chunk
+    var lazyParts = function (src) {
+        var m = LAZY_HEAD.exec(src.slice(0, 4096));
+        if (!m) return null;
+        var i = m[0].length, n = src.length, parts = [];
+        for (;;) {
+            while (i < n && /[\s,]/.test(src.charAt(i))) i++;
+            if (src.charAt(i) === '}') break;
+            var key = /^(?:\d+|"[^"\\\n]*"|'[^'\\\n]*'|[\w$]+)\s*:\s*/.exec(src.slice(i, i + 300));
+            if (!key) return null;
+            var start = i + key[0].length, end = skipValue(src, start);
+            if (end < 0) return null;
+            var value = src.slice(start, Math.min(end, start + 60));
+            if (end - start >= LAZY_MIN && /^(?:function\b|\(|[\w$]+\s*=>)/.test(value)) {
+                var e = end;
+                while (e > start && /\s/.test(src.charAt(e - 1))) e--;
+                parts.push([start, e]);
+            }
+            i = end;
+        }
+        return parts.length ? parts : null;
+    };
+    // the page's side: a stub calls it with the part's key; the app answers with the part lowered as a program that
+    // leaves the factory in __br_lazyValue
+    var LAZY_RUNTIME = 'var __br_lazy=function(g){return g.__br_lazy||(g.__br_lazy=function(k,t,a){var c=g.__br_lazyCache||(g.__br_lazyCache={}),f=c[k];' +
+        'if(!f){var x=new XMLHttpRequest();x.open("GET","https://ios6-browser.invalid/lazy/"+k+".js",false);x.send(null);' +
+        'if(!(x.status===200||x.status===0&&x.responseText))throw new Error("Module "+k+" did not load ("+x.status+")");' +
+        'var F=g.Function.__brNative||g.Function;f=c[k]=F(x.responseText+"\\n;return __br_lazyValue;").call(g)}return f.apply(t,a)})}(typeof self!=="undefined"?self:this);\n';
+    var lazySkeleton = function (src, parts, key) {
+        var out = [], at = 0;
+        for (var i = 0; i < parts.length; i++) {
+            out.push(src.slice(at, parts[i][0]), 'function(){return __br_lazy(' + quote(key + '/' + i) + ',this,arguments)}');
+            at = parts[i][1];
+        }
+        out.push(src.slice(at));
+        var body = out.join(''), directive = /^\s*(?:"use strict"|'use strict')\s*;?/.exec(body);
+        // (after a directive prologue, so that it stays one)
+        return directive ? directive[0] + '\n' + LAZY_RUNTIME + body.slice(directive[0].length) : LAZY_RUNTIME + body;
+    };
     var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0, redos: 0, maxUnit: 0, outer: 0, flat: 0,
-                  checks: 0, phases: '' };
+                  checks: 0, phases: '', lazy: null };
     // for the app: '' when the engine takes the script as it is (or it cannot be lowered), else the ES5 text;
     // JSFix.last() tells which ("es5", "lowered", or why it failed)
     var run = function (src, optsJSON) {
@@ -3256,6 +3378,27 @@
                 return text + '\n;' + helperText(used);
             }
         }
+        // a webpack chunk with big factories: those are lowered when the page first calls them (the app keeps their
+        // text: JSFix.lazy() tells where they are); anything unexpected and the whole script is lowered as usual
+        stats.lazy = null;
+        if (opts.lazy && !opts.module && !parsesAsIs && src.length >= LAZY_SCRIPT) {
+            var parts = null;
+            try { parts = lazyParts(src); } catch (el) { parts = null; }
+            if (parts) {
+                var skeleton = lazySkeleton(src, parts, String(opts.lazy)), sout = null, sok = true;
+                try { sout = transpile(skeleton, opts); } catch (es) { sok = !(es instanceof Unsupported) || es.what !== 'memory' ? false : 'memory'; }
+                if (sok === 'memory') { stats.failed++; stats.last = 'failed: unsupported: memory'; return ''; }
+                if (sok) {
+                    if (sout === null) sout = skeleton;
+                    if (sout.length > 1024 * 1024 || engineParses(sout)) {
+                        stats.lazy = parts;
+                        stats.lowered++;
+                        stats.last = 'lowered';
+                        return '/*br-lazy:' + parts.length + ':' + opts.lazy + '*/' + sout;
+                    }
+                }
+            }
+        }
         var t0 = new Date().getTime(), out = null;
         try { out = transpile(src, opts); } catch (e2) {
             stats.failed++;
@@ -3282,5 +3425,8 @@
         return out;
     };
     // (lowerUnicode: the page's RegExp constructor lowers u/v patterns with it, see shims-extra.js)
-    root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex };
+    // (lazy: after a run that kept factories for later, "[[start,end],...]" of their text in the input, else '')
+    root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex,
+                   lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts,
+                   lazyScan: function (src) { var p = null; try { p = lazyParts(src); } catch (e) { p = null; } return p ? JSON.stringify(p) : ''; } };
 })(this);

@@ -86,6 +86,12 @@ static NSString *BRTranspileTag(void)
     return tag;
 }
 
+// the text of factory n of a webpack chunk kept for later (base = "<crc>-<length>" of the chunk; see jsfix.js LAZY_*)
+static NSString *BRLazyPartPath(NSString *base, long n)
+{
+    return [BRTranspiledDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@s%ld-%@.js", base, n, BRTranspileTag()]];
+}
+
 @implementation BRCSSRewriter {
     BOOL _loaded;
     BOOL _loadFailed;
@@ -320,6 +326,7 @@ static CGFloat g_devicePixelRatio = 1;
     NSString *dir = BRTranspiledDirectory();
     NSString *path = [dir stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]];
     BOOL private = [BRSettings privateMode];
+    NSString *base = [NSString stringWithFormat:@"%08lx-%lx", crc, (unsigned long)data.length];
     NSData *cached = [_transpiled objectForKey:key];
     if (!cached && !private) {
         cached = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
@@ -328,30 +335,62 @@ static CGFloat g_devicePixelRatio = 1;
             [_transpiled setObject:cached forKey:key cost:cached.length];
         }
     }
+    if (cached && ![BRCSSRewriter lazyPartsPresentIn:cached]) {
+        // (a chunk whose kept factories were pruned: lowered again)
+        [_transpiled removeObjectForKey:key];
+        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+        cached = nil;
+    }
     if (cached) return cached.length ? cached : nil;
+    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : @"script";
+    // a webpack chunk keeps its big factories for later: only the rest is lowered now (and needs room)
+    NSString *text = nil, *lazyScan = nil;
+    long lazyBytes = 0;
+    if (!module && !private && data.length >= 256 * 1024 && [self ensureJSFixIn:engine]) {
+        NSString *used = nil;
+        text = BRDecode(data, charset.length ? charset : nil, &used);
+        lazyScan = text ? [engine callFunction:@"JSFix.lazyScan" arguments:@[text]] : nil;
+        NSArray *parts = lazyScan.length ? [NSJSONSerialization JSONObjectWithData:[lazyScan dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+        if (![parts isKindOfClass:[NSArray class]]) { parts = nil; lazyScan = nil; }
+        for (NSArray *p in parts) if ([p isKindOfClass:[NSArray class]] && p.count == 2) lazyBytes += [p[1] longValue] - [p[0] longValue];
+    }
     // room first: when the iPad is short of memory the page waits (loads slower) instead of iOS closing the app; a big
     // script that still does not fit is left as it is (not cached: it is lowered on a later visit)
-    long need = BRRoomFloorMB + (long)(data.length * BRRoomPerMBScript / (1024 * 1024));
-    if (![BRMemory waitForAvailableMB:need timeout:30 reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", url.lastPathComponent ?: @"a script", (unsigned long)(data.length >> 10)] engine:engine]
-        && [BRMemory availableMB] < BRRoomFloorMB + (long)(data.length * BRRoomPerMBScript / (2 * 1024 * 1024))) {
-        BRLog(@"jsfix %@: left unlowered, not enough memory", url.lastPathComponent ?: @"script");
+    long work = MAX(0L, (long)data.length - lazyBytes);
+    long need = BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (1024 * 1024));
+    if (![BRMemory waitForAvailableMB:need timeout:30 reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
+        && [BRMemory availableMB] < BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (2 * 1024 * 1024))) {
+        BRLog(@"jsfix %@: left unlowered, not enough memory", name);
         return nil;
     }
     if (![self ensureJSFixIn:engine]) return nil;
-    NSString *used = nil;
-    NSString *text = BRDecode(data, charset.length ? charset : nil, &used);
+    if (!text) {
+        NSString *used = nil;
+        text = BRDecode(data, charset.length ? charset : nil, &used);
+    }
     if (!text) return nil;
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     long mb0 = (long)BRResidentMemoryMB();
-    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : @"script";
-    [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(data.length >> 10)] forKey:@"js"];
+    [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(work >> 10)] forKey:@"js"];
     NSString *optsJSON = @"{}";
     NSMutableDictionary *o = [NSMutableDictionary dictionary];
     if (url.absoluteString.length) o[@"url"] = url.absoluteString;
     if (module) o[@"module"] = @YES;
+    if (lazyScan.length) o[@"lazy"] = base;
     NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
     if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
+    // the factories kept for later go next to the lowered chunk, where the page's stubs ask for them
+    NSUInteger kept = 0;
+    if (lazyScan.length && [result hasPrefix:@"/*br-lazy:"]) {
+        kept = [self storeLazyParts:[engine callFunction:@"JSFix.lazy" arguments:@[]] ofText:text base:base];
+        if (!kept) {
+            BRLog(@"jsfix %@: the factories kept for later could not be stored", name);
+            [BRMemory setActivity:nil forKey:@"js"];
+            return nil;
+        }
+        else BRLog(@"jsfix %@: %lu factories (%ld KB) lowered only when the page needs them", name, (unsigned long)kept, lazyBytes >> 10);
+    }
     text = nil;
     long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
     NSData *out = result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
@@ -387,6 +426,70 @@ static CGFloat g_devicePixelRatio = 1;
     // (acorn and jsfix.js load again in about 0.4 s; most scripts come from the cache above anyway)
     [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
     return out;
+}
+
+// A lowered chunk that keeps factories for later starts with /*br-lazy:N:<base>*/ and needs their texts: YES when
+// they are all there (touched as recently used, the cache prunes by age) or when it keeps none.
++ (BOOL)lazyPartsPresentIn:(NSData *)lowered
+{
+    static const char mark[] = "/*br-lazy:";
+    if (lowered.length < sizeof(mark) + 4 || memcmp(lowered.bytes, mark, sizeof(mark) - 1) != 0) return YES;
+    char head[64] = { 0 };
+    memcpy(head, (const char *)lowered.bytes + sizeof(mark) - 1, MIN(sizeof(head) - 1, lowered.length - (sizeof(mark) - 1)));
+    char *colon = NULL;
+    long count = strtol(head, &colon, 10);
+    char *close = colon && *colon == ':' ? strstr(colon, "*/") : NULL;
+    if (!close || count <= 0) return NO;
+    NSString *base = [[NSString alloc] initWithBytes:colon + 1 length:(NSUInteger)(close - colon - 1) encoding:NSASCIIStringEncoding];
+    if (!base.length) return NO;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *now = @{ NSFileModificationDate: [NSDate date] };
+    for (long i = 0; i < count; i++) if (![fm setAttributes:now ofItemAtPath:BRLazyPartPath(base, i) error:NULL]) return NO;
+    return YES;
+}
+
+// the transpiler's queue: the texts of the kept factories ("[[start,end],...]" in UTF-16 units of text); how many
+- (NSUInteger)storeLazyParts:(NSString *)json ofText:(NSString *)text base:(NSString *)base
+{
+    NSArray *parts = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+    if (![parts isKindOfClass:[NSArray class]] || !parts.count) return 0;
+    [[NSFileManager defaultManager] createDirectoryAtPath:BRTranspiledDirectory() withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSUInteger n = 0;
+    for (NSArray *p in parts) {
+        if (![p isKindOfClass:[NSArray class]] || p.count != 2) return 0;
+        NSUInteger start = [p[0] unsignedIntegerValue], end = [p[1] unsignedIntegerValue];
+        if (end <= start || end > text.length) return 0;
+        @autoreleasepool {
+            NSData *d = [[text substringWithRange:NSMakeRange(start, end - start)] dataUsingEncoding:NSUTF8StringEncoding];
+            if (!d || ![d writeToFile:BRLazyPartPath(base, (long)n) atomically:YES]) return 0;
+        }
+        n++;
+    }
+    return n;
+}
+
+- (NSData *)lazyModuleForBase:(NSString *)base index:(NSInteger)index
+{
+    NSString *path = BRLazyPartPath(base, (long)index);
+    NSData *src = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
+    if (!src) { BRLog(@"Lazy factory %@/%ld: its text is gone", base, (long)index); return nil; }
+    [[NSFileManager defaultManager] setAttributes:@{ NSFileModificationDate: [NSDate date] } ofItemAtPath:path error:NULL];
+    NSMutableData *wrapped = [NSMutableData dataWithCapacity:src.length + 32];
+    [wrapped appendBytes:"var __br_lazyValue=(" length:20];
+    [wrapped appendData:src];
+    [wrapped appendBytes:"\n);" length:3];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://ios6-browser.invalid/lazy/%@/%ld.js", base, (long)index]];
+    __block NSData *out = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    [[BRJSEngine transpiler] performAsync:^{
+        @autoreleasepool { out = [self transpiledScript:wrapped charset:@"utf-8" url:url module:NO]; }
+        dispatch_semaphore_signal(done);
+    }];
+    BOOL finished = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(240 * NSEC_PER_SEC))) == 0;
+    BRLog(@"Lazy factory %@/%ld (%lu KB) asked for by the page: %@ after %ld ms", base, (long)index, (unsigned long)(src.length >> 10),
+          !finished ? @"still lowering, sent as it is" : out ? @"lowered" : @"sent as it is", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+    return (finished && out) ? out : wrapped;
 }
 
 + (void)cancelPendingWork
