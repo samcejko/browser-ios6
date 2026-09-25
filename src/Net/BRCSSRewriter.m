@@ -12,6 +12,11 @@ static const NSUInteger BRMaxPagesRemembered = 8;
 static const NSTimeInterval BRTranspilerIdleRelease = 6;
 static const NSTimeInterval BRRewriterIdleRelease = 15;
 static const long BRRewriterIdleReleaseAboveMB = 170;
+// what the system should have available before heavy work starts (MB): a floor plus a share of the input size
+// (measured: lowering a 1-1.5 MB script function by function takes 45-75 MB; rewriting takes less)
+static const long BRRoomFloorMB = 55, BRRoomPerMBScript = 40, BRRoomPerMBDocument = 25;
+// bumped when a page load is stopped for lack of memory: queued work of that page is dropped
+static volatile NSUInteger g_workGeneration;
 static NSString *BRPageKey(NSURL *url);
 // The bundle is cached by pages for a year, so its URL carries a checksum of the content: a new
 // build with new polyfills gets a new URL instead of the old cached bundle.
@@ -323,6 +328,14 @@ static CGFloat g_devicePixelRatio = 1;
         }
     }
     if (cached) return cached.length ? cached : nil;
+    // room first: when the iPad is short of memory the page waits (loads slower) instead of iOS closing the app; a big
+    // script that still does not fit is left as it is (not cached: it is lowered on a later visit)
+    long need = BRRoomFloorMB + (long)(data.length * BRRoomPerMBScript / (1024 * 1024));
+    if (![BRMemory waitForAvailableMB:need timeout:30 reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", url.lastPathComponent ?: @"a script", (unsigned long)(data.length >> 10)] engine:engine]
+        && [BRMemory availableMB] < BRRoomFloorMB + (long)(data.length * BRRoomPerMBScript / (2 * 1024 * 1024))) {
+        BRLog(@"jsfix %@: left unlowered, not enough memory", url.lastPathComponent ?: @"script");
+        return nil;
+    }
     if (![self ensureJSFixIn:engine]) return nil;
     NSString *used = nil;
     NSString *text = BRDecode(data, charset.length ? charset : nil, &used);
@@ -364,6 +377,11 @@ static CGFloat g_devicePixelRatio = 1;
     // (acorn and jsfix.js load again in about 0.4 s; most scripts come from the cache above anyway)
     [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
     return out;
+}
+
++ (void)cancelPendingWork
+{
+    g_workGeneration++;
 }
 
 + (void)runTranspileTest:(NSDictionary *)params
@@ -575,8 +593,10 @@ static NSString *BRPageKey(NSURL *url)
     if ([kind isEqualToString:@"js"] || [kind isEqualToString:@"jsmodule"]) {
         // scripts on the transpiler engine: stylesheets and documents do not wait behind them
         BOOL module = [kind isEqualToString:@"jsmodule"];
+        NSUInteger generation = g_workGeneration;
         [[BRJSEngine transpiler] performAsync:^{
             @autoreleasepool {
+                if (generation != g_workGeneration) { completion(data, charset); return; }   // (the page load was stopped)
                 NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL module:module] : nil;
                 if (lowered) completion(lowered, @"utf-8");
                 else completion(data, charset);
@@ -584,8 +604,14 @@ static NSString *BRPageKey(NSURL *url)
         }];
         return;
     }
+    NSUInteger generation = g_workGeneration;
     [[BRJSEngine shared] performAsync:^{
         @autoreleasepool {
+            if (generation != g_workGeneration) { completion(data, charset); return; }   // (the page load was stopped)
+            // (big documents and stylesheets wait for room like scripts, but are always rewritten)
+            if (data.length > 256 * 1024)
+                [BRMemory waitForAvailableMB:BRRoomFloorMB + (long)(data.length * BRRoomPerMBDocument / (1024 * 1024)) timeout:15
+                                      reason:[NSString stringWithFormat:@"rewriting %@ (%lu KB)", kind, (unsigned long)(data.length >> 10)] engine:[BRJSEngine shared]];
             [BRMemory setActivity:[NSString stringWithFormat:@"rewriting %@ %@ (%lu KB)", kind, (sourceURL ?: pageURL).lastPathComponent ?: @"",
                                    (unsigned long)(data.length >> 10)] forKey:@"css"];
             NSData *outData = [self rewrittenData:data kind:kind charset:charset pageURL:pageURL mainFrame:mainFrame];

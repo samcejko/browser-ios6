@@ -52,6 +52,7 @@
     // Every http/https load of the UIWebView goes through our TLS stack from now on.
     [BRURLProtocol registerProtocol];
     [BRWatchdog start];
+    [BRMemory start];
     [BRTLSSocket warmUp];
     [BRAdBlock warmUp];
     [BRCSSRewriter warmUp];
@@ -238,7 +239,7 @@
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application
 {
     NSString *busy = [BRMemory activity];
-    BRLog(@"Memory warning at %ld MB%@%@", (long)BRResidentMemoryMB(), busy.length ? @", busy: " : @"", busy ?: @"");
+    BRLog(@"Memory warning at %ld MB, %ld MB available%@%@", (long)BRResidentMemoryMB(), [BRMemory availableMB], busy.length ? @", busy: " : @"", busy ?: @"");
     [[BRConnectionPool shared] drain];
     [BRMemory relieve:@"memory warning"];   // both script engines (recreated on the next use), page garbage, caches
 }
@@ -246,6 +247,9 @@
 - (void)applicationDidEnterBackground:(UIApplication *)application
 {
     [[BRConnectionPool shared] drain];
+    // (a kill in the background is not a page that is too big for the iPad)
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"BRLoadingURL"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
 @end

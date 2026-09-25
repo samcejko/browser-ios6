@@ -15,6 +15,7 @@
 #import "BRWatchdog.h"
 #import "BRMemory.h"
 #import "BRJSEngine.h"
+#import "BRCSSRewriter.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -75,6 +76,8 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic) NSUInteger currentTab;
 @property (nonatomic, copy) NSString *currentTitle;
 @property (nonatomic, strong) NSURL *currentURL;               // last main frame URL that was navigated to
+@property (nonatomic, strong) NSURL *crashedURL;               // the page the previous run died loading (offered again)
+@property (nonatomic) BOOL memoryStopShown;                    // the "page too large" note of this load was shown
 @property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https fails
 @property (nonatomic) BOOL editingAddress;
 @property (nonatomic) BOOL loading;
@@ -410,11 +413,18 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(privateModeChanged:) name:@"BRPrivateModeDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageStyleChanged:) name:@"BRPageStyleDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openURLNotification:) name:@"BROpenURLNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(memoryEmergency:) name:BRMemoryEmergencyNotification object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
 
     NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
+    NSString *crashed = [[NSUserDefaults standardUserDefaults] stringForKey:@"BRLoadingURL"];
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"BRLoadingURL"];
     if (self.skipRestore) { /* the launch URL arrives right after this and takes the tab */ }
+    else if (crashed.length && restored && [[crashed lowercaseString] isEqualToString:[restored.absoluteString lowercaseString]]) {
+        [self goHome];
+        [self offerCrashedPage:restored];
+    }
     else if (restored && [[restored.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:restored];
     else [self goHome];
 }
@@ -1199,10 +1209,48 @@ static void BRWebThreadLock(void)
 
 - (void)setLoading:(BOOL)loading
 {
+    BOOL was = _loading;
     _loading = loading;
     [UIApplication sharedApplication].networkActivityIndicatorVisible = loading;
     [BRWatchdog setPageLoading:loading];
     [self updateLoadingControls];
+    // the page being loaded, written at once: when iOS kills the app for memory in the middle of it, the next launch
+    // knows not to load it again by itself (see viewDidLoad)
+    if (loading != was) {
+        if (loading) self.memoryStopShown = NO;
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        NSString *url = self.currentURL.absoluteString;
+        if (loading && url.length && ![BRSettings isHomeURL:self.currentURL]) [d setObject:url forKey:@"BRLoadingURL"];
+        else [d removeObjectForKey:@"BRLoadingURL"];
+        [d synchronize];
+    }
+}
+
+// the iPad is about to run out of memory while this page loads: the load stops (and the scripts waiting to be lowered
+// are dropped) so that iOS does not close the app; what loaded so far stays usable
+- (void)memoryEmergency:(NSNotification *)note
+{
+    if (!self.loading || self.memoryStopShown) return;
+    self.memoryStopShown = YES;
+    [BRCSSRewriter cancelPendingWork];
+    [self.webView stopLoading];
+    NSString *host = self.currentURL.host ?: self.currentURL.absoluteString ?: @"";
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Page too large")
+                                                    message:[NSString stringWithFormat:L(@"The iPad is running out of memory: %@ stopped loading so that the app stays open. What loaded so far works."), host]
+                                                   delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil];
+    [alert show];
+}
+
+// the previous run ended (killed by iOS, as a rule for lack of memory) while this page was loading: the tab keeps it
+// but it only loads again when asked
+- (void)offerCrashedPage:(NSURL *)url
+{
+    self.crashedURL = url;
+    NSString *message = [NSString stringWithFormat:L(@"The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the page again?"), url.host ?: url.absoluteString];
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Page too large") message:message delegate:self
+                                          cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Load Again"), nil];
+    alert.tag = 510;
+    [alert show];
 }
 
 - (void)updateLoadingControls
@@ -1780,6 +1828,11 @@ static void BRWebThreadLock(void)
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
 {
+    if (alertView.tag == 510) {
+        if (buttonIndex != alertView.cancelButtonIndex && self.crashedURL) [self loadURL:self.crashedURL];
+        self.crashedURL = nil;
+        return;
+    }
     if (alertView.tag == 200 && buttonIndex != alertView.cancelButtonIndex && self.documentController) {
         [self openDocumentController];
     } else if (alertView.tag == 400) {

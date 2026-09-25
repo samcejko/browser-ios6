@@ -4,6 +4,16 @@
 
 #import <objc/message.h>
 #include <dlfcn.h>
+#include <mach/mach.h>
+#include <unistd.h>
+
+NSString * const BRMemoryEmergencyNotification = @"BRMemoryEmergencyNotification";
+
+// Levels by what the whole system has available (free + inactive + purgeable). Measured on the iPad 2 (512 MB):
+// with nothing open about 220-250 MB are available; iOS warns and then kills the frontmost app when it runs out.
+static const long BRAvailTightMB = 90, BRAvailCriticalMB = 55, BRAvailEmergencyMB = 32;
+static volatile BOOL g_pageLoading;
+static CFAbsoluteTime g_lastEmergency;
 
 static NSMutableDictionary *g_activities;
 static long g_lastLoggedMB;
@@ -88,10 +98,87 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     return [d objectForKey:@"BRMemoryReliefMB"] ? (long)[d integerForKey:@"BRMemoryReliefMB"] : BRMemoryDefaultReliefMB;
 }
 
-+ (void)sample
++ (long)availableMB
+{
+    static host_t host;
+    static vm_size_t page;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ host = mach_host_self(); page = 4096; host_page_size(host, &page); });
+    vm_statistics_data_t vm;
+    mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
+    if (host_statistics(host, HOST_VM_INFO, (host_info_t)&vm, &count) != KERN_SUCCESS) return 1000;
+    uint64_t pages = (uint64_t)vm.free_count + vm.inactive_count + vm.purgeable_count;
+    return (long)(pages * page / (1024 * 1024));
+}
+
++ (BRMemoryLevel)levelFor:(long)available
+{
+    if (available < BRAvailEmergencyMB) return BRMemoryLevelEmergency;
+    if (available < BRAvailCriticalMB) return BRMemoryLevelCritical;
+    if (available < BRAvailTightMB) return BRMemoryLevelTight;
+    return BRMemoryLevelNormal;
+}
+
++ (BRMemoryLevel)level
+{
+    return [self levelFor:[self availableMB]];
+}
+
++ (void)setPageLoading:(BOOL)loading
+{
+    g_pageLoading = loading;
+}
+
++ (BOOL)waitForAvailableMB:(long)needMB timeout:(NSTimeInterval)timeout reason:(NSString *)reason engine:(BRJSEngine *)engine
+{
+    long available = [self availableMB];
+    if (available >= needMB) return YES;
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    BRLog(@"Memory: %@ waits for %ld MB (%ld available)", reason, needMB, available);
+    if (engine) [engine releaseContextNow];   // the calling engine's own heap (this is its thread)
+    CFAbsoluteTime lastRelief = 0;
+    while ([NSDate timeIntervalSinceReferenceDate] - t0 < timeout) {
+        if (CFAbsoluteTimeGetCurrent() - lastRelief > 4) {
+            lastRelief = CFAbsoluteTimeGetCurrent();
+            [self relieve:@"waiting"];
+        }
+        usleep(250000);
+        available = [self availableMB];
+        if (available >= needMB) break;
+    }
+    BOOL ok = available >= needMB;
+    BRLog(@"Memory: %@ %@ after %ld ms (%ld MB available)", reason, ok ? @"goes on" : @"stopped waiting",
+          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), available);
+    return ok;
+}
+
+// its own thread: every 2 s, every 0.5 s while a page loads or memory is short
++ (void)start
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSThread *t = [[NSThread alloc] initWithTarget:self selector:@selector(run) object:nil];
+        t.name = @"com.samcejko.browser.memory";
+        [t start];
+    });
+}
+
++ (void)run
+{
+    for (;;) {
+        @autoreleasepool {
+            BRMemoryLevel level = [self sample];
+            usleep(g_pageLoading || level >= BRMemoryLevelTight ? 500000 : 2000000);
+        }
+    }
+}
+
++ (BRMemoryLevel)sample
 {
     long mb = (long)BRResidentMemoryMB();
-    if (mb <= 0) return;
+    if (mb <= 0) return BRMemoryLevelNormal;
+    long available = [self availableMB];
+    BRMemoryLevel level = [self levelFor:available];
     long last;
     BOOL jump;
     @synchronized (self) {
@@ -102,18 +189,30 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     }
     if (jump) {
         NSString *what = [self activity];
-        BRLog(@"Memory %ld MB (%@%ld)%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), what.length ? @", busy: " : @"", what ?: @"");
+        BRLog(@"Memory %ld MB (%@%ld), %ld MB available%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), available,
+              what.length ? @", busy: " : @"", what ?: @"");
         BRWebThreadRunFn run = BRWebThreadRun();
         if (run && mb >= BRMemoryReportFromMB && CFAbsoluteTimeGetCurrent() - g_lastReport > 10) {
             g_lastReport = CFAbsoluteTimeGetCurrent();
             run(^{ BRLog(@"Memory report: %@", [BRMemory webKitNumbers]); });
         }
     }
+    // relief: when the app itself is big, or earlier when the system is short (then more often)
     long threshold = [self reliefThresholdMB];
-    if (threshold > 0 && mb >= threshold && CFAbsoluteTimeGetCurrent() - g_lastRelief > 20) {
-        g_lastRelief = CFAbsoluteTimeGetCurrent();
-        dispatch_async(dispatch_get_main_queue(), ^{ [BRMemory relieve:[NSString stringWithFormat:@"%ld MB", mb]]; });
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    BOOL big = threshold > 0 && mb >= threshold;
+    if ((big && now - g_lastRelief > 20) || (level >= BRMemoryLevelCritical && now - g_lastRelief > 6)) {
+        g_lastRelief = now;
+        NSString *why = level >= BRMemoryLevelCritical ? [NSString stringWithFormat:@"%ld MB available", available] : [NSString stringWithFormat:@"%ld MB", mb];
+        dispatch_async(dispatch_get_main_queue(), ^{ [BRMemory relieve:why]; });
     }
+    // the last resort while a page loads: stop loading it, so that iOS does not have to close the app
+    if (level == BRMemoryLevelEmergency && g_pageLoading && now - g_lastEmergency > 15) {
+        g_lastEmergency = now;
+        BRLog(@"Memory emergency: %ld MB available, %ld MB used: the page load is stopped", available, mb);
+        dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:BRMemoryEmergencyNotification object:nil]; });
+    }
+    return level;
 }
 
 // the WebThread, or a thread holding the web lock
@@ -165,12 +264,13 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
         BRCallClassVoid(@"WebCoreStatistics", @"garbageCollectJavaScriptObjects");
         BRCallClassVoid(@"WebCache", @"emptyInMemoryResources");
         BRCallClassVoid(@"WebCoreStatistics", @"returnFreeMemoryToSystem");
-        BRLog(@"Memory relief (%@): %ld -> %ld MB, WebKit part %ld ms; %@", reason, before, (long)BRResidentMemoryMB(),
-              (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), [BRMemory webKitNumbers]);
+        BRLog(@"Memory relief (%@): %ld -> %ld MB, %ld MB available, WebKit part %ld ms; %@", reason, before, (long)BRResidentMemoryMB(),
+              [BRMemory availableMB], (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), [BRMemory webKitNumbers]);
     };
     BRWebThreadRunFn run = BRWebThreadRun();
     if (run) run(webkit);
-    else { BRWebLock(); webkit(); }
+    else if ([NSThread isMainThread]) { BRWebLock(); webkit(); }
+    else dispatch_async(dispatch_get_main_queue(), ^{ BRWebLock(); webkit(); });
 }
 
 @end

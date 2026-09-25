@@ -149,3 +149,9 @@
 "Site passwords forgotten." = "Hesla k webům byla zapomenuta.";
 "This site checks the browser before showing the page, which this engine cannot pass. Try again with another browser identity?" = "Tento web před zobrazením ověřuje prohlížeč, což tento engine nezvládne. Zkusit stránku znovu s jinou identitou prohlížeče?";
 "Try another identity" = "Zkusit jinou identitu";
+
+/* memory */
+"Page too large" = "Stránka je pro iPad moc velká";
+"Load Again" = "Načíst znovu";
+"The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the page again?" = "iOS aplikaci zavřel během načítání %@ – iPadu došla paměť. Načíst stránku znovu?";
+"The iPad is running out of memory: %@ stopped loading so that the app stays open. What loaded so far works." = "iPadu dochází paměť: načítání %@ se zastavilo, aby aplikace zůstala otevřená. Co se stihlo načíst, funguje.";
