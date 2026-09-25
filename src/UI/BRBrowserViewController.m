@@ -293,6 +293,8 @@ static NSString *BRQueryEscape(NSString *s)
     [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
     [self.webView.scrollView addSubview:self.refreshControl];
     [self enableWebGL];
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugNoCompositing"]) [self setAcceleratedCompositing:NO reason:@"BRDebugNoCompositing"];
+    [BRMemory watchLayer:self.webView.layer];
     [self.view addSubview:self.webView];
 
     // top bar
@@ -434,11 +436,10 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-// WebGL exists in the iOS 6 engine but is switched off for apps; the WebKit preferences object of the
-// web view (private API, guarded) turns it on. Fails silently on engines without these selectors.
-- (void)enableWebGL
+// The WebKit preferences objects that apply to the page (the standard one and the one of the WebView inside the
+// document view), and that inner WebView. Private API, guarded: empty on engines without these selectors.
+- (NSArray *)webPreferenceObjects:(id *)innerWebView documentViewClass:(NSString **)docViewClass
 {
-    SEL setter = NSSelectorFromString(@"setWebGLEnabled:");
     NSMutableArray *targets = [NSMutableArray array];
     Class prefsClass = NSClassFromString(@"WebPreferences");
     SEL standard = NSSelectorFromString(@"standardPreferences");
@@ -450,21 +451,51 @@ static NSString *BRQueryEscape(NSString *s)
     SEL webViewSel = NSSelectorFromString(@"webView");
     SEL prefsSel = NSSelectorFromString(@"preferences");
     NSMutableArray *queue = [NSMutableArray arrayWithObject:self.webView];
-    NSString *docViewClass = nil;
     while (queue.count) {
         UIView *v = queue[0];
         [queue removeObjectAtIndex:0];
         if (v != self.webView && [v respondsToSelector:webViewSel]) {
-            docViewClass = NSStringFromClass([v class]);
+            if (docViewClass) *docViewClass = NSStringFromClass([v class]);
             id inner = ((id (*)(id, SEL))objc_msgSend)(v, webViewSel);
             id p = (inner && [inner respondsToSelector:prefsSel]) ? ((id (*)(id, SEL))objc_msgSend)(inner, prefsSel) : nil;
             if (p && ![targets containsObject:p]) [targets addObject:p];
-            SEL innerSetter = NSSelectorFromString(@"_setWebGLEnabled:");
-            if (inner && [inner respondsToSelector:innerSetter]) ((void (*)(id, SEL, BOOL))objc_msgSend)(inner, innerSetter, YES);
+            if (innerWebView) *innerWebView = inner;
             break;
         }
         [queue addObjectsFromArray:v.subviews];
     }
+    return targets;
+}
+
+static void BRWebThreadLock(void);
+
+// Composited layers (3D transforms, animations, video, fixed and sticky boxes and everything overlapping them) get
+// their own graphics memory, outside the app's resident memory but counted against it by iOS; on a big page that
+// alone can get the app killed. Without them WebKit draws those boxes into the page tiles: slower animations, flat
+// 3D, far less memory. Takes effect on the live page. Main thread.
+- (void)setAcceleratedCompositing:(BOOL)on reason:(NSString *)reason
+{
+    SEL setter = NSSelectorFromString(@"setAcceleratedCompositingEnabled:");
+    NSInteger done = 0;
+    BRWebThreadLock();
+    for (id p in [self webPreferenceObjects:NULL documentViewClass:NULL]) {
+        if (![p respondsToSelector:setter]) continue;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(p, setter, on);
+        done++;
+    }
+    BRLog(@"Accelerated compositing %@ (%@): %ld preference object(s)", on ? @"on" : @"off", reason, (long)done);
+}
+
+// WebGL exists in the iOS 6 engine but is switched off for apps; the WebKit preferences object of the
+// web view (private API, guarded) turns it on. Fails silently on engines without these selectors.
+- (void)enableWebGL
+{
+    SEL setter = NSSelectorFromString(@"setWebGLEnabled:");
+    id inner = nil;
+    NSString *docViewClass = nil;
+    NSArray *targets = [self webPreferenceObjects:&inner documentViewClass:&docViewClass];
+    SEL innerSetter = NSSelectorFromString(@"_setWebGLEnabled:");
+    if (inner && [inner respondsToSelector:innerSetter]) ((void (*)(id, SEL, BOOL))objc_msgSend)(inner, innerSetter, YES);
     NSInteger done = 0;
     NSMutableString *report = [NSMutableString string];
     SEL getter = NSSelectorFromString(@"webGLEnabled");

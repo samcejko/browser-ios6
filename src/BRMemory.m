@@ -2,6 +2,7 @@
 #import "BRCommon.h"
 #import "BRJSEngine.h"
 
+#import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
@@ -18,11 +19,14 @@ static CFAbsoluteTime g_lastEmergency;
 
 static NSMutableDictionary *g_activities;
 static long g_lastLoggedMB;
+static long g_lastLoggedAvailable = -1;
 static long g_peakMB;
 static CFAbsoluteTime g_lastRelief;
 static CFAbsoluteTime g_lastReport;
+static __weak CALayer *g_watchedLayer;
 
 static const long BRMemoryLogStepMB = 24;         // a jump this big gets a log line
+static const long BRMemoryLogDropMB = 40;         // and so does a drop of the system's available memory this big
 static const long BRMemoryReportFromMB = 160;     // jumps above this also log WebKit's numbers
 static const long BRMemoryDefaultReliefMB = 240;
 
@@ -181,19 +185,22 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     long available = [self availableMB];
     BRMemoryLevel level = [self levelFor:available];
     long last;
-    BOOL jump;
+    BOOL jump, drop;
     @synchronized (self) {
         if (mb > g_peakMB) g_peakMB = mb;
         last = g_lastLoggedMB;
-        jump = labs(mb - last) >= BRMemoryLogStepMB;
-        if (jump) g_lastLoggedMB = mb;
+        // (the system can run short while the app itself hardly grows: the graphics memory of a page is not resident)
+        if (available > g_lastLoggedAvailable) g_lastLoggedAvailable = available;   // a drop counts from the recent high
+        drop = g_lastLoggedAvailable - available >= BRMemoryLogDropMB;
+        jump = labs(mb - last) >= BRMemoryLogStepMB || drop;
+        if (jump) { g_lastLoggedMB = mb; g_lastLoggedAvailable = available; }
     }
     if (jump) {
         NSString *what = [self activity];
         BRLog(@"Memory %ld MB (%@%ld), %ld MB available%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), available,
               what.length ? @", busy: " : @"", what ?: @"");
         BRWebThreadRunFn run = BRWebThreadRun();
-        if (run && mb >= BRMemoryReportFromMB && CFAbsoluteTimeGetCurrent() - g_lastReport > 10) {
+        if (run && (mb >= BRMemoryReportFromMB || drop) && CFAbsoluteTimeGetCurrent() - g_lastReport > 10) {
             g_lastReport = CFAbsoluteTimeGetCurrent();
             run(^{ BRLog(@"Memory report: %@", [BRMemory webKitNumbers]); });
         }
@@ -241,8 +248,51 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
          [count[@"Images"] longValue], [size[@"Images"] longValue] >> 20, [decoded[@"Images"] longValue] >> 20,
          [size[@"CSS"] longValue] >> 10, [size[@"JavaScript"] longValue] >> 10];
     }
+    NSString *layers = [self layerNumbers];
+    if (layers.length) [s appendFormat:@", %@", layers];
     NSString *what = [self activity];
     if (what.length) [s appendFormat:@", busy: %@", what];
+    return s;
+}
+
++ (void)watchLayer:(CALayer *)layer
+{
+    g_watchedLayer = layer;
+}
+
+typedef struct { long layers, drawn, tiled; double bytes; } BRLayerTally;
+
+static void BRTallyLayers(CALayer *layer, BRLayerTally *t, NSMutableArray *big, int depth)
+{
+    if (depth > 200) return;
+    t->layers++;
+    CGSize size = layer.bounds.size;
+    BOOL tiled = [layer isKindOfClass:[CATiledLayer class]];   // (draws only the tiles in view: not counted)
+    if (layer.contents || tiled) {
+        CGFloat scale = layer.contentsScale > 0 ? layer.contentsScale : 1;
+        double bytes = (double)size.width * size.height * scale * scale * 4;
+        if (tiled) t->tiled++;
+        else { t->drawn++; t->bytes += bytes; }
+        if (bytes >= 2 * 1024 * 1024)
+            [big addObject:@[@(bytes), [NSString stringWithFormat:@"%@ %.0fx%.0f%@", NSStringFromClass([layer class]), size.width, size.height, tiled ? @" tiled" : @""]]];
+    }
+    for (CALayer *sub in layer.sublayers) BRTallyLayers(sub, t, big, depth + 1);
+}
+
++ (NSString *)layerNumbers
+{
+    CALayer *root = g_watchedLayer;
+    if (!root) return nil;
+    BRLayerTally t = { 0, 0, 0, 0 };
+    NSMutableArray *big = [NSMutableArray array];
+    BRTallyLayers(root, &t, big, 0);
+    [big sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [b[0] compare:a[0]]; }];
+    NSMutableString *s = [NSMutableString stringWithFormat:@"%ld layers (%ld drawn, %ld tiled) %.0f MB", t.layers, t.drawn, t.tiled, t.bytes / 1048576.0];
+    if (big.count) {
+        NSMutableArray *names = [NSMutableArray array];
+        for (NSUInteger i = 0; i < big.count && i < 4; i++) [names addObject:big[i][1]];
+        [s appendFormat:@" (%lu over 2 MB: %@)", (unsigned long)big.count, [names componentsJoinedByString:@", "]];
+    }
     return s;
 }
 

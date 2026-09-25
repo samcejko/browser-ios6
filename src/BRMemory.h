@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 
-@class BRJSEngine;
+@class BRJSEngine, CALayer;
 
 // How much memory the whole iPad has left (iOS kills the frontmost app when the system runs short, whatever the app
 // itself uses: other processes and the graphics memory of big pages count too).
@@ -44,5 +44,11 @@ extern NSString * const BRMemoryEmergencyNotification;   // posted on the main t
 + (BOOL)waitForAvailableMB:(long)needMB timeout:(NSTimeInterval)timeout reason:(NSString *)reason engine:(BRJSEngine *)engine;
 // The watchdog tells whether a page is loading (the emergency stop only applies then).
 + (void)setPageLoading:(BOOL)loading;
+
+// The web view's layer: the graphics memory of the page (document tiles and composited layers, drawn by the GPU
+// outside the app's resident memory) is estimated from the layers under it. Main thread.
++ (void)watchLayer:(CALayer *)layer;
+// "N layers (M drawn), X MB" plus the biggest ones; the WebThread or a thread holding the web lock.
++ (NSString *)layerNumbers;
 
 @end
