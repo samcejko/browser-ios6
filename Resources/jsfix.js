@@ -1923,15 +1923,15 @@
             }
             if (l.type === 'MemberExpression') {
                 var nx = links[i + 1];
-                if (nx && nx.type === 'CallExpression' && nx.optional) {
-                    // a method called with ?.(): the object is its `this`
+                if (nx && nx.type === 'CallExpression' && (nx.optional || hasSpread(nx.arguments))) {
+                    // a method called with ?.() or with spread arguments (.apply): the object is its `this`
                     if (!isIdentCode(cur) && cur !== 'this') { var ot = this.temp(); cur = '(' + ot + '=' + cur + ')'; thisForCall = ot; }
                     else thisForCall = cur;
                 } else thisForCall = null;
                 cur = cur + this.tail(l);
             } else {
                 var spread = hasSpread(l.arguments);
-                if (l.optional && thisForCall !== null) cur = cur + (spread ? '.apply(' + thisForCall + ',' + this.spreadArray(l.arguments) + ')' : '.call(' + thisForCall + (l.arguments.length ? ',' + this.args(l.arguments) : '') + ')');
+                if ((l.optional || spread) && thisForCall !== null) cur = cur + (spread ? '.apply(' + thisForCall + ',' + this.spreadArray(l.arguments) + ')' : '.call(' + thisForCall + (l.arguments.length ? ',' + this.args(l.arguments) : '') + ')');
                 else if (spread) cur = cur + '.apply(void 0,' + this.spreadArray(l.arguments) + ')';
                 else cur = cur + '(' + this.args(l.arguments) + ')';
                 thisForCall = null;
