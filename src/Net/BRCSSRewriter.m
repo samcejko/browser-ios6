@@ -93,6 +93,8 @@ static NSString *BRLazyPartPath(NSString *base, long n)
 }
 
 @implementation BRCSSRewriter {
+    NSMutableDictionary *_noRoom;       // script key -> when it did not fit in memory (not waited for again soon)
+    BOOL _lastNoRoom;                   // (transpiler queue) the last transpiledScript: left as it was for lack of memory
     BOOL _loaded;
     BOOL _loadFailed;
     BOOL _jsfixLoaded;                  // in the rewriter's engine (inline scripts of documents)
@@ -318,6 +320,7 @@ static CGFloat g_devicePixelRatio = 1;
 - (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url module:(BOOL)module
 {
     BRJSEngine *engine = [BRJSEngine transpiler];
+    _lastNoRoom = NO;
     unsigned long crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
     // (a module's registration names its URL: the key has it too)
@@ -355,12 +358,25 @@ static CGFloat g_devicePixelRatio = 1;
         for (NSArray *p in parts) if ([p isKindOfClass:[NSArray class]] && p.count == 2) lazyBytes += [p[1] longValue] - [p[0] longValue];
     }
     // room first: when the iPad is short of memory the page waits (loads slower) instead of iOS closing the app; a big
-    // script that still does not fit is left as it is (not cached: it is lowered on a later visit)
+    // script that still does not fit is left as it is (not cached: it is lowered on a later visit). A factory the page
+    // waits for (a synchronous request: the page stands still) waits less, and one that did not fit a moment ago does
+    // not wait again (a page may ask for it over and over).
     long work = MAX(0L, (long)data.length - lazyBytes);
     long need = BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (1024 * 1024));
-    if (![BRMemory waitForAvailableMB:need timeout:30 reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
-        && [BRMemory availableMB] < BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (2 * 1024 * 1024))) {
+    BOOL lazyPart = [url.host isEqualToString:@"ios6-browser.invalid"];
+    NSDate *noRoom = nil;
+    @synchronized (self) { noRoom = _noRoom[key]; }
+    NSTimeInterval patience = (noRoom && -[noRoom timeIntervalSinceNow] < 120) ? 0 : lazyPart ? 10 : 30;
+    BOOL fits = patience > 0 ? [BRMemory waitForAvailableMB:need timeout:patience reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
+                             : [BRMemory availableMB] >= need;
+    if (!fits && [BRMemory availableMB] < BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (2 * 1024 * 1024))) {
         BRLog(@"jsfix %@: left unlowered, not enough memory", name);
+        @synchronized (self) {
+            if (!_noRoom) _noRoom = [NSMutableDictionary dictionary];
+            if (_noRoom.count > 64) [_noRoom removeAllObjects];
+            _noRoom[key] = [NSDate date];
+        }
+        _lastNoRoom = YES;
         return nil;
     }
     if (![self ensureJSFixIn:engine]) return nil;
@@ -411,6 +427,7 @@ static CGFloat g_devicePixelRatio = 1;
         NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
         if ([last rangeOfString:@"memory"].location != NSNotFound) {
             BRLog(@"jsfix %@: gave up, the iPad is short of memory (%ld MB available)", name, [BRMemory availableMB]);
+            _lastNoRoom = YES;
             [engine releaseContextNow];
             return out;
         }
@@ -480,16 +497,19 @@ static CGFloat g_devicePixelRatio = 1;
     [wrapped appendBytes:"\n);" length:3];
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://ios6-browser.invalid/lazy/%@/%ld.js", base, (long)index]];
     __block NSData *out = nil;
+    __block BOOL noRoom = NO;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     [[BRJSEngine transpiler] performAsync:^{
-        @autoreleasepool { out = [self transpiledScript:wrapped charset:@"utf-8" url:url module:NO]; }
+        @autoreleasepool { out = [self transpiledScript:wrapped charset:@"utf-8" url:url module:NO]; noRoom = _lastNoRoom; }
         dispatch_semaphore_signal(done);
     }];
     BOOL finished = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(240 * NSEC_PER_SEC))) == 0;
     BRLog(@"Lazy factory %@/%ld (%lu KB) asked for by the page: %@ after %ld ms", base, (long)index, (unsigned long)(src.length >> 10),
-          !finished ? @"still lowering, sent as it is" : out ? @"lowered" : @"sent as it is", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
-    return (finished && out) ? out : wrapped;
+          !finished ? @"still lowering" : noRoom ? @"no room to lower it" : out ? @"lowered" : @"sent as it is", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+    // (without room the page gets a factory that says so, not megabytes its engine cannot parse)
+    if (!finished || noRoom) return [@"var __br_lazyValue=function(){throw new Error(\"This part of the page did not fit in the iPad's memory\")};" dataUsingEncoding:NSUTF8StringEncoding];
+    return out ?: wrapped;
 }
 
 + (void)cancelPendingWork

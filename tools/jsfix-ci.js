@@ -40,6 +40,34 @@ function nestedStrictFunctions(ast) {
 }
 
 const run = (code) => vm.runInContext('(function () {' + code + '\n})()', vm.createContext({}));
+
+// A webpack chunk with big factories keeps them for later: the skeleton is ES5, its stubs ask __br_lazy, and a factory
+// lowered on its own (as the app does for /lazy/<key>/<n>.js) behaves like the original.
+function lazyCheck() {
+    const pad = (kb) => '/*' + 'x'.repeat(kb * 1024) + '*/';
+    const chunk = '(self.webpackChunk_t=self.webpackChunk_t||[]).push([[1],{' +
+        '11:(e,t,n)=>{' + pad(60) + 'e.exports={sum:(...a)=>a.reduce((x,y)=>x+y,0),Cls:class{constructor(v){this.v=v}get d(){return this.v*2}},re:/[}{]`/g.source}},' +
+        '12:(e,t,n)=>{e.exports=`small ${1+1} }`},' +
+        '"./x.js":function(e){' + pad(200) + 'e.exports=[..."ab"].join("-")}}]);';
+    const out = JSFix.run(chunk, JSON.stringify({ url: 'https://x/c.js', lazy: 'k-1', force: true }));
+    if (!/^\/\*br-lazy:2:k-1\*\//.test(out)) throw new Error('no lazy skeleton: ' + JSFix.last() + ' ' + out.slice(0, 80));
+    acorn.parse(out, { ecmaVersion: 5 });
+    const parts = JSON.parse(JSFix.lazy());
+    const g = vm.createContext({});
+    g.self = g;
+    g.__br_lazy = function (k, t, a) {
+        const i = +k.split('/')[1], part = chunk.slice(parts[i][0], parts[i][1]), wrapped = 'var __br_lazyValue=(' + part + '\n);';
+        const low = JSFix.run(wrapped, '{"force":true}') || wrapped;
+        acorn.parse(low, { ecmaVersion: 5 });
+        return vm.runInContext('(function(){' + low + '\n;return __br_lazyValue;})()', g).apply(t, a);
+    };
+    vm.runInContext(out, g);
+    const mods = g.webpackChunk_t[0][1], req = (id) => { const m = { exports: {} }; mods[id].call(m.exports, m, m.exports, null); return m.exports; };
+    const a = req(11), b = req(12), c = req('./x.js');
+    const got = JSON.stringify([a.sum(1, 2, 3), new a.Cls(2).d, a.re, b, c, Object.keys(mods)]);
+    const want = JSON.stringify([6, 4, '[}{]`', 'small 2 }', 'a-b', ['11', '12', './x.js']]);
+    if (got !== want) throw new Error('expected ' + want + ' got ' + got);
+}
 const settle = (v) => (v && typeof v.then === 'function')
     ? v.then((x) => JSON.stringify(x), (e) => 'rejected: ' + ((e && e.message) || e))
     : Promise.resolve(JSON.stringify(v));
@@ -63,5 +91,6 @@ const MODES = [['', {}], [' (early)', { early: 0 }]];
         if (actual !== expected) { console.error(`FAIL ${name}: expected ${expected} got ${actual}`); failed++; continue; }
     }
     console.log(`jsfix: ${cases.length * MODES.length - failed}/${cases.length * MODES.length} cases pass (${JSFix.stats.early} functions lowered while parsing, ${JSFix.stats.fallbacks} fallbacks)`);
+    try { lazyCheck(); console.log('jsfix: lazy factories pass'); } catch (e) { console.error('FAIL lazy factories: ' + (e.message || e)); failed++; }
     process.exit(failed ? 1 : 0);
 })();
