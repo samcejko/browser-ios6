@@ -21,8 +21,10 @@
     NSString *version = [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] ?: @"?";
     BRLog(@"Browser %@ starting on %@ (iOS %@)", version, [UIDevice currentDevice].model, [UIDevice currentDevice].systemVersion);
 
-    // Our own HTTP cache (filled explicitly by BRURLProtocol) and a permissive cookie jar, like a browser.
-    NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:64 * 1024 * 1024 diskPath:@"browser-cache"];
+    // Our own HTTP cache (filled explicitly by BRURLProtocol) and a permissive cookie jar, like a browser. The disk part
+    // is big (the user offered 2.5 GB for caches: 1.5 GB here, 1 GB of lowered scripts): a page that comes back skips
+    // the network and the rewriting; memory stays small, it is what the iPad lacks.
+    NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:1536 * 1024 * 1024 diskPath:@"browser-cache"];
     [NSURLCache setSharedURLCache:cache];
     // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
     static const NSInteger BRCacheFormatVersion = 18;   // scripts are left alone when a document's styles are rewritten

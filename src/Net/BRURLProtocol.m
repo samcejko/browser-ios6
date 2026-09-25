@@ -115,7 +115,7 @@ static void BRProgressRequestFinished(NSURLRequest *request)
 }
 static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLResponse.userInfo
 static NSString * const BRCacheMaxAgeKey = @"BRMaxAge";
-static const NSUInteger BRMaxCacheableBody = 2 * 1024 * 1024;
+static const NSUInteger BRMaxCacheableBody = 16 * 1024 * 1024;   // (big bundles and front pages are what is worth keeping)
 
 #pragma mark - HTTP authentication (Basic)
 
@@ -281,6 +281,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, strong) NSCachedURLResponse *staleCached;   // stale cache entry being revalidated
 @property (nonatomic, strong) NSMutableData *cacheBody;
 @property (nonatomic) NSTimeInterval cacheMaxAge;
+@property (nonatomic) NSUInteger cacheLimit;                  // the most of this body that is gathered for the cache
 @property (nonatomic, strong) NSHTTPURLResponse *response;
 // CSS/HTML rewriting: the body is buffered and the response is sent once the rewritten data is ready
 @property (nonatomic, copy) NSString *rewriteKind;
@@ -637,7 +638,13 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     if ([method isEqualToString:@"GET"] && status == 200) {
         NSTimeInterval maxAge = BRMaxAgeForResponse(r.responseHeaders, r.setCookieHeaders.count > 0);
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-        if (maxAge >= 0 && declared <= (long long)BRMaxCacheableBody) {
+        // (the body is gathered in memory until it is stored: big ones only for text, which is also what gets rewritten;
+        // pictures, sounds and videos up to 2 MB)
+        NSString *type = [r.responseHeaders[@"content-type"] lowercaseString] ?: @"";
+        BOOL text = [type hasPrefix:@"text/"] || [type rangeOfString:@"javascript"].location != NSNotFound || [type rangeOfString:@"json"].location != NSNotFound ||
+                    [type rangeOfString:@"xml"].location != NSNotFound || !type.length;
+        self.cacheLimit = text ? BRMaxCacheableBody : 2 * 1024 * 1024;
+        if (maxAge >= 0 && declared <= (long long)self.cacheLimit) {
             self.cacheMaxAge = maxAge;
             self.cacheBody = [NSMutableData data];
         }
@@ -800,7 +807,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         return;
     }
     if (self.cacheBody) {
-        if (self.cacheBody.length + chunk.length > BRMaxCacheableBody) self.cacheBody = nil;
+        if (self.cacheBody.length + chunk.length > self.cacheLimit) self.cacheBody = nil;
         else [self.cacheBody appendData:chunk];
     }
     [self performOnClientThread:^{

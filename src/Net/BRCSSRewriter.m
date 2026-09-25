@@ -599,7 +599,7 @@ static CGFloat g_devicePixelRatio = 1;
         total += [a fileSize];
         [items addObject:@[p, [a fileModificationDate] ?: [NSDate distantPast], @([a fileSize])]];
     }
-    const unsigned long long limit = 48ull * 1024 * 1024;
+    const unsigned long long limit = 1024ull * 1024 * 1024;   // (1 GB: every lowering saved is seconds on the next visit)
     if (total <= limit) return;
     [items sortUsingComparator:^NSComparisonResult(NSArray *x, NSArray *y) { return [x[1] compare:y[1]]; }];
     for (NSArray *it in items) {
