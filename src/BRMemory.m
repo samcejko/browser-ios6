@@ -16,15 +16,19 @@ NSString * const BRMemoryGraphicsNotification = @"BRMemoryGraphicsNotification";
 // (memory can drop 15 MB in a few seconds while a big script is lowered, so the last resort starts well above that).
 static const long BRAvailTightMB = 100, BRAvailCriticalMB = 70, BRAvailEmergencyMB = 45;
 static volatile BOOL g_pageLoading;
+static CFAbsoluteTime g_loadEnded;
 static CFAbsoluteTime g_lastEmergency;
 static CFAbsoluteTime g_lastGraphics;
-// the page's graphics are too big when, with the system short, the layers hold this much (estimated) or this much
-// memory went in a few seconds without the app's resident memory growing (layers drawn by the GPU are not resident)
-static const long BRLayersTightMB = 24, BRLayersCriticalMB = 8, BRUnexplainedDropMB = 80;
+// The page's graphics are too big when its layers hold this much (estimated; a normal page has 2-12 MB, one that
+// runs away grows by 50 MB a second: 41 -> 268 MB in 5 s on CNN) or there are this many of them (a composited video
+// or fixed box makes everything painted over it a layer too: 469 on CNN), less when the system is short, or when
+// this much memory went in a few seconds without the app's resident memory growing (GPU memory is not resident).
+static const long BRLayersMB = 32, BRLayersTightMB = 16, BRLayersCriticalMB = 8, BRLayersDrawnMax = 150, BRUnexplainedDropMB = 60;
 
 static NSMutableDictionary *g_activities;
 static long g_lastLoggedMB;
 static long g_lastLoggedAvailable = -1;
+static long g_lastLoggedLayerMB;
 static long g_peakMB;
 static CFAbsoluteTime g_lastRelief;
 static CFAbsoluteTime g_lastReport;
@@ -136,7 +140,14 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
 
 + (void)setPageLoading:(BOOL)loading
 {
+    if (!loading && g_pageLoading) g_loadEnded = CFAbsoluteTimeGetCurrent();
     g_pageLoading = loading;
+}
+
+// loading, or its scripts are still settling (lazy images, ads and players come in right after the load)
+static BOOL BRPageBusy(void)
+{
+    return g_pageLoading || CFAbsoluteTimeGetCurrent() - g_loadEnded < 20;
 }
 
 + (BOOL)waitForAvailableMB:(long)needMB timeout:(NSTimeInterval)timeout reason:(NSString *)reason engine:(BRJSEngine *)engine
@@ -178,7 +189,7 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     for (;;) {
         @autoreleasepool {
             BRMemoryLevel level = [self sample];
-            usleep(g_pageLoading || level >= BRMemoryLevelTight ? 500000 : 2000000);
+            usleep(BRPageBusy() || level >= BRMemoryLevelTight ? 500000 : 2000000);
         }
     }
 }
@@ -237,9 +248,9 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
     BRMemoryLevel level = [self levelFor:available];
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     // the page's graphics: estimated from its layers (CALayer reads are safe from any thread)
-    long layerMB = -1;
-    if (g_watchedLayer && (g_pageLoading || level >= BRMemoryLevelTight)) {
-        @autoreleasepool { layerMB = (long)([self layerTally:nil].bytes / 1048576); }
+    long layerMB = -1, drawn = 0;
+    if (g_watchedLayer) {
+        @autoreleasepool { BRLayerTally t = [self layerTally:nil]; layerMB = (long)(t.bytes / 1048576); drawn = t.drawn; }
     }
     long unexplained = BRUnexplainedDrop(now, available, mb);
     long last;
@@ -250,12 +261,12 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
         // (the system can run short while the app itself hardly grows: the graphics memory of a page is not resident)
         if (available > g_lastLoggedAvailable) g_lastLoggedAvailable = available;   // a drop counts from the recent high
         drop = g_lastLoggedAvailable - available >= BRMemoryLogDropMB;
-        jump = labs(mb - last) >= BRMemoryLogStepMB || drop;
-        if (jump) { g_lastLoggedMB = mb; g_lastLoggedAvailable = available; }
+        jump = labs(mb - last) >= BRMemoryLogStepMB || drop || (layerMB >= 0 && labs(layerMB - g_lastLoggedLayerMB) >= BRMemoryLogStepMB / 2);
+        if (jump) { g_lastLoggedMB = mb; g_lastLoggedAvailable = available; if (layerMB >= 0) g_lastLoggedLayerMB = layerMB; }
     }
     if (jump) {
         NSString *what = [self activity];
-        NSString *graphics = layerMB >= 0 ? [NSString stringWithFormat:@", layers %ld MB", layerMB] : @"";
+        NSString *graphics = layerMB >= 0 ? [NSString stringWithFormat:@", layers %ld MB (%ld drawn)", layerMB, drawn] : @"";
         if (unexplained >= 24) graphics = [graphics stringByAppendingFormat:@", %ld MB gone outside the app", unexplained];
         BRLog(@"Memory %ld MB (%@%ld), %ld MB available%@%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), available, graphics,
               what.length ? @", busy: " : @"", what ?: @"");
@@ -266,11 +277,12 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
         }
     }
     // graphics: the page is drawn without composited layers (slower animations, flat 3D) before it gets the app killed
-    BOOL heavy = (level >= BRMemoryLevelTight && (layerMB >= BRLayersTightMB || unexplained >= BRUnexplainedDropMB)) ||
+    BOOL heavy = layerMB >= BRLayersMB || drawn >= BRLayersDrawnMax ||
+                 (level >= BRMemoryLevelTight && (layerMB >= BRLayersTightMB || unexplained >= BRUnexplainedDropMB)) ||
                  (level >= BRMemoryLevelCritical && layerMB >= BRLayersCriticalMB);
     if (heavy && now - g_lastGraphics > 10) {
         g_lastGraphics = now;
-        BRLog(@"Memory: the page's graphics are too big (%ld MB available, layers %ld MB, %ld MB gone outside the app)", available, layerMB, unexplained);
+        BRLog(@"Memory: the page's graphics are too big (%ld MB available, %ld layers drawn, %ld MB, %ld MB gone outside the app)", available, drawn, layerMB, unexplained);
         dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:BRMemoryGraphicsNotification object:nil]; });
     }
     // relief: when the app itself is big, or earlier when the system is short (then more often)

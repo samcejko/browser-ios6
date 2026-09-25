@@ -489,6 +489,8 @@ static void BRWebThreadLock(void);
     }
     // (the standard preferences save every change in the app's defaults: this one is for this run only)
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"WebKitAcceleratedCompositingEnabled"];
+    // the page's styles and layout at once, while this thread has the page: the layers go now, not on the next timer
+    if (!on && self.webView.request) [self.webView stringByEvaluatingJavaScriptFromString:@"document.documentElement ? document.documentElement.offsetHeight : 0"];
     BRLog(@"Accelerated compositing %@ (%@): %ld preference object(s)", on ? @"on" : @"off", reason, (long)done);
 }
 
@@ -1290,6 +1292,7 @@ static void BRWebThreadLock(void)
         [hosts addObject:host];
         while (hosts.count > 60) [hosts removeObjectAtIndex:0];
         [d setObject:hosts forKey:@"BRHeavyGraphicsHosts"];
+        [d synchronize];   // (iOS may kill the app in a moment)
     }
     if (self.compositingOff) return;
     self.compositingOff = YES;
