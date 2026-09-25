@@ -5180,6 +5180,16 @@
     if (!window.XRSystem) { window.XRSystem = function XRSystem() {}; window.XRSession = function XRSession() {}; }
     if (window.HTMLMediaElement && !window.HTMLMediaElement.prototype.requestPictureInPicture) { window.HTMLMediaElement.prototype.requestPictureInPicture = rejectWith('NotSupportedError', 'Picture in picture is not available'); if (!('pictureInPictureEnabled' in document)) try { Object.defineProperty(document, 'pictureInPictureEnabled', { get: function () { return false; }, configurable: true }); document.exitPictureInPicture = rejectWith('InvalidStateError', 'not in picture in picture'); } catch (e) {} }
     if (window.MathMLElement === undefined) window.MathMLElement = function MathMLElement() {};
+    // canPlayType: the old engine says "maybe" for types that name exactly one codec it plays (ADTS AAC, MP3), where
+    // today's browsers say "probably" (players that insist on "probably" skipped AAC and MP3 streams)
+    if (window.HTMLMediaElement && window.HTMLMediaElement.prototype.canPlayType && !window.HTMLMediaElement.prototype.canPlayType.__brSure) {
+        var nativeCanPlay = window.HTMLMediaElement.prototype.canPlayType, SINGLE_CODEC = { 'audio/aac': 1, 'audio/x-aac': 1, 'audio/mpeg': 1, 'audio/mp3': 1 };
+        window.HTMLMediaElement.prototype.canPlayType = function (type) {
+            var r = nativeCanPlay.apply(this, arguments);
+            return r === 'maybe' && SINGLE_CODEC[String(type).replace(/\s+/g, '').toLowerCase()] ? 'probably' : r;
+        };
+        window.HTMLMediaElement.prototype.canPlayType.__brSure = true;
+    }
 
     // ---- Everyday DOM differences that break modern scripts on the old engine
     // addEventListener(type, fn, {passive, once, capture, signal}): the old engine reads the options object as capture=true

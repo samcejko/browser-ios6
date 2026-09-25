@@ -947,6 +947,29 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         }
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
+    } else if ([path hasPrefix:@"/dev/"] && [[NSUserDefaults standardUserDefaults] boolForKey:@"BRDevPages"]) {
+        // test pages on the device (a debugging switch, off unless set over SSH): files copied to tmp/devpages are served
+        // like a web page, so they get the rewriter and the polyfills of the real engine
+        NSString *name = [path substringFromIndex:5];
+        NSString *ext = [[name pathExtension] lowercaseString];
+        NSDictionary *types = @{ @"html": @"text/html; charset=utf-8", @"js": @"text/javascript; charset=utf-8", @"css": @"text/css; charset=utf-8",
+                                 @"json": @"application/json", @"bin": @"application/octet-stream", @"txt": @"text/plain; charset=utf-8" };
+        if (name.length && [name rangeOfString:@"/"].location == NSNotFound && ![name hasPrefix:@"."] && types[ext]) {
+            NSString *file = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"devpages"] stringByAppendingPathComponent:name];
+            body = [NSData dataWithContentsOfFile:file];
+            type = types[ext];
+            cacheControl = @"no-store";
+            if (body && [ext isEqualToString:@"html"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
+                self.done = YES;
+                self.rewriteKind = @"html";
+                self.rewriteBuffer = [body mutableCopy];
+                self.rewriteCharset = @"utf-8";
+                self.pendingStatus = 200;
+                self.pendingHeaderFields = @{ @"Content-Type": type, @"Cache-Control": @"no-store" };
+                [self finishRewrite];
+                return;
+            }
+        }
     } else if ([path hasPrefix:@"/lazy/"]) {
         // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request
         // of the page's stub, answered when it is lowered)
