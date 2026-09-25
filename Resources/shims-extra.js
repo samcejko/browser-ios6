@@ -1852,25 +1852,38 @@
             try { if (window.__brVars) window.__brVars.setManifest(manifest); } catch (e2) {}
             schedule();
         };
+        // what the network layer registered so far (the page asks only for what came since: GitHub's is 2.3 MB), and
+        // the count of its root variables and stylesheets
+        var KINDS = ['has', 'cq', 'dv', 'pt', 'cv', 'sc'], base = null, baseVars = 0;
+        var sinceParam = function () {
+            if (!base || window.__brManifestURL) return '';
+            var parts = [];
+            for (var i = 0; i < KINDS.length; i++) parts.push(KINDS[i] + ':' + base[KINDS[i]].length);
+            parts.push('vars:' + baseVars, 'sheets:' + (base.sheets ? base.sheets.length : 0));
+            return '&since=' + parts.join(',');
+        };
         var load = function () {
             if (fetching || !window.XMLHttpRequest || fetches > 40) return;
             fetching = true;
             fetches++;
             try {
                 var x = new XMLHttpRequest();
-                x.open('GET', manifestURL(), true);
+                x.open('GET', manifestURL() + sinceParam(), true);
                 x.onreadystatechange = function () {
                     if (x.readyState !== 4) return;
                     fetching = false;
                     if (x.status !== 200 || !x.responseText || x.responseText === lastText) return;
+                    var got = null, i, k;
+                    try { got = JSON.parse(x.responseText); } catch (e) { got = null; }
+                    if (!got || got.same) return;
                     lastText = x.responseText;
-                    try { manifest = JSON.parse(x.responseText); } catch (e) { manifest = null; }
-                    if (manifest && !manifest.has) manifest.has = [];
-                    if (manifest && !manifest.cq) manifest.cq = [];
-                    if (manifest && !manifest.dv) manifest.dv = [];
-                    if (manifest && !manifest.pt) manifest.pt = [];
-                    if (manifest && !manifest.cv) manifest.cv = [];
-                    if (manifest && !manifest.sc) manifest.sc = [];
+                    // (a full answer: the first one, a test URL, or reset because the network layer forgot the page)
+                    if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
+                    for (i = 0; i < KINDS.length; i++) { k = KINDS[i]; if (got[k] && got[k].length) base[k] = base[k].concat(got[k]); }
+                    if (got.sheets) base.sheets = got.sheets;
+                    if (got.vars) { base.vars = got.vars; baseVars = 0; for (k in got.vars) if (got.vars.hasOwnProperty(k)) baseVars++; }
+                    manifest = { sheets: base.sheets, vars: base.vars };
+                    for (i = 0; i < KINDS.length; i++) manifest[KINDS[i]] = base[KINDS[i]].slice(0);
                     if (manifest) { notePageVars(manifest); mergeExtra(manifest); }
                     try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
                     try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}

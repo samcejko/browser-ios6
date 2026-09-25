@@ -877,11 +877,12 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     } else if ([path isEqualToString:@"/manifest"]) {
         // :has() / @container entries collected for the page named in ?doc= (see BRCSSRewriter)
         NSString *query = self.request.URL.query ?: @"";
-        NSString *doc = nil;
+        NSString *doc = nil, *since = nil;
         for (NSString *pair in [query componentsSeparatedByString:@"&"]) {
             if ([pair hasPrefix:@"doc="]) doc = [[pair substringFromIndex:4] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+            else if ([pair hasPrefix:@"since="]) since = [[pair substringFromIndex:6] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
         }
-        body = [[BRCSSRewriter shared] manifestJSONForPageURLString:doc ?: self.request.mainDocumentURL.absoluteString];
+        body = [[BRCSSRewriter shared] manifestJSONForPageURLString:doc ?: self.request.mainDocumentURL.absoluteString since:since];
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/speech/"]) {

@@ -212,6 +212,42 @@ static CGFloat g_devicePixelRatio = 1;
     return out;
 }
 
+// since: "has:3,cq:0,...,vars:40,sheets:2", what the page has already: only the entries after those counts come back
+// (all of them, with reset, when the page has more than there are), and {"same":1} when nothing changed. GitHub's
+// manifest is 2.3 MB, and the page asks again whenever its DOM settles.
+- (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString since:(NSString *)since
+{
+    if (!since.length) return [self manifestJSONForPageURLString:pageURLString];
+    NSMutableDictionary *have = [NSMutableDictionary dictionary];
+    for (NSString *part in [since componentsSeparatedByString:@","]) {
+        NSRange c = [part rangeOfString:@":"];
+        if (c.location != NSNotFound) have[[part substringToIndex:c.location]] = @([[part substringFromIndex:c.location + 1] integerValue]);
+    }
+    NSString *key = BRPageKey([NSURL URLWithString:pageURLString ?: @""]);
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSArray *kinds = @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc"];
+    BOOL changed = NO, reset = NO;
+    @synchronized (self) {
+        NSDictionary *m = _pageManifests[key];
+        NSMutableDictionary *rootVars = [_pageVars[key] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [rootVars removeObjectForKey:@" scoped"];
+        for (NSString *kind in kinds) if ([have[kind] integerValue] > (NSInteger)[m[kind] count]) reset = YES;
+        for (NSString *kind in kinds) {
+            NSArray *list = m[kind] ?: @[];
+            NSUInteger from = reset ? 0 : (NSUInteger)MAX(0, [have[kind] integerValue]);
+            if (from < list.count) { out[kind] = [list subarrayWithRange:NSMakeRange(from, list.count - from)]; changed = YES; }
+            else out[kind] = @[];
+        }
+        NSArray *sheets = [m[@"sheets"] copy] ?: @[];
+        if ((NSInteger)sheets.count != [have[@"sheets"] integerValue] || (NSInteger)rootVars.count != [have[@"vars"] integerValue]) changed = YES;
+        out[@"sheets"] = sheets;
+        out[@"vars"] = rootVars;
+    }
+    if (!changed && !reset) return [@"{\"same\":1}" dataUsingEncoding:NSUTF8StringEncoding];
+    if (reset) out[@"reset"] = @YES;
+    return [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL] ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+}
+
 - (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString
 {
     NSString *key = BRPageKey([NSURL URLWithString:pageURLString ?: @""]);

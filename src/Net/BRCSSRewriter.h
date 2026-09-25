@@ -41,6 +41,8 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 // https://ios6-browser.invalid/manifest?doc=<page> to evaluate them. Thread safe.
 - (void)registerManifestInData:(NSData *)data pageURL:(NSURL *)pageURL sourceURL:(NSURL *)sourceURL;
 - (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString;
+// Only what the page lacks: since = "has:<n>,cq:<n>,dv:<n>,pt:<n>,cv:<n>,sc:<n>,vars:<n>,sheets:<n>" (counts it has).
+- (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString since:(NSString *)since;
 // The same data without the trailing manifest comment: what WebKit gets (the cache keeps it; GitHub's manifests are
 // 2.3 MB that the engine would otherwise keep and parse as stylesheet text).
 + (NSData *)dataWithoutManifest:(NSData *)data;
