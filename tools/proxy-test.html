@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>proxy test</title>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// The Proxy stand-in the transpiler gives scripts that use Proxy without a fallback (JSFix.transpile with proxy: true;
+// on the device the old engine has no Proxy, so it is automatic there).
+var CASES = [
+  ['get and set traps', 'var log = []; var p = new Proxy({ a: 1 }, { get: function (t, k) { log.push("get " + k); return t[k]; }, set: function (t, k, v) { log.push("set " + k); t[k] = v * 2; return true; } }); p.a; p.a = 5; var last = p.a; return [log, last];', [['get a', 'set a', 'get a'], 10]],
+  ['no traps forward', 'var t = { a: 1 }; var p = new Proxy(t, {}); p.a = 2; return [t.a, p.a, Object.keys(p)];', [2, 2, ['a']]],
+  ['array push reaches the set trap', 'var t = [1], hits = 0; var p = new Proxy(t, { set: function (t, k, v) { hits++; t[k] = v; return true; } }); p.push(2); return [t.length, t[1], hits > 0, Array.isArray(p), JSON.stringify(p), p.length];', [2, 2, true, true, '[1,2]', 2]],
+  ['function apply', 'var f = new Proxy(function (a) { return a + 1; }, { apply: function (t, self, args) { return t(args[0]) * 10; } }); return f(1);', 20],
+  ['function construct', 'var C = new Proxy(function (x) { this.x = x; }, { construct: function (t, args) { return { made: args[0] }; } }); var D = new Proxy(function (x) { this.x = x; }, {}); return [new C(3).made, new D(4).x];', [3, 4]],
+  ['ownKeys give the scope keys', 'var p = new Proxy({ objects: [{ a: 1 }] }, { ownKeys: function () { return ["a"]; }, get: function (t, k) { return k === "a" ? t.objects[0].a : undefined; } }); var r; with (p) { r = a; } return r;', 1],
+  ['methods see the proxy as this', 'var p = new Proxy({ n: 1, inc: function () { this.n++; return this.n; } }, { get: function (t, k) { return t[k]; }, set: function (t, k, v) { t[k] = v + 100; return true; } }); return p.inc();', 102],
+  ['needs new', 'try { Proxy({}, {}); return "no"; } catch (e) { return e instanceof TypeError; }', true],
+  ['non-object target', 'try { new Proxy(1, {}); return "no"; } catch (e) { return e instanceof TypeError; }', true]
+];
+var pass = 0, lines = [];
+CASES.forEach(function (c) {
+  var got, err = null;
+  try { got = (0, eval)(JSFix.transpile('(function () {' + c[1] + '})();', { proxy: true })); } catch (e) { err = e; }
+  var ok = !err && JSON.stringify(got) === JSON.stringify(c[2]);
+  if (ok) pass++;
+  lines.push((ok ? 'OK   ' : 'FAIL ') + c[0] + (ok ? '' : ': got ' + (err ? 'error ' + err : JSON.stringify(got)) + ', expected ' + JSON.stringify(c[2])));
+});
+document.getElementById('out').textContent = lines.join('\n');
+document.title = 'proxy ' + pass + '/' + CASES.length;
+</script>
+</body>
+</html>

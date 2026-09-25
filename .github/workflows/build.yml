@@ -181,7 +181,7 @@ jobs:
           npm install --no-save --silent acorn@8 terser@5
           npx terser Resources/shims.js --compress --mangle --output Resources/js/shims.js
           npx terser Resources/shims-extra.js --compress --mangle --output Resources/js/shims-extra.js
-          node tools/check-es5.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/jsfix.js Resources/browserscore.js Resources/js/*.js
+          node tools/check-es5.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/jsfix.js Resources/browserscore.js Resources/worker-shims.js Resources/js/*.js
           node tools/jsfix-ci.js
 
       - name: Generate icons and launch images

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>alpine test</title>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<div x-data="{ open: false, count: 1, items: ['a', 'b'], label() { return 'n' + this.count; } }">
+  <button id="t" @click="open = !open; count++">toggle</button>
+  <span id="c" x-text="count"></span> <span id="l" x-text="label()"></span>
+  <div id="p" x-show="open">panel</div>
+  <ul id="list"><template x-for="it in items"><li x-text="it"></li></template></ul>
+  <button id="add" @click="items.push('c' + items.length)">add</button>
+  <input id="in" x-model="count">
+</div>
+<pre id="out">running</pre>
+<script>
+// Alpine 3 as the device gets it: transpiled with the Proxy stand-in (the desktop Proxy is removed first).
+var src = (function () { var x = new XMLHttpRequest(); x.open('GET', '/samples/alpine.js', false); x.send(null); return x.responseText; })();
+var out = JSFix.transpile(src, { proxy: true });
+var usesStandIn = /__br_Proxy/.test(out) && !/new Proxy\(/.test(out);
+window.Proxy = undefined;
+(0, eval)(out);
+var text = function (id) { return document.getElementById(id).textContent.replace(/\s+/g, ' ').trim(); };
+var shown = function (id) { return getComputedStyle(document.getElementById(id)).display !== 'none'; };
+setTimeout(function () {
+  var r = { standIn: usesStandIn, start: [text('c'), text('l'), shown('p'), document.querySelectorAll('#list li').length] };
+  document.getElementById('t').click();
+  document.getElementById('add').click();
+  setTimeout(function () {
+    r.after = [text('c'), text('l'), shown('p'), document.querySelectorAll('#list li').length, text('list')];
+    var inp = document.getElementById('in');
+    inp.value = '7';
+    inp.dispatchEvent(new Event('input'));
+    setTimeout(function () {
+      r.model = [text('c'), text('l')];
+      var expected = { standIn: true, start: ['1', 'n1', false, 2], after: ['2', 'n2', true, 3, 'abc2'], model: ['7', 'n7'] };
+      var fails = [];
+      for (var k in expected) if (JSON.stringify(r[k]) !== JSON.stringify(expected[k])) fails.push(k + ': expected ' + JSON.stringify(expected[k]) + ' got ' + JSON.stringify(r[k]));
+      document.getElementById('out').textContent = fails.length ? 'FAIL\n' + fails.join('\n') : 'PASS';
+      document.title = fails.length ? 'alpine FAIL ' + fails.length : 'alpine PASS';
+    }, 100);
+  }, 100);
+}, 300);
+</script>
+</body>
+</html>

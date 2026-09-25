@@ -6333,10 +6333,34 @@
             for (var j = 0; j < tpls.length; j++) vars.push(tpls[j]);
             return 'try{importScripts("https://ios6-browser.invalid/worker-polyfills.js");}catch(e){}\n' + parts.join('\n') + (vars.length ? '\nvar ' + vars.join(',') + ';' : '') + '\n' + src;
         };
+        // the text of script blobs made from strings, by object URL (XHR of blob: URLs does not work everywhere)
+        var recent = [], texts = {};
+        var WrappedBlob = function Blob(parts, opts) {
+            var b = arguments.length > 1 ? new NativeBlob(parts, opts) : arguments.length ? new NativeBlob(parts) : new NativeBlob();
+            if (parts && parts.length && opts && /javascript|ecmascript/i.test(opts.type || '')) {
+                var text = '';
+                for (var i = 0; i < parts.length; i++) { if (typeof parts[i] !== 'string') { text = null; break; } text += parts[i]; }
+                if (text !== null) { recent.push([b, text]); if (recent.length > 16) recent.shift(); }
+            }
+            return b;
+        };
+        WrappedBlob.prototype = NativeBlob.prototype;
+        try { window.Blob = WrappedBlob; } catch (e0) {}
+        var remember = function (owner) {
+            if (!owner || !owner.createObjectURL || owner.createObjectURL.__brBlobText) return;
+            var createURL = owner.createObjectURL;
+            owner.createObjectURL = function (obj) {
+                var u = createURL.apply(this, arguments);
+                for (var i = recent.length - 1; i >= 0; i--) if (recent[i][0] === obj) { texts[u] = recent[i][1]; break; }
+                return u;
+            };
+            owner.createObjectURL.__brBlobText = true;
+        };
+        try { remember(window.URL); remember(window.webkitURL); } catch (e1) {}
         var Wrapped = function Worker(url, opts) {
             var u = String(url);
             if (/^blob:/i.test(u)) {
-                var src = read(u), fixed = src ? prepare(src) : null;
+                var src = texts.hasOwnProperty(u) ? texts[u] : read(u), fixed = src ? prepare(src) : null;
                 if (fixed !== null) { try { u = (window.URL || window.webkitURL).createObjectURL(new NativeBlob([fixed], { type: 'text/javascript' })); } catch (e) {} }
             }
             return arguments.length > 1 ? new NativeWorker(u, opts) : new NativeWorker(u);

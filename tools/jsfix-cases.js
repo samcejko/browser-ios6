@@ -35,6 +35,8 @@ var JSFIX_CASES = [
   ['extends Array', 'class L extends Array { sum() { return this.reduce((a, b) => a + b, 0); } } var l = new L(); l.push(1, 2, 3); return [l.length, l.sum(), l instanceof L, Array.isArray(l)];'],
   ['class expression and static block', 'var K = class Named { static { this.init = 42; } who() { return Named.init; } }; return [new K().who(), K.name];'],
   ['new.target', 'function F() { return new.target === F; } class A { constructor() { this.t = new.target === B; } } class B extends A {} return [new F() instanceof F, new B().t];'],
+  ['await inside optional chain links', 'var o = { a: { b: function (x) { return this.k + x; }, k: 1 }, m: function (y) { return y * 2; }, x: { 3: "three" } }; var hits = 0; var p = function () { hits++; return Promise.resolve(3); }; async function f(o) { return [o?.a.b(await p()), o?.m?.(await p()), o?.x?.[await p()], o?.nope?.(await p())]; } return Promise.all([f(o), f(null)]).then(function (r) { return r.concat([hits]); });'],
+  ['yield inside an optional call', 'function* g(o) { return o?.f(yield 1); } var it = g({ f: function (x) { return x + 1; } }); it.next(); var a = it.next(5).value; var it2 = g(null); var b = it2.next(); return [a, b.done, b.value];'],
   ['optional chaining', 'var o = { a: { b: 1, f() { return this.b; } }, n: null }; return [o?.a?.b, o.n?.b, o.x?.y.z, o.a.f?.(), o.a.g?.(), o.n?.f(), (o?.a).b, o?.["a"]?.["b"]];'],
   ['nullish and logical assignment', 'var a = null, b = 0, c; a ??= 5; b ||= 7; c &&= 1; var o = { x: 0 }; o.x ??= 9; o.y ??= 3; return [a, b, c, o.x, o.y, null ?? "d", 0 ?? "e"];'],
   ['exponent', 'var x = 3; x **= 2; return [2 ** 10, x, (-2) ** 2, 2 ** -1];'],

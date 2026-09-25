@@ -148,6 +148,60 @@
             try { Object.defineProperty(f, '__br_n', { value: n }); } catch (e2) {}
             return n;
         },
+        // Proxy for scripts that use it without a fallback (Alpine's reactivity and scope proxies): an ES5 engine
+        // intercepts only properties that exist as accessors, so the proxy gets one per key the target has (own keys,
+        // the handler's ownKeys(), Vue's reactivity flags), added again after every set; array proxies keep accessors
+        // a little past the end, so push() reaches the set trap, and pass Array.isArray. has, deleteProperty,
+        // defineProperty and keys that appear later are not intercepted. Function targets call apply/construct.
+        __br_Proxy: function (target, handler) {
+            if (!(this instanceof __br_Proxy)) throw new TypeError("Constructor Proxy requires 'new'");
+            if (target === null || (typeof target !== 'object' && typeof target !== 'function') || handler === null || typeof handler !== 'object') {
+                throw new TypeError('Cannot create proxy with a non-object as target or handler');
+            }
+            var slice = Array.prototype.slice, proxy, done = {}, isArr = Object.prototype.toString.call(target) === '[object Array]';
+            // (the receiver of a set is the target: Reflect.set(target, key, v, proxy) would find our accessor on the
+            // proxy and refuse)
+            var read = function (key) { return handler.get ? handler.get(target, key, proxy) : target[key]; };
+            var write = function (key, v) { if (handler.set) handler.set(target, key, v, target); else target[key] = v; };
+            if (typeof target === 'function') {
+                proxy = function () {
+                    var args = slice.call(arguments);
+                    if (this instanceof proxy) return handler.construct ? handler.construct(target, args, proxy) : __br_new(target, args);
+                    return handler.apply ? handler.apply(target, this, args) : target.apply(this, args);
+                };
+                proxy.prototype = target.prototype;
+            } else proxy = Object.create(Object.getPrototypeOf(target));
+            var define = function (key) {
+                if (typeof key !== 'string' || done['$' + key]) return;
+                done['$' + key] = 1;
+                var d = Object.prototype.hasOwnProperty.call(target, key) ? Object.getOwnPropertyDescriptor(target, key) : null;
+                try {
+                    Object.defineProperty(proxy, key, { get: function () { return read(key); }, set: function (v) { write(key, v); keys(); },
+                                                        enumerable: !!(d && d.enumerable), configurable: true });
+                } catch (e) {}
+            };
+            var keys = function () {
+                var list = Object.getOwnPropertyNames(target), k;
+                for (k = 0; k < list.length; k++) define(list[k]);
+                if (isArr) for (k = 0; k < target.length + 16; k++) define(String(k));
+                if (handler.ownKeys) { try { list = handler.ownKeys(target); for (k = 0; k < list.length; k++) define(list[k]); } catch (e) {} }
+            };
+            keys();
+            var flags = ['__v_skip', '__v_isReactive', '__v_isReadonly', '__v_isShallow', '__v_raw'];
+            for (var f = 0; f < flags.length; f++) define(flags[f]);
+            if (isArr) {
+                try {
+                    Object.defineProperty(proxy, '__br_proxyArray', { value: true });
+                    Object.defineProperty(proxy, 'toJSON', { value: function () { return slice.call(proxy); }, configurable: true });
+                } catch (e2) {}
+                if (!Array.isArray.__brProxy) {
+                    var isArray = Array.isArray;
+                    Array.isArray = function (x) { return isArray(x) || (x !== null && typeof x === 'object' && x.__br_proxyArray === true); };
+                    Array.isArray.__brProxy = true;
+                }
+            }
+            return proxy;
+        },
         __br_new: function (C, a) {
             switch (a.length) {
                 case 0: return new C();
@@ -423,7 +477,7 @@
         }
     };
     var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
-                         __br_super: ['__br_isNative', '__br_new'] };
+                         __br_super: ['__br_isNative', '__br_new'], __br_Proxy: ['__br_new'] };
 
     // ------------------------------------------------------------------------------------------------ small utilities
     var hex4 = function (c) { return ('0000' + c.toString(16)).slice(-4); };
@@ -750,6 +804,7 @@
         this.mod = null;       // module mode: {deps, depIndex, exports, stars}
         this.imports = [];     // import bindings
         this.tla = false;      // await at the top level of a module
+        this.proxyShim = false;   // free references to Proxy become __br_Proxy (the script has no fallback of its own)
     };
     var W = Walker.prototype;
     W.inArrow = function () { var f = this.fns[this.fns.length - 1]; return !!(f && f.$arrow); };
@@ -1170,6 +1225,7 @@
             b = null;
             for (var x = s; x; x = x.parent) { b = x.decls[key]; if (b) break; }
             if (b) { b.refs.push(id); id.$b = b; }
+            else if (id.name === 'Proxy' && this.proxyShim) { id.$proxy = true; markDirty(id); }
             // the name is free in every function between the reference and the binding's function
             stop = b ? b.scope.fn : null;
             for (f = s.fn; f && f !== stop; f = f.parent ? f.parent.fn : null) f.free[key] = 1;
@@ -1345,7 +1401,7 @@
         switch (n.type) {
             case 'Identifier':
                 if (n.$b && n.$b.kind === 'import') { code = this.importRef(n.$b); this.prec = n.$b.imp.name === null ? P_PRIMARY : P_CALL; return code; }
-                code = n.$b ? (n.$b.newName || n.name) : n.name === 'arguments' ? this.argsCode() : n.name;
+                code = n.$b ? (n.$b.newName || n.name) : n.$proxy ? this.h('__br_Proxy') : n.name === 'arguments' ? this.argsCode() : n.name;
                 this.prec = P_PRIMARY;
                 return code;
             case 'Literal': code = this.literal(n); return code;
@@ -2740,8 +2796,37 @@
                     if (base.type === 'MemberExpression' ? base.computed && containsLeap(base.property) : anyLeap(base.arguments)) linkLeap = true;
                     base = base.type === 'MemberExpression' ? base.object : base.callee;
                 }
-                if (linkLeap) throw new Unsupported('yield inside an optional chain');
-                return finish(this.chain(n.expression, null, viaTemp(null, base)));
+                if (!linkLeap) return finish(this.chain(n.expression, null, viaTemp(null, base)));
+                // a link waits: the chain step by step, every value in a temporary (in evaluation order), a nullish
+                // value before an optional link jumps to the undefined result
+                if (base.type === 'Super') throw new Unsupported('yield inside an optional chain on super');
+                var links = [], ln = n.expression, obj = null;
+                while (ln.type === 'MemberExpression' || ln.type === 'CallExpression') { links.unshift(ln); ln = ln.type === 'MemberExpression' ? ln.object : ln.callee; }
+                var chainOut = this.gTemp(), nullLoc = this.gLoc(), endLoc = this.gLoc(), cur = viaTemp(this.gTemp(), base);
+                for (i = 0; i < links.length; i++) {
+                    var lk = links[i];
+                    if (lk.optional) this.gJumpIf(cur + '==null', nullLoc);
+                    if (lk.type === 'MemberExpression') {
+                        obj = cur;
+                        cur = this.gAssign(this.gTemp(), cur + (lk.computed ? '[' + viaTemp(null, lk.property) + ']' : this.tail(lk)));
+                        continue;
+                    }
+                    var callCode;
+                    if (hasSpread(lk.arguments)) callCode = cur + '.apply(' + (obj !== null ? obj : 'void 0') + ',' + listCode(lk.arguments) + ')';
+                    else {
+                        var cargs = [];
+                        for (var ai = 0; ai < lk.arguments.length; ai++) cargs.push(viaTemp(null, lk.arguments[ai]));
+                        callCode = obj !== null ? cur + '.call(' + [obj].concat(cargs).join(',') + ')' : cur + '(' + cargs.join(',') + ')';
+                    }
+                    cur = this.gAssign(this.gTemp(), callCode);
+                    obj = null;
+                }
+                this.gAssign(chainOut, cur);
+                this.gJump(endLoc);
+                this.gMark(nullLoc);
+                this.gAssign(chainOut, 'void 0');
+                this.gMark(endLoc);
+                return finish(chainOut);
             }
         }
         throw new Unsupported('yield in ' + n.type);
@@ -2754,6 +2839,10 @@
         return acorn.parse(src, { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                                   allowReserved: true, locations: false });
     };
+    // a script that looks for Proxy itself (and has a way without it) keeps the global one
+    var PROXY_DETECT = /typeof\s*\(?\s*Proxy\b|['"]Proxy['"]\s*in\b|\b(?:window|self|globalThis|global)\.Proxy\b/;
+    var PROXY_USE = /\bnew\s+Proxy\s*\(/;
+    var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src) && !PROXY_DETECT.test(src); };
     // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
     // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
     var transpile = function (src, opts) {
@@ -2761,6 +2850,7 @@
         var module = !!opts.module;
         var ast = parse(src, module);
         var w = new Walker(src);
+        w.proxyShim = opts.proxy !== undefined ? !!opts.proxy : needsProxy(src);
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body));
         w.stmts(ast.body, ast, ps, false);
@@ -2796,7 +2886,8 @@
             stats.last = 'module';
             return mout;
         }
-        if (!opts.force && engineParses(src)) { stats.skipped++; stats.last = 'es5'; return ''; }
+        // (a script the engine parses is still transpiled when it needs the Proxy stand-in)
+        if (!opts.force && engineParses(src) && !needsProxy(src)) { stats.skipped++; stats.last = 'es5'; return ''; }
         var t0 = new Date().getTime(), out = null;
         try { out = transpile(src, opts); } catch (e2) {
             stats.failed++;
