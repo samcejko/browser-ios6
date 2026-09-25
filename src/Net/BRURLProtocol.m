@@ -750,9 +750,15 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
         if (cacheable && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
         [[BRCSSRewriter shared] registerManifestInData:out pageURL:page sourceURL:url];
+        // (the page shim fetches the manifest from us: WebKit gets the text without it)
+        NSData *body = [kind hasPrefix:@"js"] ? out : [BRCSSRewriter dataWithoutManifest:out];
+        if (body.length != out.length) {
+            BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)body.length]);
+            response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
+        }
         [self performOnClientThread:^{
             [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
-            if (out.length) [self.client URLProtocol:self didLoadData:out];
+            if (body.length) [self.client URLProtocol:self didLoadData:body];
             [self.client URLProtocolDidFinishLoading:self];
         }];
     }];
@@ -809,6 +815,13 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     NSString *cachedType = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
     if ([cachedType hasPrefix:@"text/css"] || [cachedType hasPrefix:@"text/html"]) {
         [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL sourceURL:self.request.URL];
+        NSData *body = [BRCSSRewriter dataWithoutManifest:data];
+        if (body.length != data.length) {
+            NSMutableDictionary *f = [response.allHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
+            BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)body.length]);
+            response = [[NSHTTPURLResponse alloc] initWithURL:response.URL statusCode:response.statusCode HTTPVersion:@"HTTP/1.1" headerFields:f];
+            data = body;
+        }
     }
     [self performOnClientThread:^{
         [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];

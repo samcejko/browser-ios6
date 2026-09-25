@@ -192,6 +192,26 @@ static CGFloat g_devicePixelRatio = 1;
     }
 }
 
++ (NSData *)dataWithoutManifest:(NSData *)data
+{
+    if (data.length < 20) return data;
+    NSRange m = [data rangeOfData:[@"br-manifest:" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:NSMakeRange(0, data.length)];
+    if (m.location == NSNotFound || m.location < 4) return data;
+    const char *bytes = data.bytes;
+    NSUInteger start;
+    NSData *closer;
+    if (bytes[m.location - 2] == '/' && bytes[m.location - 1] == '*') { start = m.location - 2; closer = [@"*/" dataUsingEncoding:NSUTF8StringEncoding]; }
+    else if (memcmp(bytes + m.location - 4, "<!--", 4) == 0) { start = m.location - 4; closer = [@"-->" dataUsingEncoding:NSUTF8StringEncoding]; }
+    else return data;
+    NSRange end = [data rangeOfData:closer options:NSDataSearchBackwards range:NSMakeRange(m.location, data.length - m.location)];
+    if (end.location == NSNotFound) return data;
+    NSUInteger after = end.location + end.length;
+    NSMutableData *out = [NSMutableData dataWithCapacity:start + (data.length - after)];
+    [out appendBytes:bytes length:start];
+    [out appendBytes:bytes + after length:data.length - after];
+    return out;
+}
+
 - (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString
 {
     NSString *key = BRPageKey([NSURL URLWithString:pageURLString ?: @""]);

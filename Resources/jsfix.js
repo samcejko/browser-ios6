@@ -3061,51 +3061,11 @@
     };
 
     // ------------------------------------------------------------------------------------------------ entry points
-    // acorn's hot paths without Function.prototype.call (finishNode for every node, updateContext for most tokens): in
-    // the 2012 engine that is a native function that enters the engine again for the callee. The same code otherwise;
-    // checkUnreserved compares the name before asking the scope getters.
-    var patchAcorn = function (acorn) {
-        var AP = acorn.Parser && acorn.Parser.prototype, tt = acorn.tokTypes;
-        if (!AP || AP.__brPatched || !tt) return;
-        AP.__brPatched = true;
-        AP.finishNodeAt = function (node, type, pos, loc) {
-            node.type = type;
-            node.end = pos;
-            if (this.options.locations) node.loc.end = loc;
-            if (this.options.ranges) node.range[1] = pos;
-            return node;
-        };
-        AP.finishNode = function (node, type) { return this.finishNodeAt(node, type, this.lastTokEnd, this.lastTokEndLoc); };
-        // (each token type's updateContext becomes a method of the parser, called by name)
-        for (var k in tt) if (hasOwn.call(tt, k) && tt[k] && typeof tt[k].updateContext === 'function') { AP['__brUpd_' + k] = tt[k].updateContext; tt[k].__brUpd = '__brUpd_' + k; }
-        AP.updateContext = function (prevType) {
-            var type = this.type, m;
-            if (type.keyword && prevType === tt.dot) this.exprAllowed = false;
-            else if ((m = type.__brUpd)) this[m](prevType);
-            else if (type.updateContext) type.updateContext.call(this, prevType);
-            else this.exprAllowed = type.beforeExpr;
-        };
-        AP.checkUnreserved = function (ref) {
-            var start = ref.start, end = ref.end, name = ref.name;
-            if (name === 'yield' && this.inGenerator) this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
-            if (name === 'await' && this.inAsync) this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
-            if (name === 'arguments' && this.currentThisScope().inClassFieldInit) this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
-            if ((name === 'arguments' || name === 'await') && this.inClassStaticBlock) this.raise(start, 'Cannot use ' + name + ' in class static initialization block');
-            if (this.keywords.test(name)) this.raise(start, "Unexpected keyword '" + name + "'");
-            if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf('\\') !== -1) return;
-            var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
-            if (re.test(name)) {
-                if (!this.inAsync && name === 'await') this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
-                this.raiseRecoverable(start, "The keyword '" + name + "' is reserved");
-            }
-        };
-    };
     // onFunction(node, strict, inClass): every `function` and arrow as soon as the parser completed it (the parser's
     // strictness is the surrounding code's again by then)
     var parse = function (src, module, onFunction, onImport) {
         var acorn = root.acorn;
         if (!acorn || !acorn.parse) throw new Unsupported('acorn missing');
-        patchAcorn(acorn);
         var options = { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                         allowReserved: true, locations: false };
         if (!onFunction) return acorn.parse(src, options);
@@ -3310,7 +3270,6 @@
         stats.last = 'lowered';
         return out;
     };
-    if (root.acorn) patchAcorn(root.acorn);
     // (lowerUnicode: the page's RegExp constructor lowers u/v patterns with it, see shims-extra.js)
     root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex };
 })(this);
