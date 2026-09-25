@@ -2079,18 +2079,22 @@ var CSSFix = (function () {
     // (a document: only its <style> blocks and style attributes are CSS)
     var STYLE_PARTS = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)|(\sstyle\s*=\s*")([^"]*)(")/gi;
     function guardCalcTransitions(out, ctx, kind) {
-        var calc = {}, k, m, names = [], css = kind === 'html' ? '' : out;
-        if (kind === 'html') { STYLE_PARTS.lastIndex = 0; while ((m = STYLE_PARTS.exec(out))) css += (m[2] || m[5] || '') + ';'; }
+        var calc = {}, k, m, names = [], css = kind === 'html' ? '' : out, scripts = [];
+        if (kind === 'html') {
+            out = hideScripts(out, scripts);
+            STYLE_PARTS.lastIndex = 0;
+            while ((m = STYLE_PARTS.exec(out))) css += (m[2] || m[5] || '') + ';';
+        }
         if (ctx.pageCalc) for (k in ctx.pageCalc) if (ctx.pageCalc.hasOwnProperty(k)) calc[k] = 1;
         CALC_DECL.lastIndex = 0;
         while ((m = CALC_DECL.exec(css))) calc[m[2].toLowerCase()] = 1;
         for (k in calc) if (calc.hasOwnProperty(k)) names.push(k);
         if (names.length) ctx.root[' calc'] = names.join(' ');   // for the page's later documents
-        if (!/-webkit-transition/i.test(css)) return out;
+        if (!/-webkit-transition/i.test(css)) return kind === 'html' ? showScripts(out, scripts) : out;
         if (kind === 'html') {
-            return out.replace(STYLE_PARTS, function (whole, o1, body1, c1, o2, body2, c2) {
+            return showScripts(out.replace(STYLE_PARTS, function (whole, o1, body1, c1, o2, body2, c2) {
                 return o1 !== undefined && o1 !== '' ? o1 + guardTransitionText(body1, calc) + c1 : o2 + guardTransitionText(body2, calc) + c2;
-            });
+            }), scripts);
         }
         return guardTransitionText(out, calc);
     }
@@ -4161,8 +4165,19 @@ var CSSFix = (function () {
         return html + tag;
     }
 
+    // Scripts set aside while a document's <style> blocks and style attributes are rewritten: markup inside their
+    // strings (Google builds '<style>...</style>' and style="..." in JavaScript) is not the document's, and rewritten
+    // CSS with line breaks there ended the string literals (SyntaxError on google.com).
+    var SCRIPT_MARK = String.fromCharCode(1) + 'brScript', SCRIPT_MARK_RE = new RegExp(SCRIPT_MARK + '(\\d+)' + String.fromCharCode(1), 'g');
+    function hideScripts(html, store) {
+        return html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, function (s) { store.push(s); return SCRIPT_MARK + (store.length - 1) + String.fromCharCode(1); });
+    }
+    function showScripts(html, store) {
+        return store.length ? html.replace(SCRIPT_MARK_RE, function (all, i) { return store[+i]; }) : html;
+    }
     function fixHTML(html, ctx, opts) {
-        var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi;
+        var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, scripts = [];
+        html = hideScripts(html, scripts);
         // 1. collect variables from every <style> block first (they usually hold the theme)
         var m;
         while ((m = styleRe.exec(html)) !== null) {
@@ -4194,6 +4209,7 @@ var CSSFix = (function () {
             return prefix + '"' + fixed + '"';
         });
         // 4. scripts: inline ones transpiled, polyfill bundle injected first thing in <head>
+        html = showScripts(html, scripts);
         html = fixScripts(html, opts);
         if (opts && opts.polyfillURL) html = injectPolyfills(html, opts.polyfillURL);
         if (opts && opts.hideCookieBanners) html = injectCookieBannerCSS(html);
