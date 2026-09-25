@@ -46,6 +46,23 @@ static const uint8_t BRBlankGIF[] = {
 
 static NSString * const BRHandledKey = @"BRURLProtocolHandled";
 NSString * const BRPageProgressNotification = @"BRPageProgressNotification";
+NSString * const BRPageDocumentNotification = @"BRPageDocumentNotification";
+
+// The HTML of a page is about to reach WebKit: how heavy it is to draw (bytes; `html` nil when only the size is
+// known), told to the main thread before WebKit lays it out.
+static void BRNotePageDocument(NSURL *url, NSData *html, unsigned long long bytes)
+{
+    NSUInteger videos = 0;
+    const char *p = html.bytes, *end = p + html.length;
+    while (p && p + 6 <= end && (p = memchr(p, '<', (size_t)(end - p))) && p + 6 <= end) {
+        if ((p[1] | 0x20) == 'v' && (p[2] | 0x20) == 'i' && (p[3] | 0x20) == 'd' && (p[4] | 0x20) == 'e' && (p[5] | 0x20) == 'o') videos++;
+        p++;
+    }
+    NSDictionary *info = @{ @"url": url ?: [NSNull null], @"bytes": @(bytes), @"videos": @(videos) };
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:BRPageDocumentNotification object:nil userInfo:info];
+    });
+}
 
 #pragma mark - Page progress and main document facts
 
@@ -671,6 +688,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
             if (declared <= 6 * 1024 * 1024) kind = @"webp";
         }
     }
+    BOOL mainHTML = (!self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL]) && ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]);
+    if (mainHTML && ![kind isEqualToString:@"html"]) BRNotePageDocument(url, nil, (unsigned long long)MAX(0LL, [r.responseHeaders[@"content-length"] longLongValue]));
     if (kind) {
         self.rewriteKind = kind;
         self.rewriteBuffer = [NSMutableData data];
@@ -690,6 +709,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 - (void)abandonRewrite
 {
     NSData *buffered = self.rewriteBuffer;
+    if ([self.rewriteKind isEqualToString:@"html"] && (!self.request.mainDocumentURL || [self.request.URL isEqual:self.request.mainDocumentURL]))
+        BRNotePageDocument(self.request.URL, buffered, buffered.length);
     self.rewriteBuffer = nil;
     self.rewriteKind = nil;
     NSHTTPURLResponse *response = self.response;
@@ -737,6 +758,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     NSTimeInterval maxAge = self.cacheMaxAge;
     self.cacheBody = nil;
     BOOL mainFrame = !self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL];
+    if (mainFrame && [kind isEqualToString:@"html"]) BRNotePageDocument(url, buffered, buffered.length);
     [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:BRURLWithoutModuleMarker(url) mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
@@ -813,6 +835,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     NSHTTPURLResponse *response = (NSHTTPURLResponse *)cached.response;
     NSData *data = cached.data;
     NSString *cachedType = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
+    if ([cachedType hasPrefix:@"text/html"] && (!self.request.mainDocumentURL || [self.request.URL isEqual:self.request.mainDocumentURL]))
+        BRNotePageDocument(self.request.URL, data, data.length);
     if ([cachedType hasPrefix:@"text/css"] || [cachedType hasPrefix:@"text/html"]) {
         [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL sourceURL:self.request.URL];
         NSData *body = [BRCSSRewriter dataWithoutManifest:data];

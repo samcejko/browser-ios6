@@ -5,6 +5,9 @@
 // HTTP cache on top of NSURLCache.
 // Posted on the main thread while a page loads: userInfo page (URL string), started and finished (NSNumber).
 extern NSString * const BRPageProgressNotification;
+// Posted on the main thread when the HTML of a page (main frame) is about to reach WebKit: userInfo url (NSURL),
+// bytes and videos (NSNumber: its size and its <video> elements, what makes a page heavy to draw).
+extern NSString * const BRPageDocumentNotification;
 
 // Asked on the main thread when a server wants HTTP Basic authentication. The completion may be called
 // from any thread; nil user means cancelled.

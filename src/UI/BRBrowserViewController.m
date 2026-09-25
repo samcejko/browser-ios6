@@ -420,6 +420,7 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openURLNotification:) name:@"BROpenURLNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(memoryEmergency:) name:BRMemoryEmergencyNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(graphicsMemoryHigh:) name:BRMemoryGraphicsNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageDocumentArrived:) name:BRPageDocumentNotification object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
 
@@ -1299,15 +1300,37 @@ static void BRWebThreadLock(void)
     [self setAcceleratedCompositing:NO reason:[NSString stringWithFormat:@"the graphics of %@ are too big", host ?: @"the page"]];
 }
 
-// a new page: compositing is back on unless its site needed it off before
-- (void)chooseCompositingForURL:(NSURL *)url
+- (BOOL)compositingOffForHost:(NSString *)host
 {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    NSString *host = [url.host lowercaseString];
-    BOOL off = [d boolForKey:@"BRDebugNoCompositing"] || (host.length && [[d arrayForKey:@"BRHeavyGraphicsHosts"] containsObject:host]);
+    return [d boolForKey:@"BRDebugNoCompositing"] || (host.length && [[d arrayForKey:@"BRHeavyGraphicsHosts"] containsObject:[host lowercaseString]]);
+}
+
+// A page on its way: a site whose graphics ran away before is drawn without compositing from the start. (Only this
+// direction here: switching it on while the previous page is still shown could make that page's layers run away.)
+- (void)compositingForNavigationTo:(NSURL *)url
+{
+    if (self.compositingOff || ![self compositingOffForHost:url.host]) return;
+    self.compositingOff = YES;
+    [self setAcceleratedCompositing:NO reason:[NSString stringWithFormat:@"%@ had too big graphics before", url.host]];
+}
+
+// The page's HTML is about to reach WebKit: a big document (a news front page, a portal) or one with several videos
+// has the kind of layout whose composited layers run away on this engine (a 5 MB page with 5 videos: 469 layers,
+// 300 MB in 10 s); such a page is drawn without compositing from the start. The rest get it (WebGL, 3D transforms).
+- (void)pageDocumentArrived:(NSNotification *)note
+{
+    NSURL *url = [note.userInfo[@"url"] isKindOfClass:[NSURL class]] ? note.userInfo[@"url"] : nil;
+    unsigned long long bytes = [note.userInfo[@"bytes"] unsignedLongLongValue];
+    NSUInteger videos = [note.userInfo[@"videos"] unsignedIntegerValue];
+    NSString *why = nil;
+    if ([self compositingOffForHost:url.host]) why = [NSString stringWithFormat:@"%@ had too big graphics before", url.host];
+    else if (bytes >= 400 * 1024) why = [NSString stringWithFormat:@"a big page (%llu KB)", bytes >> 10];
+    else if (videos >= 2) why = [NSString stringWithFormat:@"a page with %lu videos", (unsigned long)videos];
+    BOOL off = why != nil;
     if (off == self.compositingOff) return;
     self.compositingOff = off;
-    [self setAcceleratedCompositing:!off reason:off ? [NSString stringWithFormat:@"%@ had too big graphics before", host] : @"a new page"];
+    [self setAcceleratedCompositing:!off reason:why ?: @"a light page"];
 }
 
 // the previous run ended (killed by iOS, as a rule for lack of memory) while this page was loading: the tab keeps it
@@ -2419,7 +2442,7 @@ static void BRWebThreadLock(void)
     if (handled) {
         BOOL mainFrame = [url isEqual:request.mainDocumentURL] || navigationType != UIWebViewNavigationTypeOther;
         if (mainFrame && ![scheme isEqualToString:@"about"] && ![scheme isEqualToString:@"applewebdata"]) {
-            if (![url.host isEqualToString:self.currentURL.host] || self.compositingOff) [self chooseCompositingForURL:url];
+            [self compositingForNavigationTo:url];
             self.currentURL = url;
             self.readerShown = NO;
             [self updateAddressFieldWithURL:url];
