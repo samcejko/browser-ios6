@@ -6328,13 +6328,18 @@
             });
         };
         var report = function (e) { try { if (window.console && console.error) console.error(e); } catch (x) {} };
+        // (a script element inserted by a script gets its load/error event once its module ran)
+        var fire = function (el, type) {
+            if (!el) return;
+            try { var ev = document.createEvent('Event'); ev.initEvent(type, false, false); el.dispatchEvent(ev); } catch (e) {}
+        };
         var drain = function () {
             if (draining || document.readyState === 'loading') return;
             var item = queue.shift();
             if (!item) return;
             draining = true;
             var next = function () { draining = false; drain(); };
-            item.p.then(function () { return evaluate(item.r); }).then(next, function (e) { report(e); next(); });
+            item.p.then(function () { return evaluate(item.r); }).then(function () { fire(item.el, 'load'); next(); }, function (e) { report(e); fire(item.el, 'error'); next(); });
         };
         // modules run after the document is parsed, often after DOMContentLoaded/load already happened here: listeners
         // they add for those while they run are called anyway (real modules run before both)
@@ -6358,9 +6363,9 @@
             define: function (url, deps, factory) { var r = record(url); if (!r.factory) { r.deps = deps; r.factory = factory; r.error = null; } },
             fail: function (url, message) { record(url).error = new SyntaxError('Module ' + url + ' could not be lowered: ' + message); },
             // a <script type="module">: src (resolved against the document) or the id of an inline module defined before
-            entry: function (src, id) {
+            entry: function (src, id, el) {
                 var r = record(id || toURL(src, document.baseURI));
-                queue.push({ r: r, p: fetchAll(r) });
+                queue.push({ r: r, p: fetchAll(r), el: el || null });
                 drain();
             },
             'import': function (spec, base) {
@@ -6372,5 +6377,76 @@
         };
         window.__brModules = api;
         window.__brImport = api['import'];
+
+        // <script type="module"> elements that scripts insert (the engine ignores the type): a src is loaded like the
+        // document's; a data: URL or inline text is defined here, plain code without import/export in a function
+        // of its own (module scope, strict), anything else lowered by the page's transpiler
+        // (window.__brTestModuleType: another type for tests in engines that run modules themselves)
+        var isModuleScript = function (n) {
+            if (!n || n.nodeType !== 1 || n.nodeName !== 'SCRIPT' || n.__brModule) return false;
+            var t = n.getAttribute('type') || '';
+            return /^\s*module\s*$/i.test(t) || (!!window.__brTestModuleType && t === window.__brTestModuleType);
+        };
+        var dataText = function (url) {
+            var m = /^data:([^,]*),([\s\S]*)$/i.exec(url);
+            if (!m) return null;
+            try { return /;base64$/i.test(m[1]) ? window.atob(m[2]) : decodeURIComponent(m[2]); } catch (e) { return null; }
+        };
+        var inlineCount = 0, IMPORT_EXPORT = /(^|[;}\s])(import|export)\b/;
+        var defineText = function (text, id) {
+            var F = window.Function.__brNative || window.Function, body = null;
+            if (!IMPORT_EXPORT.test(text)) {
+                try { body = F('"use strict";\n' + text); } catch (e) { body = null; }
+                if (body) {
+                    api.define(id, [], function () { return [[], function () { body.call(void 0); }]; });
+                    return true;
+                }
+            }
+            if (!window.__brTranspiler || !window.__brTranspiler()) return false;
+            var code = '';
+            try { code = window.JSFix.run(text, JSON.stringify({ module: true, url: id })); } catch (e2) { code = ''; }
+            if (!code) return false;
+            try { (0, eval)(code); } catch (e3) { record(id).error = e3; }
+            return true;
+        };
+        var startModule = function (el) {
+            if (!isModuleScript(el)) return;
+            el.__brModule = true;
+            var src = el.getAttribute('src');
+            if (src && !/^data:/i.test(src)) { api.entry(src, null, el); return; }
+            // (the rewriter names the document's inline modules <page>#module-<n>)
+            var text = src ? dataText(src) : el.text, id = document.baseURI.replace(/#.*$/, '') + '#inserted-module-' + (++inlineCount);
+            if (text === null || !defineText(text, id)) { setTimeout(function () { fire(el, 'error'); }, 0); return; }
+            api.entry(null, id, el);
+        };
+        var inDocument = function (n) { return !!n && !!document.documentElement && document.documentElement.contains(n); };
+        var watchInsert = function (proto, name) {
+            var orig = proto && proto[name];
+            if (typeof orig !== 'function' || orig.__brModules) return;
+            var wrapped = function () {
+                var scripts = [];
+                for (var a = 0; a < arguments.length; a++) {
+                    var n = arguments[a];
+                    if (!n || typeof n !== 'object') continue;
+                    if (isModuleScript(n)) scripts.push(n);
+                    else if (n.nodeType === 11 && n.querySelectorAll) { var inner = n.querySelectorAll('script'); for (var k = 0; k < inner.length; k++) if (isModuleScript(inner[k])) scripts.push(inner[k]); }
+                    if (name === 'insertBefore' || name === 'replaceChild') break;   // (the second argument is the reference node)
+                }
+                var r = orig.apply(this, arguments);
+                for (var i = 0; i < scripts.length; i++) if (inDocument(scripts[i])) startModule(scripts[i]);
+                return r;
+            };
+            wrapped.__brModules = true;
+            try { proto[name] = wrapped; } catch (e) {}
+        };
+        var NodeP = window.Node && Node.prototype, ElementP = window.Element && Element.prototype;
+        watchInsert(NodeP, 'appendChild');
+        watchInsert(NodeP, 'insertBefore');
+        watchInsert(NodeP, 'replaceChild');
+        watchInsert(ElementP, 'append');
+        watchInsert(ElementP, 'prepend');
+        watchInsert(ElementP, 'before');
+        watchInsert(ElementP, 'after');
+        watchInsert(ElementP, 'replaceWith');
     })();
 })(window, document);

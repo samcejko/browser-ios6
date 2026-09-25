@@ -94,4 +94,7 @@ var JSFIX_CASES = [
   ['this at top level in arrows', 'var f = () => typeof this; return f();'],
   ['computed class members', 'var s = Symbol("s"), k = "dyn"; class A { [k]() { return 1; } static [k + "S"]() { return 2; } get [s]() { return 3; } } var a = new A(); return [a.dyn(), A.dynS(), a[s]];'],
   ['Symbol.iterator class', 'class R { constructor(n) { this.n = n; } *[Symbol.iterator]() {} } return 1;'.replace(' *[Symbol.iterator]() {}', ' [Symbol.iterator]() { var i = 0, n = this.n; return { next: () => ({ done: i >= n, value: i++ }) }; }') + ' ; return [...new R(3)];'],
+  ['direct eval of ES2015 literals', 'var a = 2; function g() { var a = 5; return [eval("(() => a)()"), eval("class K { m() { return 3; } }; new K().m()"), eval("`t${a}`")]; } return g();'],
+  ['direct eval of built text sees locals', 'function g() { var x = 7, code = "var y = x + 1; " + "[y, (() => x * 2)()]"; return eval(code); } return g();'],
+  ['eval as a local name is not the engine eval', 'function g(eval) { return eval("q"); } return g(function (s) { return s + "!"; });'],
 ];

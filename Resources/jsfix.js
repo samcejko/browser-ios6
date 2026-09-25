@@ -263,6 +263,16 @@
             if (typeof window !== 'undefined' && window.__brImport) return window.__brImport(spec, base);
             return Promise.reject(new Error('import() is not supported: ' + spec));
         },
+        // the text of a direct eval (the call stays direct, so the code still sees the caller's variables): lowered
+        // by the page's transpiler when the engine refuses it
+        __br_evalSrc: function (src) {
+            if (typeof src !== 'string') return src;
+            var G = typeof window !== 'undefined' ? window : self, F = G.Function.__brNative || G.Function;
+            try { F(src); return src; } catch (e) {
+                if (!(e instanceof SyntaxError) || !G.__brTranspiler || !G.__brTranspiler()) return src;
+                try { var out = G.JSFix.transpile(src, { evalCode: true }); return out === null ? src : out; } catch (e2) { return src; }
+            }
+        },
         // async function expressions: Object.getPrototypeOf(async function () {}).constructor is an AsyncFunction
         // (Alpine compiles its expressions with it) whose functions return promises
         __br_asyncFn: function (fn) {
@@ -1136,6 +1146,8 @@
                 break;
             case 'SequenceExpression': d = this.list(n.expressions, n, s); break;
             case 'CallExpression': case 'NewExpression':
+                if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === 'eval' && !n.optional && n.arguments.length &&
+                    n.arguments[0].type !== 'SpreadElement' && this.directEval(n)) d = true;
                 if (n.callee.type === 'Super') { d = true; n.callee.$p = n; } else if (this.v(n.callee, n, s)) d = true;
                 if (this.list(n.arguments, n, s)) d = true;
                 if (n.optional) d = true;
@@ -1242,6 +1254,22 @@
                 return;
             }
         }
+    };
+    // eval(text) of ES2015+ code (feature tests, code built as text): a literal is lowered now, any other argument goes
+    // through __br_evalSrc when it runs; either way the call stays a direct eval
+    W.directEval = function (n) {
+        var a = n.arguments[0];
+        if (a.type === 'Literal' && typeof a.value === 'string') {
+            if (engineParses(a.value)) return false;
+            var out = null;
+            try { out = transpile(a.value, { evalCode: true }); } catch (e) { out = null; }
+            if (out === null) return false;
+            n.$eval = true;
+            n.$evalCode = out;
+            return true;
+        }
+        n.$eval = true;
+        return true;
     };
     // references to bindings, then the decisions: renames, loops that need a function per iteration. A function
     // lowered while parsing that uses a renamed binding is analysed again from its source (W.rewalk), which adds
@@ -1827,6 +1855,14 @@
                 arr = this.spreadArray(n.arguments);
                 code = f + '.apply(void 0,' + arr + ')';
             }
+            this.prec = P_CALL;
+            return code;
+        }
+        if (n.$eval && callee.type === 'Identifier' && !callee.$b) {
+            // (a local binding named eval is not the engine's eval)
+            var rest = n.arguments.slice(1);
+            code = 'eval(' + (n.$evalCode !== undefined ? quote(n.$evalCode) : this.h('__br_evalSrc') + '(' + this.E(n.arguments[0], P_ASSIGN) + ')') +
+                   (rest.length ? ',' + this.args(rest) : '') + ')';
             this.prec = P_CALL;
             return code;
         }
@@ -3018,7 +3054,7 @@
     };
     // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
     // without it (a bundle often holds both kinds)
-    var PROXY_USE = /\bnew\s+Proxy\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/;
+    var PROXY_USE = /\bnew\s+Proxy\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/, DIRECT_EVAL = /(?:^|[^.\w$])eval\s*\(/;
     var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src); };
     var needsBigInt = function (src) { return typeof root.BigInt !== 'function' && BIGINT_USE.test(src); };
     // a script the engine parses that only needs the stand-ins: `new Proxy(` / `BigInt(` replaced in the text (no
@@ -3113,8 +3149,10 @@
             return lower(src, opts, false);
         }
     };
+    // (the engine's own constructor: in a page, Function is the shim that lowers what the engine refuses)
     var engineParses = function (src) {
-        try { new Function(src); return true; } catch (e) { return false; }   // eslint-disable-line no-new-func
+        var F = root.Function.__brNative || root.Function;
+        try { F(src); return true; } catch (e) { return false; }
     };
     var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0, redos: 0, maxUnit: 0, outer: 0, flat: 0,
                   checks: 0, phases: '' };
@@ -3138,12 +3176,15 @@
             stats.last = 'module';
             return mout;
         }
-        var tc = new Date().getTime(), parsesAsIs = !opts.force && engineParses(src);
+        var tc = new Date().getTime(), parsesAsIs = !opts.force && engineParses(src), evals = false;
         stats.checks = new Date().getTime() - tc;
         if (parsesAsIs) {
             var np = needsProxy(src), nb = needsBigInt(src);
-            if (!np && !nb) { stats.skipped++; stats.last = 'es5'; return ''; }
-            if (!STANDIN_OWN.test(src)) {
+            // (a direct eval of ES2015+ text needs the tree even in a script the engine takes; not worth a big
+            // script's parse)
+            evals = src.length < 300 * 1024 && DIRECT_EVAL.test(src);
+            if (!np && !nb && !evals) { stats.skipped++; stats.last = 'es5'; return ''; }
+            if (!evals && !STANDIN_OWN.test(src)) {
                 // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
                 var text = src, used = [];
                 if (np) { text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy('); used.push('__br_Proxy'); }
@@ -3160,6 +3201,7 @@
             return '';
         }
         stats.ms += new Date().getTime() - t0;
+        if (out === null && parsesAsIs) { stats.skipped++; stats.last = 'es5'; return ''; }
         if (out === null) { stats.failed++; stats.last = 'failed: nothing to lower'; return ''; }
         tc = new Date().getTime();
         var outParses = opts.force || engineParses(out);

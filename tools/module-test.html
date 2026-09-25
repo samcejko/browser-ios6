@@ -18,7 +18,7 @@ window.__brModuleTransform = function (src, url) { return JSFix.run(src, JSON.st
 <pre id="out">running</pre>
 <script>
 var expected = { count: 2, nsCount: 2, greet: 'hi x', pi: '6.28', star: 's1,s2,star-default,true', renamed: 'helped', cycle: 'abA', map: 'from-map', meta: 'modtest/main.js', lazy: 'lazy', tla: 'waited,late!,3,undefined,undefined' };
-var fails = [];
+var fails = [], loads = [];
 __brModules['import']('./modtest/main.js', location.href).then(function (ns) {
   var r = ns.results;
   return r.lazy.then(function (lazy) {
@@ -36,6 +36,31 @@ __brModules['import']('./modtest/main.js', location.href).then(function (ns) {
   });
 }).then(function () {
   if (window.__inlineModule !== 'from-map!') fails.push('inline module: ' + window.__inlineModule);
+  // <script type="module"> inserted by a script (html5test's check: a data: URL whose variables stay module-scoped);
+  // Chrome runs real module scripts itself, so the shim is told to take another type
+  window.__brTestModuleType = 'x-test-module';
+  loads = [];
+  var add = function (attrs, text) {
+    var s = document.createElement('script');
+    s.setAttribute('type', 'x-test-module');
+    if (attrs.src) s.src = attrs.src;
+    if (text) s.text = text;
+    s.onload = function () { loads.push(attrs.name); };
+    document.body.appendChild(s);
+  };
+  add({ name: 'data', src: 'data:text/javascript;charset=utf-8,var dynScoped = 1; window.__dyn1 = (typeof window.dynScoped === "undefined") + "," + (this === undefined);' });
+  add({ name: 'inline' }, 'import { u } from "./modtest/utils.js"; const v = `${u}?`; window.__dyn2 = v;');
+  var frag = document.createDocumentFragment(), s3 = document.createElement('script');
+  s3.setAttribute('type', 'x-test-module');
+  s3.text = 'window.__dyn3 = (window.__dyn3 || 0) + 1;';
+  frag.appendChild(s3);
+  document.body.appendChild(frag);
+  return new Promise(function (res) { setTimeout(res, 800); });
+}).then(function () {
+  if (window.__dyn1 !== 'true,true') fails.push('dynamic data: module: ' + window.__dyn1);
+  if (window.__dyn2 !== 'from-map?') fails.push('dynamic inline module: ' + window.__dyn2);
+  if (window.__dyn3 !== 1) fails.push('module in a fragment ran ' + window.__dyn3 + ' times');
+  if (loads.sort().join() !== 'data,inline') fails.push('load events: ' + loads.join());
   document.getElementById('out').textContent = fails.length ? 'FAIL\n' + fails.join('\n') : 'PASS';
   document.title = fails.length ? 'modules FAIL ' + fails.length : 'modules PASS';
 }, function (e) {

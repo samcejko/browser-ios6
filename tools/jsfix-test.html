@@ -24,6 +24,10 @@ pre { background: #f4f4f4; padding: 6px; white-space: pre-wrap; word-break: brea
 var CASES = JSFIX_CASES;
 // ?early=N: every function of N characters or more is lowered while parsing (the mode of big scripts)
 var EARLY = /[?&]early=(\d+)/.test(location.search) ? +RegExp.$1 : null;
+// the old engine as jsfix sees it on the iPad: ES5 only, so eval texts get lowered (at transpile time for literals,
+// by __br_evalSrc with the page's transpiler for built texts)
+Function.__brNative = function (src) { acorn.parse(src, { ecmaVersion: 5, allowReturnOutsideFunction: true }); return function () {}; };
+window.__brTranspiler = function () { return true; };
 var ES5_PARSE = function (code) {
   var ast = acorn.parse(code, { ecmaVersion: 5, allowReturnOutsideFunction: true });
   // function declarations inside blocks of strict code
