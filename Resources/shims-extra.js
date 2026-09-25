@@ -3621,24 +3621,11 @@
             return vals;
         };
         // ---- setting the values: another rule may win the property on this element (a site's own override), so the
-        // value the rule has in the stylesheet is compared with what the element computes before ours goes in
-        // transitions are held while the values are measured and set (a running transition shows the old value)
-        var frozen = [];
-        var freeze = function (el) {
-            if (el.__brCVfz) return;
-            el.__brCVfz = [el.style.getPropertyValue('-webkit-transition-property'), el.style.getPropertyPriority('-webkit-transition-property')];
-            el.style.setProperty('-webkit-transition-property', 'none', 'important');
-            frozen.push(el);
-        };
-        var thaw = function () {
-            for (var i = 0; i < frozen.length; i++) getComputedStyle(frozen[i]).color;   // commit the values first
-            for (var k = 0; k < frozen.length; k++) {
-                var el = frozen[k], o = el.__brCVfz;
-                el.__brCVfz = null;
-                if (o && o[0]) el.style.setProperty('-webkit-transition-property', o[0], o[1]); else el.style.removeProperty('-webkit-transition-property');
-            }
-            frozen = [];
-        };
+        // value the rule has in the stylesheet is compared with what the element computes before ours goes in.
+        // Transitions are not held while that happens: switching -webkit-transition-property to none and back crashed
+        // the old WebKit in its style recalc on pages with running transitions (seznam.cz; a plain timer doing the same
+        // reproduces it). A running transition can make a comparison fail (the value waits for the next pass) and a new
+        // value may fade in.
         // the longhands a shorthand declaration sets, as the engine parses them (a shorthand another rule wins in part
         // goes in as the longhands this rule still wins)
         var scratch = null;
@@ -3674,10 +3661,9 @@
                 for (k = 0; k < it.fb.length; k++) it.props = it.props.concat(LONGHANDS[it.fb[k][0]] || [it.fb[k][0]]);
                 it.check = true;
             }
-            // elements whose inline values may change: transitions held, our earlier values taken back
+            // elements whose inline values may change: our earlier values taken back
             for (i = 0; i < work.length; i++) {
                 it = work[i];
-                freeze(it.el);   // the new value appears at once instead of fading in (and a restore does not animate)
                 if (it.fb) for (k = 0; k < it.fb.length; k++) restoreInline(it.el, it.fb[k][0]);
                 for (k = 0; k < it.decls.length; k++) restoreInline(it.el, it.decls[k][0]);
                 if (it.prevPart) for (k = 0; k < it.prevPart.length; k++) restoreInline(it.el, it.prevPart[k]);
@@ -3718,7 +3704,6 @@
                 for (k = 0; k < kept.length; k++) keepInline(it, kept[k][0], kept[k][1]);
             }
             restoreStale();
-            thaw();
         };
         // ---- ties: the stylesheet gives the element the rule's substituted value, but another rule with the same value
         // may be the one winning. The style rules of the CSSOM that set the property and match the element are
@@ -3839,7 +3824,6 @@
                 if (el.__brCVc && el.__brCVc[it.key]) { el.__brCVc[it.key].ok = false; el.__brCVc[it.key].part = null; }
                 return;
             }
-            freeze(el);
             setInline(el, p, v, it.use.i);
         };
         // values that depend on the element: the rule's value goes on the element for a moment and is measured there

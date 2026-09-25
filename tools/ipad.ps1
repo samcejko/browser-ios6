@@ -16,7 +16,9 @@ if (Test-Path $script:IPadLocalCfg) {
 }
 
 function Get-IPadSshArgs {
-    @('-i', $script:IPadKey, '-oHostKeyAlgorithms=+ssh-rsa', '-oStrictHostKeyChecking=accept-new', '-oConnectTimeout=10', '-oBatchMode=yes', '-oLogLevel=ERROR')
+    # (keepalives end a session whose Wi-Fi link died instead of waiting for ever)
+    @('-i', $script:IPadKey, '-oHostKeyAlgorithms=+ssh-rsa', '-oStrictHostKeyChecking=accept-new', '-oConnectTimeout=10', '-oBatchMode=yes', '-oLogLevel=ERROR',
+      '-oServerAliveInterval=5', '-oServerAliveCountMax=4')
 }
 
 # Runs a command on the iPad and returns stdout+stderr as plain strings (never throws on stderr output).
