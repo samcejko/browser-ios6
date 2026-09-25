@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>worker test</title>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// A worker built from the source text of a transpiled function (as MapLibre does): the Worker shim must give the
+// blob the helpers and program variables the text refers to. A second worker gets modern syntax as a string.
+var src = [
+  'function workerMain() {',
+  '  class A { constructor(x) { this.x = x; } get d() { return this.x * 2; } }',
+  '  class B extends A { constructor() { super(21); } }',
+  '  const tag = (s, ...v) => s.raw.join("|") + v.join(",");',
+  '  async function f() { await null; return new B().d; }',
+  '  f().then(v => postMessage([v, tag`a${1}b`]));',
+  '}'
+].join('\n');
+(0, eval)(JSFix.transpile(src, {}));
+var results = {}, expected = { fromFunction: [42, 'a|b1'], fromString: ['ok', 3] };
+var finish = function () {
+  var fails = [];
+  for (var k in expected) if (JSON.stringify(results[k]) !== JSON.stringify(expected[k])) fails.push(k + ': expected ' + JSON.stringify(expected[k]) + ' got ' + JSON.stringify(results[k]));
+  document.getElementById('out').textContent = (fails.length ? 'FAIL\n' + fails.join('\n') : 'PASS') + '\n\nprelude sample:\n' + window.__brWorkerPrelude('(' + workerMain.toString() + ')()').slice(0, 600);
+  document.title = fails.length ? 'workers FAIL ' + fails.length : 'workers PASS';
+};
+var pending = 2, done = function () { if (--pending === 0) finish(); };
+var start = function (name, code) {
+  var w = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+  w.onmessage = function (e) { results[name] = e.data; done(); };
+  w.onerror = function (e) { results[name] = 'error ' + (e.message || e); done(); };
+};
+start('fromFunction', '(' + workerMain.toString() + ')()');
+start('fromString', 'const s = new Set([1, 2, 2, 3]); postMessage(["ok", [...s].length]);');
+setTimeout(function () { if (pending > 0) { pending = 1; done(); } }, 5000);
+</script>
+</body>
+</html>

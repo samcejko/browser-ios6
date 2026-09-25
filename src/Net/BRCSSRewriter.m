@@ -405,6 +405,24 @@ static NSString *BRPageKey(NSURL *url)
     return bundle;
 }
 
++ (NSData *)workerPolyfills
+{
+    static NSData *bundle;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableData *d = [NSMutableData data];
+        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime"]) {
+            NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"js" inDirectory:@"js"];
+            NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
+            if (!part.length) continue;
+            [d appendData:part];
+            [d appendData:[@"\n;\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        }
+        bundle = d;
+    });
+    return bundle;
+}
+
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
           mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion
 {

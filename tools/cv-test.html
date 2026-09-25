@@ -41,6 +41,10 @@ var page = [
   'li:nth-child(odd of .imp) { color: rgb(200, 0, 0); }',
   'td:nth-col(2) { background-color: rgb(0, 0, 200); }',
   'col.sel || td { font-weight: 700; }',
+  ':root { --tc: rgb(0, 0, 255); }',
+  '.tie-scope { --tc: rgb(255, 0, 0); }',
+  '.tie-a { color: var(--tc); }',
+  '.tie-b.tie-a { color: rgb(0, 0, 255); }',
   '</style>',
   '<ul><li id="l1" class="imp">a</li><li id="l2">b</li><li id="l3" class="imp">c</li><li id="l4" class="imp">d</li></ul>',
   '<table><colgroup><col><col class="sel"></colgroup><tr><td id="c1">1</td><td id="c2">2</td><td id="c3">3</td></tr><tr><td id="c4" colspan="2">4</td><td id="c5">5</td></tr></table>',
@@ -55,7 +59,8 @@ var page = [
   '<div class="spbox" id="sp1"></div>',
   '<div class="npparent"><div class="npchild" id="np1"></div></div>',
   '<div style="--k: 33px"><div id="inl" style="width: var(--k, 5px); height: 5px; background: #ccc"></div></div>',
-  '<div class="hsl" id="h1"></div><div class="hsl dark" id="h2"></div>'
+  '<div class="hsl" id="h1"></div><div class="hsl dark" id="h2"></div>',
+  '<div class="tie-scope"><span class="tie-a tie-b" id="t1">tie</span> <span class="tie-a" id="t2">scoped</span></div>'
 ].join('\n');
 var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
 var html = result.out;
@@ -77,6 +82,7 @@ var run = function () {
   check('component default', cs('b0').backgroundColor === 'rgba(0, 0, 0, 0)' && cs('b0').color === 'rgb(33, 37, 41)', cs('b0').backgroundColor + ' ' + cs('b0').color);
   check('variant class', cs('b1').backgroundColor === 'rgb(13, 110, 253)' && cs('b1').color === 'rgb(255, 255, 255)' && cs('b1').borderTopColor === 'rgb(13, 110, 253)', cs('b1').backgroundColor + ' ' + cs('b1').color + ' ' + cs('b1').borderTopColor);
   check('second variant', cs('b2').backgroundColor === 'rgb(220, 53, 69)', cs('b2').backgroundColor);
+  check('equal static value: the more specific site rule wins', cs('t1').color === 'rgb(0, 0, 255)' && cs('t2').color === 'rgb(255, 0, 0)', cs('t1').color + ' ' + cs('t2').color);
   check('site rule wins over the var() rule', cs('b3').backgroundColor === 'rgb(1, 2, 3)' && cs('b3').color === 'rgb(255, 255, 255)', cs('b3').backgroundColor + ' ' + cs('b3').color);
   check('::before through a generated rule', document.getElementById('r1').offsetHeight === 90 && document.getElementById('r2').offsetHeight === 160, document.getElementById('r1').offsetHeight + ' ' + document.getElementById('r2').offsetHeight);
   check('definition inside @media', cs('g1').marginLeft === '20px', cs('g1').marginLeft);

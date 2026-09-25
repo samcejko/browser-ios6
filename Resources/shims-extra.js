@@ -3702,7 +3702,7 @@
                 decide(it, pv);
             }
             if (slow.length) slowCheck(slow);
-            sentinelCheck(work);
+            rivalCheck(work);
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (!it.el.__brCVc) it.el.__brCVc = {};
@@ -3721,86 +3721,113 @@
             thaw();
         };
         // ---- ties: the stylesheet gives the element the rule's substituted value, but another rule with the same value
-        // may be the one winning. The rule's own declaration gets a unique value in the CSSOM for a moment: when the
-        // element shows it, the rule wins. (Rules of stylesheets the CSSOM does not expose keep the probe's answer.)
-        var cssomIndex = null, lastSentinels = [];
+        // may be the one winning. The style rules of the CSSOM that set the property and match the element are
+        // compared with ours by importance, specificity and order. This only reads the CSSOM: changing a rule of a
+        // stylesheet whose @font-face fonts are in use makes the old WebKit drop fonts that painting still uses (the
+        // app crashed in CoreGraphics seconds later on astro.build). Rules the CSSOM does not expose keep the probe's
+        // answer.
+        var cssomList = null, cssomByProp = {}, lastRivals = [];
         var normSel = function (s) { return String(s).replace(/["']/g, '').replace(/\s+/g, '').toLowerCase(); };
-        var cssomRules = function (key) {
-            if (!cssomIndex) {
-                cssomIndex = {};
-                var walk = function (list, depth) {
-                    if (!list || depth > 6) return;
-                    for (var i = 0; i < list.length; i++) {
-                        var r = list[i];
-                        if (r.type === 1) { var k = normSel(r.selectorText); (cssomIndex[k] = cssomIndex[k] || []).push(r); }
-                        else if (r.cssRules) walk(r.cssRules, depth + 1);
-                    }
-                };
-                for (var s = 0; s < document.styleSheets.length; s++) {
-                    var sheet = document.styleSheets[s], rs = null;
-                    if (sheet.ownerNode && sheet.ownerNode.id === 'br-cv-pseudo') continue;
-                    try { rs = sheet.cssRules; } catch (e) { rs = null; }
-                    walk(rs, 0);
+        var selectorList = function (text) {
+            var parts = [], depth = 0, start = 0, q = null, s = String(text);
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '\\') i++;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (c === ',' && depth === 0) { parts.push(s.slice(start, i)); start = i + 1; }
+            }
+            parts.push(s.slice(start));
+            return parts;
+        };
+        // (the rewriter's specificity(): ids, classes/attributes/pseudo-classes, types/pseudo-elements)
+        var selectorSpecificity = function (sel) {
+            var s = String(sel).replace(/"[^"]*"|'[^']*'/g, '""').replace(/\[[^\]]*\]/g, '.x'), c = 0;
+            s = s.replace(/::?(before|after|first-line|first-letter)\b|::[\w-]+(\([^)]*\))?/gi, function () { c++; return ' '; });
+            var a = (s.match(/#[\w-]+/g) || []).length;
+            var b = (s.match(/\.[\w-]+|:[\w-]+/g) || []).length - (s.match(/:(not|-webkit-any|is|where|matches)\b/gi) || []).length;
+            c += (s.replace(/[.#:][\w-]+/g, ' ').match(/(^|[\s>+~(,])[a-zA-Z][\w-]*/g) || []).length;
+            return Math.min(a, 99) * 10000 + Math.min(Math.max(b, 0), 99) * 100 + Math.min(c, 99);
+        };
+        // the style rules in effect, in cascade order ({rule, key, order}; @media blocks that do not match left out)
+        var cssomRules = function () {
+            if (cssomList) return cssomList;
+            cssomList = [];
+            cssomByProp = {};
+            var mediaOn = function (m) { var t = m && m.mediaText; if (!t) return true; try { return window.matchMedia(t).matches; } catch (e) { return true; } };
+            var walk = function (list, depth) {
+                if (!list || depth > 6) return;
+                for (var i = 0; i < list.length; i++) {
+                    var r = list[i];
+                    if (r.type === 1) { cssomList.push({ rule: r, key: normSel(r.selectorText), order: cssomList.length, sels: null }); continue; }
+                    if (r.type === 4 && !mediaOn(r.media)) continue;
+                    if (r.cssRules) walk(r.cssRules, depth + 1);
+                }
+            };
+            for (var s = 0; s < document.styleSheets.length; s++) {
+                var sheet = document.styleSheets[s], rs = null;
+                if (sheet.disabled || (sheet.ownerNode && sheet.ownerNode.id === 'br-cv-pseudo') || !mediaOn(sheet.media)) continue;
+                try { rs = sheet.cssRules; } catch (e) { rs = null; }
+                walk(rs, 0);
+            }
+            return cssomList;
+        };
+        // the rules that set `prop` ({entry, imp})
+        var rulesSetting = function (prop) {
+            if (cssomByProp.hasOwnProperty(prop)) return cssomByProp[prop];
+            var all = cssomRules(), out = [];
+            for (var i = 0; i < all.length; i++) {
+                var st = all[i].rule.style;
+                if (st && st.getPropertyValue(prop)) out.push({ entry: all[i], imp: st.getPropertyPriority(prop) === 'important' });
+            }
+            cssomByProp[prop] = out;
+            return out;
+        };
+        var matchesEl = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { return !!f.call(el, s); } catch (e) { return false; } };
+        // does another rule win `prop` on the item's element? (null when our own rule is not in the CSSOM)
+        var rivalWins = function (it, prop) {
+            var list = rulesSetting(prop), own = null, i, r;
+            for (i = 0; i < list.length; i++) if (list[i].entry.key === it.use.rk) own = list[i].entry;   // (the last copy counts)
+            if (!own) return null;
+            var ownImp = !!it.use.i;
+            for (i = 0; i < list.length; i++) {
+                r = list[i];
+                if (r.entry === own || r.entry.key === it.use.rk || (ownImp && !r.imp)) continue;
+                var e = r.entry, later = e.order > own.order;
+                if (!e.sels) {
+                    e.sels = [];
+                    var parts = selectorList(e.rule.selectorText);
+                    for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: selectorSpecificity(parts[k]) });
+                }
+                for (var j = 0; j < e.sels.length; j++) {
+                    var sp = e.sels[j].sp;
+                    // only a selector that would beat ours needs matching
+                    if (!(r.imp && !ownImp) && (sp < it.use.sp || (sp === it.use.sp && !later))) continue;
+                    if (matchesEl(it.el, e.sels[j].s)) return e.sels[j].s;
                 }
             }
-            return cssomIndex[key] || [];
+            return false;
         };
-        var LENGTH_PROP = /^((margin|padding)-(top|right|bottom|left)|width|height|(min|max)-(width|height)|top|right|bottom|left|border-(top|right|bottom|left)-width|font-size|line-height|letter-spacing|word-spacing|text-indent|outline-width|border-(top|bottom)-(left|right)-radius|-webkit-column-gap)$/;
-        var sentinelFor = function (prop, id) {
-            if (/(^|-)color$/.test(prop)) return 'rgb(1, ' + (2 + (id >> 8)) + ', ' + (id & 255) + ')';
-            if (prop === 'box-shadow') return 'rgb(1, ' + (2 + (id >> 8)) + ', ' + (id & 255) + ') 0px 0px 0px 0px';
-            if (LENGTH_PROP.test(prop)) return (7001 + id) + 'px';
-            return null;
-        };
-        var sentinelCheck = function (work) {
-            var groups = {}, list = [], id = 0, i, k, it, g;
-            cssomIndex = null;
+        var rivalCheck = function (work) {
+            var i, k, it;
+            cssomList = null;
+            lastRivals = [];
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (it.use.inl || it.use.ps || (it.ok === false && !it.part) || !it.use.rk) continue;
                 var props = it.part || it.props || [];
                 if (!props.length) for (k = 0; k < it.decls.length; k++) props = props.concat(LONGHANDS[it.decls[k][0]] || [it.decls[k][0]]);
-                var prop = null;
-                for (k = 0; k < props.length && !prop; k++) if (sentinelFor(props[k], 0)) prop = props[k];
-                if (!prop) continue;
-                var key = it.use.rk + '|' + prop;
-                g = groups[key];
-                if (!g) {
-                    var rules = cssomRules(it.use.rk);
-                    if (!rules.length) continue;
-                    g = groups[key] = { rules: rules, prop: prop, items: [], id: ++id };
-                    g.sentinel = sentinelFor(prop, g.id);
-                    g.mark = LENGTH_PROP.test(prop) ? String(7001 + g.id) : g.sentinel.replace(/\).*$/, ')');   // a length, or the rgb() part
-                    list.push(g);
+                var keep = [];
+                for (k = 0; k < props.length; k++) {
+                    var rival = rivalWins(it, props[k]);
+                    if (!rival) keep.push(props[k]);
+                    else if (lastRivals.length < 1000) lastRivals.push(props[k] + ': ' + rival + ' beats ' + it.use.sel + ' (' + it.el.tagName + ')');
                 }
-                g.items.push(it);
-            }
-            if (!list.length) return;
-            for (i = 0; i < list.length; i++) {
-                g = list[i];
-                g.saved = [];
-                for (k = 0; k < g.rules.length; k++) {
-                    var st = g.rules[k].style;
-                    g.saved.push([st.getPropertyValue(g.prop), st.getPropertyPriority(g.prop)]);
-                    try { st.setProperty(g.prop, g.sentinel, g.saved[k][1] || (g.items[0].use.i ? 'important' : '')); } catch (e) {}
-                }
-            }
-            lastSentinels = [];
-            for (i = 0; i < list.length; i++) {
-                g = list[i];
-                for (k = 0; k < g.items.length; k++) {
-                    it = g.items[k];
-                    var v = getComputedStyle(it.el).getPropertyValue(g.prop) || '';
-                    if (v.indexOf(g.mark) < 0) { it.ok = false; it.part = null; }
-                    if (lastSentinels.length < 1000) lastSentinels.push(g.prop + ' ' + g.mark + ' -> ' + v + ' (' + it.el.tagName + ' ' + g.rules.length + ' rules)');
-                }
-            }
-            for (i = 0; i < list.length; i++) {
-                g = list[i];
-                for (k = 0; k < g.rules.length; k++) {
-                    var st2 = g.rules[k].style;
-                    try { if (g.saved[k][0]) st2.setProperty(g.prop, g.saved[k][0], g.saved[k][1]); else st2.removeProperty(g.prop); } catch (e2) {}
-                }
+                if (keep.length === props.length) continue;
+                it.ok = false;
+                it.part = keep.length ? keep : null;
             }
         };
         // an unchanged decision: our inline value stays (unless a script replaced it meanwhile: then the page's stays)
@@ -4013,7 +4040,7 @@
                     if (e.r) { registered[e.r[0]] = { init: e.r[1], inh: !!e.r[2] }; continue; }
                     if (!e.s) continue;
                     e.o = (e.si !== undefined && ranks[e.si] !== undefined ? ranks[e.si] : 0) * 100000 + i;
-                    e.key = normSel(e.s.join(','));   // finds the rule in the CSSOM (see sentinelCheck)
+                    e.key = normSel(e.s.join(','));   // finds the rule in the CSSOM (see rivalCheck)
                     e.sel = [];
                     for (var b = 0; b < e.s.length; b++) e.sel.push(prepareSelector(e.s[b]));
                     rules.push(e);
@@ -4024,7 +4051,7 @@
             apply: function () { if (rules.length) pass(); },
             resolve: function (el, name) { return computedVar(el, name); },
             state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, collectMs: stats.tCollect, resolveMs: stats.tResolve, applyMs: stats.tApply, pending: stats.pending }; },
-            sentinels: function () { return lastSentinels; },
+            rivals: function () { return lastRivals; },
             // the decision steps for one declaration of an element (diagnosis)
             explain: function (el, prop) {
                 var use = el.__brCV && el.__brCV.u['|' + prop];
@@ -5943,6 +5970,286 @@
         } catch (e) {}
     })();
 
+    // ---- RegExp flags and syntax the engine refuses. new RegExp(pattern, flags) asks the engine first; what it rejects
+    // is lowered: s (the dot matches everything), u and v (\u{...}, \p{...} and astral characters become surrogate
+    // pairs: the Unicode tables and jsfix.js are loaded once when a pattern needs them, otherwise the flag just goes),
+    // named groups (numbered; .groups on the results), y (exec/test only match at lastIndex) and d (.indices).
+    // Such expressions carry __brRe, and String.prototype.match/replace/matchAll go through their exec (as ES2015
+    // does), so .groups, $<name> and sticky matching work there too. The flag getters and RegExp.escape are added.
+    (function () {
+        var Native = window.RegExp;
+        if (!Native || Native.__brFlags) return;
+        var proto = Native.prototype, nativeExec = proto.exec, hasOwnR = Object.prototype.hasOwnProperty;
+        var nativeReplace = String.prototype.replace, nativeMatch = String.prototype.match;
+        var hidden = function (o, k, v) { try { Object.defineProperty(o, k, { value: v, writable: true, configurable: true }); } catch (e) { o[k] = v; } };
+        var ORDER = 'dgimsuvy';
+        var flagsOf = function (re) {
+            if (re.__brRe && re.__brRe.flags !== undefined) return re.__brRe.flags;
+            return (re.global ? 'g' : '') + (re.ignoreCase ? 'i' : '') + (re.multiline ? 'm' : '');
+        };
+        // jsfix.js (and the Unicode tables for \p{...}) from the app, once
+        var unicodeLowering = function (tables) {
+            var load = function (name) {
+                var x = new XMLHttpRequest();
+                x.open('GET', 'https://ios6-browser.invalid/' + name, false);
+                x.send(null);
+                if (x.status === 200 && x.responseText) (0, eval)(x.responseText);
+            };
+            try {
+                if (tables && !window.JSFIX_UNICODE && !unicodeLowering.triedTables) { unicodeLowering.triedTables = true; load('unicode-props.js'); }
+                if (!window.JSFix && !unicodeLowering.tried) { unicodeLowering.tried = true; load('jsfix.js'); }
+            } catch (e) {}
+            return !!(window.JSFix && window.JSFix.lowerUnicode);
+        };
+        var dotAll = function (p) {
+            var out = '', inClass = false;
+            for (var i = 0; i < p.length; i++) {
+                var c = p.charAt(i);
+                if (c === '\\') { out += c + p.charAt(i + 1); i++; continue; }
+                if (inClass) { if (c === ']') inClass = false; out += c; continue; }
+                if (c === '[') { inClass = true; out += c; continue; }
+                out += c === '.' ? '[\\s\\S]' : c;
+            }
+            return out;
+        };
+        // named groups: the names go, \k<name> becomes a numbered backreference; name -> group number(s)
+        var namedGroups = function (p) {
+            var names = {}, count = 0, out = '', inClass = false, i, c, e, k;
+            for (i = 0; i < p.length; i++) {
+                c = p.charAt(i);
+                if (c === '\\') {
+                    if (!inClass && p.charAt(i + 1) === 'k' && p.charAt(i + 2) === '<') {
+                        e = p.indexOf('>', i);
+                        k = e > 0 ? p.slice(i + 3, e) : '';
+                        if (e > 0 && hasOwnR.call(names, k)) { out += '\\' + (typeof names[k] === 'number' ? names[k] : names[k][0]); i = e; continue; }
+                    }
+                    out += c + p.charAt(i + 1); i++; continue;
+                }
+                if (inClass) { if (c === ']') inClass = false; out += c; continue; }
+                if (c === '[') { inClass = true; out += c; continue; }
+                if (c === '(') {
+                    if (p.charAt(i + 1) !== '?') { count++; out += c; continue; }
+                    if (p.charAt(i + 2) === '<' && p.charAt(i + 3) !== '=' && p.charAt(i + 3) !== '!') {
+                        e = p.indexOf('>', i);
+                        count++;
+                        k = p.slice(i + 3, e);
+                        // (duplicate names in alternatives: the first group that took part)
+                        if (hasOwnR.call(names, k)) names[k] = [].concat(names[k], count); else names[k] = count;
+                        out += '(';
+                        i = e;
+                        continue;
+                    }
+                }
+                out += c;
+            }
+            return { pattern: out, names: names };
+        };
+        // what makes a u pattern differ from the same pattern without u: \p{...}, \u{...}, astral characters, and the
+        // dot (which takes a whole surrogate pair)
+        var NEEDS_UNICODE = /\\[pP]\{|\\u\{|[\ud800-\udfff]/;
+        var hasDot = function (p) {
+            var inClass = false;
+            for (var i = 0; i < p.length; i++) {
+                var c = p.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (inClass) { if (c === ']') inClass = false; continue; }
+                if (c === '[') inClass = true;
+                else if (c === '.') return true;
+            }
+            return false;
+        };
+        // {pattern, flags (for the engine), info} or null when it cannot be lowered
+        var lower = function (source, flags) {
+            var p = source, all = '', i, c, names = null;
+            for (i = 0; i < flags.length; i++) {
+                c = flags.charAt(i);
+                if (ORDER.indexOf(c) < 0 || all.indexOf(c) >= 0) return null;
+                all += c;
+            }
+            var has = function (f) { return all.indexOf(f) >= 0; };
+            if ((has('u') && has('v')) || /\(\?<[=!]/.test(p)) return null;   // (lookbehind is not lowered)
+            if (has('s')) p = dotAll(p);
+            if (/\(\?<[A-Za-z_$]/.test(p)) { var r = namedGroups(p); p = r.pattern; names = r.names; }
+            if ((has('u') || has('v')) && (NEEDS_UNICODE.test(p) || hasDot(p))) {
+                if (!unicodeLowering(/\\[pP]\{/.test(p))) return null;
+                var u = null;
+                try { u = window.JSFix.lowerUnicode(p); } catch (e) { u = null; }
+                if (u === null) return null;
+                p = u;
+            }
+            var sorted = '';
+            for (i = 0; i < ORDER.length; i++) if (has(ORDER.charAt(i))) sorted += ORDER.charAt(i);
+            return { pattern: p, flags: (has('g') ? 'g' : '') + (has('i') ? 'i' : '') + (has('m') ? 'm' : ''),
+                     info: { source: source, flags: sorted, names: names, sticky: has('y'), indices: has('d') } };
+        };
+        var groupsOf = function (m, names) {
+            var g = {};
+            for (var k in names) if (hasOwnR.call(names, k)) {
+                var n = names[k];
+                if (typeof n === 'number') { g[k] = m[n]; continue; }
+                g[k] = undefined;
+                for (var j = 0; j < n.length; j++) if (m[n[j]] !== undefined) { g[k] = m[n[j]]; break; }
+            }
+            return g;
+        };
+        var decorate = function (re, l) {
+            var info = l.info, anchored = null;
+            hidden(re, '__brRe', info);
+            // sticky: (?:pattern)|() always matches at lastIndex; the empty alternative taking it means no match there
+            if (info.sticky) anchored = new Native('(?:' + l.pattern + ')|()', l.flags.indexOf('g') >= 0 ? l.flags : l.flags + 'g');
+            if (!anchored && !info.names && !info.indices) return re;
+            hidden(re, 'exec', function (s) {
+                s = String(s);
+                var m;
+                if (anchored) {
+                    anchored.lastIndex = this.lastIndex;
+                    m = nativeExec.call(anchored, s);
+                    if (!m || m[m.length - 1] !== undefined) { this.lastIndex = 0; return null; }
+                    m.length--;
+                    this.lastIndex = anchored.lastIndex;
+                } else m = nativeExec.call(this, s);
+                if (!m) return m;
+                if (info.names) m.groups = groupsOf(m, info.names);
+                if (info.indices) {
+                    // (group positions: the first occurrence of the group's text within the match)
+                    var ind = [[m.index, m.index + m[0].length]];
+                    for (var i = 1; i < m.length; i++) {
+                        var at = m[i] === undefined ? -1 : m[0].indexOf(m[i]);
+                        ind.push(at < 0 ? undefined : [m.index + at, m.index + at + m[i].length]);
+                    }
+                    if (info.names) ind.groups = groupsOf(ind, info.names);
+                    m.indices = ind;
+                }
+                return m;
+            });
+            hidden(re, 'test', function (s) { return this.exec(s) !== null; });
+            return re;
+        };
+        var BRRegExp = function RegExp(pattern, flags) {
+            var isRe = pattern instanceof Native;
+            if (!(this instanceof BRRegExp) && isRe && flags === undefined) return pattern;   // RegExp(re) is re
+            var source = isRe ? (pattern.__brRe ? pattern.__brRe.source : pattern.source) : pattern === undefined ? '' : String(pattern);
+            var f = flags === undefined ? (isRe ? flagsOf(pattern) : '') : String(flags);
+            try { return new Native(source, f); } catch (e) {
+                if (!(e instanceof SyntaxError)) throw e;
+                var l = lower(source, f);
+                if (!l) throw e;
+                return decorate(new Native(l.pattern, l.flags), l);
+            }
+        };
+        BRRegExp.prototype = proto;
+        hidden(proto, 'constructor', BRRegExp);
+        hidden(BRRegExp, '__brFlags', true);
+        // the legacy statics ($1..$9, lastMatch...) stay the engine's
+        var statics = ['$1', '$2', '$3', '$4', '$5', '$6', '$7', '$8', '$9', 'input', '$_', 'lastMatch', '$&', 'lastParen', '$+', 'leftContext', '$`', 'rightContext', "$'", 'multiline', '$*'];
+        for (var si = 0; si < statics.length; si++) (function (k) {
+            try { Object.defineProperty(BRRegExp, k, { get: function () { return Native[k]; }, set: function (v) { try { Native[k] = v; } catch (e) {} }, configurable: true }); } catch (e) {}
+        })(statics[si]);
+        if (!BRRegExp.escape) hidden(BRRegExp, 'escape', function escape(s) {
+            if (typeof s !== 'string') throw new TypeError('RegExp.escape requires a string');
+            var out = '', hex = function (c, w) { var h = c.toString(16); while (h.length < w) h = '0' + h; return h; };
+            for (var i = 0; i < s.length; i++) {
+                var ch = s.charAt(i), c = s.charCodeAt(i);
+                if (i === 0 && /[0-9A-Za-z]/.test(ch)) { out += '\\x' + hex(c, 2); continue; }
+                if ('^$\\.*+?()[]{}|/'.indexOf(ch) >= 0) { out += '\\' + ch; continue; }
+                var ctl = { 9: 't', 10: 'n', 11: 'v', 12: 'f', 13: 'r' }[c];
+                if (ctl) { out += '\\' + ctl; continue; }
+                var lone = c >= 0xD800 && c <= 0xDFFF && !(c <= 0xDBFF && i + 1 < s.length && s.charCodeAt(i + 1) >= 0xDC00 && s.charCodeAt(i + 1) <= 0xDFFF) &&
+                           !(c >= 0xDC00 && i > 0 && s.charCodeAt(i - 1) >= 0xD800 && s.charCodeAt(i - 1) <= 0xDBFF);
+                if (",-=<>#&!%:;@~'`\"".indexOf(ch) >= 0 || /\s/.test(ch) || lone) { out += c <= 0xFF ? '\\x' + hex(c, 2) : '\\u' + hex(c, 4); continue; }
+                out += ch;
+            }
+            return out;
+        });
+        var getter = function (name, fn) {
+            if (name in proto) return;
+            try { Object.defineProperty(proto, name, { get: fn, configurable: true }); } catch (e) {}
+        };
+        var flagGetter = function (f) { return function () { return flagsOf(this).indexOf(f) >= 0; }; };
+        getter('flags', function () { return flagsOf(this); });
+        getter('sticky', flagGetter('y'));
+        getter('unicode', flagGetter('u'));
+        getter('unicodeSets', flagGetter('v'));
+        getter('dotAll', flagGetter('s'));
+        getter('hasIndices', flagGetter('d'));
+        try { window.RegExp = BRRegExp; } catch (e) { return; }
+
+        // String methods over lowered expressions: through their exec, as ES2015 specifies
+        var isLowered = function (re) { return typeof re === 'object' && re !== null && re.__brRe !== undefined; };
+        var substitute = function (text, m, s, pos) {
+            if (text.indexOf('$') < 0) return text;
+            return nativeReplace.call(text, /\$([$&`']|\d\d?|<[^>]*>)/g, function (all, t) {
+                if (t === '$') return '$';
+                if (t === '&') return m[0];
+                if (t === '`') return s.slice(0, pos);
+                if (t === "'") return s.slice(pos + m[0].length);
+                if (t.charAt(0) === '<') { if (!m.groups) return all; var v = m.groups[t.slice(1, -1)]; return v === undefined ? '' : String(v); }
+                var n = parseInt(t, 10), caps = m.length - 1;
+                if (n >= 1 && n <= caps) return m[n] === undefined ? '' : m[n];
+                if (t.length === 2) { var n1 = parseInt(t.charAt(0), 10); if (n1 >= 1 && n1 <= caps) return (m[n1] === undefined ? '' : m[n1]) + t.charAt(1); }
+                return all;
+            });
+        };
+        String.prototype.match = function match(re) {
+            'use strict';
+            if (!isLowered(re) || this === null || this === undefined) return nativeMatch.apply(this, arguments);
+            var s = String(this);
+            if (!re.global) return re.exec(s);
+            var all = [], m;
+            re.lastIndex = 0;
+            while ((m = re.exec(s))) { all.push(m[0]); if (m[0] === '') re.lastIndex++; }
+            return all.length ? all : null;
+        };
+        String.prototype.replace = function replace(re, rep) {
+            'use strict';
+            if (!isLowered(re) || this === null || this === undefined) return nativeReplace.apply(this, arguments);
+            var s = String(this), found = [], m, i;
+            if (re.global) re.lastIndex = 0;
+            while ((m = re.exec(s))) {
+                found.push(m);
+                if (!re.global) break;
+                if (m[0] === '') re.lastIndex++;
+            }
+            var out = '', next = 0, fn = typeof rep === 'function', text = fn ? '' : String(rep);
+            for (i = 0; i < found.length; i++) {
+                m = found[i];
+                var pos = m.index, r;
+                if (fn) {
+                    var args = Array.prototype.slice.call(m);
+                    args.push(pos, s);
+                    if (m.groups) args.push(m.groups);
+                    r = String(rep.apply(undefined, args));
+                } else r = substitute(text, m, s, pos);
+                if (pos >= next) { out += s.slice(next, pos) + r; next = pos + m[0].length; }
+            }
+            return out + s.slice(next);
+        };
+        if (!String.prototype.matchAll) {
+            hidden(String.prototype, 'matchAll', function matchAll(re) {
+                'use strict';
+                if (this === null || this === undefined) throw new TypeError('String.prototype.matchAll called on null or undefined');
+                var s = String(this), rx;
+                if (re instanceof Native) {
+                    var fl = flagsOf(re);
+                    if (fl.indexOf('g') < 0) throw new TypeError('String.prototype.matchAll called with a non-global RegExp argument');
+                    rx = new BRRegExp(re, fl);
+                    rx.lastIndex = re.lastIndex;
+                } else rx = new BRRegExp(re === undefined ? '' : String(re), 'g');
+                var done = false, it = {
+                    next: function () {
+                        var m = done ? null : rx.exec(s);
+                        if (!m) { done = true; return { value: undefined, done: true }; }
+                        if (m[0] === '') rx.lastIndex++;
+                        return { value: m, done: false };
+                    }
+                };
+                if (window.Symbol && Symbol.iterator) it[Symbol.iterator] = function () { return this; };
+                it['@@iterator'] = function () { return this; };
+                return it;
+            });
+        }
+    })();
+
     // ---- new Function(...) with ES2015+ syntax (template compilers, feature tests, AsyncFunction): when the engine
     // refuses it, the page loads the transpiler (acorn and jsfix.js from the app, once) and builds the lowered function.
     // (eval is left alone: a wrapper would turn direct eval into global eval.)
@@ -5978,7 +6285,66 @@
         };
         Lowering.prototype = NativeFunction.prototype;
         Lowering.__brLowering = true;
+        Lowering.__brNative = NativeFunction;
+        window.__brTranspiler = transpiler;
         try { window.Function = Lowering; } catch (e3) {}
+    })();
+
+    // ---- Workers made from blob: URLs. MapLibre builds its worker from the source text of (transpiled) functions,
+    // which call the transpiler's helpers and program variables of the page's script; a worker scope has neither, nor
+    // the polyfills (Promise...). The script gets a prelude with the polyfills for workers, those helpers and
+    // variables; a script the engine cannot parse is lowered first.
+    (function () {
+        var NativeWorker = window.Worker, NativeBlob = window.Blob;
+        if (!NativeWorker || NativeWorker.__brWrapped || !NativeBlob) return;
+        var read = function (url) {
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', url, false);
+                x.send(null);
+                return x.status === 200 || x.status === 0 ? x.responseText : null;
+            } catch (e) { return null; }
+        };
+        var unique = function (list) { var out = [], seen = {}; for (var i = 0; list && i < list.length; i++) if (!seen['$' + list[i]]) { seen['$' + list[i]] = 1; out.push(list[i]); } return out; };
+        var prepare = function (src) {
+            var F = window.Function.__brNative || window.Function;
+            // (text of transpiled functions parses; a big worker is not parsed twice)
+            if (!/\b__br_\w+\(|\b_rt\$\w+\./.test(src)) try { F(src); } catch (e) {
+                if (!(e instanceof SyntaxError) || !window.__brTranspiler || !window.__brTranspiler()) return null;
+                var out = '';
+                try { out = window.JSFix.run(src, '{}'); } catch (e2) { out = ''; }
+                if (!out) return null;
+                src = out;
+            }
+            // the helpers the text calls (and the ones those call), as the page has them; _rt$ variables hold __br_regen()
+            var rts = unique(src.match(/\b_rt\$\w+/g)), tpls = unique(src.match(/\b_tpl\$\w+/g)), vars = [];
+            var queue = unique(src.match(/\b__br_\w+/g)).concat(rts.length ? ['__br_regen'] : []), done = {}, parts = [];
+            while (queue.length) {
+                var n = queue.shift();
+                if (done[n]) continue;
+                done[n] = 1;
+                if (typeof window[n] !== 'function' || new RegExp('function\\s+' + n + '\\s*\\(').test(src)) continue;
+                var text = Function.prototype.toString.call(window[n]);
+                if (!/^function\s+__br_/.test(text)) text = 'var ' + n + ' = ' + text + ';';
+                parts.push(text);
+                queue = queue.concat(unique(text.match(/\b__br_\w+/g)));
+            }
+            for (var i = 0; i < rts.length; i++) vars.push(rts[i] + '=__br_regen()');
+            for (var j = 0; j < tpls.length; j++) vars.push(tpls[j]);
+            return 'try{importScripts("https://ios6-browser.invalid/worker-polyfills.js");}catch(e){}\n' + parts.join('\n') + (vars.length ? '\nvar ' + vars.join(',') + ';' : '') + '\n' + src;
+        };
+        var Wrapped = function Worker(url, opts) {
+            var u = String(url);
+            if (/^blob:/i.test(u)) {
+                var src = read(u), fixed = src ? prepare(src) : null;
+                if (fixed !== null) { try { u = (window.URL || window.webkitURL).createObjectURL(new NativeBlob([fixed], { type: 'text/javascript' })); } catch (e) {} }
+            }
+            return arguments.length > 1 ? new NativeWorker(u, opts) : new NativeWorker(u);
+        };
+        Wrapped.prototype = NativeWorker.prototype;
+        Wrapped.__brWrapped = true;
+        window.__brWorkerPrelude = prepare;   // (tests)
+        try { window.Worker = Wrapped; } catch (e) {}
     })();
 
     // ---- ES modules. The rewriter turns <script type="module"> into __brModules.entry(src) (inline ones into their
@@ -6089,7 +6455,7 @@
                 r.stars = stars || [];
             };
             var res;
-            try { res = r.factory(ex, { url: r.url, resolve: function (s) { return resolve(s, r.url); } }); } catch (e) { r.error = e; return; }
+            try { res = r.factory.call(void 0, ex, { url: r.url, resolve: function (s) { return resolve(s, r.url); } }); } catch (e) { r.error = e; return; }
             r.setters = res[0];
             r.run = res[1];
             for (var i = 0; i < r.depRecs.length; i++) instantiate(r.depRecs[i]);
@@ -6114,26 +6480,43 @@
             for (var i = 0; i < r.depRecs.length; i++) { linkStars(r.depRecs[i]); r.setters[i](r.depRecs[i].ns || makeNS()); linkSetters(r.depRecs[i]); }
         };
         var running = 0;
-        var execute = function (r) {
-            if (r.state >= 2) return r.error;
-            r.state = 2;   // (a dependency cycle meets a running module: it is skipped, as with real modules)
-            for (var i = 0; i < (r.depRecs || []).length; i++) { var err = execute(r.depRecs[i]); if (err && !r.error) r.error = err; }
-            if (!r.error && r.run) {
+        var isThenable = function (x) { return !!x && typeof x.then === 'function'; };
+        // runs r after its dependencies and returns its error; a promise of it when a module on the way awaits at its
+        // top level (its run returns a promise, and whatever depends on it waits). path: the modules on the way here
+        var execute = function (r, path) {
+            if (path && path[r.url] === 1) return r.error;   // a dependency cycle back to a running module: skipped, as with real modules
+            if (r.state >= 2) return r.pending || r.error;
+            r.state = 2;
+            var deps = r.depRecs || [], i = 0, mine = Object.create(path || null);
+            mine[r.url] = 1;
+            var finish = function (err) { if (err && !r.error) r.error = err; r.state = 3; r.pending = null; return r.error; };
+            var go = function () {
+                for (; i < deps.length; i++) {
+                    var res = execute(deps[i], mine);
+                    if (isThenable(res)) { i++; return res.then(function (e) { if (e && !r.error) r.error = e; return go(); }); }
+                    if (res && !r.error) r.error = res;
+                }
+                if (r.error || !r.run) return finish(null);
+                var out;
                 running++;
-                try { r.run(); } catch (e) { r.error = e; }
+                try { out = r.run.call(void 0); } catch (e) { running--; return finish(e); }
                 running--;
-            }
-            r.state = 3;
-            return r.error;
+                if (isThenable(out)) return out.then(function () { return finish(null); }, function (e) { return finish(e || new Error('Module ' + r.url + ' failed')); });
+                return finish(null);
+            };
+            var result = go();
+            if (isThenable(result)) r.pending = result;
+            return result;
         };
         var evaluate = function (r) {
             return fetchAll(r).then(function () {
                 instantiate(r);
                 linkStars(r);
                 linkSetters(r);
-                var err = execute(r);
-                if (err) throw err;
-                return r.ns;
+                return P.resolve(execute(r)).then(function (err) {
+                    if (err) throw err;
+                    return r.ns;
+                });
             });
         };
         var report = function (e) { try { if (window.console && console.error) console.error(e); } catch (x) {} };

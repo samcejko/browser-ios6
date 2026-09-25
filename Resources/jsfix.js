@@ -175,6 +175,7 @@
             return v;
         },
         // regular expressions with named groups: exec results get .groups
+        // (the page shim's String.prototype.match/replace use exec for expressions marked __brRe: .groups, $<name>)
         __br_named: function (re, names) {
             var exec = re.exec;
             re.exec = function (s) {
@@ -182,6 +183,7 @@
                 if (m) { var g = {}; for (var k in names) if (Object.prototype.hasOwnProperty.call(names, k)) g[k] = m[names[k]]; m.groups = g; }
                 return m;
             };
+            try { Object.defineProperty(re, '__brRe', { value: { names: names } }); } catch (e) {}
             return re;
         },
         // import(): the module loader of the page shim, when there is one
@@ -973,7 +975,7 @@
                 break;
             case 'ForInStatement': case 'ForOfStatement':
                 ls = this.loop(n, s);
-                if (n.type === 'ForOfStatement') { d = true; if (n.await) { this.noWrap(ls); } }
+                if (n.type === 'ForOfStatement') { d = true; if (n.await) { this.noWrap(ls); if (!this.fns.length) this.tla = true; } }
                 if (n.left.type === 'VariableDeclaration') { if (this.v(n.left, n, ls)) d = true; }
                 else if (this.pattern(n.left, n, ls, null)) d = true;
                 if (this.v(n.right, n, ls)) d = true;
@@ -2221,22 +2223,26 @@
             if (n.type === 'ExportDefaultDeclaration') getter('default', fname);
         }
         var run = this.push('modrun', ast), body = '';
+        // top-level await: run is an async function (a state machine) whose promise the loader waits for
+        var machine = w.tla ? this.genBegin(ast) : null;
         for (i = 0; i < st.length; i++) {
             n = st[i];
             if (n.type === 'ImportDeclaration' || n.type === 'ExportAllDeclaration' || n.type === 'FunctionDeclaration') continue;
-            if (n.type === 'ExportNamedDeclaration') { if (n.declaration && n.declaration.type !== 'FunctionDeclaration') body += this.S(n.declaration); continue; }
+            if (n.type === 'ExportNamedDeclaration') { if (n.declaration && n.declaration.type !== 'FunctionDeclaration') body += this.modStmt(n.declaration, machine); continue; }
             if (n.type === 'ExportDefaultDeclaration') {
                 var dd = n.declaration;
                 if (dd.type === 'FunctionDeclaration') continue;
-                if (dd.type === 'ClassDeclaration' && dd.id) { body += this.S(dd); getter('default', this.bname(dd.id)); continue; }
+                if (dd.type === 'ClassDeclaration' && dd.id) { body += this.modStmt(dd, machine); getter('default', this.bname(dd.id)); continue; }
                 var dn = this.fresh('_default');
                 this.hoistVar(dn);
-                body += dn + '=' + (dd.type === 'ClassDeclaration' ? this.classExpr(dd, null) : this.E(dd, P_ASSIGN)) + ';';
+                var dv = dd.type === 'ClassDeclaration' ? this.classExpr(dd, null) : machine ? this.gx(dd, false) : this.E(dd, P_ASSIGN);
+                if (machine) this.gEmit(dn + '=' + dv + ';'); else body += dn + '=' + dv + ';';
                 getter('default', dn);
                 continue;
             }
-            body += this.S(n);
+            body += this.modStmt(n, machine);
         }
+        if (machine) body = this.genEnd(machine, 'async', function () { return 'this'; });
         this.pop();
         for (i = 0; i < mod.exports.length; i++) {
             e = mod.exports[i];
@@ -2253,6 +2259,12 @@
         var factory = 'function(' + exName + ',' + this.metaName + '){"use strict";' + this.declLine(ctx) + this.progInit + fdecls +
                       exName + '({' + getters.join(',') + '},[' + mod.stars.join(',') + ']);return[[' + setters.join(',') + '],function(){' + body + '}];}';
         return this.helperCode() + '__brModules.define(' + quote(this.opts.url || '') + ',[' + deps.join(',') + '],' + factory + ');';
+    };
+    // a statement of the module's body: its code, or into the state machine (top-level await)
+    P.modStmt = function (n, machine) {
+        if (!machine) return this.S(n);
+        this.gStmt(n, []);
+        return '';
     };
 
     // ------------------------------------------------------------------------------------------------ generators
@@ -2334,9 +2346,24 @@
         // the body's function declarations stay declarations of the outer function
         var fdecls = '';
         for (i = 0; i < stmts.length; i++) if (stmts[i].type === 'FunctionDeclaration') { stmts[i].$hoisted = true; fdecls += this.func(stmts[i], 'fn', stmts[i].id.name, null); }
-        var cv = this.fresh('_context'), inner = this.push('gen', n), g = inner.gen = new GenState(cv);
-        g.asyncGen = !!(n.async && n.generator);
+        var inner = this.genBegin(n);
         for (i = 0; i < stmts.length; i++) this.gStmt(stmts[i], []);
+        var body = this.genEnd(inner, n.async ? (n.generator ? 'asyncGen' : 'async') : 'wrap', function (p) { return kind === 'arrow' ? p.thisCode() : 'this'; });
+        this.pop();
+        var head = o && o.accessor ? '' : 'function' + (name ? ' ' + name : '');
+        return head + '(' + params.join(',') + '){' + dirs + this.declLine(outer) + pre + fdecls + body + '}';
+    };
+    // a state machine in the current function context: genBegin opens it, the statements go in with gStmt, genEnd
+    // closes it and returns the code that returns rt[method](machine) (self: `this` for the machine, in the outer
+    // context)
+    P.genBegin = function (n) {
+        var inner = this.push('gen', n);
+        inner.gen = new GenState(this.fresh('_context'));
+        inner.gen.asyncGen = !!(n.async && n.generator);
+        return inner;
+    };
+    P.genEnd = function (inner, method, self) {
+        var g = inner.gen, cv = g.cv, i;
         var resolve = function (s) { return s.replace(LOC_RE, function (m, id) { return String(g.marks[id]); }); };
         var starts = {}, id, machine = '';
         for (id in g.marks) if (hasOwn.call(g.marks, id)) starts[g.marks[id]] = 1;
@@ -2350,12 +2377,9 @@
         }
         var triesCode = tries.length ? resolve('[' + tries.join(',') + ']') : '';
         this.pop();
-        var self = kind === 'arrow' ? this.thisCode() : 'this', rt = this.rtName();
-        var body = 'return ' + rt + '.' + (n.async ? (n.generator ? 'asyncGen' : 'async') : 'wrap') + '(function(' + cv + '){' + this.declLine(inner) + 'while(1)switch(' + cv + '.prev=' + cv + '.next){' +
-                   machine + '}},null,' + self + (triesCode ? ',' + triesCode : '') + ');';
-        this.pop();
-        var head = o && o.accessor ? '' : 'function' + (name ? ' ' + name : '');
-        return head + '(' + params.join(',') + '){' + dirs + this.declLine(outer) + pre + fdecls + body + '}';
+        var selfCode = self(this), rt = this.rtName();
+        return 'return ' + rt + '.' + method + '(function(' + cv + '){' + this.declLine(inner) + 'while(1)switch(' + cv + '.prev=' + cv + '.next){' +
+               machine + '}},null,' + selfCode + (triesCode ? ',' + triesCode : '') + ');';
     };
     // one statement into the machine
     P.gStmt = function (n, labels) {
@@ -2741,7 +2765,6 @@
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body));
         w.stmts(ast.body, ast, ps, false);
         if (w.module && !module) throw new Unsupported('module');
-        if (module && w.tla) throw new Unsupported('top-level await');
         w.resolve(ast);
         if (module) return new Printer(src, w, opts).moduleCode(ast, w);
         var dirty = false;
@@ -2793,5 +2816,6 @@
         stats.last = 'lowered';
         return out;
     };
-    root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported };
+    // (lowerUnicode: the page's RegExp constructor lowers u/v patterns with it, see shims-extra.js)
+    root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex };
 })(this);

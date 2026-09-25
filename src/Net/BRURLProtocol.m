@@ -818,6 +818,8 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *cacheControl = @"max-age=31536000";
     if ([path hasPrefix:@"/polyfills"] && [path hasSuffix:@".js"]) {
         body = [BRCSSRewriter polyfillBundle];
+    } else if ([path isEqualToString:@"/worker-polyfills.js"]) {
+        body = [BRCSSRewriter workerPolyfills];
     } else if ([path isEqualToString:@"/manifest"]) {
         // :has() / @container entries collected for the page named in ?doc= (see BRCSSRewriter)
         NSString *query = self.request.URL.query ?: @"";

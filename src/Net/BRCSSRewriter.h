@@ -26,6 +26,8 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 // The bundle of polyfills injected into every document (assembled once from Resources/js and shims.js).
 + (NSString *)polyfillURLString;
 + (NSData *)polyfillBundle;
+// What a worker scope gets (core-js, regenerator; nothing that needs a document), see the Worker shim.
++ (NSData *)workerPolyfills;
 
 // The rewriter turns :has() selectors and @container queries into classes, and records deferred values, position-try
 // rules and custom properties that differ per element; the entries go to the output as a trailing comment. Every

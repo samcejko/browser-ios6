@@ -17,7 +17,7 @@ window.__brModuleTransform = function (src, url) { return JSFix.run(src, JSON.st
 <body>
 <pre id="out">running</pre>
 <script>
-var expected = { count: 2, nsCount: 2, greet: 'hi x', pi: '6.28', star: 's1,s2,star-default,true', renamed: 'helped', cycle: 'abA', map: 'from-map', meta: 'modtest/main.js', lazy: 'lazy' };
+var expected = { count: 2, nsCount: 2, greet: 'hi x', pi: '6.28', star: 's1,s2,star-default,true', renamed: 'helped', cycle: 'abA', map: 'from-map', meta: 'modtest/main.js', lazy: 'lazy', tla: 'waited,late!,3,undefined,undefined' };
 var fails = [];
 __brModules['import']('./modtest/main.js', location.href).then(function (ns) {
   var r = ns.results;

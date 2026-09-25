@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>regexp test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="gen-unicode.js"></script>
+<script src="../Resources/jsfix.js"></script>
+<script>
+// The old engine in a desktop browser: flags other than g/i/m, named groups and lookbehind are syntax errors, and the
+// flag getters, String.prototype.matchAll and RegExp.escape are missing. shims-extra.js then wraps this constructor.
+(function () {
+  var R = RegExp;
+  var Old = function RegExp(p, f) {
+    var isRe = p instanceof R;
+    if (!(this instanceof Old) && isRe && f === undefined) return p;
+    var src = isRe ? p.source : p === undefined ? '' : String(p);
+    f = f === undefined ? (isRe ? (p.global ? 'g' : '') + (p.ignoreCase ? 'i' : '') + (p.multiline ? 'm' : '') : '') : String(f);
+    if (/[^gim]/.test(f)) throw new SyntaxError('Invalid flags supplied to RegExp constructor.');
+    if (/\(\?<([A-Za-z_$]|[=!])|\\k</.test(src)) throw new SyntaxError('Invalid regular expression: unrecognized character after (?');
+    return new R(src, f);
+  };
+  Old.prototype = R.prototype;
+  ['$1', '$2', 'lastMatch'].forEach(function (k) { Object.defineProperty(Old, k, { get: function () { return R[k]; } }); });
+  ['flags', 'sticky', 'unicode', 'unicodeSets', 'dotAll', 'hasIndices'].forEach(function (k) { delete R.prototype[k]; });
+  delete String.prototype.matchAll;
+  window.RegExp = Old;
+})();
+</script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>RegExp flags on the old engine</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<script>
+var NAMED = '(?<y>\\d{4})-(?<m>\\d\\d)';
+var CASES = [
+  ['u flag alone', function () { return new RegExp('', 'u').test('x'); }, true],
+  ['flags getter', function () { var r = new RegExp('a', 'ysgdmiu'); return [r.flags, r.global, r.sticky, r.unicode, r.dotAll, r.hasIndices, /a/gi.flags]; }, ['dgimsuy', true, true, true, true, true, 'gi']],
+  ['\\p{L}', function () { return new RegExp('\\p{L}+', 'u').exec('žluť 123')[0]; }, 'žluť'],
+  ['\\p{sc=Arab}', function () { var r = new RegExp('\\p{sc=Arab}', 'u'); return [r.test('مرحبا'), r.test('abc')]; }, [true, false]],
+  ['\\P{L}', function () { return new RegExp('^\\P{L}+$', 'u').test('123 !'); }, true],
+  ['dot takes an astral character', function () { return [new RegExp('^.$', 'u').test('😀'), new RegExp('^.$', 'u').test('ab')]; }, [true, false]],
+  ['\\u{...}', function () { return new RegExp('\\u{1F600}', 'u').test('x😀'); }, true],
+  ['astral class', function () { return new RegExp('^[😀-😂]$', 'u').test('😁'); }, true],
+  ['maplibre script list', function () { var parts = ['Arab', 'Nope'].map(function (s) { try { return new RegExp('\\p{sc=' + s + '}', 'u').source; } catch (e) { return null; } }).filter(Boolean); return [parts.length, new RegExp(parts.join('|'), 'u').test('م'), new RegExp([].join('|'), 'u').test('')]; }, [1, true, true]],
+  ['dotAll', function () { var r = new RegExp('a.b', 's'); return [r.test('a\nb'), r.dotAll, r.flags]; }, [true, true, 's']],
+  ['sticky exec', function () { var re = new RegExp('a+', 'y'); re.lastIndex = 1; var m = re.exec('baab'); return [m && m[0], m && m.index, re.lastIndex, re.exec('baab'), re.lastIndex]; }, ['aa', 1, 3, null, 0]],
+  ['sticky test only at lastIndex', function () { var re = new RegExp('b', 'y'); return [re.test('ab'), re.lastIndex]; }, [false, 0]],
+  ['sticky groups', function () { var re = new RegExp('(\\d+)-(\\d+)', 'y'); var m = re.exec('12-34x'); return [m.length, m[1], m[2], re.lastIndex]; }, [3, '12', '34', 5]],
+  ['sticky global match/replace', function () { return ['aaba'.match(new RegExp('a', 'gy')), 'aaba'.replace(new RegExp('a', 'gy'), 'x')]; }, [['a', 'a'], 'xxba']],
+  ['sticky split', function () { return 'a,b'.split(new RegExp(',', 'y')); }, ['a', 'b']],
+  ['named groups exec', function () { var m = new RegExp(NAMED).exec('on 2024-05'); return [m.groups.y, m.groups.m, m.index]; }, ['2024', '05', 3]],
+  ['named groups match', function () { return '2024-05'.match(new RegExp(NAMED)).groups.m; }, '05'],
+  ['replace $<name>', function () { return '2024-05'.replace(new RegExp(NAMED), '$<m>/$<y> $$ $& $1'); }, '05/2024 $ 2024-05 2024'],
+  ['replace function gets groups', function () { return '2024-05 2025-06'.replace(new RegExp(NAMED, 'g'), function () { var g = arguments[arguments.length - 1]; return g.m + '.' + g.y; }); }, '05.2024 06.2025'],
+  ['\\k<name>', function () { return new RegExp('(?<q>[\'"]).*?\\k<q>').exec('say "hi" ok')[0]; }, '"hi"'],
+  ['duplicate names', function () { return new RegExp('(?<a>x)|(?<a>y)').exec('y').groups.a; }, 'y'],
+  ['indices', function () { var m = new RegExp('b(c)', 'd').exec('abc'); return m.indices; }, [[1, 3], [2, 3]]],
+  ['matchAll', function () { return Array.from('a1b2'.matchAll(/\d/g), function (m) { return m[0] + m.index; }).join(); }, '11,23'],
+  ['matchAll with a string', function () { return Array.from('a.b.'.matchAll('.'), function (m) { return m.index; }).join(); }, '0,1,2,3'],
+  ['matchAll needs g', function () { try { 'a'.matchAll(/a/); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
+  ['matchAll over named groups', function () { return Array.from('2024-05 2025-06'.matchAll(new RegExp(NAMED, 'g')), function (m) { return m.groups.y; }).join(); }, '2024,2025'],
+  ['RegExp.escape', function () { return [RegExp.escape('a.b*c'), RegExp.escape('foo bar'), RegExp.escape('1+1=2')]; }, ['\\x61\\.b\\*c', '\\x66oo\\x20bar', '\\x31\\+1\\x3d2']],
+  ['legacy statics', function () { /(x)(y)/.test('xy'); return [RegExp.$1, RegExp.$2, RegExp.lastMatch]; }, ['x', 'y', 'xy']],
+  ['constructor identity', function () { var re = /a/g; return [RegExp(re) === re, new RegExp(re) !== re, re.constructor === RegExp, new RegExp('a') instanceof RegExp, new RegExp('a', 'y') instanceof RegExp, Object.prototype.toString.call(new RegExp('a', 'y'))]; }, [true, true, true, true, true, '[object RegExp]']],
+  ['new RegExp(re, flags)', function () { return [new RegExp(/a/g, 'i').flags, new RegExp(new RegExp(NAMED)).exec('2024-05').groups.y]; }, ['i', '2024']],
+  ['bad flags still throw', function () { try { new RegExp('a', 'x'); return 'no'; } catch (e) { return e instanceof SyntaxError; } }, true],
+  ['lookbehind is not lowered', function () { try { new RegExp('(?<=a)b'); return 'no'; } catch (e) { return e.name; } }, 'SyntaxError'],
+  ['plain use unchanged', function () { return ['aXbX'.replace(/X/g, '-'), 'abc'.match(/b/).index, 'a-b'.replace('-', '$&$&'), 'x'.match(/y/g), 'a1b2'.match(/\d/g)]; }, ['a-b-', 1, 'a--b', null, ['1', '2']]],
+  ['transpiled named literal', function () { var out = JSFix.transpile('(function () { var m = "2024-05".match(/(?<y>\\d{4})-(?<m>\\d\\d)/); return [m.groups.m, "2024-05".replace(/(?<y>\\d{4})-(?<m>\\d\\d)/, "$<m>/$<y>")]; })();', {}); return (0, eval)(out); }, ['05', '05/2024']],
+  ['transpiled sticky literal', function () { var out = JSFix.transpile('(function () { var re = /a/y; re.lastIndex = 1; return [re.test("ba"), re.lastIndex, re.test("ba")]; })();', {}); return (0, eval)(out); }, [true, 2, false]]
+];
+var pass = 0, html = [];
+CASES.forEach(function (c) {
+  var got, err = null;
+  try { got = c[1](); } catch (e) { err = e; }
+  var ok = !err && JSON.stringify(got) === JSON.stringify(c[2]);
+  if (ok) pass++;
+  html.push('<div class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'OK   ' : 'FAIL ') + c[0] + (ok ? '' : ': got ' + (err ? 'error ' + err : JSON.stringify(got)) + ', expected ' + JSON.stringify(c[2])) + '</div>');
+});
+document.getElementById('summary').textContent = 'regexp: ' + pass + ' passed, ' + (CASES.length - pass) + ' failed';
+document.getElementById('out').innerHTML = html.join('');
+document.title = 'regexp ' + pass + '/' + CASES.length;
+</script>
+</body>
+</html>
