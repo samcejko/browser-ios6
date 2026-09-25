@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>xhr test</title>
+<script>
+// Exercises the XMLHttpRequest wrapper of shims-extra.js (responseType blob/json, timeout, events) and the
+// whatwg-fetch polyfill on top of it. In a desktop browser ?force=all makes the wrapper act as on the old engine.
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+if (/[?&]force=all/.test(location.search)) window.__brForceXHR = 'all';
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+(function () {
+    var results = [], pending = 0, done = false;
+    var check = function (name, ok, info) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (info ? ' (' + info + ')' : '')); };
+    var finish = function () {
+        if (done || pending > 0) return;
+        done = true;
+        var fails = 0;
+        for (var i = 0; i < results.length; i++) if (results[i].indexOf('FAIL') === 0) fails++;
+        document.title = 'xhr ' + (results.length - fails) + '/' + results.length + (window.__errors.length ? ' errors ' + window.__errors.length : '');
+        document.getElementById('out').textContent = document.title + '\n' + results.join('\n') + (window.__errors.length ? '\n' + window.__errors.join('\n') : '');
+    };
+    var start = function () { pending++; };
+    var end = function () { pending--; finish(); };
+    var X = window.XMLHttpRequest;
+    check('wrapped', !!X.__brWrapped || !/force/.test(location.search), String(!!X.__brWrapped));
+    check('constants', X.DONE === 4 && new X().UNSENT === 0);
+    check('instanceof', new X() instanceof X);
+
+    // text, with the order of events
+    start();
+    (function () {
+        var x = new X(), seen = [];
+        x.onreadystatechange = function () { seen.push('rs' + this.readyState); };
+        x.addEventListener('load', function (e) { seen.push('load'); check('load target is the request', e.target === x && this === x); });
+        x.onloadend = function () {
+            seen.push('loadend');
+            check('text', x.status === 200 && x.responseText.indexOf('Příliš') >= 0 && x.response === x.responseText, x.status + ' ' + typeof x.response);
+            check('text events', /rs1.*rs4.*load.*loadend/.test(seen.join(' ')), seen.join(' '));
+            check('headers', /json/.test(x.getResponseHeader('Content-Type') || '') && x.getAllResponseHeaders().length > 0, x.getResponseHeader('Content-Type'));
+            end();
+        };
+        x.open('GET', 'xhr-test.json?t=' + Math.random());
+        x.send();
+    })();
+
+    // json
+    start();
+    (function () {
+        var x = new X();
+        x.open('GET', 'xhr-test.json?j=' + Math.random(), true);
+        x.responseType = 'json';
+        check('json type sticks', x.responseType === 'json');
+        check('json response null before done', x.response === null);
+        x.onload = function () {
+            var r = x.response;
+            check('json', r && r.name === 'xhr-test' && r.list.length === 3 && r.text === 'Příliš žluťoučký kůň', JSON.stringify(r));
+            end();
+        };
+        x.onerror = function () { check('json', false, 'error'); end(); };
+        x.send();
+    })();
+
+    // blob: the same bytes as an arraybuffer request
+    start();
+    (function () {
+        var x = new X();
+        x.open('GET', 'xhr-test.bin?b=' + Math.random(), true);
+        x.responseType = 'blob';
+        check('blob type sticks', x.responseType === 'blob');
+        x.onload = function () {
+            var b = x.response;
+            check('blob', b instanceof Blob && b.size === 256, b && (b.constructor && b.constructor.name) + ' ' + (b && b.size));
+            var fr = new FileReader();
+            fr.onload = function () {
+                var v = new Uint8Array(fr.result), ok = v.length === 256;
+                for (var i = 0; ok && i < 256; i++) if (v[i] !== i) ok = false;
+                check('blob bytes', ok);
+                end();
+            };
+            fr.onerror = function () { check('blob bytes', false, 'reader error'); end(); };
+            fr.readAsArrayBuffer(b);
+        };
+        x.send();
+    })();
+
+    // arraybuffer and document pass through
+    start();
+    (function () {
+        var x = new X();
+        x.open('GET', 'xhr-test.bin?a=' + Math.random(), true);
+        x.responseType = 'arraybuffer';
+        x.onload = function () { check('arraybuffer', x.response instanceof ArrayBuffer && x.response.byteLength === 256); end(); };
+        x.send();
+    })();
+    start();
+    (function () {
+        var x = new X();
+        x.open('GET', 'xhr-test.html?d=' + Math.random(), true);
+        x.responseType = 'document';
+        x.onload = function () { check('document', x.response && x.response.title === 'xhr test', x.response && x.response.title); end(); };
+        x.send();
+    })();
+
+    // synchronous
+    (function () {
+        var x = new X(), fired = 0;
+        x.onreadystatechange = function () { if (this.readyState === 4) fired++; };
+        x.open('GET', 'xhr-test.json?s=' + Math.random(), false);
+        x.send(null);
+        check('sync', x.status === 200 && x.responseText.indexOf('xhr-test') >= 0 && fired === 1);
+    })();
+
+    // abort, once, removeEventListener
+    start();
+    (function () {
+        var x = new X(), events = [], onceCount = 0, removed = function () { events.push('removed!'); };
+        x.addEventListener('abort', function () { onceCount++; }, { once: true });
+        x.addEventListener('abort', removed);
+        x.removeEventListener('abort', removed);
+        x.onabort = function () { events.push('abort'); };
+        x.onloadend = function () {
+            events.push('loadend');
+            check('abort', events.join(' ') === 'abort loadend' && onceCount === 1, events.join(' ') + ' once=' + onceCount);
+            end();
+        };
+        x.open('GET', 'xhr-test.bin?x=' + Math.random(), true);
+        x.send();
+        x.abort();
+    })();
+
+    // timeout (an address that never answers)
+    start();
+    (function () {
+        var x = new X(), t0 = new Date().getTime(), got = [];
+        x.open('GET', 'http://10.255.255.1/never', true);
+        x.timeout = 300;
+        check('timeout property', x.timeout === 300);
+        x.ontimeout = function () { got.push('timeout'); };
+        x.onabort = function () { got.push('abort'); };
+        x.onerror = function () { got.push('error'); };
+        x.onloadend = function () {
+            got.push('loadend');
+            var ms = new Date().getTime() - t0;
+            check('timeout', got[0] === 'timeout' && ms < 3000, got.join(' ') + ' after ' + ms + ' ms');
+            end();
+        };
+        x.send();
+    })();
+
+    // Blob: typed-array parts are bytes; object URLs of blobs made here can be read (sync, async, as every type)
+    (function () {
+        var b = new Blob([new Uint8Array([1, 2, 3]), 'é', new Uint8Array([9, 8, 7, 6]).subarray(1, 3)], { type: 'application/x-test' });
+        check('blob of views', b.size === 7, 'size ' + b.size);
+        var u = URL.createObjectURL(b), x = new X();
+        x.open('GET', u, false);
+        x.overrideMimeType('text/plain; charset=x-user-defined');
+        x.send(null);
+        var t = x.responseText, codes = [];
+        for (var i = 0; i < t.length; i++) codes.push(t.charCodeAt(i) & 0xff);
+        check('sync blob URL', x.status === 200 && codes.join(',') === '1,2,3,195,169,8,7' && x.getResponseHeader('Content-Type') === 'application/x-test', x.status + ' ' + codes.join(','));
+        // (a desktop browser refuses responseType on synchronous requests: those two run only on the wrapper)
+        if (X.__brWrapped) {
+            var y = new X();
+            y.open('GET', URL.createObjectURL(new Blob(['{"k":"ž"}'])), false);
+            y.responseType = 'json';
+            y.send();
+            check('sync blob URL json', y.response && y.response.k === 'ž', JSON.stringify(y.response));
+            var s = b.slice(1, 4), z = new X();
+            z.open('GET', URL.createObjectURL(s), false);
+            z.responseType = 'arraybuffer';
+            z.send();
+            check('blob slice URL', z.response && new Uint8Array(z.response).join(',') === '2,3,195', z.response && new Uint8Array(z.response).join(','));
+        }
+        start();
+        var w = new X();
+        w.open('GET', URL.createObjectURL(new Blob(['async text'])));
+        w.onload = function () { check('async blob URL', w.status === 200 && w.responseText === 'async text' && w.readyState === 4, w.status + ' ' + w.responseText); end(); };
+        w.send();
+    })();
+
+    // :read-write / :read-only for editable content
+    (function () {
+        var el = document.createElement('div'), nested = document.createElement('div'), field = document.createElement('input');
+        el.id = 'rwTest'; el.contentEditable = true;
+        nested.id = 'rwNested'; nested.contentEditable = false;
+        field.id = 'rwField';
+        el.appendChild(nested);
+        document.body.appendChild(el);
+        document.body.appendChild(field);
+        check(':read-write editable', document.querySelector('#rwTest:read-write') === el);
+        check(':read-only nested', document.querySelector('#rwNested:read-only') === nested);
+        check(':read-write field', document.querySelector('#rwField:read-write') === field && !document.querySelector('#rwField:read-only'));
+        check('matches', el.matches ? el.matches(':read-write') && nested.matches(':read-only') : true);
+        check('list with :read-write', document.querySelectorAll('#rwTest:read-write, #rwField:read-write').length === 2);
+        check('marks removed', !document.querySelector('[data-br-rw]'));
+        document.body.removeChild(el);
+        document.body.removeChild(field);
+    })();
+
+    // fetch: the polyfill (loaded here from the CDN like the app bundle does) on the wrapper
+    if (/[?&]fetch/.test(location.search)) {
+        start();
+        var s = document.createElement('script');
+        s.onload = function () {
+            var f = window.fetch;
+            f('xhr-test.bin?f=' + Math.random()).then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+                var v = new Uint8Array(ab), ok = v.length === 256;
+                for (var i = 0; ok && i < 256; i++) if (v[i] !== i) ok = false;
+                check('fetch arrayBuffer bytes', ok, v.length + ' bytes');
+                return f('xhr-test.json?f=' + Math.random()).then(function (r) { return r.json(); });
+            }).then(function (j) {
+                check('fetch json utf-8', j && j.text === 'Příliš žluťoučký kůň', j && j.text);
+                return f(URL.createObjectURL(new Blob([new Uint8Array([5, 6, 7])], { type: 'image/x-test' }))).then(function (r) { return r.blob(); });
+            }).then(function (b) {
+                check('fetch blob URL', b && b.size === 3 && b.type === 'image/x-test', b && b.size + ' ' + b.type);
+                end();
+            }, function (e) { check('fetch', false, e && e.message); end(); });
+        };
+        s.onerror = function () { check('fetch polyfill loaded', false); end(); };
+        window.fetch = undefined;
+        s.src = 'https://cdn.jsdelivr.net/npm/whatwg-fetch@3.6.20/dist/fetch.umd.js';
+        document.head.appendChild(s);
+    }
+    setTimeout(function () { if (!done) { pending = 0; results.push('FAIL timed out'); finish(); } }, 8000);
+})();
+</script>
+</body>
+</html>

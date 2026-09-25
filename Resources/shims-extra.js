@@ -86,6 +86,315 @@
         if (document.documentElement) startObserving(); else document.addEventListener('DOMContentLoaded', startObserving, false);
     }
 
+    // ---- Blob. The old engine writes typed-array parts as their text ("1,2,3" instead of three bytes) and cannot
+    // read blob: URLs with XMLHttpRequest (NETWORK_ERR), which fetch() of an object URL and IndexedDB (it reads a Blob
+    // back synchronously to store it) need. Views become array buffers, and blobs made here remember their parts (up
+    // to 4 MB) so that their bytes can be given synchronously (BlobTools.bytes, used by the request wrapper below).
+    var BlobTools = (function () {
+        var NativeBlob = window.Blob;
+        if (!NativeBlob || NativeBlob.__brWrapped) return null;
+        var LIMIT = 4 * 1024 * 1024, urls = {}, force = window.__brForceXHR === 'all';
+        var viewsBroken = force;
+        try { viewsBroken = viewsBroken || new NativeBlob([new Uint8Array([1, 2, 3])]).size !== 3; } catch (e) {}
+        var isView = function (p) { return !!p && typeof p === 'object' && !(p instanceof ArrayBuffer) && p.buffer instanceof ArrayBuffer && typeof p.byteOffset === 'number' && typeof p.byteLength === 'number'; };
+        var toBuffer = function (v) { var copy = new Uint8Array(v.byteLength); copy.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)); return copy.buffer; };
+        var hide = function (obj, name, value) { try { Object.defineProperty(obj, name, { value: value, configurable: true, writable: true, enumerable: false }); } catch (e) { obj[name] = value; } };
+        var sizeOf = function (p) { return typeof p === 'string' ? p.length * 3 : p instanceof ArrayBuffer ? p.byteLength : isView(p) ? p.byteLength : p && typeof p.size === 'number' ? p.size : String(p).length * 3; };
+        var WrappedBlob = function Blob(parts, opts) {
+            var fixed = parts;
+            if (parts && typeof parts.length === 'number' && viewsBroken) {
+                fixed = [];
+                for (var i = 0; i < parts.length; i++) fixed.push(isView(parts[i]) ? toBuffer(parts[i]) : parts[i]);
+            }
+            var b = arguments.length > 1 ? new NativeBlob(fixed, opts) : arguments.length ? new NativeBlob(fixed) : new NativeBlob();
+            var list = fixed && typeof fixed.length === 'number' ? Array.prototype.slice.call(fixed) : [], total = 0;
+            for (var j = 0; j < list.length && total <= LIMIT; j++) total += sizeOf(list[j]);
+            if (total <= LIMIT) hide(b, '__brParts', list);
+            return b;
+        };
+        WrappedBlob.prototype = NativeBlob.prototype;
+        WrappedBlob.__brWrapped = true;
+        try { window.Blob = WrappedBlob; } catch (e0) {}
+        // (a slice of a blob whose bytes are known is known too)
+        var nativeSlice = NativeBlob.prototype.slice;
+        if (nativeSlice) {
+            NativeBlob.prototype.slice = function (start, end) {
+                var r = nativeSlice.apply(this, arguments), size = this.size;
+                var clamp = function (v, d) { v = v === undefined ? d : Math.floor(Number(v) || 0); return v < 0 ? Math.max(size + v, 0) : Math.min(v, size); };
+                var s = clamp(start, 0), e = clamp(end, size);
+                hide(r, '__brFrom', [this, s, Math.max(s, e)]);
+                return r;
+            };
+        }
+        var watch = function (owner) {
+            if (!owner || !owner.createObjectURL || owner.createObjectURL.__brBlobURLs) return;
+            var create = owner.createObjectURL, revoke = owner.revokeObjectURL;
+            owner.createObjectURL = function (obj) {
+                var u = create.apply(this, arguments);
+                if (obj && typeof obj.size === 'number') urls[u] = obj;
+                return u;
+            };
+            owner.createObjectURL.__brBlobURLs = true;
+            if (revoke) owner.revokeObjectURL = function (u) { delete urls[u]; return revoke.apply(this, arguments); };
+        };
+        try { watch(window.URL); if (window.webkitURL !== window.URL) watch(window.webkitURL); } catch (e1) {}
+        var utf8Bytes = function (s) {
+            var b = unescape(encodeURIComponent(s)), out = new Uint8Array(b.length);
+            for (var i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+            return out;
+        };
+        // the bytes of a blob made on this page (Uint8Array), or null when they are not known
+        var bytes = function (b, depth) {
+            try { return bytesOf(b, depth); } catch (e) { return null; }
+        };
+        var bytesOf = function (b, depth) {
+            if (!b || (depth || 0) > 8) return null;
+            if (b.__brBytes) return b.__brBytes;
+            var result = null;
+            if (b.__brParts) {
+                var chunks = [], total = 0;
+                for (var i = 0; i < b.__brParts.length; i++) {
+                    var p = b.__brParts[i], c;
+                    if (typeof p === 'string') c = utf8Bytes(p);
+                    else if (p instanceof ArrayBuffer) c = new Uint8Array(p);
+                    else if (isView(p)) c = new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+                    else if (p && typeof p.size === 'number' && typeof p.slice === 'function') { c = bytes(p, (depth || 0) + 1); if (!c) return null; }
+                    else c = utf8Bytes(String(p));
+                    chunks.push(c);
+                    total += c.length;
+                }
+                result = new Uint8Array(total);
+                for (var k = 0, at = 0; k < chunks.length; k++) { result.set(chunks[k], at); at += chunks[k].length; }
+            } else if (b.__brFrom) {
+                var whole = bytes(b.__brFrom[0], (depth || 0) + 1);
+                result = whole ? whole.subarray(b.__brFrom[1], b.__brFrom[2]) : null;
+            } else if (b.size === 0) result = new Uint8Array(0);
+            if (result && result.length !== b.size) return null;   // (not what the engine holds)
+            if (result) hide(b, '__brBytes', result);
+            return result;
+        };
+        return { bytes: bytes, forURL: function (u) { return urls.hasOwnProperty(u) ? urls[u] : null; } };
+    })();
+
+    // ---- XMLHttpRequest with every responseType. The old engine keeps responseType as an own, non-configurable
+    // property of each request that takes only '', text, document and arraybuffer ('blob' is ignored, 'json'
+    // throws), so fetch() (which asks for blobs) turned binary answers into text. A request object in front of the
+    // native one takes every type: a blob comes from an arraybuffer, json from the text. It also times requests out
+    // (the old engine has no timeout).
+    (function () {
+        var Native = window.XMLHttpRequest;
+        if (!Native || Native.__brWrapped || !window.Blob) return;
+        var probe = new Native(), accepts = function (t) { try { probe.responseType = t; return probe.responseType === t; } catch (e) { return false; } };
+        try { probe.open('GET', location.href, true); } catch (e0) {}
+        var nativeBlob = accepts('blob'), nativeJSON = accepts('json'), nativeTimeout = 'ontimeout' in probe;
+        try { probe.responseType = ''; } catch (e1) {}
+        if (window.__brForceXHR === 'all') nativeBlob = nativeJSON = nativeTimeout = false;   // (tools/xhr-test.html)
+        if ((nativeBlob && nativeJSON && nativeTimeout && !window.__brForceXHR) || !accepts('arraybuffer')) return;
+        var EVENTS = ['readystatechange', 'loadstart', 'progress', 'abort', 'error', 'load', 'timeout', 'loadend'];
+        var TYPES = { '': 1, text: 1, document: 1, arraybuffer: 1, blob: 1, json: 1 };
+        var EventProto = window.ProgressEvent ? window.ProgressEvent.prototype : window.Event ? window.Event.prototype : Object.prototype;
+        // the page's handlers see the request object they know as target and this
+        var makeEvent = function (type, e, target) {
+            var ev;
+            try { ev = Object.create(EventProto); } catch (e2) { ev = {}; }
+            var own = { type: type, target: target, currentTarget: target, srcElement: target, eventPhase: 2, bubbles: false, cancelable: false,
+                        defaultPrevented: false, isTrusted: true, timeStamp: (e && e.timeStamp) || new Date().getTime(),
+                        lengthComputable: !!(e && e.lengthComputable), loaded: (e && e.loaded) || 0, total: (e && e.total) || 0 };
+            for (var k in own) try { Object.defineProperty(ev, k, { value: own[k], writable: true, configurable: true, enumerable: true }); } catch (e3) { ev[k] = own[k]; }
+            ev.preventDefault = function () { this.defaultPrevented = true; };
+            ev.stopPropagation = noop;
+            ev.stopImmediatePropagation = function () { this.__brStop = true; };
+            return ev;
+        };
+        var rethrow = function (err) { setTimeout(function () { throw err; }, 0); };
+        var XHR = function XMLHttpRequest() {
+            var self = this, x = new Native();
+            this.__x = x;
+            this.__type = '';
+            this.__on = {};
+            this.__value = undefined;
+            this.__timer = null;
+            this.__timedOut = false;
+            this.__timeout = 0;
+            for (var i = 0; i < EVENTS.length; i++) (function (type) {
+                x.addEventListener(type, function (e) { self.__fire(type, e); }, false);
+            })(EVENTS[i]);
+        };
+        var XP = XHR.prototype;
+        XP.__fire = function (type, e) {
+            var x = this.__x;
+            if (type === 'readystatechange' && x.readyState === 4 && this.__timer) { clearTimeout(this.__timer); this.__timer = null; }
+            if (type === 'abort' && this.__timedOut) type = 'timeout';
+            var ev = e && e.__brOwnEvent ? e : makeEvent(type, e, this);
+            var h = this['on' + type];
+            if (typeof h === 'function') { try { h.call(this, ev); } catch (err) { rethrow(err); } }
+            var list = this.__on[type];
+            if (!list) return;
+            list = list.slice();
+            for (var i = 0; i < list.length && !ev.__brStop; i++) {
+                var l = list[i];
+                if (l.once) this.removeEventListener(type, l.fn);
+                try { if (typeof l.fn === 'function') l.fn.call(this, ev); else if (l.fn && typeof l.fn.handleEvent === 'function') l.fn.handleEvent(ev); } catch (err2) { rethrow(err2); }
+            }
+        };
+        XP.addEventListener = function (type, fn, opts) {
+            if (!fn) return;
+            var list = this.__on[type] || (this.__on[type] = []);
+            for (var i = 0; i < list.length; i++) if (list[i].fn === fn) return;
+            list.push({ fn: fn, once: !!(opts && typeof opts === 'object' && opts.once) });
+        };
+        XP.removeEventListener = function (type, fn) {
+            var list = this.__on[type];
+            if (list) for (var i = 0; i < list.length; i++) if (list[i].fn === fn) { list.splice(i, 1); return; }
+        };
+        XP.dispatchEvent = function (ev) {
+            try { ev.__brOwnEvent = true; } catch (e) {}
+            this.__fire(ev.type, ev);
+            return !ev.defaultPrevented;
+        };
+        XP.open = function (method, url) {
+            this.__value = undefined;
+            this.__timedOut = false;
+            this.__async = arguments.length < 3 || !!arguments[2];
+            // a blob: URL of a blob made on this page is answered here (the engine cannot read them)
+            var blob = BlobTools && /^blob:/i.test(String(url)) && /^get$/i.test(String(method)) ? BlobTools.forURL(String(url)) : null;
+            var known = blob ? BlobTools.bytes(blob) : null;
+            if (known) {
+                this.__fake = { state: 1, bytes: known, type: blob.type || '', blob: blob, mime: '' };
+                this.__fire('readystatechange');
+                return;
+            }
+            this.__fake = null;
+            return this.__x.open.apply(this.__x, arguments);
+        };
+        XP.send = function (body) {
+            var self = this, x = this.__x, f = this.__fake;
+            if (f) {
+                var n = f.bytes.length, progress = { lengthComputable: true, loaded: n, total: n };
+                var finish = function () {
+                    if (f.aborted) return;
+                    f.state = 2; self.__fire('readystatechange');
+                    f.state = 3; self.__fire('readystatechange');
+                    f.state = 4; self.__fire('readystatechange');
+                    self.__fire('load', progress);
+                    self.__fire('loadend', progress);
+                };
+                self.__fire('loadstart', { lengthComputable: true, loaded: 0, total: n });
+                if (this.__async) setTimeout(finish, 0); else finish();
+                return;
+            }
+            if (this.__timeout > 0 && this.__async && !nativeTimeout) {
+                this.__timer = setTimeout(function () { self.__timer = null; if (x.readyState !== 4) { self.__timedOut = true; x.abort(); } }, this.__timeout);
+            }
+            return arguments.length ? x.send(body) : x.send();
+        };
+        XP.abort = function () {
+            if (this.__timer) { clearTimeout(this.__timer); this.__timer = null; }
+            var f = this.__fake;
+            if (f) {
+                if (f.aborted || f.state === 4) return;
+                f.aborted = true;
+                f.state = 4; this.__fire('readystatechange');
+                this.__fire('abort');
+                this.__fire('loadend');
+                f.state = 0;
+                return;
+            }
+            return this.__x.abort();
+        };
+        // (the bytes as the text of a response: UTF-8, or one character per byte for x-user-defined)
+        var fakeText = function (f) {
+            var b = f.bytes, s = '', chunk = 8192, user = /x-user-defined/i.test(f.mime);
+            for (var i = 0; i < b.length; i += chunk) {
+                var part = b.subarray(i, Math.min(b.length, i + chunk)), codes = [];
+                for (var k = 0; k < part.length; k++) codes.push(user && part[k] >= 0x80 ? 0xF700 + part[k] : part[k]);
+                s += String.fromCharCode.apply(null, codes);
+            }
+            if (user) return s;
+            try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
+        };
+        XP.setRequestHeader = function () { if (!this.__fake) return this.__x.setRequestHeader.apply(this.__x, arguments); };
+        XP.overrideMimeType = function (m) { if (this.__fake) { this.__fake.mime = String(m); return; } return this.__x.overrideMimeType.apply(this.__x, arguments); };
+        XP.getResponseHeader = function (name) {
+            var f = this.__fake;
+            if (!f) return this.__x.getResponseHeader.apply(this.__x, arguments);
+            if (f.state < 2) return null;
+            var n = String(name).toLowerCase();
+            return n === 'content-type' ? f.type || null : n === 'content-length' ? String(f.bytes.length) : null;
+        };
+        XP.getAllResponseHeaders = function () {
+            var f = this.__fake;
+            if (!f) return this.__x.getAllResponseHeaders.apply(this.__x, arguments);
+            return f.state < 2 ? '' : (f.type ? 'Content-Type: ' + f.type + '\r\n' : '') + 'Content-Length: ' + f.bytes.length + '\r\n';
+        };
+        var fakeGetters = {
+            readyState: function (f) { return f.state; },
+            status: function (f) { return f.state >= 2 && !f.aborted ? 200 : 0; },
+            statusText: function (f) { return f.state >= 2 && !f.aborted ? 'OK' : ''; },
+            responseText: function (f) { return f.state === 4 && !f.aborted ? (f.text !== undefined ? f.text : (f.text = fakeText(f))) : ''; },
+            responseXML: function () { return null; },
+            responseURL: function (f) { return ''; },
+            upload: function (f, x) { return x.upload; }
+        };
+        var getters = ['readyState', 'status', 'statusText', 'responseText', 'responseXML', 'responseURL', 'upload'];
+        for (var g = 0; g < getters.length; g++) (function (name) {
+            Object.defineProperty(XP, name, { get: function () { return this.__fake ? fakeGetters[name](this.__fake, this.__x) : this.__x[name]; }, configurable: true, enumerable: true });
+        })(getters[g]);
+        Object.defineProperty(XP, 'withCredentials', { get: function () { return this.__x.withCredentials; }, set: function (v) { this.__x.withCredentials = v; }, configurable: true, enumerable: true });
+        Object.defineProperty(XP, 'timeout', {
+            get: function () { return nativeTimeout ? this.__x.timeout : this.__timeout; },
+            set: function (v) { if (nativeTimeout) this.__x.timeout = v; else this.__timeout = Math.max(0, Number(v) || 0); },
+            configurable: true, enumerable: true
+        });
+        Object.defineProperty(XP, 'responseType', {
+            get: function () { return this.__type; },
+            set: function (t) {
+                t = String(t);
+                if (!TYPES[t]) return;
+                var n = (t === 'blob' && !nativeBlob) ? 'arraybuffer' : (t === 'json' && !nativeJSON) ? 'text' : t;
+                if (!this.__fake) this.__x.responseType = n;
+                this.__type = t;
+                this.__value = undefined;
+            },
+            configurable: true, enumerable: true
+        });
+        Object.defineProperty(XP, 'response', {
+            get: function () {
+                var x = this.__x, t = this.__type, f = this.__fake;
+                if (f) {
+                    if (t === '' || t === 'text') return this.responseText;
+                    if (f.state !== 4 || f.aborted) return null;
+                    if (t === 'arraybuffer') return f.bytes.buffer.slice(f.bytes.byteOffset, f.bytes.byteOffset + f.bytes.length);
+                    if (t === 'blob') return f.blob;
+                    if (t === 'json') { try { return JSON.parse(this.responseText); } catch (e0) { return null; } }
+                    return null;
+                }
+                if ((t === 'blob' && !nativeBlob) || (t === 'json' && !nativeJSON)) {
+                    if (x.readyState !== 4) return null;
+                    if (this.__value === undefined) {
+                        if (t === 'blob') {
+                            var type = (x.getResponseHeader('Content-Type') || '').toLowerCase();
+                            this.__value = x.response ? new Blob([x.response], { type: type }) : null;
+                        } else {
+                            var text = x.responseText;
+                            try { this.__value = text ? JSON.parse(text) : null; } catch (e) { this.__value = null; }
+                        }
+                    }
+                    return this.__value;
+                }
+                return 'response' in x ? x.response : x.responseText;
+            },
+            configurable: true, enumerable: true
+        });
+        for (var h = 0; h < EVENTS.length; h++) XP['on' + EVENTS[h]] = null;
+        var STATES = ['UNSENT', 'OPENED', 'HEADERS_RECEIVED', 'LOADING', 'DONE'];
+        for (var s = 0; s < STATES.length; s++) { XHR[STATES[s]] = s; XP[STATES[s]] = s; }
+        XP.toString = function () { return '[object XMLHttpRequest]'; };
+        XHR.__brWrapped = true;
+        XHR.__brNative = Native;
+        window.XMLHttpRequest = XHR;
+    })();
+
     // ---- New tabs: window.open and target=_blank links go to the app (brtab: scheme handled natively)
     function sendToApp(scheme, payload) {
         try {
@@ -4957,6 +5266,81 @@
             if (queryOwners[qo].querySelectorAll) queryOwners[qo].querySelectorAll = scopedQuery(queryOwners[qo].querySelectorAll);
         }
     }
+    // ':read-write' / ':read-only' in queries: the old engine matches only form fields, not editable content
+    // (contenteditable). During a query with them, editable elements carry data-br-rw; ':read-write' becomes the
+    // engine's own plus [data-br-rw], ':read-only' the rest.
+    (function () {
+        if (!Ep || !document.documentElement) return;
+        var probe = document.createElement('div'), works = false;
+        probe.id = 'br-rw-probe';
+        probe.setAttribute('contenteditable', 'true');
+        try { document.documentElement.appendChild(probe); works = document.querySelector('#br-rw-probe:read-write') === probe; } catch (e) {}
+        if (probe.parentNode) probe.parentNode.removeChild(probe);
+        if (works && window.__brForceXHR !== 'all') return;   // (tools/xhr-test.html)
+        var RW = /:(?:-moz-)?read-(write|only)(?![\w-])/;
+        // the selectors of a list (commas outside brackets, parentheses and strings)
+        var split = function (sel) {
+            var out = [], depth = 0, quote = '', start = 0;
+            for (var i = 0; i < sel.length; i++) {
+                var c = sel.charAt(i);
+                if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (c === ',' && depth === 0) { out.push(sel.slice(start, i)); start = i + 1; }
+            }
+            out.push(sel.slice(start));
+            return out;
+        };
+        var NATIVE = '\u0001';
+        var rewrite = function (sel) {
+            var parts = split(sel), out = [];
+            for (var i = 0; i < parts.length; i++) {
+                var variants = [parts[i]];
+                for (var round = 0; round < 4; round++) {
+                    var next = [], changed = false;
+                    for (var v = 0; v < variants.length; v++) {
+                        var m = RW.exec(variants[v]);
+                        if (!m) { next.push(variants[v]); continue; }
+                        changed = true;
+                        var before = variants[v].slice(0, m.index), after = variants[v].slice(m.index + m[0].length);
+                        if (m[1] === 'write') { next.push(before + NATIVE + after); next.push(before + '[data-br-rw]' + after); }
+                        else next.push(before + ':not(' + NATIVE + '):not([data-br-rw])' + after);
+                    }
+                    variants = next;
+                    if (!changed) break;
+                }
+                out = out.concat(variants);
+            }
+            return out.join(',').split(NATIVE).join(':read-write');
+        };
+        var mark = function () {
+            var roots = document.querySelectorAll('[contenteditable]'), marked = [];
+            for (var i = 0; i < roots.length; i++) {
+                var r = roots[i];
+                if (!r.isContentEditable || r.hasAttribute('data-br-rw')) continue;
+                var all = [r], inner = r.getElementsByTagName('*');
+                for (var k = 0; k < inner.length; k++) all.push(inner[k]);
+                for (var j = 0; j < all.length; j++) if (all[j].isContentEditable && !all[j].hasAttribute('data-br-rw')) { all[j].setAttribute('data-br-rw', ''); marked.push(all[j]); }
+            }
+            return marked;
+        };
+        var wrap = function (orig) {
+            return function (sel) {
+                if (typeof sel !== 'string' || !RW.test(sel)) return orig.apply(this, arguments);
+                var marked = mark();
+                try { return orig.call(this, rewrite(sel)); } finally { for (var i = 0; i < marked.length; i++) marked[i].removeAttribute('data-br-rw'); }
+            };
+        };
+        var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
+        for (var o = 0; o < owners.length; o++) {
+            if (!owners[o]) continue;
+            if (owners[o].querySelector) owners[o].querySelector = wrap(owners[o].querySelector);
+            if (owners[o].querySelectorAll) owners[o].querySelectorAll = wrap(owners[o].querySelectorAll);
+        }
+        if (Ep.matches) Ep.matches = wrap(Ep.matches);
+        if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector);
+    })();
     // KeyboardEvent.key from keyCode
     if (window.KeyboardEvent && window.KeyboardEvent.prototype && !('key' in window.KeyboardEvent.prototype)) {
         var keyNames = { 8: 'Backspace', 9: 'Tab', 13: 'Enter', 16: 'Shift', 17: 'Control', 18: 'Alt', 20: 'CapsLock', 27: 'Escape', 32: ' ', 33: 'PageUp', 34: 'PageDown', 35: 'End', 36: 'Home', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 45: 'Insert', 46: 'Delete', 91: 'Meta', 93: 'ContextMenu', 186: ';', 187: '=', 188: ',', 189: '-', 190: '.', 191: '/', 192: '`', 219: '[', 220: '\\', 221: ']', 222: "'" };
