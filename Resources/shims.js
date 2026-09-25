@@ -15,19 +15,79 @@
         window.cancelIdleCallback = function (id) { window.clearTimeout(id); };
     }
 
-    // performance
+    // performance: the old engine has no Navigation/User Timing (iOS 8 brought them). Times are taken from here (the
+    // polyfills run first in the page, so this is close to the start of the document): the network part of a
+    // navigation is not known and counts as instant; the document's own moments are filled in as they happen.
     if (!window.performance) window.performance = {};
-    var perf = window.performance;
-    if (!perf.now) { var t0 = Date.now(); perf.now = function () { return Date.now() - t0; }; }
-    if (!perf.mark) perf.mark = function () {};
-    if (!perf.measure) perf.measure = function () {};
-    if (!perf.getEntriesByType) perf.getEntriesByType = function () { return []; };
-    if (!perf.getEntriesByName) perf.getEntriesByName = function () { return []; };
-    if (!perf.getEntries) perf.getEntries = function () { return []; };
-    if (!perf.clearMarks) perf.clearMarks = function () {};
-    if (!perf.clearMeasures) perf.clearMeasures = function () {};
-    if (!perf.timing) perf.timing = { navigationStart: t0 || Date.now() };
-    if (!perf.timeOrigin) perf.timeOrigin = Date.now();
+    var perf = window.performance, t0 = (perf.timing && perf.timing.navigationStart) || Date.now();
+    if (!perf.now) perf.now = function () { return Date.now() - t0; };
+    if (!perf.timeOrigin) perf.timeOrigin = t0;
+    if (!perf.timing) {
+        var timing = {}, T_FIELDS = ['navigationStart', 'unloadEventStart', 'unloadEventEnd', 'redirectStart', 'redirectEnd', 'fetchStart', 'domainLookupStart', 'domainLookupEnd',
+                                     'connectStart', 'connectEnd', 'secureConnectionStart', 'requestStart', 'responseStart', 'responseEnd', 'domLoading', 'domInteractive',
+                                     'domContentLoadedEventStart', 'domContentLoadedEventEnd', 'domComplete', 'loadEventStart', 'loadEventEnd'];
+        for (var tf = 0; tf < T_FIELDS.length; tf++) timing[T_FIELDS[tf]] = /^(unload|redirect|secureConnection|dom[A-Z]|domContent|domComplete|loadEvent)/.test(T_FIELDS[tf]) ? 0 : t0;
+        timing.domLoading = t0;
+        timing.toJSON = function () { var o = {}; for (var i = 0; i < T_FIELDS.length; i++) o[T_FIELDS[i]] = this[T_FIELDS[i]]; return o; };
+        perf.timing = timing;
+        var stamp = function (names) { var now = Date.now(); for (var i = 0; i < names.length; i++) if (!timing[names[i]]) timing[names[i]] = now; };
+        var interactive = function () { stamp(['domInteractive', 'domContentLoadedEventStart']); setTimeout(function () { stamp(['domContentLoadedEventEnd']); }, 0); };
+        if (document.readyState === 'interactive' || document.readyState === 'complete') interactive();
+        else document.addEventListener('DOMContentLoaded', interactive, false);
+        window.addEventListener('load', function () { stamp(['domInteractive', 'domContentLoadedEventStart', 'domContentLoadedEventEnd', 'domComplete', 'loadEventStart']); setTimeout(function () { stamp(['loadEventEnd']); }, 0); }, false);
+    }
+    if (!perf.navigation) perf.navigation = { type: 0, redirectCount: 0, TYPE_NAVIGATE: 0, TYPE_RELOAD: 1, TYPE_BACK_FORWARD: 2, TYPE_RESERVED: 255, toJSON: function () { return { type: this.type, redirectCount: this.redirectCount }; } };
+    if (!perf.getEntries) {
+        // User Timing (mark / measure) and a navigation entry made from the timing above
+        var entries = [];
+        var navigationEntry = function () {
+            var t = perf.timing, rel = function (v) { return v ? v - t0 : 0; };
+            var e = { name: location.href, entryType: 'navigation', startTime: 0, initiatorType: 'navigation', type: 'navigate', redirectCount: 0,
+                      workerStart: 0, redirectStart: 0, redirectEnd: 0, fetchStart: 0, domainLookupStart: 0, domainLookupEnd: 0, connectStart: 0, connectEnd: 0,
+                      secureConnectionStart: 0, requestStart: 0, responseStart: 0, responseEnd: 0, transferSize: 0, encodedBodySize: 0, decodedBodySize: 0,
+                      unloadEventStart: 0, unloadEventEnd: 0, domInteractive: rel(t.domInteractive), domContentLoadedEventStart: rel(t.domContentLoadedEventStart),
+                      domContentLoadedEventEnd: rel(t.domContentLoadedEventEnd), domComplete: rel(t.domComplete), loadEventStart: rel(t.loadEventStart), loadEventEnd: rel(t.loadEventEnd),
+                      nextHopProtocol: '', serverTiming: [] };
+            e.duration = e.loadEventEnd;
+            e.toJSON = function () { var o = {}; for (var k in this) if (typeof this[k] !== 'function') o[k] = this[k]; return o; };
+            return e;
+        };
+        var all = function () { return [navigationEntry()].concat(entries); };
+        perf.getEntries = function () { return all(); };
+        perf.getEntriesByType = function (type) { var out = [], list = all(); for (var i = 0; i < list.length; i++) if (list[i].entryType === type) out.push(list[i]); return out; };
+        perf.getEntriesByName = function (name, type) { var out = [], list = all(); for (var i = 0; i < list.length; i++) if (list[i].name === name && (!type || list[i].entryType === type)) out.push(list[i]); return out; };
+        var entry = function (name, type, start, duration, detail) { return { name: String(name), entryType: type, startTime: start, duration: duration, detail: detail === undefined ? null : detail, toJSON: function () { return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration, detail: this.detail }; } }; };
+        var timeOf = function (v) {
+            if (typeof v === 'number') return v;
+            if (typeof v === 'string') {
+                for (var i = entries.length - 1; i >= 0; i--) if (entries[i].entryType === 'mark' && entries[i].name === v) return entries[i].startTime;
+                if (perf.timing[v]) return perf.timing[v] - t0;
+                throw new SyntaxError("Failed to execute 'measure': The mark '" + v + "' does not exist.");
+            }
+            return undefined;
+        };
+        perf.mark = function (name, opts) {
+            var e = entry(name, 'mark', opts && typeof opts.startTime === 'number' ? opts.startTime : perf.now(), 0, opts && opts.detail);
+            entries.push(e);
+            if (entries.length > 2000) entries.shift();
+            return e;
+        };
+        perf.measure = function (name, start, end) {
+            var opts = start && typeof start === 'object' ? start : null, s, e2;
+            if (opts) { s = timeOf(opts.start); e2 = opts.end !== undefined ? timeOf(opts.end) : opts.duration !== undefined && s !== undefined ? s + opts.duration : perf.now(); if (s === undefined) s = opts.duration !== undefined ? e2 - opts.duration : 0; }
+            else { s = start === undefined ? 0 : timeOf(start); e2 = end === undefined ? perf.now() : timeOf(end); }
+            var m = entry(name, 'measure', s, e2 - s, opts && opts.detail);
+            entries.push(m);
+            if (entries.length > 2000) entries.shift();
+            return m;
+        };
+        var clear = function (type) { return function (name) { for (var i = entries.length - 1; i >= 0; i--) if (entries[i].entryType === type && (name === undefined || entries[i].name === name)) entries.splice(i, 1); }; };
+        perf.clearMarks = clear('mark');
+        perf.clearMeasures = clear('measure');
+        perf.clearResourceTimings = function () {};
+        perf.setResourceTimingBufferSize = function () {};
+    }
+    if (!perf.toJSON) perf.toJSON = function () { return { timeOrigin: perf.timeOrigin, timing: perf.timing && perf.timing.toJSON ? perf.timing.toJSON() : perf.timing, navigation: perf.navigation }; };
     if (!window.PerformanceObserver) {
         window.PerformanceObserver = function () {};
         window.PerformanceObserver.prototype.observe = function () {};

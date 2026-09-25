@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>perf test</title>
+<script>
+// performance shim of shims.js: in a desktop browser the page replaces window.performance first (it is a replaceable
+// attribute), so the shim's Navigation/User Timing stand-ins are the ones tested
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+if (!/[?&]native/.test(location.search)) window.performance = {};
+</script>
+<script src="../Resources/shims.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+window.addEventListener('load', function () {
+    setTimeout(function () {
+        var p = window.performance, out = [], ok = true;
+        var check = function (name, cond, info) { out.push((cond ? 'PASS ' : 'FAIL ') + name + (info !== undefined ? ' (' + info + ')' : '')); if (!cond) ok = false; };
+        check('now', typeof p.now() === 'number' && p.now() >= 0, p.now());
+        check('timing', p.timing.navigationStart > 0 && p.timing.loadEventEnd >= p.timing.navigationStart && p.timing.domContentLoadedEventStart >= p.timing.navigationStart,
+              p.timing.loadEventEnd - p.timing.navigationStart);
+        check('navigation.type', p.navigation && p.navigation.type === 0);
+        var nav = p.getEntriesByType('navigation');
+        check('navigation entry', nav.length === 1 && nav[0].type === 'navigate' && nav[0].loadEventEnd >= 0 && nav[0].name === location.href);
+        p.mark('a');
+        var m = p.mark('b', { detail: { x: 1 } });
+        var meas = p.measure('a-b', 'a', 'b');
+        check('mark/measure', m.entryType === 'mark' && m.detail.x === 1 && meas.duration >= 0 && p.getEntriesByName('a-b')[0] === meas);
+        var meas2 = p.measure('opts', { start: 'a', duration: 5 });
+        check('measure options', meas2.duration === 5);
+        p.clearMarks('a');
+        check('clearMarks', p.getEntriesByName('a').length === 0 && p.getEntriesByName('b').length === 1);
+        var threw = false;
+        try { p.measure('bad', 'nope'); } catch (e) { threw = true; }
+        check('unknown mark throws', threw);
+        check('toJSON', !!JSON.stringify(p));
+        check('errors', window.__errors.length === 0, window.__errors.join(' | '));
+        document.title = 'perf ' + (ok ? 'ok' : 'FAIL');
+        document.getElementById('out').textContent = out.join('\n');
+    }, 50);
+});
+</script>
+</body>
+</html>

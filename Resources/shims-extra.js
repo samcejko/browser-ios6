@@ -613,6 +613,46 @@
         var src = (e.filename || '').split('/').slice(-1)[0];
         sendToApp('brlog', 'JS error: ' + (e.message || 'error') + ' @ ' + src + ':' + (e.lineno || 0) + ' page ' + location.hostname);
     }, false);
+    // Debugging (BRDebugJSErrors in the app puts window.__brDebugErrors at the start of the polyfills): errors of
+    // scripts from other hosts reach onerror only as "Script error.", so callbacks (timers, animation frames, event
+    // listeners) and promise rejections are caught here, where the real error is visible, logged and thrown again.
+    if (window.__brDebugErrors) (function () {
+        var logged = 0;
+        var describe = function (err) {
+            if (!err || typeof err !== 'object') return String(err);
+            var where = err.sourceURL ? ' @ ' + String(err.sourceURL).split('/').slice(-1)[0] + ':' + (err.line || 0) : '';
+            var stack = typeof err.stack === 'string' ? ' | ' + err.stack.split('\n').slice(0, 4).join(' < ') : '';
+            return (err.name || 'Error') + ': ' + (err.message || '') + where + stack;
+        };
+        var report = function (kind, err) {
+            if (logged >= 20 || (err && err.__brLogged)) return;
+            logged++;
+            try { if (err && typeof err === 'object') err.__brLogged = true; } catch (e) {}
+            sendToApp('brlog', 'JS debug (' + kind + '): ' + describe(err).slice(0, 600) + ' page ' + location.hostname);
+        };
+        var guard = function (fn, kind) {
+            if (typeof fn !== 'function') return fn;
+            if (fn.__brGuard) return fn.__brGuard;
+            var g = function () { try { return fn.apply(this, arguments); } catch (err) { report(kind, err); throw err; } };
+            try { Object.defineProperty(fn, '__brGuard', { value: g, configurable: true }); } catch (e) {}
+            return g;
+        };
+        var timers = ['setTimeout', 'setInterval', 'requestAnimationFrame', 'webkitRequestAnimationFrame'];
+        for (var t = 0; t < timers.length; t++) (function (name) {
+            var orig = window[name];
+            if (typeof orig !== 'function') return;
+            window[name] = function (fn) { var args = Array.prototype.slice.call(arguments); args[0] = guard(fn, name); return orig.apply(this, args); };
+        })(timers[t]);
+        var owners = [window.Node && window.Node.prototype, window, window.XMLHttpRequest && window.XMLHttpRequest.prototype];
+        for (var o = 0; o < owners.length; o++) (function (owner) {
+            if (!owner || !owner.addEventListener) return;
+            var add = owner.addEventListener, remove = owner.removeEventListener;
+            owner.addEventListener = function (type, fn, opts) { return add.call(this, type, typeof fn === 'function' ? guard(fn, type) : fn, opts); };
+            owner.removeEventListener = function (type, fn, opts) { return remove.call(this, type, typeof fn === 'function' && fn.__brGuard ? fn.__brGuard : fn, opts); };
+        })(owners[o]);
+        window.addEventListener('unhandledrejection', function (e) { report('promise', e && (e.reason !== undefined ? e.reason : e.detail)); }, false);
+        window.addEventListener('error', function (e) { if (e && e.error) report('onerror', e.error); }, false);
+    })();
     // Web Share goes to the app's share sheet
     if (!navigator.share) {
         navigator.share = function (data) {

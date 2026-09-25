@@ -675,6 +675,8 @@ static NSString *BRPageKey(NSURL *url)
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
         NSBundle *b = [NSBundle mainBundle];
+        // (debugging switch: the page shim logs the real errors of callbacks and promises, see shims-extra.js)
+        if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugJSErrors"]) [d appendData:[@"window.__brDebugErrors=true;\n" dataUsingEncoding:NSUTF8StringEncoding]];
         for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill", @"dialog-polyfill",
                                  @"object-fit-images", @"shims", @"regexp-shim", @"shims-extra"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
