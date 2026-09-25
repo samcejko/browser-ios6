@@ -274,6 +274,10 @@
                 try { var out = G.JSFix.transpile(src, { evalCode: true }); return out === null ? src : out; } catch (e2) { return src; }
             }
         },
+        // delete el.dataset[key]: the old engine throws in strict code when there is no such attribute (today: true)
+        __br_dsdel: function (el, key) {
+            try { return delete el.dataset[key]; } catch (e) { return true; }
+        },
         // async function expressions: Object.getPrototypeOf(async function () {}).constructor is an AsyncFunction
         // (Alpine compiles its expressions with it) whose functions return promises
         __br_asyncFn: function (fn) {
@@ -1138,6 +1142,10 @@
             case 'UnaryExpression': case 'UpdateExpression':
                 if (n.operator === 'typeof' && n.argument.type === 'Identifier') n.argument.$typeof = true;   // (typeof Proxy stays the engine's)
                 d = this.v(n.argument, n, s);
+                // delete el.dataset.x throws in the old engine's strict code when there is no data-x (Next.js does it
+                // at start): a helper deletes it
+                if (n.operator === 'delete' && n.argument.type === 'MemberExpression' && n.argument.object.type === 'MemberExpression' &&
+                    !n.argument.object.computed && n.argument.object.property.name === 'dataset' && n.argument.object.object.type !== 'Super') { n.$dsDelete = true; d = true; }
                 if (n.type === 'UpdateExpression' && n.argument.type === 'Identifier') n.argument.$w = true;
                 break;
             case 'BinaryExpression':
@@ -1744,6 +1752,12 @@
     P.unary = function (n) {
         var op = n.operator;
         if (op === 'delete' && n.argument.type === 'ChainExpression') return this.chain(n.argument.expression, 'delete');
+        if (op === 'delete' && n.$dsDelete) {
+            var target = n.argument, key = target.computed ? this.E(target.property, P_ASSIGN) : quote(target.property.name);
+            var dsCode = this.h('__br_dsdel') + '(' + this.E(target.object.object, P_ASSIGN) + ',' + key + ')';
+            this.prec = P_CALL;
+            return dsCode;
+        }
         var arg = this.E(n.argument, P_UNARY), code;
         if (/^[a-z]/.test(op)) code = op + ' ' + arg;
         else code = op + ((op === '-' || op === '+') && arg.charAt(0) === op ? ' ' : '') + arg;
