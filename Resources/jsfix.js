@@ -202,6 +202,24 @@
             }
             return proxy;
         },
+        // BigInt for scripts that call it without checking first (bigint literals too): an integer Number, exact up to
+        // 2^53 (asUintN/asIntN within that); the operators then work on numbers. typeof BigInt stays the engine's.
+        __br_BigInt: function (v) {
+            if (!__br_BigInt.asUintN) {
+                __br_BigInt.asUintN = function (bits, x) { var m = Math.pow(2, Math.min(bits, 53)); x = Number(x) % m; return x < 0 ? x + m : x; };
+                __br_BigInt.asIntN = function (bits, x) { var m = Math.pow(2, Math.min(bits, 53)); x = __br_BigInt.asUintN(bits, x); return x >= m / 2 ? x - m : x; };
+            }
+            var n = v;
+            if (typeof v === 'string') {
+                var s = v.replace(/^\s+|\s+$/g, ''), neg = s.charAt(0) === '-';
+                if (neg || s.charAt(0) === '+') s = s.slice(1);
+                n = /^0x/i.test(s) ? parseInt(s.slice(2), 16) : /^0o/i.test(s) ? parseInt(s.slice(2), 8) : /^0b/i.test(s) ? parseInt(s.slice(2), 2) : s === '' ? 0 : /^\d+$/.test(s) ? Number(s) : NaN;
+                if (neg) n = -n;
+            } else if (typeof v === 'boolean') n = v ? 1 : 0;
+            n = Number(n);
+            if (isNaN(n) || !isFinite(n) || Math.floor(n) !== n) throw new RangeError('The value ' + v + ' cannot be converted to a BigInt');
+            return n;
+        },
         __br_new: function (C, a) {
             switch (a.length) {
                 case 0: return new C();
@@ -804,7 +822,8 @@
         this.mod = null;       // module mode: {deps, depIndex, exports, stars}
         this.imports = [];     // import bindings
         this.tla = false;      // await at the top level of a module
-        this.proxyShim = false;   // free references to Proxy become __br_Proxy (the script has no fallback of its own)
+        this.proxyShim = false;   // free references to Proxy become __br_Proxy (not the operand of typeof)
+        this.bigintShim = false;  // the same for BigInt (and bigint literals call __br_BigInt)
     };
     var W = Walker.prototype;
     W.inArrow = function () { var f = this.fns[this.fns.length - 1]; return !!(f && f.$arrow); };
@@ -1230,6 +1249,7 @@
             for (var x = s; x; x = x.parent) { b = x.decls[key]; if (b) break; }
             if (b) { b.refs.push(id); id.$b = b; }
             else if (id.name === 'Proxy' && this.proxyShim && !id.$typeof) { id.$proxy = true; markDirty(id); }
+            else if (id.name === 'BigInt' && this.bigintShim && !id.$typeof) { id.$bigint = true; markDirty(id); }
             // the name is free in every function between the reference and the binding's function
             stop = b ? b.scope.fn : null;
             for (f = s.fn; f && f !== stop; f = f.parent ? f.parent.fn : null) f.free[key] = 1;
@@ -1318,6 +1338,7 @@
     var Printer = function (src, walker, opts) {
         this.src = src;
         this.names = walker.names;
+        this.bigintShim = walker.bigintShim;
         this.opts = opts || {};
         this.helpers = [];
         this.helperSet = {};
@@ -1354,6 +1375,7 @@
         for (var i = 0; i < this.helpers.length; i++) {
             var s = String(RUNTIME[this.helpers[i]]);
             out += 'function ' + this.helpers[i] + s.slice(s.indexOf('(')) + '\n';
+            if (this.helpers[i] === '__br_BigInt') out += '__br_BigInt(0);\n';   // (its statics exist before a first call)
         }
         return out;
     };
@@ -1405,7 +1427,7 @@
         switch (n.type) {
             case 'Identifier':
                 if (n.$b && n.$b.kind === 'import') { code = this.importRef(n.$b); this.prec = n.$b.imp.name === null ? P_PRIMARY : P_CALL; return code; }
-                code = n.$b ? (n.$b.newName || n.name) : n.$proxy ? this.h('__br_Proxy') : n.name === 'arguments' ? this.argsCode() : n.name;
+                code = n.$b ? (n.$b.newName || n.name) : n.$proxy ? this.h('__br_Proxy') : n.$bigint ? this.h('__br_BigInt') : n.name === 'arguments' ? this.argsCode() : n.name;
                 this.prec = P_PRIMARY;
                 return code;
             case 'Literal': code = this.literal(n); return code;
@@ -1448,7 +1470,7 @@
     };
     P.literal = function (n) {
         this.prec = P_PRIMARY;
-        if (n.bigint !== undefined) { this.prec = P_CALL; return 'BigInt(' + quote(n.bigint) + ')'; }
+        if (n.bigint !== undefined) { this.prec = P_CALL; return (this.bigintShim ? this.h('__br_BigInt') : 'BigInt') + '(' + quote(n.bigint) + ')'; }
         if (n.regex) return this.regex(n);
         if (typeof n.value === 'number') {
             if (!/^0[bBoO]|_/.test(n.raw)) return n.raw;
@@ -2845,11 +2867,12 @@
     };
     // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
     // without it (a bundle often holds both kinds)
-    var PROXY_USE = /\bnew\s+Proxy\s*\(/;
+    var PROXY_USE = /\bnew\s+Proxy\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/;
     var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src); };
-    // a script the engine parses that only needs the stand-in: `new Proxy(` replaced in the text (no parse of a big
-    // bundle for that), unless the script has a Proxy of its own
-    var PROXY_OWN = /\b(?:class|function|var|let|const)\s+Proxy\b|[(,]\s*Proxy\s*[,)=]/;
+    var needsBigInt = function (src) { return typeof root.BigInt !== 'function' && BIGINT_USE.test(src); };
+    // a script the engine parses that only needs the stand-ins: `new Proxy(` / `BigInt(` replaced in the text (no
+    // parse of a big bundle for that), unless the script has a Proxy or BigInt of its own
+    var STANDIN_OWN = /\b(?:class|function|var|let|const)\s+(?:Proxy|BigInt)\b|[(,]\s*(?:Proxy|BigInt)\s*[,)=]/;
     var helperText = function (names) {
         var out = '', seen = {};
         var add = function (n) {
@@ -2859,6 +2882,7 @@
             for (var i = 0; i < deps.length; i++) add(deps[i]);
             var s = String(RUNTIME[n]);
             out += 'function ' + n + s.slice(s.indexOf('(')) + '\n';
+            if (n === '__br_BigInt') out += '__br_BigInt(0);\n';
         };
         for (var i = 0; i < names.length; i++) add(names[i]);
         return out;
@@ -2871,6 +2895,7 @@
         var ast = parse(src, module);
         var w = new Walker(src);
         w.proxyShim = opts.proxy !== undefined ? !!opts.proxy : needsProxy(src);
+        w.bigintShim = opts.bigint !== undefined ? !!opts.bigint : typeof root.BigInt !== 'function';
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body));
         w.stmts(ast.body, ast, ps, false);
@@ -2907,12 +2932,16 @@
             return mout;
         }
         if (!opts.force && engineParses(src)) {
-            if (!needsProxy(src)) { stats.skipped++; stats.last = 'es5'; return ''; }
-            if (!PROXY_OWN.test(src)) {
+            var np = needsProxy(src), nb = needsBigInt(src);
+            if (!np && !nb) { stats.skipped++; stats.last = 'es5'; return ''; }
+            if (!STANDIN_OWN.test(src)) {
                 // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
+                var text = src, used = [];
+                if (np) { text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy('); used.push('__br_Proxy'); }
+                if (nb) { text = text.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); used.push('__br_BigInt'); }
                 stats.lowered++;
-                stats.last = 'proxy';
-                return src.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(') + '\n;' + helperText(['__br_Proxy']);
+                stats.last = 'stand-in';
+                return text + '\n;' + helperText(used);
             }
         }
         var t0 = new Date().getTime(), out = null;

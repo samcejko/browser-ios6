@@ -42,10 +42,23 @@ var fast = JSFix.run('"use strict"; var q = new Proxy({ a: 1 }, { get: function 
 var fastLast = JSFix.last();
 window.Proxy = saved;
 (0, eval)(fast);
-var fastOk = fastLast === 'proxy' && /^"use strict"/.test(fast) && window.__fastProxy === 2;
+var fastOk = fastLast === 'stand-in' && /^"use strict"/.test(fast) && window.__fastProxy === 2;
 lines.push((fastOk ? 'OK   ' : 'FAIL ') + 'text path for parsed scripts' + (fastOk ? '' : ': ' + fastLast + ' ' + window.__fastProxy + ' ' + fast.slice(0, 120)));
 if (fastOk) pass++;
-CASES.length += 2;
+// BigInt: an integer Number for scripts that call it without looking first
+var bi = (0, eval)(JSFix.transpile('(function () { return [BigInt(10) * 2, 10n + 5n, typeof BigInt, BigInt.asUintN(8, 257), BigInt("-0x10"), 0x1fn]; })();', { bigint: true }));
+var biOk = JSON.stringify(bi) === JSON.stringify([20, 15, 'function', 1, -16, 31]);
+lines.push((biOk ? 'OK   ' : 'FAIL ') + 'BigInt stand-in' + (biOk ? '' : ': ' + JSON.stringify(bi)));
+if (biOk) pass++;
+var savedBigInt = window.BigInt;
+window.BigInt = undefined;
+var fastBi = JSFix.run('window.__fastBigInt = BigInt("0x10") + 1;', '{}');
+window.BigInt = savedBigInt;
+(0, eval)(fastBi);
+var fastBiOk = window.__fastBigInt === 17;
+lines.push((fastBiOk ? 'OK   ' : 'FAIL ') + 'BigInt text path' + (fastBiOk ? '' : ': ' + window.__fastBigInt + ' ' + fastBi.slice(0, 120)));
+if (fastBiOk) pass++;
+CASES.length += 4;
 document.getElementById('out').textContent = lines.join('\n');
 document.title = 'proxy ' + pass + '/' + CASES.length;
 </script>
