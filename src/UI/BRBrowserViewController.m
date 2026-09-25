@@ -294,10 +294,9 @@ static NSString *BRQueryEscape(NSString *s)
     [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
     [self.webView.scrollView addSubview:self.refreshControl];
     [self enableWebGL];
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugNoCompositing"]) {
-        self.compositingOff = YES;
-        [self setAcceleratedCompositing:NO reason:@"BRDebugNoCompositing"];
-    }
+    // (set either way: builds 120 and 121 left it saved in the defaults)
+    self.compositingOff = [[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugNoCompositing"];
+    [self setAcceleratedCompositing:!self.compositingOff reason:self.compositingOff ? @"BRDebugNoCompositing" : @"start"];
     [BRMemory watchLayer:self.webView.layer];
     [self.view addSubview:self.webView];
 
@@ -488,6 +487,8 @@ static void BRWebThreadLock(void);
         ((void (*)(id, SEL, BOOL))objc_msgSend)(p, setter, on);
         done++;
     }
+    // (the standard preferences save every change in the app's defaults: this one is for this run only)
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"WebKitAcceleratedCompositingEnabled"];
     BRLog(@"Accelerated compositing %@ (%@): %ld preference object(s)", on ? @"on" : @"off", reason, (long)done);
 }
 
