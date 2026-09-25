@@ -303,7 +303,7 @@ static CGFloat g_devicePixelRatio = 1;
         [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
         [store writeToFile:path atomically:YES];
     }
-    if (data.length > 200000) [engine collectGarbage];
+    if (data.length > 200000) { [engine collectGarbage]; [BRJSEngine returnFreeMemory]; }
     // a parse tree of a big script leaves the heap large: the whole VM goes once the page's scripts are through
     // (acorn and jsfix.js load again in about 0.4 s; most scripts come from the cache above anyway)
     [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];

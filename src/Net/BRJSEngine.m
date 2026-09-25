@@ -31,6 +31,9 @@ static void (*p_JSObjectSetProperty)(JSCtx ctx, JSObj object, JSStr propertyName
 static JSVal (*p_JSObjectGetProperty)(JSCtx ctx, JSObj object, JSStr propertyName, JSVal *exception);
 static JSObj (*p_JSValueToObject)(JSCtx ctx, JSVal value, JSVal *exception);
 static void (*p_JSGarbageCollect)(JSCtx ctx);
+// WTF::releaseFastMallocFreeMemory(): JavaScriptCore's malloc (shared with WebCore) keeps freed pages for reuse; a
+// big transpile leaves ~45 MB of them resident after its heap is gone
+static void (*p_releaseFastMallocFreeMemory)(void);
 
 static void *BRLookup(void *handle, const char *name)
 {
@@ -78,6 +81,8 @@ static BOOL BRResolveJSC(void)
 #undef RESOLVE
     p_JSContextGroupCreate = BRLookup(handle, "JSContextGroupCreate");
     p_JSContextGroupRelease = BRLookup(handle, "JSContextGroupRelease");
+    p_releaseFastMallocFreeMemory = BRLookup(handle, "_ZN3WTF27releaseFastMallocFreeMemoryEv");
+    if (!p_releaseFastMallocFreeMemory) BRLog(@"WTF::releaseFastMallocFreeMemory not found");
     p_JSGlobalContextCreateInGroup = BRLookup(handle, "JSGlobalContextCreateInGroup");
     resolved = YES;
     return YES;
@@ -205,8 +210,15 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
     }
     p_JSGlobalContextRelease(_ctx);
     _ctx = NULL;
-    BRLog(@"JavaScript context %@ released (%@): %ld -> %ld MB", _thread.name, why, before, (long)BRResidentMemoryMB());
+    long released = (long)BRResidentMemoryMB();
+    if (p_releaseFastMallocFreeMemory) p_releaseFastMallocFreeMemory();
+    BRLog(@"JavaScript context %@ released (%@): %ld -> %ld MB, free malloc pages returned: %ld MB", _thread.name, why, before, released, (long)BRResidentMemoryMB());
     [[NSNotificationCenter defaultCenter] postNotificationName:BRJSEngineDidResetNotification object:self];
+}
+
++ (void)returnFreeMemory
+{
+    if (BRResolveJSC() && p_releaseFastMallocFreeMemory) p_releaseFastMallocFreeMemory();
 }
 
 // A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.

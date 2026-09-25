@@ -14,6 +14,7 @@
 #import "BRHTTPRequest.h"
 #import "BRWatchdog.h"
 #import "BRMemory.h"
+#import "BRJSEngine.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -2342,6 +2343,8 @@ static void BRWebThreadLock(void)
             [self updateTabsButton];
             if (BRIsPad()) [self fetchFaviconForCurrentPage];
         }
+        // (the load's freed malloc pages back to the system)
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{ [BRJSEngine returnFreeMemory]; });
         BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB (peak %ld MB)", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
               (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB(),
