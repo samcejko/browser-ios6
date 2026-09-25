@@ -11,6 +11,7 @@
 #import "BRCSSRewriter.h"
 #import "BRJSEngine.h"
 #import "BRWatchdog.h"
+#import "BRMemory.h"
 #import "BRCommon.h"
 
 @implementation BRAppDelegate
@@ -146,6 +147,14 @@
         [self.browserViewController showReader];
         return YES;
     }
+    if ([target isEqualToString:@"mem"] || [target isEqualToString:@"mem?relieve=1"]) {
+        // browser:mem logs WebKit's memory numbers (to tmp/eval.txt as well); browser:mem?relieve=1 frees first
+        if ([target hasSuffix:@"relieve=1"]) [BRMemory relieve:@"requested"];
+        NSString *report = [BRMemory webKitReport];
+        [report writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"Memory report: %@", report);
+        return YES;
+    }
     if ([target isEqualToString:@"pdf"]) {
         [self.browserViewController savePageAsPDF];
         return YES;
@@ -217,10 +226,10 @@
 
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application
 {
-    BRLog(@"Memory warning at %ld MB", (long)BRResidentMemoryMB());
+    NSString *busy = [BRMemory activity];
+    BRLog(@"Memory warning at %ld MB%@%@", (long)BRResidentMemoryMB(), busy.length ? @", busy: " : @"", busy ?: @"");
     [[BRConnectionPool shared] drain];
-    [[BRJSEngine shared] resetContext];   // the CSS rewriter context is recreated on the next use
-    [[BRJSEngine transpiler] resetContext];
+    [BRMemory relieve:@"memory warning"];   // both script engines (recreated on the next use), page garbage, caches
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application

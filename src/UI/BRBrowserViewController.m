@@ -13,6 +13,7 @@
 #import "BRURLProtocol.h"
 #import "BRHTTPRequest.h"
 #import "BRWatchdog.h"
+#import "BRMemory.h"
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
@@ -2341,9 +2342,10 @@ static void BRWebThreadLock(void)
             [self updateTabsButton];
             if (BRIsPad()) [self fetchFaviconForCurrentPage];
         }
-        BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB", url.absoluteString ?: @"?",
+        BRLog(@"Loaded %@ (%@), %lu requests blocked, %lu connections reused, %lu idle, %ld MB (peak %ld MB)", url.absoluteString ?: @"?",
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
-              (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB());
+              (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB(),
+              [BRMemory peakMB]);
         if ([BRSettings isHomeURL:url]) {
             [self populateHomePage];
             NSString *info = [webView stringByEvaluatingJavaScriptFromString:@"document.getElementById('info').innerText"];

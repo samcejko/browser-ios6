@@ -13,6 +13,7 @@ static JSCtx (*p_JSGlobalContextCreate)(void *cls);
 // (optional) a context group per engine: without one this JavaScriptCore may give every context of an app that does
 // not link it the same shared VM, which two threads must not use at once
 static void *(*p_JSContextGroupCreate)(void);
+static void (*p_JSContextGroupRelease)(void *group);
 static JSCtx (*p_JSGlobalContextCreateInGroup)(void *group, void *cls);
 static void (*p_JSGlobalContextRelease)(JSCtx ctx);
 static JSVal (*p_JSEvaluateScript)(JSCtx ctx, JSStr script, JSObj thisObject, JSStr sourceURL, int startingLineNumber, JSVal *exception);
@@ -76,6 +77,7 @@ static BOOL BRResolveJSC(void)
     RESOLVE(JSGarbageCollect);
 #undef RESOLVE
     p_JSContextGroupCreate = BRLookup(handle, "JSContextGroupCreate");
+    p_JSContextGroupRelease = BRLookup(handle, "JSContextGroupRelease");
     p_JSGlobalContextCreateInGroup = BRLookup(handle, "JSGlobalContextCreateInGroup");
     resolved = YES;
     return YES;
@@ -88,8 +90,9 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
     NSCondition *_condition;
     NSMutableArray *_queue;
     JSCtx _ctx;
-    void *_group;       // this engine's context group (kept for the contexts made after a reset)
+    void *_group;       // this engine's context group (its VM and heap)
     BOOL _available;
+    NSUInteger _uses;   // engine thread: counts evaluations, so an idle release can tell whether it was used since
 }
 
 + (instancetype)shared
@@ -169,13 +172,36 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
 
 - (void)resetContext
 {
-    [self performAsync:^{
-        if (!_ctx) return;
-        p_JSGlobalContextRelease(_ctx);
-        _ctx = NULL;
-        BRLog(@"JavaScript context released, process uses %ld MB", (long)BRResidentMemoryMB());
-        [[NSNotificationCenter defaultCenter] postNotificationName:BRJSEngineDidResetNotification object:self];
-    }];
+    [self performAsync:^{ [self releaseContext:@"reset"]; }];
+}
+
+- (void)releaseWhenIdleFor:(NSTimeInterval)seconds aboveMB:(long)minimumMB
+{
+    NSUInteger uses = _uses;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        [self performAsync:^{
+            if (uses != _uses || !_ctx) return;   // used again in the meantime (that use schedules its own release)
+            if (minimumMB > 0 && BRResidentMemoryMB() < minimumMB) return;
+            [self releaseContext:@"idle"];
+        }];
+    });
+}
+
+// engine thread
+- (void)releaseContext:(NSString *)why
+{
+    if (!_ctx) return;
+    long before = (long)BRResidentMemoryMB();
+    // the group goes first: releasing the context then drops the last reference to the VM, which destroys the whole
+    // heap at once (with the group kept, the context's objects are only garbage the heap holds on to)
+    if (_group && p_JSContextGroupRelease) {
+        p_JSContextGroupRelease(_group);
+        _group = NULL;
+    }
+    p_JSGlobalContextRelease(_ctx);
+    _ctx = NULL;
+    BRLog(@"JavaScript context %@ released (%@): %ld -> %ld MB", _thread.name, why, before, (long)BRResidentMemoryMB());
+    [[NSNotificationCenter defaultCenter] postNotificationName:BRJSEngineDidResetNotification object:self];
 }
 
 // A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.
@@ -333,6 +359,7 @@ static NSString * const BRContextPrelude =
 
 - (BOOL)evaluateScript:(NSString *)script sourceName:(NSString *)name
 {
+    _uses++;
     if (![self ensureContext] || !script) return NO;
     JSStr src = p_JSStringCreateWithCFString((__bridge CFStringRef)script);
     JSStr url = p_JSStringCreateWithCFString((__bridge CFStringRef)(name ?: @"script"));
@@ -349,6 +376,7 @@ static NSString * const BRContextPrelude =
 
 - (NSString *)callFunction:(NSString *)function arguments:(NSArray *)arguments
 {
+    _uses++;
     if (![self ensureContext] || !function.length) return nil;
     JSObj global = p_JSContextGetGlobalObject(_ctx);
     NSMutableString *call = [NSMutableString stringWithFormat:@"%@(", function];

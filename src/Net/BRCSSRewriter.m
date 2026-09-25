@@ -2,10 +2,16 @@
 #import "BRJSEngine.h"
 #import "BRSettings.h"
 #import "BRCommon.h"
+#import "BRMemory.h"
 
 #include <zlib.h>
 
 static const NSUInteger BRMaxPagesRemembered = 8;
+// seconds without work before an engine gives its whole heap back (the rewriter's engine only above the given
+// resident size: every document needs it, and reloading cssfix.js costs half a second)
+static const NSTimeInterval BRTranspilerIdleRelease = 6;
+static const NSTimeInterval BRRewriterIdleRelease = 15;
+static const long BRRewriterIdleReleaseAboveMB = 170;
 static NSString *BRPageKey(NSURL *url);
 // The bundle is cached by pages for a year, so its URL carries a checksum of the content: a new
 // build with new polyfills gets a new URL instead of the old cached bundle.
@@ -266,6 +272,9 @@ static CGFloat g_devicePixelRatio = 1;
     NSString *text = BRDecode(data, charset.length ? charset : nil, &used);
     if (!text) return nil;
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    long mb0 = (long)BRResidentMemoryMB();
+    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : @"script";
+    [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(data.length >> 10)] forKey:@"js"];
     NSString *optsJSON = @"{}";
     NSMutableDictionary *o = [NSMutableDictionary dictionary];
     if (url.absoluteString.length) o[@"url"] = url.absoluteString;
@@ -273,18 +282,21 @@ static CGFloat g_devicePixelRatio = 1;
     NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
     if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
+    text = nil;
     long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
     NSData *out = result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
-    NSString *name = url.lastPathComponent.length ? url.lastPathComponent : @"script";
+    result = nil;
+    long mb1 = (long)BRResidentMemoryMB();
     if (out && module) {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
-        BRLog(@"jsfix module %@: %ld ms, %lu -> %lu bytes%@", name, ms, (unsigned long)data.length, (unsigned long)out.length,
+        BRLog(@"jsfix module %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
               [why hasPrefix:@"failed"] ? [@" " stringByAppendingString:why] : @"");
-    } else if (out) BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes", name, ms, (unsigned long)data.length, (unsigned long)out.length);
+    } else if (out) BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1);
     else {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
-        if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@)", name, ms, why ?: @"?");
+        if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@), %ld -> %ld MB", name, ms, why ?: @"?", mb0, mb1);
     }
+    [BRMemory setActivity:nil forKey:@"js"];
     NSData *store = out ?: [NSData data];
     [_transpiled setObject:store forKey:key cost:store.length + 64];
     if (!private) {
@@ -292,6 +304,9 @@ static CGFloat g_devicePixelRatio = 1;
         [store writeToFile:path atomically:YES];
     }
     if (data.length > 200000) [engine collectGarbage];
+    // a parse tree of a big script leaves the heap large: the whole VM goes once the page's scripts are through
+    // (acorn and jsfix.js load again in about 0.4 s; most scripts come from the cache above anyway)
+    [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
     return out;
 }
 
@@ -448,60 +463,72 @@ static NSString *BRPageKey(NSURL *url)
     }
     [[BRJSEngine shared] performAsync:^{
         @autoreleasepool {
-            NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
-            NSString *used = nil;
-            if (![self ensureLoaded]) { completion(data, charset); return; }
-            NSString *declared = charset.length ? charset : BRSniffCharset(data, kind);
-            NSString *text = BRDecode(data, declared, &used);
-            if (!text) { completion(data, charset); return; }
-            NSString *pageKey = BRPageKey(pageURL);
-            NSMutableDictionary *vars = [self varsForPage:pageKey create:YES];
-            NSString *varsJSON = @"{}";
-            NSData *j = nil;
-            @synchronized (self) { if (vars.count) j = [NSJSONSerialization dataWithJSONObject:vars options:0 error:NULL]; }
-            if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
-            NSString *optionsJSON = @"{}";
-            {
-                NSMutableDictionary *opts = [@{ @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
-                                                @"devicePixelRatio": @(g_devicePixelRatio) } mutableCopy];
-                // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
-                if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
-                if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;
-                // inline scripts in ES2015+ syntax: lowered by the transpiler in the same context
-                if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixIn:[BRJSEngine shared]]) opts[@"transpile"] = @YES;
-                NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
-                if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
-            }
-            NSString *result = [[BRJSEngine shared] callFunction:@"CSSFix.run" arguments:@[kind, text, varsJSON, optionsJSON]];
-            if (!result.length) { completion(data, charset); return; }
-            NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[result dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
-            NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;
-            if (![out isKindOfClass:[NSString class]]) { completion(data, charset); return; }
-            NSDictionary *newVars = parsed[@"vars"];
-            NSArray *scoped = parsed[@"scoped"];
-            @synchronized (self) {
-                if ([newVars isKindOfClass:[NSDictionary class]] && newVars.count) {
-                    for (NSString *name in newVars) {
-                        id value = newVars[name];
-                        if ([value isKindOfClass:[NSString class]] && ![name isEqualToString:@" scoped"]) vars[name] = value;
-                    }
-                }
-                // custom properties resolved per element at run time, for the page's later documents (" scoped" is
-                // not a property name, so it cannot clash with one)
-                if ([scoped isKindOfClass:[NSArray class]] && scoped.count) {
-                    NSMutableOrderedSet *names = [NSMutableOrderedSet orderedSetWithArray:[vars[@" scoped"] ?: @"" componentsSeparatedByString:@" "]];
-                    for (id n in scoped) if ([n isKindOfClass:[NSString class]]) [names addObject:n];
-                    [names removeObject:@""];
-                    vars[@" scoped"] = [names.array componentsJoinedByString:@" "];
-                }
-            }
-            NSData *outData = [out dataUsingEncoding:NSUTF8StringEncoding];
-            BRLog(@"cssfix %@ %ld ms: %lu -> %lu bytes (%@, %lu vars)", kind, (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000),
-                  (unsigned long)data.length, (unsigned long)outData.length, used ?: @"?", (unsigned long)vars.count);
-            if (data.length > 200000) [[BRJSEngine shared] collectGarbage];
-            completion(outData ?: data, outData ? @"utf-8" : charset);
+            [BRMemory setActivity:[NSString stringWithFormat:@"rewriting %@ %@ (%lu KB)", kind, (sourceURL ?: pageURL).lastPathComponent ?: @"",
+                                   (unsigned long)(data.length >> 10)] forKey:@"css"];
+            NSData *outData = [self rewrittenData:data kind:kind charset:charset pageURL:pageURL mainFrame:mainFrame];
+            [BRMemory setActivity:nil forKey:@"css"];
+            [[BRJSEngine shared] releaseWhenIdleFor:BRRewriterIdleRelease aboveMB:BRRewriterIdleReleaseAboveMB];
+            if (outData) completion(outData, @"utf-8");
+            else completion(data, charset);
         }
     }];
+}
+
+// the rewriter's engine queue only: the rewritten document or stylesheet in UTF-8, nil to keep the original
+- (NSData *)rewrittenData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL mainFrame:(BOOL)mainFrame
+{
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    NSString *used = nil;
+    if (![self ensureLoaded]) return nil;
+    NSString *declared = charset.length ? charset : BRSniffCharset(data, kind);
+    NSString *text = BRDecode(data, declared, &used);
+    if (!text) return nil;
+    NSString *pageKey = BRPageKey(pageURL);
+    NSMutableDictionary *vars = [self varsForPage:pageKey create:YES];
+    NSString *varsJSON = @"{}";
+    NSData *j = nil;
+    @synchronized (self) { if (vars.count) j = [NSJSONSerialization dataWithJSONObject:vars options:0 error:NULL]; }
+    if (j) varsJSON = [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] ?: @"{}";
+    NSString *optionsJSON = @"{}";
+    {
+        NSMutableDictionary *opts = [@{ @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
+                                        @"devicePixelRatio": @(g_devicePixelRatio) } mutableCopy];
+        // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
+        if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
+        if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;
+        // inline scripts in ES2015+ syntax: lowered by the transpiler in the same context
+        if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixIn:[BRJSEngine shared]]) opts[@"transpile"] = @YES;
+        NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
+        if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
+    }
+    NSString *result = [[BRJSEngine shared] callFunction:@"CSSFix.run" arguments:@[kind, text, varsJSON, optionsJSON]];
+    if (!result.length) return nil;
+    NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[result dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;
+    if (![out isKindOfClass:[NSString class]]) return nil;
+    NSDictionary *newVars = parsed[@"vars"];
+    NSArray *scoped = parsed[@"scoped"];
+    @synchronized (self) {
+        if ([newVars isKindOfClass:[NSDictionary class]] && newVars.count) {
+            for (NSString *name in newVars) {
+                id value = newVars[name];
+                if ([value isKindOfClass:[NSString class]] && ![name isEqualToString:@" scoped"]) vars[name] = value;
+            }
+        }
+        // custom properties resolved per element at run time, for the page's later documents (" scoped" is
+        // not a property name, so it cannot clash with one)
+        if ([scoped isKindOfClass:[NSArray class]] && scoped.count) {
+            NSMutableOrderedSet *names = [NSMutableOrderedSet orderedSetWithArray:[vars[@" scoped"] ?: @"" componentsSeparatedByString:@" "]];
+            for (id n in scoped) if ([n isKindOfClass:[NSString class]]) [names addObject:n];
+            [names removeObject:@""];
+            vars[@" scoped"] = [names.array componentsJoinedByString:@" "];
+        }
+    }
+    NSData *outData = [out dataUsingEncoding:NSUTF8StringEncoding];
+    BRLog(@"cssfix %@ %ld ms: %lu -> %lu bytes (%@, %lu vars)", kind, (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000),
+          (unsigned long)data.length, (unsigned long)outData.length, used ?: @"?", (unsigned long)vars.count);
+    if (data.length > 200000) [[BRJSEngine shared] collectGarbage];
+    return outData;
 }
 
 @end

@@ -1,5 +1,6 @@
 #import "BRWatchdog.h"
 #import "BRCommon.h"
+#import "BRMemory.h"
 
 #include <execinfo.h>
 #include <pthread.h>
@@ -47,6 +48,7 @@ static pthread_t BRFindThreadNamed(const char *name)
 
 + (void)setPageLoading:(BOOL)loading
 {
+    if (loading && !g_loadingSince) [BRMemory resetPeak];
     g_loadingSince = loading ? (g_loadingSince ?: CFAbsoluteTimeGetCurrent()) : 0;
 }
 
@@ -112,6 +114,7 @@ static pthread_t BRFindThreadNamed(const char *name)
         for (;;) {
             [NSThread sleepForTimeInterval:BRWatchdogInterval];
             dispatch_async(dispatch_get_main_queue(), ^{ lastPong = CFAbsoluteTimeGetCurrent(); });
+            [BRMemory sample];
             // slow page loads: what is the WebThread doing?
             CFAbsoluteTime loadingSince = g_loadingSince;
             if (!loadingSince) {
