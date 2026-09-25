@@ -3145,6 +3145,11 @@
         w.bigintShim = opts.bigint !== undefined ? !!opts.bigint : typeof root.BigInt !== 'function';
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
         var printer = new Printer(src, w, opts), onFunction = null, onImport = null, units = 0, checked = 0;
+        // (the app's engines have __brAvailableMB: a lowering that would exhaust the iPad gives up, the script stays
+        // as it is and the app survives)
+        var roomCheck = function () {
+            if (typeof root.__brAvailableMB === 'function' && root.__brAvailableMB() < MEMORY_FLOOR_MB) throw new Unsupported('memory');
+        };
         if (early !== false) {
             var supers = null, hashes = null;
             if (module) {
@@ -3154,9 +3159,7 @@
                 onImport = function (n) { w.moduleDecl(n, w.earlyRoot); };
             }
             onFunction = function (n, strict, inClass) {
-                // (the app's engines have __brAvailableMB: a lowering that would exhaust the iPad gives up, the script
-                // stays as it is and the app survives)
-                if ((++checked & 63) === 0 && typeof root.__brAvailableMB === 'function' && root.__brAvailableMB() < MEMORY_FLOOR_MB) throw new Unsupported('memory');
+                if ((++checked & 15) === 0) roomCheck();
                 if (n.end - n.start < early) return;
                 if (n.type === 'FunctionDeclaration' && !n.id) return;   // (export default function () {}: moduleCode names it)
                 // (positions of every super/new.target and #, found once: a binary search per function instead of a
@@ -3171,12 +3174,15 @@
         // (stats.phases: parse with the early units / walk / resolve / print, ms of the last run)
         var t0 = new Date().getTime();
         var ast = parse(src, module, onFunction, onImport);
+        roomCheck();
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body)), v0 = w.visits, t1 = new Date().getTime();
         w.stmts(ast.body, ast, ps, false);
         stats.outer = w.visits - v0;
         if (w.module && !module) throw new Unsupported('module');
         var t2 = new Date().getTime();
+        roomCheck();
         w.resolve(ast);
+        roomCheck();
         var t3 = new Date().getTime(), out = null;
         if (module) out = printer.moduleCode(ast, w);
         else {
@@ -3260,7 +3266,9 @@
         if (out === null && parsesAsIs) { stats.skipped++; stats.last = 'es5'; return ''; }
         if (out === null) { stats.failed++; stats.last = 'failed: nothing to lower'; return ''; }
         tc = new Date().getTime();
-        var outParses = opts.force || engineParses(out);
+        // (the engine's parse of a big output costs as much memory as a page's script: 50 MB for Vimeo's 4 MB; when
+        // the input does not parse either, a bad output changes nothing for the page)
+        var outParses = opts.force || (!parsesAsIs && out.length > 1024 * 1024) || engineParses(out);
         stats.checks += new Date().getTime() - tc;
         if (!outParses) {
             var why = '';

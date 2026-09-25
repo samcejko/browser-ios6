@@ -13,8 +13,9 @@ static const NSTimeInterval BRTranspilerIdleRelease = 6;
 static const NSTimeInterval BRRewriterIdleRelease = 15;
 static const long BRRewriterIdleReleaseAboveMB = 170;
 // what the system should have available before heavy work starts (MB): a floor plus a share of the input size
-// (measured: lowering a 1-1.5 MB script function by function takes 45-75 MB; rewriting takes less)
-static const long BRRoomFloorMB = 55, BRRoomPerMBScript = 40, BRRoomPerMBDocument = 25;
+// (measured: lowering a 1-1.5 MB script function by function takes 45-75 MB, Vimeo's 3.3 MB chunk 125 MB while the
+// page kept growing next to it; rewriting takes less)
+static const long BRRoomFloorMB = 55, BRRoomPerMBScript = 45, BRRoomPerMBDocument = 25;
 // bumped when a page load is stopped for lack of memory: queued work of that page is dropped
 static volatile NSUInteger g_workGeneration;
 static NSString *BRPageKey(NSURL *url);
