@@ -58,6 +58,19 @@ static uint8_t *BRFirstAnimationFrame(const uint8_t *bytes, size_t length, int *
 
 + (NSData *)pngDataFromWebP:(NSData *)data
 {
+    NSString *type = nil;
+    NSData *out = [self imageDataFromWebP:data mimeType:&type allowJPEG:NO];
+    return [type isEqualToString:@"image/png"] ? out : nil;
+}
+
++ (NSData *)imageDataFromWebP:(NSData *)data mimeType:(NSString **)mimeType
+{
+    return [self imageDataFromWebP:data mimeType:mimeType allowJPEG:YES];
+}
+
+// Opaque stills become JPEG (quality 0.9): encoding a 2 MP PNG took 3-6 s on the iPad 2, a JPEG a fraction of that.
++ (NSData *)imageDataFromWebP:(NSData *)data mimeType:(NSString **)mimeType allowJPEG:(BOOL)allowJPEG
+{
     if (![self looksLikeWebP:data]) return nil;
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     int width = 0, height = 0;
@@ -67,7 +80,9 @@ static uint8_t *BRFirstAnimationFrame(const uint8_t *bytes, size_t length, int *
         return nil;
     }
     WebPBitstreamFeatures features;
-    BOOL animated = WebPGetFeatures((const uint8_t *)data.bytes, data.length, &features) == VP8_STATUS_OK && features.has_animation;
+    BOOL known = WebPGetFeatures((const uint8_t *)data.bytes, data.length, &features) == VP8_STATUS_OK;
+    BOOL animated = known && features.has_animation;
+    BOOL opaque = allowJPEG && known && !animated && !features.has_alpha;
     uint8_t *rgba = animated ? BRFirstAnimationFrame((const uint8_t *)data.bytes, data.length, &width, &height)
                              : WebPDecodeRGBA((const uint8_t *)data.bytes, data.length, &width, &height);
     if (!rgba) {
@@ -78,17 +93,18 @@ static uint8_t *BRFirstAnimationFrame(const uint8_t *bytes, size_t length, int *
     CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, rgba, stride * (size_t)height, animated ? BRFreeMallocBuffer : BRFreeWebPBuffer);
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
     CGImageRef image = CGImageCreate((size_t)width, (size_t)height, 8, 32, stride, colorSpace,
-                                     kCGBitmapByteOrderDefault | kCGImageAlphaLast, provider, NULL, false, kCGRenderingIntentDefault);
+                                     kCGBitmapByteOrderDefault | (opaque ? kCGImageAlphaNoneSkipLast : kCGImageAlphaLast), provider, NULL, false, kCGRenderingIntentDefault);
     CGColorSpaceRelease(colorSpace);
     CGDataProviderRelease(provider);
     if (!image) return nil;
-    NSData *png = UIImagePNGRepresentation([UIImage imageWithCGImage:image]);
+    UIImage *ui = [UIImage imageWithCGImage:image];
+    NSData *out = opaque ? UIImageJPEGRepresentation(ui, 0.9) : UIImagePNGRepresentation(ui);
     CGImageRelease(image);
-    if (png.length) {
-        BRLog(@"WebP -> PNG: %lu -> %lu bytes (%dx%d) in %ld ms", (unsigned long)data.length, (unsigned long)png.length, width, height,
-              (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
-    }
-    return png.length ? png : nil;
+    if (!out.length) return nil;
+    if (mimeType) *mimeType = opaque ? @"image/jpeg" : @"image/png";
+    BRLog(@"WebP -> %@: %lu -> %lu bytes (%dx%d) in %ld ms", opaque ? @"JPEG" : @"PNG", (unsigned long)data.length, (unsigned long)out.length, width, height,
+          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+    return out;
 }
 
 @end

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>text test</title>
+<script>
+// the old engine: no String.prototype.normalize, DOMParser without text/html
+var nativeNormalize = String.prototype.normalize;
+delete String.prototype.normalize;
+var nativeParse = DOMParser.prototype.parseFromString;
+DOMParser.prototype.parseFromString = function (s, t) { return /html/i.test(t) ? null : nativeParse.apply(this, arguments); };
+</script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+var lines = [], pass = 0, total = 0;
+var check = function (name, got, want) { total++; var ok = JSON.stringify(got) === JSON.stringify(want); if (ok) pass++; lines.push((ok ? 'OK   ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got) + ', expected ' + JSON.stringify(want))); };
+var samples = ['Příliš žluťoučký kůň úpěl ďábelské ódy', 'ǕǖǗǘ ứỨ ΐΰ Ώ ёЁйЙ', 'ﬁ ﬂ ＡＢＣ１２３ ① ½ ² ℡ ǅ', 'é ů Ǟ', 'plain ascii'];
+['NFC', 'NFD', 'NFKC', 'NFKD'].forEach(function (form) {
+  samples.forEach(function (s, i) { check(form + ' #' + i, s.normalize(form), nativeNormalize.call(s, form)); });
+});
+check('default form is NFC', 'é'.normalize(), 'é');
+check('strip diacritics', 'Žluťoučký kůň'.normalize('NFD').replace(/[̀-ͯ]/g, ''), 'Zlutoucky kun');
+check('bad form', (function () { try { 'a'.normalize('X'); return 'no'; } catch (e) { return e instanceof RangeError; } })(), true);
+var d1 = new DOMParser().parseFromString('<p class="x">hi</p>', 'text/html');
+check('DOMParser fragment', [d1.body.firstChild.className, d1.body.textContent], ['x', 'hi']);
+var d2 = new DOMParser().parseFromString('<!doctype html><html lang="cs"><head><title>T</title></head><body><b>b</b></body></html>', 'text/html');
+check('DOMParser document', [d2.title, d2.body.textContent, d2.documentElement.nodeName], ['T', 'b', 'HTML']);
+check('DOMParser xml untouched', new DOMParser().parseFromString('<a><b/></a>', 'application/xml').documentElement.nodeName, 'a');
+document.getElementById('out').textContent = lines.join('\n');
+document.title = 'text ' + pass + '/' + total;
+</script>
+</body>
+</html>

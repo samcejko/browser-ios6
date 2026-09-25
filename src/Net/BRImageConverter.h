@@ -5,5 +5,7 @@
 
 + (BOOL)looksLikeWebP:(NSData *)data;
 + (NSData *)pngDataFromWebP:(NSData *)data;    // nil when the data is not WebP or cannot be decoded
+// JPEG for opaque stills, PNG otherwise; *mimeType tells which (nil result: not WebP or undecodable)
++ (NSData *)imageDataFromWebP:(NSData *)data mimeType:(NSString **)mimeType;
 
 @end
