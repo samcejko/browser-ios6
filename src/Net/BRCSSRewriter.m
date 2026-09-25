@@ -317,7 +317,7 @@ static CGFloat g_devicePixelRatio = 1;
         @autoreleasepool {
             NSString *report;
             NSString *input = params[@"input"] ?: @"", *opts = [params[@"opts"] length] ? params[@"opts"] : @"{}";
-            NSString *text = [NSString stringWithContentsOfFile:input encoding:NSUTF8StringEncoding error:NULL];
+            BOOL readable = [[NSFileManager defaultManager] isReadableFileAtPath:input];
             [engine releaseContextNow];   // a fresh heap for the measurement
             long mb0 = (long)BRResidentMemoryMB();
             NSBundle *b = [NSBundle mainBundle];
@@ -327,8 +327,8 @@ static CGFloat g_devicePixelRatio = 1;
             NSString *uni = uniPath ? [NSString stringWithContentsOfFile:uniPath encoding:NSUTF8StringEncoding error:NULL] : nil;
             NSString *acorn = acornPath ? [NSString stringWithContentsOfFile:acornPath encoding:NSUTF8StringEncoding error:NULL] : nil;
             NSString *fix = fixPath ? [NSString stringWithContentsOfFile:fixPath encoding:NSUTF8StringEncoding error:NULL] : nil;
-            if (!text || !acorn || !fix) {
-                report = [NSString stringWithFormat:@"jsfix test: cannot read %@", !text ? input : !acorn ? @"acorn.js" : fixPath];
+            if (!readable || !acorn || !fix) {
+                report = [NSString stringWithFormat:@"jsfix test: cannot read %@", !readable ? input : !acorn ? @"acorn.js" : fixPath];
             } else {
                 if (uni.length) [engine evaluateScript:uni sourceName:@"unicode-props.js"];
                 [engine evaluateScript:acorn sourceName:@"acorn.js"];
@@ -346,23 +346,29 @@ static CGFloat g_devicePixelRatio = 1;
                     }
                     dispatch_semaphore_signal(stopped);
                 });
-                NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
-                NSString *out = [engine callFunction:@"JSFix.run" arguments:@[text, opts]];
-                long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
-                dispatch_semaphore_signal(stop);
-                dispatch_semaphore_wait(stopped, DISPATCH_TIME_FOREVER);
-                long mb2 = (long)BRResidentMemoryMB();
-                NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"?";
-                NSString *stats = [engine callFunction:@"__brStats" arguments:@[]] ?: @"?";
-                NSUInteger outLength = out.length;
-                out = nil;
+                long ms, mb2;
+                NSUInteger inLength, outLength;
+                NSString *last, *stats;
+                @autoreleasepool {   // (the input and output strings go before the last measurements)
+                    NSString *text = [NSString stringWithContentsOfFile:input encoding:NSUTF8StringEncoding error:NULL] ?: @"";
+                    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+                    NSString *out = [engine callFunction:@"JSFix.run" arguments:@[text, opts]];
+                    ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+                    dispatch_semaphore_signal(stop);
+                    dispatch_semaphore_wait(stopped, DISPATCH_TIME_FOREVER);
+                    mb2 = (long)BRResidentMemoryMB();
+                    last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"?";
+                    stats = [engine callFunction:@"__brStats" arguments:@[]] ?: @"?";
+                    inLength = text.length;
+                    outLength = out.length;
+                }
                 [engine collectGarbage];
                 long mb3 = (long)BRResidentMemoryMB();
                 [engine releaseContextNow];
                 long mb4 = (long)BRResidentMemoryMB();
                 report = [NSString stringWithFormat:@"jsfix test %@ (%@, jsfix %@): %ld ms, %lu -> %lu chars (%@); resident %ld MB, with jsfix loaded %ld, "
                           "peak %ld (+%ld), after the run %ld, after GC %ld, context released %ld; stats %@",
-                          input.lastPathComponent, opts, fixPath.lastPathComponent, ms, (unsigned long)text.length, (unsigned long)outLength, last,
+                          input.lastPathComponent, opts, fixPath.lastPathComponent, ms, (unsigned long)inLength, (unsigned long)outLength, last,
                           mb0, mb1, peak, peak - mb1, mb2, mb3, mb4, stats];
             }
             [report writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
@@ -541,6 +547,12 @@ static NSString *BRPageKey(NSURL *url)
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     NSString *used = nil;
     if (![self ensureLoaded]) return nil;
+    if (data.length > 200000 && [[NSUserDefaults standardUserDefaults] boolForKey:@"BRDumpRewriteInputs"]) {
+        // debugging: big inputs as they came from the network, Caches/rewrite-inputs/<host>-<length>.<kind>
+        NSString *dir = [[NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject] stringByAppendingPathComponent:@"rewrite-inputs"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+        [data writeToFile:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%lu.%@", pageURL.host ?: @"page", (unsigned long)data.length, kind]] atomically:NO];
+    }
     NSString *declared = charset.length ? charset : BRSniffCharset(data, kind);
     NSString *text = BRDecode(data, declared, &used);
     if (!text) return nil;

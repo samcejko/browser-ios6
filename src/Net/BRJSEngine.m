@@ -2,6 +2,7 @@
 #import "BRCommon.h"
 
 #include <dlfcn.h>
+#include <malloc/malloc.h>
 
 // JavaScriptCore C API, resolved at runtime (no link-time dependency on the framework path).
 typedef void *JSCtx;
@@ -212,13 +213,17 @@ NSString * const BRJSEngineDidResetNotification = @"BRJSEngineDidResetNotificati
     _ctx = NULL;
     long released = (long)BRResidentMemoryMB();
     if (p_releaseFastMallocFreeMemory) p_releaseFastMallocFreeMemory();
-    BRLog(@"JavaScript context %@ released (%@): %ld -> %ld MB, free malloc pages returned: %ld MB", _thread.name, why, before, released, (long)BRResidentMemoryMB());
+    size_t relief = malloc_zone_pressure_relief(NULL, 0);
+    BRLog(@"JavaScript context %@ released (%@): %ld -> %ld MB, free malloc pages returned (%ld MB): %ld MB", _thread.name, why, before, released,
+          (long)(relief >> 20), (long)BRResidentMemoryMB());
     [[NSNotificationCenter defaultCenter] postNotificationName:BRJSEngineDidResetNotification object:self];
 }
 
 + (void)returnFreeMemory
 {
     if (BRResolveJSC() && p_releaseFastMallocFreeMemory) p_releaseFastMallocFreeMemory();
+    // (this JavaScriptCore may allocate through the system malloc: its free pages go back only on request)
+    malloc_zone_pressure_relief(NULL, 0);
 }
 
 // A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.
