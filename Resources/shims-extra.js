@@ -637,7 +637,7 @@
             try { Object.defineProperty(fn, '__brGuard', { value: g, configurable: true }); } catch (e) {}
             return g;
         };
-        var timers = ['setTimeout', 'setInterval', 'requestAnimationFrame', 'webkitRequestAnimationFrame'];
+        var timers = ['setTimeout', 'setInterval', 'requestAnimationFrame', 'webkitRequestAnimationFrame', 'queueMicrotask', 'setImmediate', 'requestIdleCallback'];
         for (var t = 0; t < timers.length; t++) (function (name) {
             var orig = window[name];
             if (typeof orig !== 'function') return;

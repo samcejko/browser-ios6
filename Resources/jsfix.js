@@ -274,6 +274,13 @@
                 try { var out = G.JSFix.transpile(src, { evalCode: true }); return out === null ? src : out; } catch (e2) { return src; }
             }
         },
+        // o.style = v: an element's style takes the text as its declarations (today's style attribute setter); the old
+        // engine's style is read-only
+        __br_setStyle: function (o, v) {
+            if (o && o.nodeType === 1 && o.style && (v === null || typeof v !== 'object')) { o.style.cssText = v == null ? '' : String(v); return v; }
+            o.style = v;
+            return v;
+        },
         // delete el.dataset[key]: the old engine throws in strict code when there is no such attribute (today: true)
         __br_dsdel: function (el, key) {
             try { return delete el.dataset[key]; } catch (e) { return true; }
@@ -1163,6 +1170,9 @@
                 if (n.left.type === 'Identifier') { this.ref(n.left, s, true); n.left.$p = n; if (n.left.name === 'arguments' && this.argsDirty()) d = true; }
                 else if (this.pattern(n.left, n, s, null)) d = true;
                 if (this.v(n.right, n, s)) d = true;
+                // el.style = "..." (today it sets the style attribute; the old engine's style is read-only, a TypeError in
+                // strict code): through a helper
+                if (n.operator === '=' && n.left.type === 'MemberExpression' && !n.left.computed && n.left.property.name === 'style' && n.left.object.type !== 'Super') { n.$styleSet = true; d = true; }
                 break;
             case 'ConditionalExpression':
                 if (this.v(n.test, n, s)) d = true;
@@ -1829,6 +1839,11 @@
     };
     P.assign = function (n) {
         var op = n.operator, left = n.left, code;
+        if (n.$styleSet) {
+            code = this.h('__br_setStyle') + '(' + this.E(left.object, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')';
+            this.prec = P_CALL;
+            return code;
+        }
         if (left.type === 'ObjectPattern' || left.type === 'ArrayPattern') {
             var out = [], t = this.temp();
             out.push(t + '=' + this.E(n.right, P_ASSIGN));

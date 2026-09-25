@@ -169,10 +169,49 @@
     wrapScroll(window, 'scrollTo'); wrapScroll(window, 'scrollBy'); wrapScroll(window, 'scroll');
     if (Ep) { wrapScroll(Ep, 'scrollTo'); wrapScroll(Ep, 'scrollBy'); }
 
-    // document.currentScript (parser-inserted scripts only)
+    // Object.defineProperty(fn, 'name' | 'length', ...): a function's name and length are fixed in the old engine
+    // (today they are configurable, and bundlers rename functions and set their arity that way). Refused, they stay
+    // as they are instead of the page's script failing ("Attempting to change value of a readonly property").
+    (function () {
+        var nativeDP = Object.defineProperty, nativeDPs = Object.defineProperties;
+        var probe = function f(a) {}, fixed = false;
+        try { nativeDP(probe, 'length', { value: 2, configurable: true }); } catch (e) { fixed = true; }
+        if (!fixed) return;
+        Object.defineProperty = function (o, k, d) {
+            if ((k === 'name' || k === 'length') && typeof o === 'function') { try { return nativeDP(o, k, d); } catch (e) { return o; } }
+            return nativeDP(o, k, d);
+        };
+        var own = Object.prototype.hasOwnProperty;
+        Object.defineProperties = function (o, props) {
+            if (typeof o !== 'function' || !props || !(own.call(props, 'name') || own.call(props, 'length'))) return nativeDPs(o, props);
+            var rest = {}, k;
+            for (k in props) if (own.call(props, k)) { if (k === 'name' || k === 'length') Object.defineProperty(o, k, props[k]); else rest[k] = props[k]; }
+            return nativeDPs(o, rest);
+        };
+    })();
+
+    // document.currentScript: the running script's URL is read from a stack trace (the first frame that is not this
+    // bundle's) and matched with the script elements; inline and eval'd code, or no stack, get the last script element
+    // (the running one while the document is parsed). Chunk loaders (Turbopack, webpack's publicPath) read it.
     if (!('currentScript' in document)) {
+        var stackURLs = function () {
+            try { throw new Error(); } catch (err) {
+                var s = String(err.stack || ''), out = [], re = /((?:https?|file):\/\/[^\s@]+?):\d+(?::\d+)?\s*$/gm, m;
+                while ((m = re.exec(s))) out.push(m[1]);
+                return out;
+            }
+        };
+        var ownScriptURL = stackURLs()[0] || null;
         try {
-            Object.defineProperty(document, 'currentScript', { get: function () { var s = document.getElementsByTagName('script'); return s.length ? s[s.length - 1] : null; } });
+            Object.defineProperty(document, 'currentScript', { configurable: true, get: function () {
+                var scripts = document.getElementsByTagName('script'), urls = stackURLs();
+                for (var i = 0; i < urls.length; i++) {
+                    if (urls[i] === ownScriptURL) continue;
+                    for (var j = scripts.length - 1; j >= 0; j--) if (scripts[j].src === urls[i]) return scripts[j];
+                    break;
+                }
+                return scripts.length ? scripts[scripts.length - 1] : null;
+            } });
         } catch (e) {}
     }
     if (!document.scrollingElement) {
