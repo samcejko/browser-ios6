@@ -11,6 +11,9 @@ typedef NS_ENUM(NSInteger, BRMemoryLevel) {
     BRMemoryLevelEmergency,    // the page load is stopped (BRMemoryEmergencyNotification) so that the app survives
 };
 extern NSString * const BRMemoryEmergencyNotification;   // posted on the main thread while a page loads
+// posted on the main thread when the page's graphics (composited layers) eat the memory: the page should be drawn
+// without accelerated compositing
+extern NSString * const BRMemoryGraphicsNotification;
 
 // Memory diagnostics and early relief. The 512 MB iPad 2 kills the app at about 330 MB resident, and iOS warns
 // only a few megabytes before that, so heavy pages die before the warning handler can free anything.

@@ -78,6 +78,7 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) NSURL *currentURL;               // last main frame URL that was navigated to
 @property (nonatomic, strong) NSURL *crashedURL;               // the page the previous run died loading (offered again)
 @property (nonatomic) BOOL memoryStopShown;                    // the "page too large" note of this load was shown
+@property (nonatomic) BOOL compositingOff;                     // accelerated compositing is off (the page's graphics were too big)
 @property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https fails
 @property (nonatomic) BOOL editingAddress;
 @property (nonatomic) BOOL loading;
@@ -293,7 +294,10 @@ static NSString *BRQueryEscape(NSString *s)
     [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
     [self.webView.scrollView addSubview:self.refreshControl];
     [self enableWebGL];
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugNoCompositing"]) [self setAcceleratedCompositing:NO reason:@"BRDebugNoCompositing"];
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugNoCompositing"]) {
+        self.compositingOff = YES;
+        [self setAcceleratedCompositing:NO reason:@"BRDebugNoCompositing"];
+    }
     [BRMemory watchLayer:self.webView.layer];
     [self.view addSubview:self.webView];
 
@@ -416,6 +420,7 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageStyleChanged:) name:@"BRPageStyleDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openURLNotification:) name:@"BROpenURLNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(memoryEmergency:) name:BRMemoryEmergencyNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(graphicsMemoryHigh:) name:BRMemoryGraphicsNotification object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
 
@@ -1270,6 +1275,35 @@ static void BRWebThreadLock(void)
                                                     message:[NSString stringWithFormat:L(@"The iPad is running out of memory: %@ stopped loading so that the app stays open. What loaded so far works."), host]
                                                    delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil];
     [alert show];
+}
+
+// the page's composited layers eat the iPad's memory: it is drawn without them from now on (and the site is
+// remembered, so that its next visit starts that way instead of getting near the limit again)
+- (void)graphicsMemoryHigh:(NSNotification *)note
+{
+    NSString *host = [self.currentURL.host lowercaseString];
+    if (host.length) {
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        NSMutableArray *hosts = [[d arrayForKey:@"BRHeavyGraphicsHosts"] mutableCopy] ?: [NSMutableArray array];
+        [hosts removeObject:host];
+        [hosts addObject:host];
+        while (hosts.count > 60) [hosts removeObjectAtIndex:0];
+        [d setObject:hosts forKey:@"BRHeavyGraphicsHosts"];
+    }
+    if (self.compositingOff) return;
+    self.compositingOff = YES;
+    [self setAcceleratedCompositing:NO reason:[NSString stringWithFormat:@"the graphics of %@ are too big", host ?: @"the page"]];
+}
+
+// a new page: compositing is back on unless its site needed it off before
+- (void)chooseCompositingForURL:(NSURL *)url
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSString *host = [url.host lowercaseString];
+    BOOL off = [d boolForKey:@"BRDebugNoCompositing"] || (host.length && [[d arrayForKey:@"BRHeavyGraphicsHosts"] containsObject:host]);
+    if (off == self.compositingOff) return;
+    self.compositingOff = off;
+    [self setAcceleratedCompositing:!off reason:off ? [NSString stringWithFormat:@"%@ had too big graphics before", host] : @"a new page"];
 }
 
 // the previous run ended (killed by iOS, as a rule for lack of memory) while this page was loading: the tab keeps it
@@ -2381,6 +2415,7 @@ static void BRWebThreadLock(void)
     if (handled) {
         BOOL mainFrame = [url isEqual:request.mainDocumentURL] || navigationType != UIWebViewNavigationTypeOther;
         if (mainFrame && ![scheme isEqualToString:@"about"] && ![scheme isEqualToString:@"applewebdata"]) {
+            if (![url.host isEqualToString:self.currentURL.host] || self.compositingOff) [self chooseCompositingForURL:url];
             self.currentURL = url;
             self.readerShown = NO;
             [self updateAddressFieldWithURL:url];

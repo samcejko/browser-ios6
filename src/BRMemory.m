@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 NSString * const BRMemoryEmergencyNotification = @"BRMemoryEmergencyNotification";
+NSString * const BRMemoryGraphicsNotification = @"BRMemoryGraphicsNotification";
 
 // Levels by what the whole system has available (free + inactive + purgeable). Measured on the iPad 2 (512 MB):
 // with nothing open about 220-250 MB are available, iOS warns at 40-60 MB and kills the frontmost app at 15-25 MB
@@ -16,6 +17,10 @@ NSString * const BRMemoryEmergencyNotification = @"BRMemoryEmergencyNotification
 static const long BRAvailTightMB = 100, BRAvailCriticalMB = 70, BRAvailEmergencyMB = 45;
 static volatile BOOL g_pageLoading;
 static CFAbsoluteTime g_lastEmergency;
+static CFAbsoluteTime g_lastGraphics;
+// the page's graphics are too big when, with the system short, the layers hold this much (estimated) or this much
+// memory went in a few seconds without the app's resident memory growing (layers drawn by the GPU are not resident)
+static const long BRLayersTightMB = 24, BRLayersCriticalMB = 8, BRUnexplainedDropMB = 80;
 
 static NSMutableDictionary *g_activities;
 static long g_lastLoggedMB;
@@ -178,12 +183,65 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     }
 }
 
+typedef struct { long layers, drawn, tiled; double bytes; } BRLayerTally;
+
+static void BRTallyLayers(CALayer *layer, BRLayerTally *t, NSMutableArray *big, int depth)
+{
+    if (depth > 200) return;
+    t->layers++;
+    CGSize size = layer.bounds.size;
+    BOOL tiled = [layer isKindOfClass:[CATiledLayer class]];   // (draws only the tiles in view: not counted)
+    if (layer.contents || tiled) {
+        CGFloat scale = layer.contentsScale > 0 ? layer.contentsScale : 1;
+        double bytes = (double)size.width * size.height * scale * scale * 4;
+        if (tiled) t->tiled++;
+        else { t->drawn++; t->bytes += bytes; }
+        if (big && bytes >= 2 * 1024 * 1024)
+            [big addObject:@[@(bytes), [NSString stringWithFormat:@"%@ %.0fx%.0f%@", NSStringFromClass([layer class]), size.width, size.height, tiled ? @" tiled" : @""]]];
+    }
+    for (CALayer *sub in layer.sublayers) BRTallyLayers(sub, t, big, depth + 1);   // (a copy: safe while WebKit changes the tree)
+}
+
+// the layers under the watched layer with their backing store estimated from the size (4 bytes a pixel)
++ (BRLayerTally)layerTally:(NSMutableArray *)big
+{
+    BRLayerTally t = { 0, 0, 0, 0 };
+    CALayer *root = g_watchedLayer;
+    if (root) BRTallyLayers(root, &t, big, 0);
+    return t;
+}
+
+typedef struct { CFAbsoluteTime t; long available, resident; } BRMemorySample;
+static BRMemorySample g_history[16];
+static unsigned g_historyCount;
+
+// the memory thread: how much the system lost in the last few seconds beyond what the app's resident memory grew (MB)
+static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
+{
+    long worst = 0;
+    for (unsigned i = 0; i < MIN(g_historyCount, 16u); i++) {
+        BRMemorySample s = g_history[i];
+        if (now - s.t > 6) continue;
+        long gone = s.available - available - MAX(mb - s.resident, 0);
+        if (gone > worst) worst = gone;
+    }
+    g_history[g_historyCount++ % 16] = (BRMemorySample){ now, available, mb };
+    return worst;
+}
+
 + (BRMemoryLevel)sample
 {
     long mb = (long)BRResidentMemoryMB();
     if (mb <= 0) return BRMemoryLevelNormal;
     long available = [self availableMB];
     BRMemoryLevel level = [self levelFor:available];
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    // the page's graphics: estimated from its layers (CALayer reads are safe from any thread)
+    long layerMB = -1;
+    if (g_watchedLayer && (g_pageLoading || level >= BRMemoryLevelTight)) {
+        @autoreleasepool { layerMB = (long)([self layerTally:nil].bytes / 1048576); }
+    }
+    long unexplained = BRUnexplainedDrop(now, available, mb);
     long last;
     BOOL jump, drop;
     @synchronized (self) {
@@ -197,7 +255,9 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     }
     if (jump) {
         NSString *what = [self activity];
-        BRLog(@"Memory %ld MB (%@%ld), %ld MB available%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), available,
+        NSString *graphics = layerMB >= 0 ? [NSString stringWithFormat:@", layers %ld MB", layerMB] : @"";
+        if (unexplained >= 24) graphics = [graphics stringByAppendingFormat:@", %ld MB gone outside the app", unexplained];
+        BRLog(@"Memory %ld MB (%@%ld), %ld MB available%@%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), available, graphics,
               what.length ? @", busy: " : @"", what ?: @"");
         BRWebThreadRunFn run = BRWebThreadRun();
         if (run && (mb >= BRMemoryReportFromMB || drop) && CFAbsoluteTimeGetCurrent() - g_lastReport > 10) {
@@ -205,9 +265,16 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
             run(^{ BRLog(@"Memory report: %@", [BRMemory webKitNumbers]); });
         }
     }
+    // graphics: the page is drawn without composited layers (slower animations, flat 3D) before it gets the app killed
+    BOOL heavy = (level >= BRMemoryLevelTight && (layerMB >= BRLayersTightMB || unexplained >= BRUnexplainedDropMB)) ||
+                 (level >= BRMemoryLevelCritical && layerMB >= BRLayersCriticalMB);
+    if (heavy && now - g_lastGraphics > 10) {
+        g_lastGraphics = now;
+        BRLog(@"Memory: the page's graphics are too big (%ld MB available, layers %ld MB, %ld MB gone outside the app)", available, layerMB, unexplained);
+        dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:BRMemoryGraphicsNotification object:nil]; });
+    }
     // relief: when the app itself is big, or earlier when the system is short (then more often)
     long threshold = [self reliefThresholdMB];
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     BOOL big = threshold > 0 && mb >= threshold;
     if ((big && now - g_lastRelief > 20) || (level >= BRMemoryLevelCritical && now - g_lastRelief > 6)) {
         g_lastRelief = now;
@@ -260,32 +327,11 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     g_watchedLayer = layer;
 }
 
-typedef struct { long layers, drawn, tiled; double bytes; } BRLayerTally;
-
-static void BRTallyLayers(CALayer *layer, BRLayerTally *t, NSMutableArray *big, int depth)
-{
-    if (depth > 200) return;
-    t->layers++;
-    CGSize size = layer.bounds.size;
-    BOOL tiled = [layer isKindOfClass:[CATiledLayer class]];   // (draws only the tiles in view: not counted)
-    if (layer.contents || tiled) {
-        CGFloat scale = layer.contentsScale > 0 ? layer.contentsScale : 1;
-        double bytes = (double)size.width * size.height * scale * scale * 4;
-        if (tiled) t->tiled++;
-        else { t->drawn++; t->bytes += bytes; }
-        if (bytes >= 2 * 1024 * 1024)
-            [big addObject:@[@(bytes), [NSString stringWithFormat:@"%@ %.0fx%.0f%@", NSStringFromClass([layer class]), size.width, size.height, tiled ? @" tiled" : @""]]];
-    }
-    for (CALayer *sub in layer.sublayers) BRTallyLayers(sub, t, big, depth + 1);
-}
-
 + (NSString *)layerNumbers
 {
-    CALayer *root = g_watchedLayer;
-    if (!root) return nil;
-    BRLayerTally t = { 0, 0, 0, 0 };
+    if (!g_watchedLayer) return nil;
     NSMutableArray *big = [NSMutableArray array];
-    BRTallyLayers(root, &t, big, 0);
+    BRLayerTally t = [self layerTally:big];
     [big sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [b[0] compare:a[0]]; }];
     NSMutableString *s = [NSMutableString stringWithFormat:@"%ld layers (%ld drawn, %ld tiled) %.0f MB", t.layers, t.drawn, t.tiled, t.bytes / 1048576.0];
     if (big.count) {
