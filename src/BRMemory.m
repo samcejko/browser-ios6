@@ -16,13 +16,24 @@ static const long BRMemoryReportFromMB = 160;     // jumps above this also log W
 static const long BRMemoryDefaultReliefMB = 240;
 
 // Calls into WebKit from the main thread need the web thread lock (UIKit takes it the same way; it is released at
-// the end of the main run loop cycle).
+// the end of the main run loop cycle). Taking it waits for the page's JavaScript, up to seconds on a heavy page, so
+// the regular work goes to the WebThread itself with WebThreadRun instead.
 static void BRWebLock(void)
 {
     static void (*lockFn)(void);
     static dispatch_once_t once;
     dispatch_once(&once, ^{ lockFn = (void (*)(void))dlsym(RTLD_DEFAULT, "WebThreadLock"); });
     if (lockFn) lockFn();
+}
+
+typedef void (*BRWebThreadRunFn)(void (^block)(void));
+
+static BRWebThreadRunFn BRWebThreadRun(void)
+{
+    static BRWebThreadRunFn fn;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ fn = (BRWebThreadRunFn)dlsym(RTLD_DEFAULT, "WebThreadRun"); });
+    return fn;
 }
 
 static id BRCallClass(NSString *className, NSString *selectorName)
@@ -92,9 +103,10 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     if (jump) {
         NSString *what = [self activity];
         BRLog(@"Memory %ld MB (%@%ld)%@%@", mb, mb >= last ? @"+" : @"-", labs(mb - last), what.length ? @", busy: " : @"", what ?: @"");
-        if (mb >= BRMemoryReportFromMB && CFAbsoluteTimeGetCurrent() - g_lastReport > 10) {
+        BRWebThreadRunFn run = BRWebThreadRun();
+        if (run && mb >= BRMemoryReportFromMB && CFAbsoluteTimeGetCurrent() - g_lastReport > 10) {
             g_lastReport = CFAbsoluteTimeGetCurrent();
-            dispatch_async(dispatch_get_main_queue(), ^{ BRLog(@"Memory report: %@", [BRMemory webKitReport]); });
+            run(^{ BRLog(@"Memory report: %@", [BRMemory webKitNumbers]); });
         }
     }
     long threshold = [self reliefThresholdMB];
@@ -104,10 +116,10 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     }
 }
 
-+ (NSString *)webKitReport
+// the WebThread, or a thread holding the web lock
++ (NSString *)webKitNumbers
 {
     NSMutableString *s = [NSMutableString stringWithFormat:@"resident %ld MB", (long)BRResidentMemoryMB()];
-    BRWebLock();
     NSDictionary *m = BRCallClass(@"WebCoreStatistics", @"memoryStatistics");
     if ([m isKindOfClass:[NSDictionary class]]) {
         long heap = [m[@"JavaScriptHeapSize"] longValue] >> 20, heapFree = [m[@"JavaScriptFreeSize"] longValue] >> 20;
@@ -134,25 +146,31 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     return s;
 }
 
++ (NSString *)webKitReport
+{
+    BRWebLock();
+    return [self webKitNumbers];
+}
+
 + (void)relieve:(NSString *)reason
 {
     long before = (long)BRResidentMemoryMB();
-    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     // our two script engines: whole heaps, recreated on the next use (0.3 to 0.5 s each)
     [[BRJSEngine transpiler] resetContext];
     [[BRJSEngine shared] resetContext];
-    BRWebLock();
-    // the pages' garbage, then WebKit's free lists back to the system
-    BRCallClassVoid(@"WebCoreStatistics", @"garbageCollectJavaScriptObjects");
-    // resources no page uses and the decoded copies of images (redecoded when painted); the iOS variant keeps the
-    // application caches that +empty would delete
-    BRCallClassVoid(@"WebCache", @"emptyInMemoryResources");
-    BRCallClassVoid(@"WebCoreStatistics", @"returnFreeMemoryToSystem");
-    long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
-    // the engines release on their own threads, and the WebThread prunes the cache in its own turn
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        BRLog(@"Memory relief (%@): %ld -> %ld MB, %ld ms on the main thread; %@", reason, before, (long)BRResidentMemoryMB(), ms, [BRMemory webKitReport]);
-    });
+    // the pages' garbage, the resources no page uses and the decoded copies of images (redecoded when painted; the
+    // iOS variant keeps the application caches that +empty would delete), then WebKit's free lists back to the system
+    void (^webkit)(void) = ^{
+        NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+        BRCallClassVoid(@"WebCoreStatistics", @"garbageCollectJavaScriptObjects");
+        BRCallClassVoid(@"WebCache", @"emptyInMemoryResources");
+        BRCallClassVoid(@"WebCoreStatistics", @"returnFreeMemoryToSystem");
+        BRLog(@"Memory relief (%@): %ld -> %ld MB, WebKit part %ld ms; %@", reason, before, (long)BRResidentMemoryMB(),
+              (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), [BRMemory webKitNumbers]);
+    };
+    BRWebThreadRunFn run = BRWebThreadRun();
+    if (run) run(webkit);
+    else { BRWebLock(); webkit(); }
 }
 
 @end

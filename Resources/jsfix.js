@@ -824,6 +824,7 @@
         this.tla = false;      // await at the top level of a module
         this.proxyShim = false;   // free references to Proxy become __br_Proxy (not the operand of typeof)
         this.bigintShim = false;  // the same for BigInt (and bigint literals call __br_BigInt)
+        this.redos = [];          // functions lowered while parsing that must be analysed again (renamed names)
     };
     var W = Walker.prototype;
     W.inArrow = function () { var f = this.fns[this.fns.length - 1]; return !!(f && f.$arrow); };
@@ -918,6 +919,17 @@
     };
     W.fn = function (n, p, s) {
         n.$p = p;
+        if (n.$raw) {
+            // lowered while parsing (see W.early): the names it takes from outside are references from a function of
+            // its own (closures in loops, renames); whether it changed decides for the code around it
+            var raw = n.$raw, rs = new Scope('function', s, n, s.strict), free = raw.free;
+            raw.node = n;
+            raw.scope = s;
+            for (var j = 0; j < free.length; j++) this.ref({ type: 'Identifier', name: free[j].name, $raw: raw, $w: free[j].w, start: n.start, end: n.end }, rs, false);
+            if (raw.text === null) return false;
+            n.$d = true;
+            return true;
+        }
         var arrow = n.type === 'ArrowFunctionExpression';
         var body = n.body, strict = s.strict || (body.type === 'BlockStatement' && hasUseStrict(body.body));
         var fs = new Scope('function', s, n, strict);
@@ -1238,16 +1250,43 @@
             }
         }
     };
-    // references to bindings, then the decisions: renames, loops that need a function per iteration
-    W.resolve = function (program) {
-        var refs = this.refs, i, j, id, s, key, b, f, stop;
-        for (i = 0; i < refs.length; i += 2) {
+    // references to bindings, then the decisions: renames, loops that need a function per iteration. A function
+    // lowered while parsing that uses a renamed binding is analysed again from its source (W.rewalk), which adds
+    // references and declarations: those are resolved in the next round.
+    W.resolve = function () {
+        var ri = 0, li = 0, i, j, b;
+        for (;;) {
+            ri = this.resolveRefs(ri);
+            li = this.decideRenames(li);
+            if (!this.redos.length) break;
+            var list = this.redos;
+            this.redos = [];
+            for (i = 0; i < list.length; i++) this.rewalk(list[i]);
+        }
+        for (i = 0; i < this.loops.length; i++) {
+            var l = this.loops[i];
+            if (l.$wrap && !l.$noWrap) { markDirty(l); markWrapped(l.body); }
+        }
+        // imported names print as members of the dependency's namespace
+        for (i = 0; i < this.imports.length; i++) {
+            b = this.imports[i];
+            for (j = 0; j < b.refs.length; j++) markDirty(b.refs[j]);
+        }
+    };
+    W.resolveRefs = function (from) {
+        var refs = this.refs, i, id, s, key, b, f, stop;
+        for (i = from; i < refs.length; i += 2) {
             id = refs[i];
             s = refs[i + 1];
             key = '$' + id.name;
             b = null;
             for (var x = s; x; x = x.parent) { b = x.decls[key]; if (b) break; }
-            if (b) { b.refs.push(id); id.$b = b; }
+            if (b) {
+                b.refs.push(id);
+                id.$b = b;
+                // (a binding renamed in an earlier round)
+                if (b.newName) { if (id.$raw) this.redo(id.$raw); else markDirty(id); }
+            }
             else if (id.name === 'Proxy' && this.proxyShim && !id.$typeof) { id.$proxy = true; markDirty(id); }
             else if (id.name === 'BigInt' && this.bigintShim && !id.$typeof) { id.$bigint = true; markDirty(id); }
             // the name is free in every function between the reference and the binding's function
@@ -1256,7 +1295,11 @@
             // a closure in a loop capturing a binding of the iteration
             if (b && b.loop && s.fn !== b.scope.fn) { b.loop.$wrap = true; b.captured = true; }
         }
-        for (i = 0; i < this.lexicals.length; i++) {
+        return refs.length;
+    };
+    W.decideRenames = function (from) {
+        var i, j, b, f, key;
+        for (i = from; i < this.lexicals.length; i++) {
             b = this.lexicals[i];
             f = b.scope.fn;
             key = '$' + b.name;
@@ -1269,17 +1312,64 @@
             this.names['$' + nn] = 1;
             b.newName = nn;
             for (j = 0; j < b.ids.length; j++) markDirty(b.ids[j]);
-            for (j = 0; j < b.refs.length; j++) markDirty(b.refs[j]);
+            for (j = 0; j < b.refs.length; j++) { if (b.refs[j].$raw) this.redo(b.refs[j].$raw); else markDirty(b.refs[j]); }
         }
-        for (i = 0; i < this.loops.length; i++) {
-            var l = this.loops[i];
-            if (l.$wrap && !l.$noWrap) { markDirty(l); markWrapped(l.body); }
+        return this.lexicals.length;
+    };
+    // a function lowered while parsing whose text cannot stay (a name it uses from outside is renamed): parsed again
+    // from the source and analysed in its place, then printed like any other function (P.func)
+    W.redo = function (rawRef) {
+        var n = rawRef.node;
+        if (!n.$raw.redo) { n.$raw.redo = true; this.redos.push(n); }
+    };
+    W.rewalk = function (n) {
+        var raw = n.$raw, acorn = root.acorn;
+        var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowReserved: true, locations: false }, this.src, n.start);
+        p.strict = raw.strict;
+        p.nextToken();
+        var fresh = p.parseMaybeAssign();
+        if (n.type === 'FunctionDeclaration' && fresh.type === 'FunctionExpression') fresh.type = 'FunctionDeclaration';
+        if (fresh.type !== n.type || fresh.start !== n.start || fresh.end !== n.end) throw new Unsupported('early-redo');
+        raw.fresh = fresh;
+        raw.text = null;
+        var fns = this.fns;
+        this.fns = [];
+        this.fn(fresh, n.$p, raw.scope);
+        this.fns = fns;
+        markDirty(n);
+    };
+    // A function the parser just completed, lowered on its own: analysed below a stand-in for the scopes around it
+    // (not parsed completely yet), printed, and emptied. It keeps its text (null: unchanged), the free names with
+    // whether it writes them, and the placeholders an arrow used for the outer this/arguments (P.rawFunc).
+    W.early = function (n, strict, printer) {
+        var saved = [this.refs, this.lexicals, this.loops, this.fns, this.imports, this.redos];
+        this.refs = []; this.lexicals = []; this.loops = []; this.fns = []; this.imports = []; this.redos = [];
+        var root = new Scope('program', null, null, strict), i, id, e;
+        var raw = { text: null, free: [], thisAlias: null, argsAlias: null, strict: strict, node: null, scope: null, fresh: null, redo: false };
+        try {
+            this.fn(n, null, root);
+            this.resolve();
+            var seen = {};
+            for (i = 0; i < this.refs.length; i += 2) {
+                id = this.refs[i];
+                if (id.$b) continue;
+                e = seen['$' + id.name];
+                if (!e) { e = seen['$' + id.name] = { name: id.name, w: false }; raw.free.push(e); }
+                if (id.$w) e.w = true;
+            }
+            if (n.$d) {
+                var out = printer.early(n);
+                raw.text = out.code;
+                raw.thisAlias = out.thisAlias;
+                raw.argsAlias = out.argsAlias;
+            }
+        } finally {
+            this.refs = saved[0]; this.lexicals = saved[1]; this.loops = saved[2]; this.fns = saved[3]; this.imports = saved[4]; this.redos = saved[5];
         }
-        // imported names print as members of the dependency's namespace
-        for (i = 0; i < this.imports.length; i++) {
-            b = this.imports[i];
-            for (j = 0; j < b.refs.length; j++) markDirty(b.refs[j]);
-        }
+        n.$raw = raw;
+        n.params = [];
+        n.body = null;
+        n.$scope = null;
     };
     // inside a loop body that becomes a function: this/arguments, jumps out, returns and var declarations change
     var markWrapped = function (n) {
@@ -1847,7 +1937,34 @@
         return 'var ' + list.join(',') + ';';
     };
     // o: {superRef, supVar, fields, accessor}
+    // a function lowered while parsing (W.early), below a stand-in function context: the outer this/arguments an
+    // arrow in it needs are placeholders, replaced by P.rawFunc once the context around it is known
+    P.early = function (n) {
+        if (!this.program) { this.program = new Ctx('program', null, null); this.progInit = ''; }
+        var saved = this.ctx, holder = new Ctx('fn', this.program, null), code;
+        this.ctx = holder;
+        try {
+            code = n.type === 'ArrowFunctionExpression' ? this.func(n, 'arrow', null, null) : this.func(n, 'fn', n.id ? n.id.name : null, null);
+        } finally { this.ctx = saved; }
+        if (holder.temps.length || holder.ntAlias) throw new Unsupported('early-context');
+        return { code: code, thisAlias: holder.thisAlias, argsAlias: holder.argsAlias };
+    };
+    var replaceName = function (code, name, by) {
+        return code.replace(new RegExp('(^|[^\\w$])' + name.replace(/\$/g, '\\$') + '(?![\\w$])', 'g'), function (m, pre) { return pre + by; });
+    };
+    P.rawFunc = function (n) {
+        var r = n.$raw, code = r.text;
+        if (code === null) return this.src.slice(n.start, n.end);
+        if (r.thisAlias || r.argsAlias) {
+            this.push('arrow', n);
+            if (r.thisAlias) code = replaceName(code, r.thisAlias, this.thisCode());
+            if (r.argsAlias) code = replaceName(code, r.argsAlias, this.argsCode());
+            this.pop();
+        }
+        return code;
+    };
     P.func = function (n, kind, name, o) {
+        if (n.$raw) return n.$raw.fresh ? this.func(n.$raw.fresh, kind, name, o) : this.rawFunc(n);
         if (n.async || n.generator) return this.genFunc(n, kind, name, o);
         var ctx = this.push(kind, n), i;
         if (o) {
@@ -2273,9 +2390,9 @@
         return 'var ' + fnName + '=' + fnCode + ';' + prefix + loopCode;
     };
     P.programCode = function (ast) {
-        var ctx = this.push('program', ast);
-        this.program = ctx;
-        this.progInit = '';
+        // (functions lowered while parsing may have declared program variables already)
+        var ctx = this.program;
+        if (ctx) { ctx.node = ast; this.ctx = ctx; } else { ctx = this.push('program', ast); this.program = ctx; this.progInit = ''; }
         var st = ast.body, dirs = '', k = 0;
         while (k < st.length && st[k].directive !== undefined) { dirs += sliceStmt(this.src, st[k]); k++; }
         var body = this.block(k ? st.slice(k) : st, false);
@@ -2859,11 +2976,20 @@
     };
 
     // ------------------------------------------------------------------------------------------------ entry points
-    var parse = function (src, module) {
+    // onFunction(node, strict, inClass): every `function` and arrow as soon as the parser completed it (the parser's
+    // strictness is the surrounding code's again by then)
+    var parse = function (src, module, onFunction) {
         var acorn = root.acorn;
         if (!acorn || !acorn.parse) throw new Unsupported('acorn missing');
-        return acorn.parse(src, { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
-                                  allowReserved: true, locations: false });
+        var options = { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
+                        allowReserved: true, locations: false };
+        if (!onFunction) return acorn.parse(src, options);
+        var p = new acorn.Parser(options, src), classes = 0;
+        var parseFunction = p.parseFunction, parseArrow = p.parseArrowExpression, parseClass = p.parseClass;
+        p.parseClass = function () { classes++; try { return parseClass.apply(this, arguments); } finally { classes--; } };
+        p.parseFunction = function () { var n = parseFunction.apply(this, arguments); onFunction(n, this.strict, classes > 0); return n; };
+        p.parseArrowExpression = function () { var n = parseArrow.apply(this, arguments); onFunction(n, this.strict, classes > 0); return n; };
+        return p.parse();
     };
     // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
     // without it (a bundle often holds both kinds)
@@ -2887,30 +3013,63 @@
         for (var i = 0; i < names.length; i++) add(names[i]);
         return out;
     };
-    // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
-    // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
-    var transpile = function (src, opts) {
-        opts = opts || {};
+    // Big scripts are lowered function by function while they are parsed: the whole tree of a 1.5 MB bundle took
+    // over 100 MB in the old engine (the app is killed at about 330 MB). A completed function of EARLY_FN characters
+    // or more is analysed and printed on its own and only its text stays in the tree; arrows that use super or
+    // new.target and functions with private names inside a class body wait for the code around them.
+    var EARLY_SCRIPT = 96 * 1024, EARLY_FN = 512;
+    var EARLY_ARROW_SKIP = /\bsuper\b|\bnew\s*\.\s*target\b/;
+    var lower = function (src, opts, early) {
         var module = !!opts.module;
-        var ast = parse(src, module);
         var w = new Walker(src);
         w.proxyShim = opts.proxy !== undefined ? !!opts.proxy : needsProxy(src);
         w.bigintShim = opts.bigint !== undefined ? !!opts.bigint : typeof root.BigInt !== 'function';
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
+        var printer = new Printer(src, w, opts), onFunction = null;
+        if (early !== false) {
+            onFunction = function (n, strict, inClass) {
+                if (n.end - n.start < early) return;
+                if (n.type === 'ArrowFunctionExpression' || inClass) {
+                    var text = src.slice(n.start, n.end);
+                    if (n.type === 'ArrowFunctionExpression' && EARLY_ARROW_SKIP.test(text)) return;
+                    if (inClass && text.indexOf('#') >= 0) return;
+                }
+                w.early(n, strict, printer);
+                stats.early++;
+            };
+        }
+        var ast = parse(src, module, onFunction);
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body));
         w.stmts(ast.body, ast, ps, false);
         if (w.module && !module) throw new Unsupported('module');
         w.resolve(ast);
-        if (module) return new Printer(src, w, opts).moduleCode(ast, w);
+        if (module) return printer.moduleCode(ast, w);
         var dirty = false;
         for (var i = 0; i < ast.body.length; i++) if (ast.body[i].$d) { dirty = true; break; }
         if (!dirty) return null;
-        return new Printer(src, w, opts).programCode(ast);
+        return printer.programCode(ast);
+    };
+    // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
+    // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
+    // opts.early: false, or the size from which functions are lowered while parsing (default: EARLY_FN for big scripts)
+    var transpile = function (src, opts) {
+        opts = opts || {};
+        var early = opts.early !== undefined ? opts.early : src.length >= EARLY_SCRIPT ? EARLY_FN : false;
+        // (a module's imports are only known at its end; a script with its own Proxy/BigInt needs every scope)
+        if (early !== false && (opts.module || STANDIN_OWN.test(src) || !root.acorn || !root.acorn.Parser)) early = false;
+        if (early === false) return lower(src, opts, false);
+        try { return lower(src, opts, early); } catch (e) {
+            // a function lowered early uses a name the code around it renames afterwards (or needs more of the
+            // context than a stand-in gives): the whole tree at once
+            if (!(e instanceof Unsupported) || !/^early-/.test(e.what)) throw e;
+            stats.fallbacks++;
+            return lower(src, opts, false);
+        }
     };
     var engineParses = function (src) {
         try { new Function(src); return true; } catch (e) { return false; }   // eslint-disable-line no-new-func
     };
-    var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '' };
+    var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0 };
     // for the app: '' when the engine takes the script as it is (or it cannot be lowered), else the ES5 text;
     // JSFix.last() tells which ("es5", "lowered", or why it failed)
     var run = function (src, optsJSON) {

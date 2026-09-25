@@ -44,12 +44,16 @@ const settle = (v) => (v && typeof v.then === 'function')
     ? v.then((x) => JSON.stringify(x), (e) => 'rejected: ' + ((e && e.message) || e))
     : Promise.resolve(JSON.stringify(v));
 
+// every case twice: as a small script (the whole tree at once) and with every function lowered while parsing (the
+// mode of scripts over 96 KB)
+const MODES = [['', {}], [' (early)', { early: 0 }]];
 (async () => {
     let failed = 0;
-    for (const [name, code] of cases) {
+    for (const [mode, opts] of MODES) for (const [caseName, code] of cases) {
+        const name = caseName + mode;
         let expected, out, actual;
         try { expected = await settle(run(code)); } catch (e) { console.error(`FAIL ${name}: original threw ${e.message}`); failed++; continue; }
-        try { out = JSFix.transpile(code, {}); } catch (e) { console.error(`FAIL ${name}: transpile threw ${e.message || e.what}`); failed++; continue; }
+        try { out = JSFix.transpile(code, opts); } catch (e) { console.error(`FAIL ${name}: transpile threw ${e.message || e.what}`); failed++; continue; }
         if (out === null) out = code;
         try {
             acorn.parse(out, { ecmaVersion: 5, allowReturnOutsideFunction: true });
@@ -58,6 +62,6 @@ const settle = (v) => (v && typeof v.then === 'function')
         try { actual = await settle(run(out)); } catch (e) { console.error(`FAIL ${name}: lowered threw ${e.message}`); failed++; continue; }
         if (actual !== expected) { console.error(`FAIL ${name}: expected ${expected} got ${actual}`); failed++; continue; }
     }
-    console.log(`jsfix: ${cases.length - failed}/${cases.length} cases pass`);
+    console.log(`jsfix: ${cases.length * MODES.length - failed}/${cases.length * MODES.length} cases pass (${JSFix.stats.early} functions lowered while parsing, ${JSFix.stats.fallbacks} fallbacks)`);
     process.exit(failed ? 1 : 0);
 })();

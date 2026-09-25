@@ -22,6 +22,8 @@ pre { background: #f4f4f4; padding: 6px; white-space: pre-wrap; word-break: brea
 // lowered by JSFix.transpile; the results must match, and the lowered text must parse as ES5 (acorn ecmaVersion 5,
 // plus no function declarations in blocks of strict code, which the old engine rejects).
 var CASES = JSFIX_CASES;
+// ?early=N: every function of N characters or more is lowered while parsing (the mode of big scripts)
+var EARLY = /[?&]early=(\d+)/.test(location.search) ? +RegExp.$1 : null;
 var ES5_PARSE = function (code) {
   var ast = acorn.parse(code, { ecmaVersion: 5, allowReturnOutsideFunction: true });
   // function declarations inside blocks of strict code
@@ -64,7 +66,7 @@ var settle = function (v) {
 var runCase = function (c) {
   var name = c[0], code = c[1], out, expected;
   try { expected = settle(new Function(code)()); } catch (e) { show(name, false, 'original threw: ' + e.message); return Promise.resolve(); }
-  try { out = JSFix.transpile(code, {}); } catch (e) { show(name, false, 'transpile threw: ' + (e.message || e.what) + (e.stack ? ' ' + e.stack.split('\n')[1] : '')); return Promise.resolve(); }
+  try { out = JSFix.transpile(code, EARLY !== null ? { early: EARLY } : {}); } catch (e) { show(name, false, 'transpile threw: ' + (e.message || e.what) + (e.stack ? ' ' + e.stack.split('\n')[1] : '')); return Promise.resolve(); }
   if (out === null) out = code;
   try { ES5_PARSE(out); } catch (e) { show(name, false, 'not ES5: ' + e.message, out); return Promise.resolve(); }
   var actual;
@@ -75,7 +77,7 @@ var chain = Promise.resolve();
 CASES.forEach(function (c) { chain = chain.then(function () { return runCase(c); }); });
 chain.then(function () {
   document.getElementById('summary').textContent = pass + ' / ' + total;
-  document.title = 'jsfix ' + pass + '/' + total;
+  document.title = 'jsfix ' + pass + '/' + total + (EARLY !== null ? ' early ' + JSFix.stats.early + ' fallbacks ' + JSFix.stats.fallbacks : '');
   window.__jsfixResults = results;
 });
 </script>
