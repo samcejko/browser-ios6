@@ -303,9 +303,18 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 + (NSString *)lastMainDocumentTLSInfo { @synchronized (self) { return g_lastMainTLS; } }
 + (NSString *)lastMainDocumentContentType { @synchronized (self) { return g_lastMainContentType; } }
 
+// data:image/webp,... (placeholders of lazy images, feature tests): decoded here like WebP responses
+static BOOL BRIsWebPDataURL(NSURL *url)
+{
+    NSString *s = url.absoluteString;
+    if (s.length < 20) return NO;
+    return [[[s substringToIndex:MIN(s.length, (NSUInteger)32)] lowercaseString] hasPrefix:@"data:image/webp"];
+}
+
 + (BOOL)canInitWithRequest:(NSURLRequest *)request
 {
     NSString *scheme = [request.URL.scheme lowercaseString];
+    if ([scheme isEqualToString:@"data"]) return BRIsWebPDataURL(request.URL);
     if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return NO;
     if (![request.URL.host length]) return NO;
     if ([NSURLProtocol propertyForKey:BRHandledKey inRequest:request]) return NO;
@@ -348,6 +357,12 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSString *method = request.HTTPMethod.length ? [request.HTTPMethod uppercaseString] : @"GET";
     BOOL isGET = [method isEqualToString:@"GET"];
     NSURLRequestCachePolicy policy = request.cachePolicy;
+
+    // 0. A WebP picture in a data: URL
+    if ([[url.scheme lowercaseString] isEqualToString:@"data"]) {
+        [self serveWebPDataURL];
+        return;
+    }
 
     // 0a. Our own resources (polyfill bundle) live on a reserved host name that never resolves
     if ([[url.host lowercaseString] isEqualToString:@"ios6-browser.invalid"]) {
@@ -809,6 +824,31 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge) };
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];
+}
+
+- (void)serveWebPDataURL
+{
+    NSURL *url = self.request.URL;
+    NSString *s = url.absoluteString;
+    NSRange comma = [s rangeOfString:@","];
+    NSData *webp = nil;
+    if (comma.location != NSNotFound) {
+        NSString *meta = [[s substringToIndex:comma.location] lowercaseString], *payload = [s substringFromIndex:comma.location + 1];
+        if ([meta hasSuffix:@";base64"]) webp = BRBase64Decode([payload stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: payload);
+        else webp = [[payload stringByReplacingPercentEscapesUsingEncoding:NSISOLatin1StringEncoding] dataUsingEncoding:NSISOLatin1StringEncoding];
+    }
+    NSString *mime = nil;
+    NSData *image = webp.length ? [BRImageConverter imageDataFromWebP:webp mimeType:&mime] : nil;
+    id<NSURLProtocolClient> client = self.client;
+    if (!image.length) {
+        [client URLProtocol:self didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil]];
+        return;
+    }
+    BRLog(@"WebP data: URL decoded (%lu -> %lu bytes %@)", (unsigned long)webp.length, (unsigned long)image.length, mime ?: @"image/png");
+    NSURLResponse *response = [[NSURLResponse alloc] initWithURL:url MIMEType:mime ?: @"image/png" expectedContentLength:(NSInteger)image.length textEncodingName:nil];
+    [client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    [client URLProtocol:self didLoadData:image];
+    [client URLProtocolDidFinishLoading:self];
 }
 
 - (void)serveInternalResource

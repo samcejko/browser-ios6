@@ -125,6 +125,34 @@ NSString *BRBase64Encode(NSData *data)
     return out;
 }
 
+NSData *BRBase64Decode(NSString *string)
+{
+    NSData *ascii = [string dataUsingEncoding:NSASCIIStringEncoding allowLossyConversion:YES];
+    const uint8_t *in = ascii.bytes;
+    NSUInteger length = ascii.length;
+    NSMutableData *out = [NSMutableData dataWithCapacity:length / 4 * 3 + 3];
+    uint32_t acc = 0;
+    int bits = 0;
+    for (NSUInteger i = 0; i < length; i++) {
+        uint8_t c = in[i], v;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+' || c == '-') v = 62;
+        else if (c == '/' || c == '_') v = 63;
+        else if (c == '=') break;
+        else continue;   // whitespace and line breaks
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            uint8_t byte = (uint8_t)(acc >> bits);
+            [out appendBytes:&byte length:1];
+        }
+    }
+    return out;
+}
+
 NSString *BRHTMLEscape(NSString *string)
 {
     if (!string) return @"";

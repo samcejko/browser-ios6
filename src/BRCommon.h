@@ -41,3 +41,5 @@ NSString *BRIDNAEncodeHost(NSString *host);
 
 // Standard base64 of arbitrary data (iOS 6 has no public NSData API for it).
 NSString *BRBase64Encode(NSData *data);
+// The reverse (also the URL-safe alphabet; whitespace skipped, stops at '=').
+NSData *BRBase64Decode(NSString *string);
