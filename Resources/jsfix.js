@@ -267,7 +267,8 @@
         // by the page's transpiler when the engine refuses it
         __br_evalSrc: function (src) {
             if (typeof src !== 'string') return src;
-            var G = typeof window !== 'undefined' ? window : self, F = G.Function.__brNative || G.Function;
+            var G = typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : Function('return this')();
+            var F = G.Function.__brNative || G.Function;
             try { F(src); return src; } catch (e) {
                 if (!(e instanceof SyntaxError) || !G.__brTranspiler || !G.__brTranspiler()) return src;
                 try { var out = G.JSFix.transpile(src, { evalCode: true }); return out === null ? src : out; } catch (e2) { return src; }
