@@ -9,7 +9,9 @@
 <script src="../Resources/cssfix.js"></script>
 <script>
 // the network layer lowers module files on the device; here the page does it (the loader's test hook)
-window.__brModuleTransform = function (src, url) { return JSFix.run(src, JSON.stringify({ module: true, url: url })); };
+// ?early=0: every function and class lowered while parsing (the mode of big modules)
+var EARLY = /[?&]early=(\d+)/.test(location.search) ? +RegExp.$1 : undefined;
+window.__brModuleTransform = function (src, url) { return JSFix.run(src, JSON.stringify({ module: true, url: url, early: EARLY })); };
 </script>
 <script src="../Resources/shims.js"></script>
 <script src="../Resources/shims-extra.js"></script>

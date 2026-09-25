@@ -1244,6 +1244,15 @@
             encrypt: cryptoUnsupported, decrypt: cryptoUnsupported, sign: cryptoUnsupported, verify: cryptoUnsupported, generateKey: cryptoUnsupported,
             deriveKey: cryptoUnsupported, deriveBits: cryptoUnsupported, importKey: cryptoUnsupported, exportKey: cryptoUnsupported, wrapKey: cryptoUnsupported, unwrapKey: cryptoUnsupported
         };
+        // getRandomValues of this engine fills the array but returns nothing (apple.com reads [0] of the result)
+        try {
+            var cproto = Object.getPrototypeOf(window.crypto), nativeGRV = cproto && cproto.getRandomValues;
+            if (nativeGRV && !nativeGRV.__brFixed) {
+                var fixedGRV = function getRandomValues(arr) { var r = nativeGRV.call(this, arr); return r === undefined ? arr : r; };
+                fixedGRV.__brFixed = true;
+                cproto.getRandomValues = fixedGRV;
+            }
+        } catch (e5) {}
         // Expandos on the Crypto wrapper vanish when the old engine garbage-collects and recreates the wrapper,
         // so the property lives on the prototype (and the wrapper is pinned below just in case).
         try { Object.defineProperty(Object.getPrototypeOf(window.crypto), 'subtle', { get: function () { return subtle; }, configurable: true }); } catch (e4) {}
@@ -1253,7 +1262,7 @@
             var nativeCrypto = window.crypto;
             var cryptoWrapper = {
                 subtle: subtle,
-                getRandomValues: function (arr) { if (nativeCrypto.getRandomValues) return nativeCrypto.getRandomValues(arr); for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; },
+                getRandomValues: function (arr) { if (nativeCrypto.getRandomValues) { nativeCrypto.getRandomValues(arr); return arr; } for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; },
                 randomUUID: nativeCrypto.randomUUID ? function () { return nativeCrypto.randomUUID(); } : function () { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
             };
             try { Object.defineProperty(window, 'crypto', { value: cryptoWrapper, configurable: true, writable: true }); } catch (e2) { try { window.crypto = cryptoWrapper; } catch (e3) {} }

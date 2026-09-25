@@ -97,4 +97,6 @@ var JSFIX_CASES = [
   ['direct eval of ES2015 literals', 'var a = 2; function g() { var a = 5; return [eval("(() => a)()"), eval("class K { m() { return 3; } }; new K().m()"), eval("`t${a}`")]; } return g();'],
   ['direct eval of built text sees locals', 'function g() { var x = 7, code = "var y = x + 1; " + "[y, (() => x * 2)()]"; return eval(code); } return g();'],
   ['eval as a local name is not the engine eval', 'function g(eval) { return eval("q"); } return g(function (s) { return s + "!"; });'],
+  ['function named like its parameter', 'class e { constructor(e, t) { this.v = e + t; } } function t(t) { return t * 2; } var q = function r(r) { return r + 1; }; return [new e(1, 2).v, t(4), q(5)];'],
+  ['trailing commas after comments', 'function f(a, b, /* c */) { return a + b; } var g = (x, // one\n) => x * 3; return [f(1, 2, // two\n), g(4, /* four */)];'],
 ];

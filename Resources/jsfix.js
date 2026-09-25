@@ -816,6 +816,10 @@
         this.loop = LEXICAL[kind] ? scope.loop : null;
     };
     var markDirty = function (n) { while (n && !n.$d) { n.$d = true; n = n.$p; } };
+    // a comma before the closing parenthesis of a list (comments between them too)
+    var trailingComma = function (src, from, to) {
+        return /,\)/.test(src.slice(from, to).replace(/\/\/[^\n\r]*|\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ''));
+    };
     var hasUseStrict = function (stmts) {
         for (var i = 0; i < stmts.length && stmts[i].directive !== undefined; i++) if (stmts[i].directive === 'use strict') return true;
         return false;
@@ -944,16 +948,26 @@
             if (this.pattern(n.params[i], n, fs, 'param')) d = true;
         }
         // trailing comma after the last parameter (ES2017)
-        if (n.params.length) {
-            var last = n.params[n.params.length - 1], stop = body.start;
-            if (this.src.slice(last.end, stop).indexOf(',') >= 0 && /,\s*\)/.test(this.src.slice(last.end, stop))) d = true;
-        }
+        if (n.params.length && trailingComma(this.src, n.params[n.params.length - 1].end, body.start)) d = true;
+        // (a parameter named like the function itself: the 2012 engine refuses `function e(e)` in strict code)
+        if (n.id && this.avoidNameParam(fs, n.id.name)) d = true;
         this.fns.push(n);
         if (body.type === 'BlockStatement') { body.$p = n; if (this.stmts(body.body, body, fs, false)) { body.$d = true; d = true; } }
         else if (this.v(body, n, fs)) d = true;
         this.fns.pop();
         if (d) n.$d = true;
         return d;
+    };
+    // the parameter of that name gets another one (P.func prints parameters through bname); true when renamed
+    W.avoidNameParam = function (fs, name) {
+        var b = fs.decls['$' + name];
+        if (!b || b.kind !== 'param' || b.newName) return false;
+        var nn, k = 1;
+        do { nn = name + '$' + k++; } while (this.names['$' + nn]);
+        this.names['$' + nn] = 1;
+        b.newName = nn;
+        for (var j = 0; j < b.ids.length; j++) markDirty(b.ids[j]);
+        return true;
     };
     W.cls = function (n, p, s) {
         n.$p = p;
@@ -971,6 +985,8 @@
                 if (m.computed) this.v(m.key, m, cs);
                 if (m.kind === 'constructor' && n.superClass) m.value.$derived = true;
                 this.fn(m.value, m, cs);
+                // (the constructor prints as function <class name>(...))
+                if (m.kind === 'constructor' && n.id && m.value.$scope) this.avoidNameParam(m.value.$scope, n.id.name);
             } else if (m.type === 'PropertyDefinition' || m.type === 'StaticBlock') {
                 if (m.computed) this.v(m.key, m, cs);
                 // initialisers and static blocks run like methods: their own `this` (initialisers print it differently)
@@ -1153,7 +1169,7 @@
                 if (this.list(n.arguments, n, s)) d = true;
                 if (n.optional) d = true;
                 // trailing comma after the last argument (ES2017)
-                if (n.arguments.length && /,\s*\)\s*$/.test(this.src.slice(n.arguments[n.arguments.length - 1].end, n.end))) d = true;
+                if (n.arguments.length && trailingComma(this.src, n.arguments[n.arguments.length - 1].end, n.end)) d = true;
                 break;
             case 'MemberExpression':
                 if (n.object.type === 'Super') { d = true; n.object.$p = n; } else if (this.v(n.object, n, s)) d = true;
@@ -1308,6 +1324,9 @@
                 id.$b = b;
                 // (a binding renamed in an earlier round)
                 if (b.newName) { if (id.$raw) this.redo(id.$raw); else markDirty(id); }
+                // (an imported name prints as a member of its dependency's namespace; a function lowered while
+                // parsing before that import took it for a global: analysed again)
+                if (b.kind === 'import') { if (id.$raw) this.redo(id.$raw); else markDirty(id); }
             }
             else if (id.name === 'Proxy' && this.proxyShim && !id.$typeof) { id.$proxy = true; markDirty(id); }
             else if (id.name === 'BigInt' && this.bigintShim && !id.$typeof) { id.$bigint = true; markDirty(id); }
@@ -1347,7 +1366,8 @@
     W.rewalk = function (n) {
         var raw = n.$raw, acorn = root.acorn;
         // (a parser made at position 0 and moved: one made at n.start counts the lines before it, a copy of the text)
-        var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowReserved: true, locations: false }, this.src);
+        var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: this.mod ? 'module' : 'script', allowReturnOutsideFunction: !this.mod, allowReserved: true,
+                                   locations: false }, this.src);
         p.pos = p.lastTokEnd = p.lastTokStart = n.start;
         p.strict = raw.strict;
         p.nextToken();
@@ -1382,7 +1402,8 @@
     W.early = function (n, strict, printer) {
         var saved = [this.refs, this.lexicals, this.loops, this.fns, this.imports, this.redos];
         this.refs = []; this.lexicals = []; this.loops = []; this.fns = []; this.imports = []; this.redos = [];
-        var root = new Scope('program', null, null, strict), i, id, e, v0 = this.visits;
+        // (in a module the stand-in holds the imports parsed so far: they print as namespace members)
+        var root = this.earlyRoot || new Scope('program', null, null, strict), i, id, e, v0 = this.visits;
         var raw = { text: null, free: [], thisAlias: null, argsAlias: null, strict: strict, node: null, scope: null, fresh: null, redo: false };
         try {
             if (isClassNode(n)) this.cls(n, null, root); else this.fn(n, null, root);
@@ -1407,6 +1428,8 @@
             }
         } finally {
             this.refs = saved[0]; this.lexicals = saved[1]; this.loops = saved[2]; this.fns = saved[3]; this.imports = saved[4]; this.redos = saved[5];
+            // (the shared stand-in must not keep the unit's identifiers alive)
+            if (this.earlyRoot) for (var k in root.decls) if (hasOwn.call(root.decls, k)) root.decls[k].refs = [];
         }
         n.$raw = raw;
         if (isClassNode(n)) n.superClass = null; else n.params = [];
@@ -1875,8 +1898,15 @@
         return code;
     };
     // a reference to an imported binding: a member of the dependency's namespace (so it stays live)
+    // the variables of a module's dependency namespaces and of import.meta, named when first needed (functions lowered
+    // while parsing print before moduleCode)
+    P.modVar = function (dep) {
+        if (!this.modVars) this.modVars = [];
+        return this.modVars[dep] || (this.modVars[dep] = this.fresh('_m'));
+    };
+    P.metaVar = function () { return this.metaName || (this.metaName = this.fresh('_meta')); };
     P.importRef = function (b) {
-        var ns = this.modVars[b.imp.dep], name = b.imp.name;
+        var ns = this.modVar(b.imp.dep), name = b.imp.name;
         if (name === null) return ns;
         return ns + (IDENT.test(name) ? '.' + name : '[' + quote(name) + ']');
     };
@@ -1920,7 +1950,7 @@
             this.prec = P_PRIMARY;
             return t.ntAlias;
         }
-        if (this.metaName) { this.prec = P_PRIMARY; return this.metaName; }
+        if (this.opts.module) { this.prec = P_PRIMARY; return this.metaVar(); }
         throw new Unsupported('import.meta');
     };
 
@@ -2025,7 +2055,7 @@
         if (kind === 'dctor') { ctx.derivedThis = this.fresh('_this'); ctx.declare(ctx.derivedThis); }
         var params = [], pre = '', simple = n.params.length;
         for (i = 0; i < n.params.length; i++) if (n.params[i].type !== 'Identifier') { simple = i; break; }
-        for (i = 0; i < simple; i++) params.push(n.params[i].name);
+        for (i = 0; i < simple; i++) params.push(this.bname(n.params[i]));
         for (i = simple; i < n.params.length; i++) pre += this.param(n.params[i], i);
         if (kind === 'ctor' && ctx.fieldNodes) pre += this.fieldStmts(ctx.fieldNodes);
         var dirs = '', body;
@@ -2461,12 +2491,11 @@
     // in shims-extra.js fetches the graph, links it and calls run in dependency order.
     P.moduleCode = function (ast, w) {
         var mod = w.mod, st = ast.body, i, n, e, b;
-        var ctx = this.push('program', ast);
-        this.program = ctx;
-        this.progInit = '';
-        this.modVars = [];
-        for (i = 0; i < mod.deps.length; i++) { this.modVars.push(this.fresh('_m')); ctx.declare(this.modVars[i]); }
-        this.metaName = this.fresh('_meta');
+        // (functions lowered while parsing may have declared program variables and named namespaces already)
+        var ctx = this.program;
+        if (ctx) { ctx.node = ast; this.ctx = ctx; } else { ctx = this.push('program', ast); this.program = ctx; this.progInit = ''; }
+        for (i = 0; i < mod.deps.length; i++) ctx.declare(this.modVar(i));
+        this.metaVar();
         var exName = this.fresh('_ex'), fdecls = '', getters = [], fname;
         var getter = function (name, code) { getters.push(quote(name) + ':function(){return ' + code + ';}'); };
         for (i = 0; i < st.length; i++) {
@@ -2505,11 +2534,11 @@
             if (e.id) {
                 b = e.id.$b;
                 getter(e.name, b ? (b.kind === 'import' ? this.importRef(b) : b.newName || b.name) : e.id.name);
-            } else if (e.ns) getter(e.name, this.modVars[e.dep]);
-            else getter(e.name, this.modVars[e.dep] + (IDENT.test(e.from) ? '.' + e.from : '[' + quote(e.from) + ']'));
+            } else if (e.ns) getter(e.name, this.modVar(e.dep));
+            else getter(e.name, this.modVar(e.dep) + (IDENT.test(e.from) ? '.' + e.from : '[' + quote(e.from) + ']'));
         }
         var setters = [], deps = [];
-        for (i = 0; i < mod.deps.length; i++) { setters.push('function(n){' + this.modVars[i] + '=n;}'); deps.push(quote(mod.deps[i])); }
+        for (i = 0; i < mod.deps.length; i++) { setters.push('function(n){' + this.modVar(i) + '=n;}'); deps.push(quote(mod.deps[i])); }
         this.pop();
         var factory = 'function(' + exName + ',' + this.metaName + '){"use strict";' + this.declLine(ctx) + this.progInit + fdecls +
                       exName + '({' + getters.join(',') + '},[' + mod.stars.join(',') + ']);return[[' + setters.join(',') + '],function(){' + body + '}];}';
@@ -2589,7 +2618,7 @@
         if (o && o.superRef !== undefined) outer.superRef = o.superRef;
         var params = [], pre = '', simple = n.params.length;
         for (i = 0; i < n.params.length; i++) if (n.params[i].type !== 'Identifier') { simple = i; break; }
-        for (i = 0; i < simple; i++) params.push(n.params[i].name);
+        for (i = 0; i < simple; i++) params.push(this.bname(n.params[i]));
         for (i = simple; i < n.params.length; i++) pre += this.param(n.params[i], i);
         var dirs = '', stmts;
         if (n.expression) stmts = [{ type: 'ReturnStatement', argument: n.body, $d: true }];
@@ -3032,25 +3061,79 @@
     };
 
     // ------------------------------------------------------------------------------------------------ entry points
+    // acorn's hot paths without Function.prototype.call (finishNode for every node, updateContext for most tokens): in
+    // the 2012 engine that is a native function that enters the engine again for the callee. The same code otherwise;
+    // checkUnreserved compares the name before asking the scope getters.
+    var patchAcorn = function (acorn) {
+        var AP = acorn.Parser && acorn.Parser.prototype, tt = acorn.tokTypes;
+        if (!AP || AP.__brPatched || !tt) return;
+        AP.__brPatched = true;
+        AP.finishNodeAt = function (node, type, pos, loc) {
+            node.type = type;
+            node.end = pos;
+            if (this.options.locations) node.loc.end = loc;
+            if (this.options.ranges) node.range[1] = pos;
+            return node;
+        };
+        AP.finishNode = function (node, type) { return this.finishNodeAt(node, type, this.lastTokEnd, this.lastTokEndLoc); };
+        // (each token type's updateContext becomes a method of the parser, called by name)
+        for (var k in tt) if (hasOwn.call(tt, k) && tt[k] && typeof tt[k].updateContext === 'function') { AP['__brUpd_' + k] = tt[k].updateContext; tt[k].__brUpd = '__brUpd_' + k; }
+        AP.updateContext = function (prevType) {
+            var type = this.type, m;
+            if (type.keyword && prevType === tt.dot) this.exprAllowed = false;
+            else if ((m = type.__brUpd)) this[m](prevType);
+            else if (type.updateContext) type.updateContext.call(this, prevType);
+            else this.exprAllowed = type.beforeExpr;
+        };
+        AP.checkUnreserved = function (ref) {
+            var start = ref.start, end = ref.end, name = ref.name;
+            if (name === 'yield' && this.inGenerator) this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
+            if (name === 'await' && this.inAsync) this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
+            if (name === 'arguments' && this.currentThisScope().inClassFieldInit) this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
+            if ((name === 'arguments' || name === 'await') && this.inClassStaticBlock) this.raise(start, 'Cannot use ' + name + ' in class static initialization block');
+            if (this.keywords.test(name)) this.raise(start, "Unexpected keyword '" + name + "'");
+            if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf('\\') !== -1) return;
+            var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
+            if (re.test(name)) {
+                if (!this.inAsync && name === 'await') this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
+                this.raiseRecoverable(start, "The keyword '" + name + "' is reserved");
+            }
+        };
+    };
     // onFunction(node, strict, inClass): every `function` and arrow as soon as the parser completed it (the parser's
     // strictness is the surrounding code's again by then)
-    var parse = function (src, module, onFunction) {
+    var parse = function (src, module, onFunction, onImport) {
         var acorn = root.acorn;
         if (!acorn || !acorn.parse) throw new Unsupported('acorn missing');
+        patchAcorn(acorn);
         var options = { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                         allowReserved: true, locations: false };
         if (!onFunction) return acorn.parse(src, options);
         var p = new acorn.Parser(options, src), classes = 0;
-        var parseFunction = p.parseFunction, parseArrow = p.parseArrowExpression, parseClass = p.parseClass;
-        p.parseClass = function () {
+        p.__brParseFunction = p.parseFunction;
+        p.__brParseArrow = p.parseArrowExpression;
+        p.__brParseClass = p.parseClass;
+        p.parseClass = function (node, isStatement) {
             var n;
             classes++;
-            try { n = parseClass.apply(this, arguments); } finally { classes--; }
+            try { n = this.__brParseClass(node, isStatement); } finally { classes--; }
             onFunction(n, this.strict, classes > 0);
             return n;
         };
-        p.parseFunction = function () { var n = parseFunction.apply(this, arguments); onFunction(n, this.strict, classes > 0); return n; };
-        p.parseArrowExpression = function () { var n = parseArrow.apply(this, arguments); onFunction(n, this.strict, classes > 0); return n; };
+        p.parseFunction = function (node, statement, allowExpressionBody, isAsync, forInit) {
+            var n = this.__brParseFunction(node, statement, allowExpressionBody, isAsync, forInit);
+            onFunction(n, this.strict, classes > 0);
+            return n;
+        };
+        p.parseArrowExpression = function (node, params, isAsync, forInit) {
+            var n = this.__brParseArrow(node, params, isAsync, forInit);
+            onFunction(n, this.strict, classes > 0);
+            return n;
+        };
+        if (onImport) {
+            p.__brParseImport = p.parseImport;
+            p.parseImport = function (node) { var n = this.__brParseImport(node); onImport(n); return n; };
+        }
         return p.parse();
     };
     // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
@@ -3101,22 +3184,30 @@
         w.proxyShim = opts.proxy !== undefined ? !!opts.proxy : needsProxy(src);
         w.bigintShim = opts.bigint !== undefined ? !!opts.bigint : typeof root.BigInt !== 'function';
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
-        var printer = new Printer(src, w, opts), onFunction = null;
+        var printer = new Printer(src, w, opts), onFunction = null, onImport = null, units = 0;
         if (early !== false) {
             var supers = null, hashes = null;
+            if (module) {
+                // the imports as the parser meets them (bundlers interleave them with exports: a function lowered before
+                // an import it uses is analysed again at the end, see resolveRefs)
+                w.earlyRoot = new Scope('program', null, null, true);
+                onImport = function (n) { w.moduleDecl(n, w.earlyRoot); };
+            }
             onFunction = function (n, strict, inClass) {
                 if (n.end - n.start < early) return;
+                if (n.type === 'FunctionDeclaration' && !n.id) return;   // (export default function () {}: moduleCode names it)
                 // (positions of every super/new.target and #, found once: a binary search per function instead of a
                 // copy of its text)
                 if (n.type === 'ArrowFunctionExpression' && occursIn(supers || (supers = positions(src, EARLY_ARROW_SKIP)), n.start, n.end)) return;
                 if (inClass && occursIn(hashes || (hashes = positions(src, /#/g)), n.start, n.end)) return;
                 w.early(n, strict, printer);
+                units++;
                 stats.early++;
             };
         }
         // (stats.phases: parse with the early units / walk / resolve / print, ms of the last run)
         var t0 = new Date().getTime();
-        var ast = parse(src, module, onFunction);
+        var ast = parse(src, module, onFunction, onImport);
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body)), v0 = w.visits, t1 = new Date().getTime();
         w.stmts(ast.body, ast, ps, false);
         stats.outer = w.visits - v0;
@@ -3139,14 +3230,15 @@
     var transpile = function (src, opts) {
         opts = opts || {};
         var early = opts.early !== undefined ? opts.early : src.length >= EARLY_SCRIPT ? EARLY_FN : false;
-        // (a module's imports are only known at its end; a script with its own Proxy/BigInt needs every scope)
-        if (early !== false && (opts.module || STANDIN_OWN.test(src) || !root.acorn || !root.acorn.Parser)) early = false;
+        // (a script with its own Proxy/BigInt needs every scope)
+        if (early !== false && (STANDIN_OWN.test(src) || !root.acorn || !root.acorn.Parser)) early = false;
         if (early === false) return lower(src, opts, false);
         try { return lower(src, opts, early); } catch (e) {
             // a function lowered early uses a name the code around it renames afterwards (or needs more of the
             // context than a stand-in gives): the whole tree at once
             if (!(e instanceof Unsupported) || !/^early-/.test(e.what)) throw e;
             stats.fallbacks++;
+            stats.fallbackWhy = e.what;
             return lower(src, opts, false);
         }
     };
@@ -3218,6 +3310,7 @@
         stats.last = 'lowered';
         return out;
     };
+    if (root.acorn) patchAcorn(root.acorn);
     // (lowerUnicode: the page's RegExp constructor lowers u/v patterns with it, see shims-extra.js)
     root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex };
 })(this);
