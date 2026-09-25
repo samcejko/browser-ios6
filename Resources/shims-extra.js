@@ -7020,6 +7020,24 @@
             if (text === null || !defineText(text, id)) { setTimeout(function () { fire(el, 'error'); }, 0); return; }
             api.entry(null, id, el);
         };
+        // classic inline scripts that scripts insert (loaders, jQuery's globalEval, ad tags): text the old engine cannot
+        // parse (ES2015+, a function declared in a block of strict code) is lowered by the page's transpiler before the
+        // element goes in (it runs when inserted)
+        var CLASSIC_TYPE = /^\s*$|^\s*(text|application)\/(x-)?(java|ecma)script\s*(;.*)?$|^\s*text\/jscript\s*$/i;
+        var lowerClassic = function (n) {
+            if (!n || n.nodeType !== 1 || n.nodeName !== 'SCRIPT' || n.__brClassic || n.getAttribute('src') !== null) return;
+            var t = n.getAttribute('type');
+            if (t !== null && !CLASSIC_TYPE.test(t)) return;
+            try { n.__brClassic = true; } catch (e0) {}
+            var text = n.text;
+            if (!text || !/\S/.test(text)) return;
+            var F = window.Function.__brNative || window.Function;
+            try { F(text); return; } catch (e) { if (!(e instanceof SyntaxError)) return; }
+            if (!window.__brTranspiler || !window.__brTranspiler()) return;
+            var out = '';
+            try { out = window.JSFix.run(text, '{}'); } catch (e2) { out = ''; }
+            if (out) n.text = out;
+        };
         var inDocument = function (n) { return !!n && !!document.documentElement && document.documentElement.contains(n); };
         var watchInsert = function (proto, name) {
             var orig = proto && proto[name];
@@ -7030,7 +7048,8 @@
                     var n = arguments[a];
                     if (!n || typeof n !== 'object') continue;
                     if (isModuleScript(n)) scripts.push(n);
-                    else if (n.nodeType === 11 && n.querySelectorAll) { var inner = n.querySelectorAll('script'); for (var k = 0; k < inner.length; k++) if (isModuleScript(inner[k])) scripts.push(inner[k]); }
+                    else if (n.nodeName === 'SCRIPT') lowerClassic(n);
+                    else if (n.nodeType === 11 && n.querySelectorAll) { var inner = n.querySelectorAll('script'); for (var k = 0; k < inner.length; k++) { if (isModuleScript(inner[k])) scripts.push(inner[k]); else lowerClassic(inner[k]); } }
                     if (name === 'insertBefore' || name === 'replaceChild') break;   // (the second argument is the reference node)
                 }
                 var r = orig.apply(this, arguments);

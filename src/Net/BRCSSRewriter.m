@@ -584,6 +584,20 @@ static CGFloat g_devicePixelRatio = 1;
     }];
 }
 
++ (NSString *)rewriteTag
+{
+    static NSString *tag;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *path = [[NSBundle mainBundle] pathForResource:@"cssfix" ofType:@"js"];
+        NSData *d = path ? [NSData dataWithContentsOfFile:path] : nil;
+        unsigned long crc = crc32(0L, Z_NULL, 0);
+        if (d.length) crc = crc32(crc, (const Bytef *)d.bytes, (uInt)d.length);
+        tag = [NSString stringWithFormat:@"%08lx-%@", crc, BRTranspileTag()];
+    });
+    return tag;
+}
+
 + (void)pruneTranspiledCache
 {
     NSString *dir = BRTranspiledDirectory(), *suffix = [NSString stringWithFormat:@"-%@.js", BRTranspileTag()];

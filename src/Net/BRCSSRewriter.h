@@ -22,6 +22,8 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
           sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion;
 + (void)pruneTranspiledCache;   // keeps Caches/transpiled under its size limit (call off the main thread)
+// Checksum of the rewriters (cssfix.js, jsfix.js): stored rewritten bodies of another version are not used. Any thread.
++ (NSString *)rewriteTag;
 // Work queued so far is dropped (the originals go back): the page load was stopped for lack of memory. Any thread.
 + (void)cancelPendingWork;
 // Debugging (browser:jsfixtest): lowers the file params[@"input"] on a fresh transpiler context (jsfix.js from

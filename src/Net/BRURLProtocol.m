@@ -115,6 +115,19 @@ static void BRProgressRequestFinished(NSURLRequest *request)
 }
 static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLResponse.userInfo
 static NSString * const BRCacheMaxAgeKey = @"BRMaxAge";
+static NSString * const BRCacheRewriteTagKey = @"BRRewriteTag";   // the rewriters that made a stored text body
+
+// a stored document, stylesheet or script was rewritten by the rewriters of another version: not used (a fixed
+// transpiler would otherwise not reach a script cached for a year)
+static NSString *BRHeader(NSDictionary *headers, NSString *name);
+static BOOL BRCachedRewriteIsStale(NSCachedURLResponse *c)
+{
+    if (![c.response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
+    NSString *type = [BRHeader([(NSHTTPURLResponse *)c.response allHeaderFields], @"Content-Type") lowercaseString] ?: @"";
+    BOOL rewritable = [type hasPrefix:@"text/html"] || [type hasPrefix:@"text/css"] || [type hasPrefix:@"application/xhtml"] ||
+                      [type rangeOfString:@"javascript"].location != NSNotFound || [type rangeOfString:@"ecmascript"].location != NSNotFound;
+    return rewritable && ![c.userInfo[BRCacheRewriteTagKey] isEqual:[BRCSSRewriter rewriteTag]];
+}
 static const NSUInteger BRMaxCacheableBody = 16 * 1024 * 1024;   // (big bundles and front pages are what is worth keeping)
 
 #pragma mark - HTTP authentication (Basic)
@@ -405,8 +418,9 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     // 1. Cache
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
         NSCachedURLResponse *cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
-        if (cached && ![BRCSSRewriter lazyPartsPresentIn:cached.data]) {
-            // (a lowered chunk whose factories kept for later are gone from the transpiler's cache: loaded again)
+        if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data])) {
+            // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later are gone
+            // from the transpiler's cache: loaded again)
             [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
             cached = nil;
         }
@@ -870,7 +884,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 {
     if (!response || !data) return;
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
-    NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge) };
+    NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
+                            BRCacheRewriteTagKey: [BRCSSRewriter rewriteTag] };
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];
 }
