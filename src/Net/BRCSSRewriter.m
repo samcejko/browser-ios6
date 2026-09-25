@@ -387,7 +387,7 @@ static NSString *BRPageKey(NSURL *url)
         NSMutableData *d = [NSMutableData data];
         NSBundle *b = [NSBundle mainBundle];
         for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill", @"dialog-polyfill",
-                                 @"object-fit-images", @"shims", @"shims-extra"]) {
+                                 @"object-fit-images", @"shims", @"regexp-shim", @"shims-extra"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
@@ -411,7 +411,7 @@ static NSString *BRPageKey(NSURL *url)
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
-        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"worker-shims"]) {
+        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"worker-shims", @"regexp-shim"]) {
             NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [[NSBundle mainBundle] pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;

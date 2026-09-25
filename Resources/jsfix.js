@@ -1084,7 +1084,11 @@
             case 'SpreadElement': this.v(n.argument, n, s); d = true; break;
             case 'TemplateLiteral': this.list(n.expressions, n, s); d = true; break;
             case 'TaggedTemplateExpression': this.v(n.tag, n, s); n.quasi.$p = n; this.list(n.quasi.expressions, n.quasi, s); d = true; break;
-            case 'UnaryExpression': case 'UpdateExpression': d = this.v(n.argument, n, s); if (n.type === 'UpdateExpression' && n.argument.type === 'Identifier') n.argument.$w = true; break;
+            case 'UnaryExpression': case 'UpdateExpression':
+                if (n.operator === 'typeof' && n.argument.type === 'Identifier') n.argument.$typeof = true;   // (typeof Proxy stays the engine's)
+                d = this.v(n.argument, n, s);
+                if (n.type === 'UpdateExpression' && n.argument.type === 'Identifier') n.argument.$w = true;
+                break;
             case 'BinaryExpression':
                 if (n.operator === '**') d = true;
                 if (n.left.type === 'PrivateIdentifier') { d = true; n.left.$p = n; } else if (this.v(n.left, n, s)) d = true;
@@ -1225,7 +1229,7 @@
             b = null;
             for (var x = s; x; x = x.parent) { b = x.decls[key]; if (b) break; }
             if (b) { b.refs.push(id); id.$b = b; }
-            else if (id.name === 'Proxy' && this.proxyShim) { id.$proxy = true; markDirty(id); }
+            else if (id.name === 'Proxy' && this.proxyShim && !id.$typeof) { id.$proxy = true; markDirty(id); }
             // the name is free in every function between the reference and the binding's function
             stop = b ? b.scope.fn : null;
             for (f = s.fn; f && f !== stop; f = f.parent ? f.parent.fn : null) f.free[key] = 1;
@@ -2839,10 +2843,26 @@
         return acorn.parse(src, { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                                   allowReserved: true, locations: false });
     };
-    // a script that looks for Proxy itself (and has a way without it) keeps the global one
-    var PROXY_DETECT = /typeof\s*\(?\s*Proxy\b|['"]Proxy['"]\s*in\b|\b(?:window|self|globalThis|global)\.Proxy\b/;
+    // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
+    // without it (a bundle often holds both kinds)
     var PROXY_USE = /\bnew\s+Proxy\s*\(/;
-    var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src) && !PROXY_DETECT.test(src); };
+    var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src); };
+    // a script the engine parses that only needs the stand-in: `new Proxy(` replaced in the text (no parse of a big
+    // bundle for that), unless the script has a Proxy of its own
+    var PROXY_OWN = /\b(?:class|function|var|let|const)\s+Proxy\b|[(,]\s*Proxy\s*[,)=]/;
+    var helperText = function (names) {
+        var out = '', seen = {};
+        var add = function (n) {
+            if (seen[n]) return;
+            seen[n] = 1;
+            var deps = RUNTIME_DEPS[n] || [];
+            for (var i = 0; i < deps.length; i++) add(deps[i]);
+            var s = String(RUNTIME[n]);
+            out += 'function ' + n + s.slice(s.indexOf('(')) + '\n';
+        };
+        for (var i = 0; i < names.length; i++) add(names[i]);
+        return out;
+    };
     // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
     // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
     var transpile = function (src, opts) {
@@ -2886,8 +2906,15 @@
             stats.last = 'module';
             return mout;
         }
-        // (a script the engine parses is still transpiled when it needs the Proxy stand-in)
-        if (!opts.force && engineParses(src) && !needsProxy(src)) { stats.skipped++; stats.last = 'es5'; return ''; }
+        if (!opts.force && engineParses(src)) {
+            if (!needsProxy(src)) { stats.skipped++; stats.last = 'es5'; return ''; }
+            if (!PROXY_OWN.test(src)) {
+                // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
+                stats.lowered++;
+                stats.last = 'proxy';
+                return src.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(') + '\n;' + helperText(['__br_Proxy']);
+            }
+        }
         var t0 = new Date().getTime(), out = null;
         try { out = transpile(src, opts); } catch (e2) {
             stats.failed++;

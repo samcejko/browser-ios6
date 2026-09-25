@@ -30,6 +30,22 @@ CASES.forEach(function (c) {
   if (ok) pass++;
   lines.push((ok ? 'OK   ' : 'FAIL ') + c[0] + (ok ? '' : ': got ' + (err ? 'error ' + err : JSON.stringify(got)) + ', expected ' + JSON.stringify(c[2])));
 });
+// typeof Proxy keeps the engine's answer (a library with a fallback takes it); the rest gets the stand-in
+var text = JSFix.transpile('var t = typeof Proxy; let p = new Proxy({}, {});', { proxy: true });
+var textOk = /typeof Proxy/.test(text) && /new __br_Proxy\(/.test(text);
+lines.push((textOk ? 'OK   ' : 'FAIL ') + 'typeof Proxy untouched');
+if (textOk) pass++;
+// a script the engine parses: the text path (as without a native Proxy on the device)
+var saved = window.Proxy;
+window.Proxy = undefined;
+var fast = JSFix.run('"use strict"; var q = new Proxy({ a: 1 }, { get: function (t, k) { return t[k] * 2; } }); window.__fastProxy = q.a;', '{}');
+var fastLast = JSFix.last();
+window.Proxy = saved;
+(0, eval)(fast);
+var fastOk = fastLast === 'proxy' && /^"use strict"/.test(fast) && window.__fastProxy === 2;
+lines.push((fastOk ? 'OK   ' : 'FAIL ') + 'text path for parsed scripts' + (fastOk ? '' : ': ' + fastLast + ' ' + window.__fastProxy + ' ' + fast.slice(0, 120)));
+if (fastOk) pass++;
+CASES.length += 2;
 document.getElementById('out').textContent = lines.join('\n');
 document.title = 'proxy ' + pass + '/' + CASES.length;
 </script>
