@@ -444,6 +444,42 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
     return [self webKitNumbers];
 }
 
+// "name count, name count, ..." of a counted set, the most frequent first
+static NSString *BRTopCounts(id set, NSUInteger limit)
+{
+    if (![set isKindOfClass:[NSCountedSet class]]) return @"?";
+    NSCountedSet *counts = set;
+    NSArray *names = [[counts allObjects] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        NSUInteger ca = [counts countForObject:a], cb = [counts countForObject:b];
+        return ca > cb ? NSOrderedAscending : ca < cb ? NSOrderedDescending : NSOrderedSame;
+    }];
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSUInteger i = 0; i < names.count && i < limit; i++)
+        [parts addObject:[NSString stringWithFormat:@"%@ %lu", names[i], (unsigned long)[counts countForObject:names[i]]]];
+    return [parts componentsJoinedByString:@", "];
+}
+
++ (NSString *)webKitTypesReport
+{
+    BRWebLock();
+    Class stats = NSClassFromString(@"WebCoreStatistics");
+    if (!stats) return @"";
+    NSMutableString *s = [NSMutableString string];
+    SEL protectedSel = NSSelectorFromString(@"javaScriptProtectedObjectsCount");
+    SEL protectedGlobalsSel = NSSelectorFromString(@"javaScriptProtectedGlobalObjectsCount");
+    SEL protectedTypesSel = NSSelectorFromString(@"javaScriptProtectedObjectTypeCounts");
+    SEL typesSel = NSSelectorFromString(@"javaScriptObjectTypeCounts");
+    if ([stats respondsToSelector:protectedSel])
+        [s appendFormat:@"protected %lu", (unsigned long)((size_t (*)(id, SEL))objc_msgSend)(stats, protectedSel)];
+    if ([stats respondsToSelector:protectedGlobalsSel])
+        [s appendFormat:@" (%lu globals)", (unsigned long)((size_t (*)(id, SEL))objc_msgSend)(stats, protectedGlobalsSel)];
+    if ([stats respondsToSelector:protectedTypesSel])
+        [s appendFormat:@": %@", BRTopCounts(((id (*)(id, SEL))objc_msgSend)(stats, protectedTypesSel), 12)];
+    if ([stats respondsToSelector:typesSel])
+        [s appendFormat:@"\ntypes: %@", BRTopCounts(((id (*)(id, SEL))objc_msgSend)(stats, typesSel), 40)];
+    return s;
+}
+
 // A relief that freed next to nothing is not repeated for a while (unless the system lost 10 MB more meanwhile):
 // its garbage collection holds the page for 0.5-1 s, and on a page whose own heap fills the iPad (YouTube after a
 // while: 95 MB, 1.6 million objects) it ran every 1-2 s, the page stalled and was killed all the same.

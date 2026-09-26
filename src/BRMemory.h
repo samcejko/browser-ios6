@@ -41,6 +41,10 @@ extern NSString * const BRMemoryGraphicsNotification;
 // Main thread: WebKit's own numbers (JavaScript heap of the pages, FastMalloc, memory cache).
 + (NSString *)webKitReport;
 
+// Main thread: the pages' objects by kind, the most frequent first, and the protected ones (walks the whole heap:
+// for diagnosis only, browser:mem?types=1).
++ (NSString *)webKitTypesReport;
+
 // Frees what can be freed without losing the page (both script engines, page garbage, WebKit's memory cache and free
 // lists) and logs what it gained. Any thread: the work happens on the engines' threads and the WebThread.
 + (void)relieve:(NSString *)reason;

@@ -178,10 +178,12 @@
         [BRCSSRewriter runTranspileTest:q];
         return YES;
     }
-    if ([target isEqualToString:@"mem"] || [target isEqualToString:@"mem?relieve=1"]) {
-        // browser:mem logs WebKit's memory numbers (to tmp/eval.txt as well); browser:mem?relieve=1 frees first
-        if ([target hasSuffix:@"relieve=1"]) [BRMemory relieve:@"requested"];
+    if ([target isEqualToString:@"mem"] || [target isEqualToString:@"mem?relieve=1"] || [target isEqualToString:@"mem?types=1"]) {
+        // browser:mem logs WebKit's memory numbers (to tmp/eval.txt as well); browser:mem?relieve=1 frees first;
+        // browser:mem?types=1 frees first and adds the objects by kind (a walk over the whole heap)
+        if (![target isEqualToString:@"mem"]) [BRMemory relieve:@"requested"];
         NSString *report = [BRMemory webKitReport];
+        if ([target hasSuffix:@"types=1"]) report = [report stringByAppendingFormat:@"\n%@", [BRMemory webKitTypesReport]];
         [report writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
         BRLog(@"Memory report: %@", report);
         return YES;
