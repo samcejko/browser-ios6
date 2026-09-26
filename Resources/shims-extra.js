@@ -5685,20 +5685,24 @@
         if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector);
     })();
     // ---- selectors of today that the old engine rejects with SYNTAX_ERR in querySelector(All) / matches (Adobe Launch
-    // on o2.cz, blesk.cz, zive.cz): the query is tried as written first; on that error :is()/:where() are spelled out,
-    // :not(a, b) becomes :not(a):not(b), :scope marks the element, :focus-visible is :focus, the state pseudo-classes
-    // become the classes the page shim keeps, and alternatives with :has() or "of S" (nothing to match them with here)
-    // are left out. When that does not parse either, the original error stands.
+    // on o2.cz, blesk.cz, zive.cz): the query is tried as written first; on that error brackets, parentheses and a
+    // string left open at the end are closed (as the CSS parser does at the end of the input), :is()/:where() are
+    // spelled out, :not(a, b) becomes :not(a):not(b), a :not() of a complex selector (:not(.box a)) on the last
+    // compound becomes a filter for the elements found, :scope marks the element, :focus-visible is :focus, the state
+    // pseudo-classes become the classes the page shim keeps, and alternatives with :has() or "of S" (nothing to match
+    // them with here) are left out. When that does not parse either, the original error stands.
     (function () {
         if (!Ep || !document.querySelectorAll) return;
         var STATES = { 'focus-within': '.br-focus-within', 'placeholder-shown': '.br-placeholder-shown', 'user-invalid': '.br-user-invalid',
             'user-valid': '.br-user-valid', 'popover-open': '.br-popover-open', modal: '.br-modal', fullscreen: '.br-fullscreen', 'focus-visible': ':focus',
             'any-link': ':link', defined: '', 'read-write': ':read-write', blank: '.br-blank', playing: '.br-playing', paused: '.br-paused' };
+        var trim = function (s) { return s.replace(/^\s+|\s+$/g, ''); };
         var splitList = function (s) {
             var out = [], depth = 0, quote = '', start = 0;
             for (var i = 0; i < s.length; i++) {
                 var c = s.charAt(i);
-                if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
                 if (c === '"' || c === "'") quote = c;
                 else if (c === '(' || c === '[') depth++;
                 else if (c === ')' || c === ']') depth--;
@@ -5708,79 +5712,168 @@
             return out;
         };
         var closeParen = function (s, open) {
-            var depth = 0;
-            for (var i = open; i < s.length; i++) { var c = s.charAt(i); if (c === '(') depth++; else if (c === ')' && --depth === 0) return i; }
+            var depth = 0, quote = '';
+            for (var i = open; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(') depth++;
+                else if (c === ')' && --depth === 0) return i;
+            }
             return -1;
         };
-        // one selector (no top-level commas) -> a list of selectors the old engine may take, [] when it cannot be had
-        var variants = function (sel) {
+        // brackets, parentheses and a string still open at the end closed
+        var balance = function (s) {
+            var stack = [], quote = '';
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(') stack.push(')');
+                else if (c === '[') stack.push(']');
+                else if ((c === ')' || c === ']') && stack.length && stack[stack.length - 1] === c) stack.pop();
+            }
+            return s + quote + stack.reverse().join('');
+        };
+        // a combinator outside brackets, parentheses and strings
+        var hasCombinator = function (s) {
+            var depth = 0, quote = '';
+            s = trim(s);
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && /[\s>+~]/.test(c)) return true;
+            }
+            return false;
+        };
+        // one selector (no top-level commas) -> [{t: the text for the engine, x: [selectors an element found must not
+        // match]}], [] when it cannot be had
+        var variants = function (sel, excl) {
             var m = /:(?:is|where|matches|-webkit-any)\(/i.exec(sel);
             if (m) {
                 var open = m.index + m[0].length - 1, close = closeParen(sel, open);
-                if (close < 0) return [sel];
+                if (close < 0) return [{ t: sel, x: excl || [] }];
                 var inner = splitList(sel.slice(open + 1, close)), out = [];
-                for (var i = 0; i < inner.length; i++) out = out.concat(variants(sel.slice(0, m.index) + inner[i].replace(/^\s+|\s+$/g, '') + sel.slice(close + 1)));
+                for (var i = 0; i < inner.length; i++) out = out.concat(variants(sel.slice(0, m.index) + trim(inner[i]) + sel.slice(close + 1), excl));
                 return out;
             }
             if (/:has\(|:nth-(?:last-)?child\([^)]*\sof\s/i.test(sel)) return [];
-            var n = /:not\(/i.exec(sel);
+            var n = /:not\(/i.exec(sel), from;
             while (n) {
                 var o = n.index + 4, c = closeParen(sel, o);
                 if (c < 0) break;
-                var parts = splitList(sel.slice(o + 1, c));
-                if (parts.length > 1) {
-                    var nots = '';
-                    for (var k = 0; k < parts.length; k++) nots += ':not(' + parts[k].replace(/^\s+|\s+$/g, '') + ')';
-                    sel = sel.slice(0, n.index) + nots + sel.slice(c + 1);
-                }
-                var next = /:not\(/i.exec(sel.slice(n.index + 5));
-                n = next ? { index: n.index + 5 + next.index } : null;
+                var parts = splitList(sel.slice(o + 1, c)), simple = '', hard = [];
+                for (var k = 0; k < parts.length; k++) { var p = trim(parts[k]); if (hasCombinator(p)) hard.push(p); else simple += ':not(' + p + ')'; }
+                // (a complex one filters the elements found: only on the subject, the last compound)
+                if (hard.length && hasCombinator(sel.slice(c + 1))) return [];
+                if (hard.length) excl = (excl || []).concat(hard);
+                if (hard.length || parts.length > 1) { sel = sel.slice(0, n.index) + simple + sel.slice(c + 1); from = n.index + simple.length; }
+                else from = n.index + 5;
+                var next = /:not\(/i.exec(sel.slice(from));
+                n = next ? { index: from + next.index } : null;
             }
             sel = sel.replace(/:([a-z-]+)(?![\w(-])/gi, function (all, name) { var s = STATES[name.toLowerCase()]; return s === undefined ? all : s; });
             sel = sel.replace(/(\[[^\]"']*(?:"[^"]*"|'[^']*')?)\s+[is]\s*\]/g, '$1]');   // attribute case flags
-            return [sel];
+            if (!trim(sel) || /[\s>+~]$/.test(sel)) sel += '*';   // (the compound had only the complex :not)
+            return [{ t: sel, x: excl || [] }];
         };
         var rewrite = function (sel) {
-            var parts = splitList(sel), out = [];
-            for (var i = 0; i < parts.length; i++) out = out.concat(variants(parts[i].replace(/^\s+|\s+$/g, '')));
+            var parts = splitList(balance(sel)), out = [];
+            for (var i = 0; i < parts.length; i++) out = out.concat(variants(trim(parts[i]), null));
             return out;
         };
-        var scopeSeq = 0;
-        var retry = function (el, sel, run, none) {
-            var list = rewrite(sel);
-            if (!list.length) return none();
-            var text = list.join(', '), marked = false;
+        var joined = function (list) { var t = []; for (var i = 0; i < list.length; i++) t.push(list[i].t); return t.join(', '); };
+        var filtering = function (list) { for (var i = 0; i < list.length; i++) if (list[i].x.length) return true; return false; };
+        var scopeSeq = 0, pickSeq = 0;
+        // fn(text) with :scope pointing at el (marked meanwhile)
+        var scoped = function (el, text, fn) {
+            var marked = false;
             if (/:scope\b/i.test(text)) {
                 if (el && el.nodeType === 1) { el.setAttribute('data-br-scope', String(++scopeSeq)); marked = true; text = text.replace(/:scope\b/gi, '[data-br-scope="' + scopeSeq + '"]'); }
                 else text = text.replace(/:scope\b/gi, ':root');
             }
-            try { return run(text); } finally { if (marked) el.removeAttribute('data-br-scope'); }
+            try { return fn(text); } finally { if (marked) el.removeAttribute('data-br-scope'); }
+        };
+        var nativeMatches = Ep.webkitMatchesSelector || Ep.matches;
+        var excluded = function (el, x) {
+            for (var i = 0; i < x.length; i++) {
+                var list = rewrite(x[i]);
+                if (!list.length) continue;
+                try { if (nativeMatches.call(el, joined(list).replace(/:scope\b/gi, ':root'))) return true; } catch (e) {}
+            }
+            return false;
+        };
+        var matchesList = function (el, list) {
+            for (var i = 0; i < list.length; i++) {
+                var hit = false, t = list[i].t;
+                try { hit = scoped(el, t, function (text) { return nativeMatches.call(el, text); }); } catch (e) { hit = false; }
+                if (hit && !excluded(el, list[i].x)) return true;
+            }
+            return false;
+        };
+        // querySelector(All) with filters: the elements that pass are marked and fetched in one more query (a real
+        // NodeList in document order)
+        var pick = function (root, list, qsa, first) {
+            var seq = 'p' + (++pickSeq), picked = [], ran = 0;
+            try {
+                for (var i = 0; i < list.length; i++) {
+                    var found;
+                    try { found = scoped(root, list[i].t, function (text) { return qsa.call(root, text); }); ran++; } catch (e) { continue; }
+                    for (var k = 0; k < found.length; k++) {
+                        var el = found[k];
+                        if (el.getAttribute('data-br-pick') === seq || (list[i].x.length && excluded(el, list[i].x))) continue;
+                        el.setAttribute('data-br-pick', seq);
+                        picked.push(el);
+                    }
+                }
+                if (!ran) throw new Error('selector refused');
+                var all = qsa.call(root, '[data-br-pick="' + seq + '"]');
+                return first ? (all.length ? all[0] : null) : all;
+            } finally {
+                for (var j = 0; j < picked.length; j++) picked[j].removeAttribute('data-br-pick');
+            }
         };
         var isSyntax = function (e) { return e && (e.code === 12 || /SYNTAX_ERR|SyntaxError/.test(String(e.name) + String(e.message))); };
         var refusedLogged = 0;
-        var wrap = function (orig, none) {
+        var emptyList = function () { return document.createDocumentFragment().querySelectorAll('br-none'); };
+        // kind: 'one' querySelector, 'all' querySelectorAll, 'is' matches, 'up' closest; qsa: the owner's own querySelectorAll
+        var wrap = function (orig, kind, qsa) {
             return function (sel) {
                 try { return orig.apply(this, arguments); } catch (e) {
                     if (typeof sel !== 'string' || !isSyntax(e)) throw e;
-                    var self = this;
-                    try { return retry(self, sel, function (text) { return orig.call(self, text); }, none); } catch (e2) {
+                    var self = this, list = rewrite(sel), direct = function (text) { return orig.call(self, text); }, result = null;
+                    try {
+                        if (!list.length) result = kind === 'all' ? emptyList() : kind === 'is' ? false : null;
+                        else if (!filtering(list)) result = scoped(self, joined(list), direct);
+                        else if (kind === 'is') result = matchesList(self, list);
+                        else if (kind === 'up') { for (var el = self; el && el.nodeType === 1; el = el.parentNode) if (matchesList(el, list)) { result = el; break; } }
+                        else result = pick(self, list, qsa, kind === 'one');
+                    } catch (e2) {
                         // (debugging: which selector the retry could not take either)
                         if (window.__brDebugErrors && refusedLogged < 5) { refusedLogged++; sendToApp('brlog', 'Selector refused: ' + sel.slice(0, 300) + ' page ' + location.hostname); }
                         throw e;
                     }
+                    return result;
                 }
             };
         };
-        var emptyList = function () { return document.createDocumentFragment().querySelectorAll('br-none'); };
         var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
         for (var o = 0; o < owners.length; o++) {
-            if (!owners[o]) continue;
-            if (owners[o].querySelector) owners[o].querySelector = wrap(owners[o].querySelector, function () { return null; });
-            if (owners[o].querySelectorAll) owners[o].querySelectorAll = wrap(owners[o].querySelectorAll, emptyList);
+            var owner = owners[o];
+            if (!owner || !owner.querySelectorAll) continue;
+            var ownQSA = owner.querySelectorAll;
+            if (owner.querySelector) owner.querySelector = wrap(owner.querySelector, 'one', ownQSA);
+            owner.querySelectorAll = wrap(ownQSA, 'all', ownQSA);
         }
-        if (Ep.matches) Ep.matches = wrap(Ep.matches, function () { return false; });
-        if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector, function () { return false; });
-        if (Ep.closest) Ep.closest = wrap(Ep.closest, function () { return null; });
+        if (Ep.matches) Ep.matches = wrap(Ep.matches, 'is');
+        if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector, 'is');
+        if (Ep.closest) Ep.closest = wrap(Ep.closest, 'up');
     })();
     // KeyboardEvent.key from keyCode
     if (window.KeyboardEvent && window.KeyboardEvent.prototype && !('key' in window.KeyboardEvent.prototype)) {

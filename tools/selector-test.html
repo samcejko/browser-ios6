@@ -3,13 +3,59 @@
 <head>
 <meta charset="utf-8">
 <title>selector retry test</title>
+<script>
+// ?emulate: an "old engine" in a current browser: querySelector(All)/matches/closest refuse what iOS 6 refuses (open
+// brackets at the end, :is/:where/:has/:scope/state pseudo-classes, :not() with a list or a complex selector,
+// attribute case flags), then the shims load, so their retry path is what runs here. On the iPad the page is opened
+// without it (the app adds the shims and the engine is the old one).
+if (/[?&]emulate/.test(location.search)) {
+    (function () {
+        var refuses = function (sel) {
+            var depth = 0, quote = '', i, c;
+            for (i = 0; i < sel.length; i++) {
+                c = sel.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+            }
+            if (depth || quote) return true;
+            if (/:(is|where|matches|has|scope|focus-visible|focus-within|placeholder-shown|any-link|defined)\b/i.test(sel)) return true;
+            if (/\s[is]\s*\]/.test(sel)) return true;
+            var re = /:not\(/g, m;
+            while ((m = re.exec(sel))) {
+                var d = 0, j;
+                for (j = m.index + 4; j < sel.length; j++) { c = sel.charAt(j); if (c === '(') d++; else if (c === ')' && --d === 0) break; }
+                var inner = sel.slice(m.index + 5, j).replace(/\[[^\]]*\]|"[^"]*"|'[^']*'/g, '').replace(/^\s+|\s+$/g, '');
+                if (/[\s,>+~]/.test(inner)) return true;
+            }
+            return false;
+        };
+        var syntaxError;
+        try { document.querySelector('[['); } catch (x) { syntaxError = x; }
+        var guard = function (P, name) {
+            var f = P[name];
+            if (!f) return;
+            P[name] = function (sel) { if (typeof sel === 'string' && refuses(sel)) throw syntaxError; return f.apply(this, arguments); };
+        };
+        var owners = [Element.prototype, Document.prototype, DocumentFragment.prototype];
+        for (var o = 0; o < owners.length; o++) { guard(owners[o], 'querySelector'); guard(owners[o], 'querySelectorAll'); }
+        guard(Element.prototype, 'matches');
+        guard(Element.prototype, 'webkitMatchesSelector');
+        guard(Element.prototype, 'closest');
+    })();
+    document.write('<script src="../Resources/shims.js"><\/script><script src="../Resources/shims-extra.js"><\/script>');
+}
+</script>
 </head>
 <body>
 <div id="root"><p class="a">a</p><p class="b">b</p><span class="c">c</span><ul id="list"><li>1</li><li>2</li></ul><input id="field"></div>
-<pre id="out"></pre>
+<div id="box-1"><a href="x?_ic=1">in</a></div><a id="out" href="y?_ic=2">out</a>
+<pre id="out-text"></pre>
 <script>
 // Selectors of today on the old engine (shims-extra "selectors ... that the old engine rejects"): each query must work
-// or give the same answer a current browser gives. Chrome passes natively.
+// or give the same answer a current browser gives. Chrome passes natively (and through the shims with ?emulate).
 (function () {
     var res = [], root = document.getElementById('root');
     var check = function (name, fn, expect) {
@@ -26,9 +72,22 @@
     check(':focus-visible', function () { return root.querySelectorAll('input:focus-visible').length; }, 0);
     check('closest :is', function () { var c = document.querySelector('.c').closest(':is(#root, #none)'); return c ? c.id : null; }, 'root');
     check('invalid stays invalid', function () { try { document.querySelector('p[['); return 'no'; } catch (e) { return 'threw'; } }, 'threw');
+    check('unclosed :not(', function () { return root.querySelectorAll('p:not([class="a"]').length; }, 1);
+    check('unclosed string', function () { return document.querySelectorAll('#root [class="c').length; }, 1);
+    check('complex :not', function () { return root.querySelectorAll('li:not(#list > li:first-child)').length; }, 1);
+    check('complex :not in a list', function () { return root.querySelectorAll('p:not(#root > p.a), span').length; }, 2);
+    check('complex :not, first', function () { var p = root.querySelector('p:not(#root .a)'); return p ? p.className : null; }, 'b');
+    check('matches complex :not', function () { return [document.querySelector('.a').matches('p:not(#root > .a)'), document.querySelector('.b').matches('p:not(#root > .a)')]; }, [false, true]);
+    check('closest complex :not', function () { var c = document.querySelector('#list li').closest('ul:not(div > ul), div'); return c ? c.id : null; }, 'root');
+    check('adobe launch (o2.cz)', function () {
+        var all = document.querySelectorAll("a[href*='_ic=']:not([id^='box-'] a),[id^='box-']"), ids = [];
+        for (var i = 0; i < all.length; i++) ids.push(all[i].id || all[i].tagName);
+        return ids.join(',');
+    }, 'box-1,out');
+    check('no marks left', function () { return document.querySelectorAll('[data-br-pick], [data-br-scope]').length; }, 0);
     var pass = 0, lines = [];
     for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
-    document.getElementById('out').textContent = lines.join('\n');
+    document.getElementById('out-text').textContent = lines.join('\n');
     document.title = 'selectors ' + pass + '/' + res.length;
 })();
 </script>
