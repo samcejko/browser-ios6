@@ -7700,4 +7700,39 @@
         watchInsert(ElementP, 'after');
         watchInsert(ElementP, 'replaceWith');
     })();
+    // ---- The attributes of document, window, navigator, location, screen and history are own non-configurable data
+    // properties in the old engine (current browsers keep them as accessors on the prototypes, which pages wrap:
+    // consent managers redefine document.cookie, sreality.cz threw there). Such a redefinition by the page is skipped
+    // instead of throwing: the page's wrapper is not in place and the engine's own attribute keeps working. Elements
+    // keep the error (object-fit-images and React check for it themselves). Last in the bundle: the shims above still
+    // see the engine's own behaviour.
+    (function () {
+        var dp = Object.defineProperty, dps = Object.defineProperties, gopd = Object.getOwnPropertyDescriptor, tag = Object.prototype.toString;
+        if (!dp || !gopd) return;
+        var HOSTS = /^\[object (HTMLDocument|Document|DOMWindow|Window|global|Navigator|Location|Screen|History)\]$/;
+        var host = function (o) {
+            if (!o || (typeof o !== 'object' && typeof o !== 'function')) return false;
+            if (o === window || o === document || o === window.navigator || o === window.location || o === window.screen || o === window.history) return true;
+            try { return HOSTS.test(tag.call(o)); } catch (e) { return false; }
+        };
+        var fixed = function (o, k) {
+            var d = null;
+            try { d = gopd(o, k); } catch (e) { d = null; }
+            return !!d && d.configurable === false;
+        };
+        Object.defineProperty = function defineProperty(o, k, d) {
+            try { return dp(o, k, d); } catch (e) {
+                if (e instanceof TypeError && host(o) && fixed(o, k)) return o;
+                throw e;
+            }
+        };
+        if (dps) Object.defineProperties = function defineProperties(o, props) {
+            try { return dps(o, props); } catch (e) {
+                if (!(e instanceof TypeError) || !host(o) || !props) throw e;
+                var keys = Object.keys(props);
+                for (var i = 0; i < keys.length; i++) Object.defineProperty(o, keys[i], props[keys[i]]);
+                return o;
+            }
+        };
+    })();
 })(window, document);
