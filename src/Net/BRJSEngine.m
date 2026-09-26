@@ -7,6 +7,10 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
+#include <fcntl.h>
+#include <stddef.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 // JavaScriptCore C API, resolved at runtime (no link-time dependency on the framework path).
 typedef void *JSCtx;
@@ -281,10 +285,78 @@ static void *BRFindLocalSymbol(const char *library, const char *name)
     return NULL;
 }
 
-static void *BRFindJSCSymbol(const char *name)
+// The system's shared cache on iOS 6 keeps the local symbols of its libraries apart, in a part of the cache file that
+// is not mapped: read from the file (only that part is mapped, read-only, for the lookup). names -> found[] (the
+// addresses in this process, NULL when not found).
+struct BRCacheHeader { char magic[16]; uint32_t mappingOffset, mappingCount, imagesOffset, imagesCount; uint64_t dyldBaseAddress,
+    codeSignatureOffset, codeSignatureSize, slideInfoOffset, slideInfoSize, localSymbolsOffset, localSymbolsSize; uint8_t uuid[16]; };
+struct BRCacheMapping { uint64_t address, size, fileOffset; uint32_t maxProt, initProt; };
+struct BRCacheLocalInfo { uint32_t nlistOffset, nlistCount, stringsOffset, stringsSize, entriesOffset, entriesCount; };
+struct BRCacheLocalEntry { uint32_t dylibOffset, nlistStartIndex, nlistCount; };
+
+static void BRFindCacheLocalSymbols(const char *library, const char *const names[], void *found[], int count)
 {
-    void *p = dlsym(RTLD_DEFAULT, name + 1);
-    return p ?: BRFindLocalSymbol("/JavaScriptCore.framework/JavaScriptCore", name);
+    for (int k = 0; k < count; k++) found[k] = NULL;
+    const struct mach_header *mh = NULL;
+    intptr_t slide = 0;
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *path = _dyld_get_image_name(i);
+        if (path && strstr(path, library)) { mh = _dyld_get_image_header(i); slide = _dyld_get_image_vmaddr_slide(i); break; }
+    }
+    if (!mh) return;
+    const char *files[] = { "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7s", "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7" };
+    for (int f = 0; f < 2; f++) {
+        int fd = open(files[f], O_RDONLY);
+        if (fd < 0) continue;
+        struct BRCacheHeader h;
+        struct BRCacheMapping m;
+        BOOL ok = pread(fd, &h, sizeof(h), 0) == (ssize_t)sizeof(h) && strncmp(h.magic, "dyld_v1", 7) == 0 &&
+                  h.mappingOffset >= offsetof(struct BRCacheHeader, uuid) && h.localSymbolsOffset && h.localSymbolsSize &&
+                  pread(fd, &m, sizeof(m), h.mappingOffset) == (ssize_t)sizeof(m);
+        uint64_t unslid = (uint64_t)((uintptr_t)mh - slide);
+        if (!ok || unslid < m.address || unslid >= m.address + m.size) { close(fd); continue; }
+        uint32_t dylibOffset = (uint32_t)(unslid - m.address + m.fileOffset);
+        long page = sysconf(_SC_PAGESIZE);
+        off_t start = (off_t)(h.localSymbolsOffset & ~(uint64_t)(page - 1));
+        size_t length = (size_t)(h.localSymbolsSize + (h.localSymbolsOffset - (uint64_t)start));
+        void *map = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, start);
+        close(fd);
+        if (map == MAP_FAILED) return;
+        const char *chunk = (const char *)map + (h.localSymbolsOffset - (uint64_t)start);
+        const struct BRCacheLocalInfo *info = (const struct BRCacheLocalInfo *)chunk;
+        const struct BRCacheLocalEntry *entries = (const struct BRCacheLocalEntry *)(chunk + info->entriesOffset);
+        for (uint32_t e = 0; e < info->entriesCount; e++) {
+            if (entries[e].dylibOffset != dylibOffset) continue;
+            const struct nlist *syms = (const struct nlist *)(chunk + info->nlistOffset) + entries[e].nlistStartIndex;
+            const char *strings = chunk + info->stringsOffset;
+            for (uint32_t s = 0; s < entries[e].nlistCount && entries[e].nlistStartIndex + s < info->nlistCount; s++) {
+                uint32_t at = syms[s].n_un.n_strx;
+                if (!at || at >= info->stringsSize || (syms[s].n_type & N_STAB) || (syms[s].n_type & N_TYPE) != N_SECT) continue;
+                for (int k = 0; k < count; k++) if (!found[k] && strcmp(strings + at, names[k]) == 0) found[k] = (void *)(uintptr_t)(syms[s].n_value + slide);
+            }
+            break;
+        }
+        munmap(map, length);
+        return;
+    }
+}
+
+// JavaScriptCore's symbols by name (with the leading underscore): exported, in the library's symbol table, or among
+// the shared cache's local symbols
+static void BRFindJSCSymbols(const char *const names[], void *found[], int count)
+{
+    static const char *library = "/JavaScriptCore.framework/JavaScriptCore";
+    BOOL missing = NO;
+    for (int k = 0; k < count; k++) {
+        found[k] = dlsym(RTLD_DEFAULT, names[k] + 1);
+        if (!found[k]) found[k] = BRFindLocalSymbol(library, names[k]);
+        if (!found[k]) missing = YES;
+    }
+    if (!missing) return;
+    void *local[8] = { NULL };
+    if (count > 8) return;
+    BRFindCacheLocalSymbols(library, names, local, count);
+    for (int k = 0; k < count; k++) if (!found[k]) found[k] = local[k];
 }
 
 + (void)applyEngineTiers
@@ -292,20 +364,30 @@ static void *BRFindJSCSymbol(const char *name)
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSInteger mode = [d objectForKey:@"BRJSCMode"] ? [d integerForKey:@"BRJSCMode"] : BRJSCDefaultMode;
     void (*initialize)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "_ZN3JSC19initializeThreadingEv");
-    unsigned *candidates = (unsigned *)BRFindJSCSymbol("__ZN3JSC7Options44maximumOptimizationCandidateInstructionCountE");
-    int32_t *jitAfterWarmUp = (int32_t *)BRFindJSCSymbol("__ZN3JSC7Options26thresholdForJITAfterWarmUpE");
-    int32_t *jitSoon = (int32_t *)BRFindJSCSymbol("__ZN3JSC7Options19thresholdForJITSoonE");
+    const char *names[] = { "__ZN3JSC7Options44maximumOptimizationCandidateInstructionCountE", "__ZN3JSC7Options26thresholdForJITAfterWarmUpE",
+                            "__ZN3JSC7Options19thresholdForJITSoonE" };
+    void *found[3];
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    BRFindJSCSymbols(names, found, 3);
+    unsigned *candidates = (unsigned *)found[0];
+    int32_t *jitAfterWarmUp = (int32_t *)found[1], *jitSoon = (int32_t *)found[2];
+    long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
     if (!initialize || !candidates || !jitAfterWarmUp || !jitSoon) {
-        BRLog(@"JavaScriptCore tiers: the engine's switches were not found (%d%d%d%d), all tiers stay", !!initialize, !!candidates, !!jitAfterWarmUp, !!jitSoon);
+        BRLog(@"JavaScriptCore tiers: the engine's switches were not found (%d%d%d%d, %ld ms), all tiers stay", !!initialize, !!candidates, !!jitAfterWarmUp, !!jitSoon, ms);
         return;
     }
     initialize();
     unsigned oldCandidates = *candidates;
-    int32_t oldWarmUp = *jitAfterWarmUp;
+    int32_t oldWarmUp = *jitAfterWarmUp, oldSoon = *jitSoon;
+    // (the engine's own defaults are there, or these are not the switches: nothing is written then)
+    if (oldCandidates < 100 || oldCandidates > 1000000 || oldWarmUp < 1 || oldWarmUp > 100000 || oldSoon < 1 || oldSoon > 100000) {
+        BRLog(@"JavaScriptCore tiers: unexpected values (%u, %d, %d), all tiers stay", oldCandidates, oldWarmUp, oldSoon);
+        return;
+    }
     if (mode >= 1) *candidates = 0;   // no function is small enough for the optimizing JIT
     if (mode >= 2) { *jitAfterWarmUp = INT32_MAX; *jitSoon = INT32_MAX; }   // (the maximum: never)
-    BRLog(@"JavaScriptCore tiers: mode %ld (optimizing JIT for functions up to %u -> %u instructions, baseline JIT after %d -> %d runs)",
-          (long)mode, oldCandidates, *candidates, oldWarmUp, *jitAfterWarmUp);
+    BRLog(@"JavaScriptCore tiers: mode %ld (optimizing JIT for functions up to %u -> %u instructions, baseline JIT after %d -> %d runs; %ld ms)",
+          (long)mode, oldCandidates, *candidates, oldWarmUp, *jitAfterWarmUp, ms);
 }
 
 // A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.
