@@ -2168,6 +2168,18 @@
         }
         pctFixed = keep;
     };
+    // a box without content in the flow: no text of its own, every child positioned absolutely or not displayed (a
+    // video tile whose picture, caption and links all sit on top of it: csfd.cz's were 0 px high, their captions
+    // over the page's menu)
+    var flowEmpty = function (el) {
+        for (var n = el.firstChild; n; n = n.nextSibling) {
+            if (n.nodeType === 3) { if (/\S/.test(n.nodeValue)) return false; continue; }
+            if (n.nodeType !== 1) continue;
+            var ccs = getComputedStyle(n);
+            if (ccs.display !== 'none' && ccs.position !== 'absolute' && ccs.position !== 'fixed') return false;
+        }
+        return true;
+    };
     var applyAspectRatios = function () {
         try {
             recheckPercentHeights();
@@ -2190,7 +2202,10 @@
                 var m = [null, mw[1], mhh[1]];
                 var tag = el.tagName;
                 var replaced = tag === 'IMG' || tag === 'VIDEO' || tag === 'IFRAME' || tag === 'CANVAS' || tag === 'EMBED' || tag === 'OBJECT' || tag === 'SVG';
-                if (!replaced && (el.children.length || (el.textContent || '').replace(/\s+/g, '').length)) continue;   // boxes with content keep their own height
+                if (!replaced && !flowEmpty(el)) {   // boxes with content keep their own height
+                    if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; }
+                    continue;
+                }
                 var w = el.offsetWidth;
                 if (!w) continue;
                 var h = Math.round(w * parseInt(m[2], 10) / parseInt(m[1], 10));
