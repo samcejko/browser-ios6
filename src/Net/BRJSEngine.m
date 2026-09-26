@@ -4,6 +4,9 @@
 
 #include <dlfcn.h>
 #include <malloc/malloc.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
 
 // JavaScriptCore C API, resolved at runtime (no link-time dependency on the framework path).
 typedef void *JSCtx;
@@ -245,16 +248,55 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
 // BRJSCMode: 0 all tiers, 1 no optimizing JIT, 2 the interpreter only (debugging; regular expressions keep their JIT).
 static const NSInteger BRJSCDefaultMode = 0;
 
+// A symbol of a loaded library that dlsym does not see (not exported): from the library's own symbol table, which the
+// system's shared cache keeps mapped. name as in the table (with the leading underscore).
+static void *BRFindLocalSymbol(const char *library, const char *name)
+{
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *path = _dyld_get_image_name(i);
+        if (!path || !strstr(path, library)) continue;
+        const struct mach_header *mh = _dyld_get_image_header(i);
+        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+        if (!mh || mh->magic != MH_MAGIC) return NULL;
+        const struct load_command *lc = (const struct load_command *)(mh + 1);
+        const struct symtab_command *symtab = NULL;
+        const struct segment_command *linkedit = NULL;
+        for (uint32_t c = 0; c < mh->ncmds; c++) {
+            if (lc->cmd == LC_SYMTAB) symtab = (const struct symtab_command *)lc;
+            else if (lc->cmd == LC_SEGMENT && strcmp(((const struct segment_command *)lc)->segname, SEG_LINKEDIT) == 0) linkedit = (const struct segment_command *)lc;
+            lc = (const struct load_command *)((const char *)lc + lc->cmdsize);
+        }
+        if (!symtab || !linkedit) return NULL;
+        uintptr_t base = (uintptr_t)linkedit->vmaddr + slide - linkedit->fileoff;
+        const struct nlist *syms = (const struct nlist *)(base + symtab->symoff);
+        const char *strings = (const char *)(base + symtab->stroff);
+        for (uint32_t s = 0; s < symtab->nsyms; s++) {
+            uint32_t at = syms[s].n_un.n_strx;
+            if (!at || at >= symtab->strsize || (syms[s].n_type & N_STAB) || (syms[s].n_type & N_TYPE) != N_SECT) continue;
+            if (strcmp(strings + at, name) == 0) return (void *)(uintptr_t)(syms[s].n_value + slide);
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+static void *BRFindJSCSymbol(const char *name)
+{
+    void *p = dlsym(RTLD_DEFAULT, name + 1);
+    return p ?: BRFindLocalSymbol("/JavaScriptCore.framework/JavaScriptCore", name);
+}
+
 + (void)applyEngineTiers
 {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSInteger mode = [d objectForKey:@"BRJSCMode"] ? [d integerForKey:@"BRJSCMode"] : BRJSCDefaultMode;
     void (*initialize)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "_ZN3JSC19initializeThreadingEv");
-    unsigned *candidates = (unsigned *)dlsym(RTLD_DEFAULT, "_ZN3JSC7Options44maximumOptimizationCandidateInstructionCountE");
-    int32_t *jitAfterWarmUp = (int32_t *)dlsym(RTLD_DEFAULT, "_ZN3JSC7Options26thresholdForJITAfterWarmUpE");
-    int32_t *jitSoon = (int32_t *)dlsym(RTLD_DEFAULT, "_ZN3JSC7Options19thresholdForJITSoonE");
+    unsigned *candidates = (unsigned *)BRFindJSCSymbol("__ZN3JSC7Options44maximumOptimizationCandidateInstructionCountE");
+    int32_t *jitAfterWarmUp = (int32_t *)BRFindJSCSymbol("__ZN3JSC7Options26thresholdForJITAfterWarmUpE");
+    int32_t *jitSoon = (int32_t *)BRFindJSCSymbol("__ZN3JSC7Options19thresholdForJITSoonE");
     if (!initialize || !candidates || !jitAfterWarmUp || !jitSoon) {
-        BRLog(@"JavaScriptCore tiers: the engine's switches were not found, all tiers stay");
+        BRLog(@"JavaScriptCore tiers: the engine's switches were not found (%d%d%d%d), all tiers stay", !!initialize, !!candidates, !!jitAfterWarmUp, !!jitSoon);
         return;
     }
     initialize();
