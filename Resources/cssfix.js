@@ -499,6 +499,10 @@ var CSSFix = (function () {
             else if (name in ctx.page) val = ctx.page[name];
             else if (name in ctx.root) val = ctx.root[name];
             else if ((rd = registeredDefault(name, ctx)) !== null) val = rd;
+            // a property only some rules define, resolved per element at run time, with a fallback here: the fallback is
+            // what the elements outside those rules get (vercel.com: 58 scoped --themed-bg definitions, and the last
+            // one made every button mint instead of var(--ds-gray-1000))
+            else if (fallback !== null && ctx.rt && ctx.rt[name]) val = null;
             else if (name in ctx.other) val = ctx.other[name];
             else if (ctx.initial && name in ctx.initial) val = ctx.initial[name];
             // "--x: initial" is the guaranteed-invalid value (and inherit/unset cannot be known here): the fallback applies

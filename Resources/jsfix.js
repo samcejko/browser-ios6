@@ -189,6 +189,20 @@
             keys();
             var flags = ['__v_skip', '__v_isReactive', '__v_isReadonly', '__v_isShallow', '__v_raw'];
             for (var f = 0; f < flags.length; f++) define(flags[f]);
+            // a factory proxy (framer-motion's motion.div / m.span, created by its get trap on first use): a function
+            // target with a get trap answers for the element and SVG tag names too
+            if (typeof target === 'function' && handler.get) {
+                var tags = ('a abbr address area article aside audio b bdi bdo blockquote body br button canvas caption cite code col colgroup data ' +
+                    'datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr ' +
+                    'html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p ' +
+                    'picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table ' +
+                    'tbody td template textarea tfoot th thead time title tr track u ul var video wbr svg animate animateMotion animateTransform circle ' +
+                    'clipPath defs desc ellipse feBlend feColorMatrix feComponentTransfer feComposite feDiffuseLighting feDisplacementMap feDropShadow ' +
+                    'feFlood feGaussianBlur feImage feMerge feMergeNode feMorphology feOffset feSpecularLighting feTile feTurbulence filter foreignObject ' +
+                    'g image line linearGradient marker mask path pattern polygon polyline radialGradient rect stop switch symbol text textPath tspan use ' +
+                    'view create custom').split(' ');
+                for (var tg = 0; tg < tags.length; tg++) if (!(tags[tg] in proxy)) define(tags[tg]);
+            }
             if (isArr) {
                 try {
                     Object.defineProperty(proxy, '__br_proxyArray', { value: true });
@@ -3134,6 +3148,20 @@
     // a script the engine parses that only needs the stand-ins: `new Proxy(` / `BigInt(` replaced in the text (no
     // parse of a big bundle for that), unless the script has a Proxy or BigInt of its own
     var STANDIN_OWN = /\b(?:class|function|var|let|const)\s+(?:Proxy|BigInt)\b|[(,]\s*(?:Proxy|BigInt)\s*[,)=]/;
+    // framer-motion (motion.div, m.span...) looks first, `if ("u" < typeof Proxy) return fallback;` right before
+    // `return new Proxy(factory, { get })`, and that fallback has no motion.div: React then fails with "element type is
+    // invalid" and a Next.js page is replaced by its error page (nextjs.org). A guard like that, with the proxy right
+    // after it, asks about the stand-in instead, so the proxy path runs (typeof Proxy elsewhere stays the engine's).
+    var PROXY_GUARD = /(if\s*\(\s*)((["'])(?:u|undefined)\3\s*(?:<|===?)\s*typeof\s+Proxy\b|typeof\s+Proxy\s*(?:>|===?)\s*(["'])(?:u|undefined)\4)(\s*\)\s*return\b)/g;
+    var retargetProxyGuards = function (src) {
+        if (src.indexOf('typeof') < 0 || !PROXY_USE.test(src)) return src;
+        PROXY_GUARD.lastIndex = 0;
+        return src.replace(PROXY_GUARD, function (whole, head, guard, q1, q2, tail, offset) {
+            var after = src.slice(offset + whole.length, offset + whole.length + 600);
+            if (!/\bnew\s+Proxy\s*\(/.test(after)) return whole;
+            return head + guard.replace(/typeof\s+Proxy/, 'typeof __br_Proxy') + tail;
+        });
+    };
     var helperText = function (names) {
         var out = '', seen = {};
         var add = function (n) {
@@ -3228,6 +3256,7 @@
     // opts.early: false, or the size from which functions are lowered while parsing (default: EARLY_FN for big scripts)
     var transpile = function (src, opts) {
         opts = opts || {};
+        if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
         var early = opts.early !== undefined ? opts.early : src.length >= EARLY_SCRIPT ? EARLY_FN : false;
         // (a script with its own Proxy/BigInt needs every scope)
         if (early !== false && (STANDIN_OWN.test(src) || !root.acorn || !root.acorn.Parser)) early = false;
@@ -3376,6 +3405,7 @@
         var opts = null;
         try { opts = optsJSON ? JSON.parse(optsJSON) : {}; } catch (e) { opts = {}; }
         stats.runs++;
+        if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
         if (opts.module) {
             // a module always becomes a registration; when it cannot, the loader is told why
             var mout = null, merr = '';

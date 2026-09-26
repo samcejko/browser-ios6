@@ -20,6 +20,9 @@ var cases = [
   // scoped custom properties: definitions and users with the rule's selectors, the static value for comparison
   ['vars scoped per element', '.btn{--bg:transparent;background:var(--bg);color:red}.btn-primary{--bg:blue}.card{padding:var(--pad, 1px)}',
    '.btn{background:transparent;color:red}\n.card{padding:1px}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"10qf7ts","s":[".btn"],"sp":[100],"d":[["--bg","transparent",0]],"u":[["background","var(--bg)",0,"transparent"]]},{"h":"l43o16","s":[".btn-primary"],"sp":[100],"d":[["--bg","blue",0]]},{"h":"i6wik","s":[".card"],"sp":[100],"u":[["padding","var(--pad, 1px)",0,"1px"]]}]}*/'],
+  // a property only some rules define: outside them the var() fallback applies, so that is the static value
+  ['vars scoped with fallback', '.a{--t:red}.b{--t:blue}.btn{background:var(--t, green);color:var(--t)}',
+   '.btn{background:green;color:blue}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"1raj8em","s":[".a"],"sp":[100],"d":[["--t","red",0]]},{"h":"yrbdhc","s":[".b"],"sp":[100],"d":[["--t","blue",0]]},{"h":"1gi7gqz","s":[".btn"],"sp":[100],"u":[["background","var(--t, green)",0,"green"],["color","var(--t)",0,"blue"]]}]}*/'],
   ['flex row', '.f{display:flex;justify-content:space-between;align-items:center;flex-direction:row}', '.f{display:-webkit-box;-webkit-box-pack:justify;justify-content:space-between;-webkit-box-align:center;align-items:center;-webkit-box-orient:horizontal;-webkit-box-direction:normal;flex-direction:row}'],
   ['flex wrap', '.g{display:flex;flex-wrap:wrap}', '.g{display:block;-webkit-box-lines:multiple;flex-wrap:wrap}\n.g > *{display:inline-block;vertical-align:top}'],
   ['flex wrap gap justify', '.g{display:flex;flex-wrap:wrap;gap:8px 4px;justify-content:center}', '.g{display:block;-webkit-box-lines:multiple;flex-wrap:wrap;gap:8px 4px;-webkit-box-pack:center;justify-content:center}\n.g > *{display:inline-block;vertical-align:top;margin:4px 2px}\n.g{text-align:center}'],

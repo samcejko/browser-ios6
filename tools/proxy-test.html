@@ -20,7 +20,9 @@ var CASES = [
   ['ownKeys give the scope keys', 'var p = new Proxy({ objects: [{ a: 1 }] }, { ownKeys: function () { return ["a"]; }, get: function (t, k) { return k === "a" ? t.objects[0].a : undefined; } }); var r; with (p) { r = a; } return r;', 1],
   ['methods see the proxy as this', 'var p = new Proxy({ n: 1, inc: function () { this.n++; return this.n; } }, { get: function (t, k) { return t[k]; }, set: function (t, k, v) { t[k] = v + 100; return true; } }); return p.inc();', 102],
   ['needs new', 'try { Proxy({}, {}); return "no"; } catch (e) { return e instanceof TypeError; }', true],
-  ['non-object target', 'try { new Proxy(1, {}); return "no"; } catch (e) { return e instanceof TypeError; }', true]
+  ['non-object target', 'try { new Proxy(1, {}); return "no"; } catch (e) { return e instanceof TypeError; }', true],
+  // framer-motion: motion.div comes from a get trap on a function target
+  ['factory proxy answers tag names', 'var cache = {}; var motion = new Proxy(function (c) { return "C:" + c; }, { get: function (t, k) { return k === "create" ? t : (cache[k] || (cache[k] = "C:" + k)); } }); return [motion.div, motion.svg, motion.create("x"), motion("y"), typeof motion];', ['C:div', 'C:svg', 'C:x', 'C:y', 'function']]
 ];
 var pass = 0, lines = [];
 CASES.forEach(function (c) {
@@ -58,7 +60,22 @@ window.BigInt = savedBigInt;
 var fastBiOk = window.__fastBigInt === 17;
 lines.push((fastBiOk ? 'OK   ' : 'FAIL ') + 'BigInt text path' + (fastBiOk ? '' : ': ' + window.__fastBigInt + ' ' + fastBi.slice(0, 120)));
 if (fastBiOk) pass++;
-CASES.length += 4;
+// framer-motion's guard `if ("u" < typeof Proxy) return fallback;` right before `new Proxy(...)` asks about the
+// stand-in on an engine without Proxy (text path and lowered path)
+var FRAMER = 'function B(c) { return "C:" + c; } function mk() { if ("u" < typeof Proxy) return B; var cache = {}; return new Proxy(function (c) { return B(c); }, { get: function (t, k) { return k === "create" ? B : (cache[k] || (cache[k] = B(k))); } }); } var m = mk(); ';
+var framerRuns = [['framer guard, text path', FRAMER + 'window.__framer = [m.div, m.create("x"), typeof m.span];'],
+                  ['framer guard, lowered path', FRAMER + 'let lw = () => [m.div, m.create("x"), typeof m.span]; window.__framer = lw();']];
+framerRuns.forEach(function (fr) {
+  var savedProxy = window.Proxy, out = '', ok = false, info = '';
+  window.Proxy = undefined;
+  // (force: this engine parses `let` and arrows itself, the old one would not)
+  try { out = JSFix.run(fr[1], /lowered/.test(fr[0]) ? '{"force":true}' : '{}'); info = JSFix.last(); } catch (e) { info = 'threw ' + e.message; }
+  window.Proxy = savedProxy;
+  try { window.__framer = null; (0, eval)(out || fr[1]); ok = JSON.stringify(window.__framer) === JSON.stringify(['C:div', 'C:x', 'string']); } catch (e2) { info += ' eval ' + e2.message; }
+  lines.push((ok ? 'OK   ' : 'FAIL ') + fr[0] + (ok ? '' : ': ' + info + ' ' + JSON.stringify(window.__framer) + ' ' + out.slice(0, 160)));
+  if (ok) pass++;
+});
+CASES.length += 6;
 document.getElementById('out').textContent = lines.join('\n');
 document.title = 'proxy ' + pass + '/' + CASES.length;
 </script>
