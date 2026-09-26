@@ -2318,6 +2318,57 @@
     // the items are measured, then gets its item's height in pixels (or auto when nothing else gives the row a
     // height: auto does not grow). Measured again when the row's or the item's width changes, or when the row grew
     // around the child.
+    // A lone horizontal auto margin (cssfix made it 0 and marked it "br-mauto 1|2", the auto side left|right) comes
+    // back wherever the 2009 box model does not misuse it: outside 2009 boxes it is auto again (a block pushed to the
+    // right). In a box row the old engine resolves it as if the item were alone in the row (a header's menu ended
+    // outside the header) and, next to a flexible sibling, hands it all the free space first (Google's result text
+    // got 0 px): in a row without flexible items the margin gets the row's free space in pixels, with one it stays 0.
+    var mautoEls = [];
+    var outerWidth = function (c) {
+        var cs = getComputedStyle(c);
+        if (cs.display === 'none' || cs.position === 'absolute' || cs.position === 'fixed') return 0;
+        return c.offsetWidth + (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
+    };
+    onMarkers(function (marked) {
+        var keep = [], i, el;
+        for (i = 0; i < marked.length; i++) {
+            var mm = /br-mauto\s+(\d)/.exec(marked[i].cr);
+            if (!mm) continue;
+            el = marked[i].el;
+            var side = mm[1] === '1' ? 'margin-left' : 'margin-right', p = el.parentNode, want = 'auto';
+            if (p && p.nodeType === 1) {
+                var ps = getComputedStyle(p);
+                if ((ps.display === '-webkit-box' || ps.display === '-webkit-inline-box') && ps.webkitBoxOrient === 'horizontal') {
+                    var used = 0, c;
+                    for (c = p.firstElementChild; c; c = c.nextElementSibling) {
+                        if (parseFloat(getComputedStyle(c).webkitBoxFlex) > 0) { want = null; break; }
+                        // (the pushed item's own margin on that side is ours, or 0 from the rewriter)
+                        used += outerWidth(c) - (c === el ? (parseFloat(getComputedStyle(c)[side === 'margin-left' ? 'marginLeft' : 'marginRight']) || 0) : 0);
+                    }
+                    if (want) {
+                        var free = p.clientWidth - (parseFloat(ps.paddingLeft) || 0) - (parseFloat(ps.paddingRight) || 0) - used;
+                        want = free > 0 ? Math.floor(free) + 'px' : null;
+                    }
+                }
+            }
+            var had = el.__brMauto;
+            if (had && (!want || had.side !== side)) { if (had.prev) el.style.setProperty(had.side, had.prev); else el.style.removeProperty(had.side); el.__brMauto = had = null; }
+            if (want && (!had || had.value !== want)) {
+                if (!had) el.__brMauto = had = { side: side, prev: el.style.getPropertyValue(side) };
+                had.value = want;
+                el.style.setProperty(side, want);
+            }
+            if (el.__brMauto) keep.push(el);
+        }
+        // (one whose rule no longer applies, a media query after a rotation, loses the margin again)
+        for (i = 0; i < mautoEls.length; i++) {
+            el = mautoEls[i];
+            if (keep.indexOf(el) >= 0 || !el.__brMauto) continue;
+            if (el.__brMauto.prev) el.style.setProperty(el.__brMauto.side, el.__brMauto.prev); else el.style.removeProperty(el.__brMauto.side);
+            el.__brMauto = null;
+        }
+        mautoEls = keep;
+    });
     // A 2009 box with a percentage height whose parent's height is auto (a card at height: 100% in a plain block)
     // grows the same way; there the percentage means auto (CSS 2.1), so the box gets auto. (The parent's own
     // height is read while it is hidden, when the computed style gives the specified value.)

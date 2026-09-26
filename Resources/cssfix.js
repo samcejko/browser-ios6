@@ -2779,6 +2779,8 @@ var CSSFix = (function () {
         // resolves that auto margin to all the free space before the flexible siblings get theirs (Google's
         // result text ended up 0 px wide next to its thumbnail), so the lone auto margin becomes 0.
         var flexPush = autoLeft !== autoRight;
+        // (marked "br-mauto 1|2", the auto side: the shim gives the margin back where the old model does not misuse it)
+        if (flexPush && !keyframe) markers.push('br-mauto ' + (autoLeft ? 1 : 2));
         var out = [];
         var rt = !keyframe && g_manifest !== false ? ctx.rt : null;
         // declarations with viewport units go to the orientation rules (see VP_UNIT_RE and transformRules)

@@ -30,7 +30,7 @@
     // Cached bodies are stored after rewriting: whenever the rewriters change, the cache starts over in a directory of
     // its own and the old one is deleted in the background. (Emptying a full cache on the main thread took longer than
     // iOS allows for a launch: the app was killed at its first start after an update.)
-    static const NSInteger BRCacheFormatVersion = 21;   // manifest "mk": the selectors of rules with markers
+    static const NSInteger BRCacheFormatVersion = 22;   // percentage heights marked (br-pcth), grid-auto-flow column strips
     NSString *cacheName = [NSString stringWithFormat:@"browser-cache-%ld", (long)BRCacheFormatVersion];
     NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:1536 * 1024 * 1024 diskPath:cacheName];
     [NSURLCache setSharedURLCache:cache];
