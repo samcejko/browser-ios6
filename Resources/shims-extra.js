@@ -2185,10 +2185,61 @@
         }
         return true;
     };
+    // The elements the marker scan reads the style of. Once the page's manifest is known: those the rules with markers
+    // match (their selectors come as manifest "mk"), style attributes with markers, pictures and media (the
+    // percentage-height fixes) and the boxes that got a height last time; before that (null) every element. Reading
+    // the style of every element took about a second per scan on big pages.
+    var mkPlan = null, mkKey = null, mkStamp = 0;
+    var splitSelectorList = function (s) {
+        var out = [], depth = 0, start = 0, q = null;
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+            if (c === '"' || c === "'") q = c;
+            else if (c === '(' || c === '[') depth++;
+            else if (c === ')' || c === ']') depth--;
+            else if (c === ',' && !depth) { out.push(s.slice(start, i)); start = i + 1; }
+        }
+        out.push(s.slice(start));
+        return out;
+    };
+    var markerCandidates = function () {
+        var rules = window.__brMarkerRules;
+        if (!rules) return null;
+        if (mkKey !== rules.key) {
+            var sels = [], seen = {}, i, k;
+            for (i = 0; i < rules.list.length; i++) {
+                var parts = splitSelectorList(rules.list[i]);
+                for (k = 0; k < parts.length; k++) {
+                    var sel = parts[k].replace(/^\s+|\s+$/g, '');
+                    // (pseudo-elements cannot be queried, nor used by the shims)
+                    if (!sel || seen[sel] || /::|:(before|after|first-line|first-letter)\b/i.test(sel)) continue;
+                    seen[sel] = 1;
+                    sels.push(sel);
+                }
+            }
+            var plan = [];
+            for (i = 0; i < sels.length; i += 50) {
+                var chunk = sels.slice(i, i + 50), joined = chunk.join(',');
+                try { document.querySelector(joined); plan.push(joined); }
+                catch (e) { for (k = 0; k < chunk.length; k++) { try { document.querySelector(chunk[k]); plan.push(chunk[k]); } catch (e2) {} } }
+            }
+            plan.push('[style*="counter-reset"]', 'img,video,canvas,iframe,embed,object,picture');
+            mkPlan = plan;
+            mkKey = rules.key;
+        }
+        var out = [], stamp = ++mkStamp, p, q, list;
+        for (p = 0; p < mkPlan.length; p++) {
+            try { list = document.querySelectorAll(mkPlan[p]); } catch (e3) { continue; }
+            for (q = 0; q < list.length; q++) if (list[q].__brMkStamp !== stamp) { list[q].__brMkStamp = stamp; out.push(list[q]); }
+        }
+        for (q = 0; q < aspectElements.length; q++) if (aspectElements[q].__brMkStamp !== stamp) { aspectElements[q].__brMkStamp = stamp; out.push(aspectElements[q]); }
+        return out;
+    };
     var applyAspectRatios = function () {
         try {
             recheckPercentHeights();
-            var all = document.getElementsByTagName('*'), found = [], containers = [], marked = [];
+            var all = markerCandidates() || document.getElementsByTagName('*'), found = [], containers = [], marked = [];
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
                 if (PCT_TAGS[el.tagName]) { fixPercentHeight(el); fixThinPicture(el); }
@@ -2499,12 +2550,58 @@
             } finally { el.removeAttribute('data-br-scope'); }
             return found;
         };
+        // a part of a :has() argument that can be answered from the inside: one compound selector (no combinator in
+        // it) as a descendant or a child; null for anything else
+        var insideOut = function (p) {
+            var child = false;
+            if (p.charAt(0) === '>') { child = true; p = trim(p.slice(1)); }
+            else if (/^[+~]/.test(p)) return null;
+            var depth = 0, q = null;
+            for (var i = 0; i < p.length; i++) {
+                var c = p.charAt(i);
+                if (q) { if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && (c === ' ' || c === '>' || c === '+' || c === '~' || c === ',')) return null;
+            }
+            return p ? { sel: p, child: child } : null;
+        };
+        var hasStamp = 0;
         var applyHas = function () {
             if (!manifest || !manifest.has || !manifest.has.length) return;
             for (var i = 0; i < manifest.has.length; i++) {
-                var entry = manifest.has[i], candidates;
+                var entry = manifest.has[i], candidates, k;
                 try { candidates = document.querySelectorAll(entry.target); } catch (e) { continue; }
-                for (var k = 0; k < candidates.length && k < 3000; k++) setStateClass(candidates[k], 'br-has-' + entry.h, hasMatch(candidates[k], entry.inner));
+                if (!candidates.length) continue;
+                // The usual forms (":has(img)", ":has(> .x)") are found from the inside: the elements the compound
+                // matches stamp their parents or ancestors, once per pass. (Asking every candidate with a scoped
+                // query marked and unmarked each of them: seconds per pass on a big page that changes all the time.)
+                var parts = entry.__brParts || (entry.__brParts = (function () {
+                    var ps = splitTop(entry.inner, ','), out = [];
+                    for (var x = 0; x < ps.length; x++) { var io = insideOut(trim(ps[x])); if (!io) return false; out.push(io); }
+                    return out;
+                })());
+                if (parts) {
+                    var stamp = ++hasStamp, keep = [];
+                    for (var pi = 0; pi < parts.length; pi++) {
+                        var found;
+                        try { found = document.querySelectorAll(parts[pi].sel); } catch (e2) { found = []; }
+                        for (k = 0; k < found.length; k++) {
+                            if (parts[pi].child) {
+                                var par = found[k].parentNode;
+                                if (par && par.nodeType === 1 && par.__brHasStamp !== stamp) { par.__brHasStamp = stamp; keep.push(par); }
+                                continue;
+                            }
+                            // (a stamped ancestor has its own ancestors stamped already)
+                            for (var a = found[k].parentNode; a && a.nodeType === 1 && a.__brHasStamp !== stamp; a = a.parentNode) { a.__brHasStamp = stamp; keep.push(a); }
+                        }
+                    }
+                    for (k = 0; k < candidates.length; k++) setStateClass(candidates[k], 'br-has-' + entry.h, candidates[k].__brHasStamp === stamp);
+                    keep = null;
+                    continue;
+                }
+                for (k = 0; k < candidates.length && k < 3000; k++) setStateClass(candidates[k], 'br-has-' + entry.h, hasMatch(candidates[k], entry.inner));
             }
         };
         // ---- structural selectors (manifest "sc"): :nth-child(An+B of S), :nth-col() / :nth-last-col(), the column
@@ -2728,13 +2825,22 @@
             applyTimer = setTimeout(apply, Math.max(120, applyEnd + applyCost * 5 - Date.now()));
         };
         // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest
-        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
+        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [] };
         var mergeExtra = function (m) {
             for (var kind in extra) {
                 if (!extra.hasOwnProperty(kind) || !extra[kind].length) continue;
                 if (!m[kind]) m[kind] = [];
                 m[kind] = m[kind].concat(extra[kind]);
             }
+        };
+        // the selectors of the rules with markers, for the marker scan (see markerCandidates)
+        // (only when the network layer sends them: a manifest without the kind, a test's, means every element is scanned)
+        var mkKnown = false;
+        var noteMarkerRules = function (m) {
+            if (!mkKnown) { window.__brMarkerRules = null; return; }
+            var list = [], mk = m.mk || [];
+            for (var i = 0; i < mk.length; i++) if (mk[i] && mk[i].s) list.push(mk[i].s);
+            window.__brMarkerRules = { list: list, key: list.length + '|' + (list.length ? list[list.length - 1] : '') };
         };
         // the root custom properties and the scoped ones, for the rewriter the page runs itself
         var notePageVars = function (m) {
@@ -2755,15 +2861,16 @@
                 any = true;
             }
             if (!any) return;
-            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
+            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [] };
             for (var k2 in add) if (add.hasOwnProperty(k2) && extra.hasOwnProperty(k2) && add[k2]) manifest[k2] = (manifest[k2] || []).concat(add[k2]);
+            noteMarkerRules(manifest);
             try { if (window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e) {}
             try { if (window.__brVars) window.__brVars.setManifest(manifest); } catch (e2) {}
             schedule();
         };
         // what the network layer registered so far (the page asks only for what came since: GitHub's is 2.3 MB), and
         // the count of its root variables and stylesheets
-        var KINDS = ['has', 'cq', 'dv', 'pt', 'cv', 'sc'], base = null, baseVars = 0;
+        var KINDS = ['has', 'cq', 'dv', 'pt', 'cv', 'sc', 'mk'], base = null, baseVars = 0;
         var sinceParam = function () {
             if (!base || window.__brManifestURL) return '';
             var parts = [];
@@ -2786,14 +2893,15 @@
                     try { got = JSON.parse(x.responseText); } catch (e) { got = null; }
                     if (!got || got.same) return;
                     lastText = x.responseText;
+                    if (got.mk && !window.__brManifestURL) mkKnown = true;
                     // (a full answer: the first one, a test URL, or reset because the network layer forgot the page)
-                    if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
+                    if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [] };
                     for (i = 0; i < KINDS.length; i++) { k = KINDS[i]; if (got[k] && got[k].length) base[k] = base[k].concat(got[k]); }
                     if (got.sheets) base.sheets = got.sheets;
                     if (got.vars) { base.vars = got.vars; baseVars = 0; for (k in got.vars) if (got.vars.hasOwnProperty(k)) baseVars++; }
                     manifest = { sheets: base.sheets, vars: base.vars };
                     for (i = 0; i < KINDS.length; i++) manifest[KINDS[i]] = base[KINDS[i]].slice(0);
-                    if (manifest) { notePageVars(manifest); mergeExtra(manifest); }
+                    if (manifest) { notePageVars(manifest); mergeExtra(manifest); noteMarkerRules(manifest); }
                     try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
                     try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}
                     schedule();

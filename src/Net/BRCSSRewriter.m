@@ -124,6 +124,16 @@ static CGFloat g_devicePixelRatio = 1;
 static CGSize g_viewPortrait = { 768, 930 }, g_viewLandscape = { 1024, 674 };
 static BOOL g_landscape = NO;
 
+// the kinds of manifest entries cssfix.js writes (see manifestAdd there): :has(), @container, deferred values,
+// @position-try, runtime custom properties, structural selectors, rules with markers
+static NSArray *BRManifestKinds(void)
+{
+    static NSArray *kinds;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ kinds = @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc", @"mk"]; });
+    return kinds;
+}
+
 + (void)noteWebViewSize:(CGSize)size landscape:(BOOL)landscape
 {
     CGSize screen = [UIScreen mainScreen].bounds.size;   // portrait on iOS 6
@@ -226,8 +236,8 @@ static BOOL g_landscape = NO;
     @synchronized (self) {
         NSMutableDictionary *m = _pageManifests[key];
         if (!m) {
-            m = [@{ @"has": [NSMutableArray array], @"cq": [NSMutableArray array], @"dv": [NSMutableArray array], @"pt": [NSMutableArray array],
-                    @"cv": [NSMutableArray array], @"sc": [NSMutableArray array], @"sheets": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
+            m = [@{ @"sheets": [NSMutableArray array], @"seen": [NSMutableSet set] } mutableCopy];
+            for (NSString *kind in BRManifestKinds()) m[kind] = [NSMutableArray array];
             _pageManifests[key] = m;
             [_manifestOrder addObject:key];
             while (_manifestOrder.count > BRMaxPagesRemembered) {
@@ -240,7 +250,7 @@ static BOOL g_landscape = NO;
         // document orders its stylesheets (they arrive in network order)
         NSMutableArray *sheets = m[@"sheets"];
         NSUInteger sheetIndex = [sheets indexOfObject:source];
-        for (NSString *kind in @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc"]) {
+        for (NSString *kind in BRManifestKinds()) {
             NSArray *entries = parsed[kind];
             if (![entries isKindOfClass:[NSArray class]]) continue;
             for (NSDictionary *e in entries) {
@@ -294,7 +304,7 @@ static BOOL g_landscape = NO;
     }
     NSString *key = BRPageKey([NSURL URLWithString:pageURLString ?: @""]);
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
-    NSArray *kinds = @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc"];
+    NSArray *kinds = BRManifestKinds();
     BOOL changed = NO, reset = NO;
     @synchronized (self) {
         NSDictionary *m = _pageManifests[key];
@@ -320,15 +330,15 @@ static BOOL g_landscape = NO;
 - (NSData *)manifestJSONForPageURLString:(NSString *)pageURLString
 {
     NSString *key = BRPageKey([NSURL URLWithString:pageURLString ?: @""]);
-    NSDictionary *out = nil;
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
     @synchronized (self) {
         NSDictionary *m = _pageManifests[key];
         NSMutableDictionary *rootVars = [_pageVars[key] mutableCopy] ?: [NSMutableDictionary dictionary];
         [rootVars removeObjectForKey:@" scoped"];
-        if (m) out = @{ @"has": [m[@"has"] copy], @"cq": [m[@"cq"] copy], @"dv": [m[@"dv"] copy], @"pt": [m[@"pt"] copy],
-                        @"cv": [m[@"cv"] copy], @"sc": [m[@"sc"] copy], @"sheets": [m[@"sheets"] copy], @"vars": rootVars };
         // (a page without entries still has its " calc" / " trans" findings, which the shims read from the vars)
-        else out = @{ @"has": @[], @"cq": @[], @"dv": @[], @"pt": @[], @"cv": @[], @"sc": @[], @"vars": rootVars };
+        for (NSString *kind in BRManifestKinds()) out[kind] = [m[kind] copy] ?: @[];
+        if (m) out[@"sheets"] = [m[@"sheets"] copy] ?: @[];
+        out[@"vars"] = rootVars;
     }
     return [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL] ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
 }

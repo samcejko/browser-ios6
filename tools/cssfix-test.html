@@ -206,6 +206,9 @@ cases.push(['html inline script transpiled', '<html><head></head><body><script>v
 // module scripts stay as they are (the old engine skips them and runs the nomodule fallback)
 cases.push(['html modules', '<html><head><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" data-br-src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>']);
+// rules with markers go to the manifest ("mk") so that the shim finds their elements with the selectors
+cases.push(['marker rules in the manifest', '.a{aspect-ratio:16/9}.b::before,.c{scroll-snap-type:x mandatory}.d{color:red}',
+  '.a{aspect-ratio:16/9;counter-reset:br-aspect 16000 br-aspect-h 9000}\n.b::before,.c{scroll-snap-type:x mandatory;counter-reset:br-snap-x 1 br-snap-m 1}\n.d{color:red}\n/*br-manifest:{"has":[],"cq":[],"mk":[{"h":"2vvegg","s":".a"},{"h":"tvuc23","s":".b::before,.c"}]}*/']);
 // viewport units against the page's layout viewport: device width with a viewport meta tag, 980 px without
 cases.push(['html viewport units with a viewport meta tag', '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>.a{width:50vw}</style></head><body><div style="height:10vh">x</div></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script><meta name="viewport" content="width=device-width, initial-scale=1"><style>/*br*/@media (orientation: portrait){.a{width:384px}}\n@media (orientation: landscape){.a{width:512px}}</style></head><body><div style="height:93px">x</div></body></html>']);
@@ -217,6 +220,20 @@ cases.push(['page reset does not hide the value', ':root{--a:initial}.b{backgrou
   null, '{"--a":"initial"}']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
+// the "mk" manifest entries (selectors of rules with markers) only where a case looks at them
+function stripMk(s) {
+  return s.replace(/\n?(\/\*br-manifest:|<!--br-manifest:)(\{[\s\S]*\})(\*\/|-->)/, function (all, open, json, close) {
+    var html = open.charAt(0) === '<', m;
+    try { m = JSON.parse(html ? json.replace(/-\\u002d/g, '--') : json.replace(/\*\\\//g, '*/')); } catch (e) { return all; }
+    if (!m.mk) return all;
+    delete m.mk;
+    var any = false;
+    for (var k in m) if (m.hasOwnProperty(k) && m[k] && m[k].length) any = true;
+    if (!any) return '';
+    var text = JSON.stringify(m).replace(/\*\//g, '*\\/');
+    return '\n' + open + (html ? text.replace(/--/g, '-\\u002d') : text) + close;
+  });
+}
 for (var i = 0; i < cases.length; i++) {
   var c = cases[i], got, ok;
   try {
@@ -230,6 +247,7 @@ for (var i = 0; i < cases.length; i++) {
     }
     // the page-state comment (calc / transition findings) only where a case looks at it
     if (c[2].indexOf('br-page:') < 0) got = got.replace(/\n(\/\*br-page:[^*]*\*\/|<!--br-page:[^>]*-->)/, '');
+    if (c[2].indexOf('"mk"') < 0) got = stripMk(got);
     ok = norm(got) === norm(c[2]);
   } catch (e) { got = 'EXCEPTION: ' + e.message + '\n' + (e.stack || ''); ok = false; }
   if (ok) pass++; else fail++;

@@ -1592,7 +1592,7 @@ var CSSFix = (function () {
 
     function manifestAdd(kind, entry) {
         if (g_suppressManifest) return;
-        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], seen: {} };
+        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], seen: {} };
         var key = kind + ':' + entry.h;
         if (g_manifest.seen[key]) return;
         g_manifest.seen[key] = true;
@@ -3526,6 +3526,12 @@ var CSSFix = (function () {
                 if (ownReset && !/^(none|inherit|initial|unset)$/i.test(trim(ownReset.v))) out.push({ p: 'counter-reset', v: ownReset.v + ' ' + markers.join(' '), imp: ownReset.imp });
                 else push(out, 'counter-reset', markers.join(' '), ownReset ? ownReset.imp : false);
             } else if (!ownReset) push(out, 'counter-reset', markerKeyword, false);
+            // the rule's selectors go to the manifest ("mk"): the shim looks for marked elements with them instead of
+            // reading the style of every element of the page
+            if (ctx.curSels && ctx.curSels.length && !keyframe) {
+                var mkSel = ctx.curSels.join(',');
+                manifestAdd('mk', { h: manifestHash('mk|' + mkSel), s: mkSel });
+            }
         }
         // a style attribute keeps its declarations with scoped custom properties after the static ones: the engine
         // drops them, the shim reads them back from the attribute
@@ -4643,12 +4649,13 @@ var CSSFix = (function () {
         var state = pageState(ctx);
         if (state && (kind !== 'html' || /<html|<head|<body/i.test(text))) out += kind === 'html' ? '\n<!--br-page:' + state + '-->' : '\n/*br-page:' + state + '*/';
         var manifest = null;
-        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length || g_manifest.sc.length)) {
+        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length || g_manifest.sc.length || g_manifest.mk.length)) {
             manifest = { has: g_manifest.has, cq: g_manifest.cq };
             if (g_manifest.dv.length) manifest.dv = g_manifest.dv;
             if (g_manifest.pt.length) manifest.pt = g_manifest.pt;
             if (g_manifest.cv.length) manifest.cv = g_manifest.cv;
             if (g_manifest.sc.length) manifest.sc = g_manifest.sc;
+            if (g_manifest.mk.length) manifest.mk = g_manifest.mk;
             // the entries ride along in the output (so a cached copy keeps them); "*/" cannot occur inside
             var json = JSON.stringify(manifest).replace(/\*\//g, '*\\/');
             out += kind === 'html' ? '\n<!--br-manifest:' + json.replace(/--/g, '-\\u002d') + '-->' : '\n/*br-manifest:' + json + '*/';
