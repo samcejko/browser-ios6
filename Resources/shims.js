@@ -37,17 +37,37 @@
         window.addEventListener('load', function () { stamp(['domInteractive', 'domContentLoadedEventStart', 'domContentLoadedEventEnd', 'domComplete', 'loadEventStart']); setTimeout(function () { stamp(['loadEventEnd']); }, 0); }, false);
     }
     if (!perf.navigation) perf.navigation = { type: 0, redirectCount: 0, TYPE_NAVIGATE: 0, TYPE_RELOAD: 1, TYPE_BACK_FORWARD: 2, TYPE_RESERVED: 255, toJSON: function () { return { type: this.type, redirectCount: this.redirectCount }; } };
+    // the entry interfaces (rohlik.cz: `entry instanceof PerformanceNavigationTiming` was a ReferenceError)
+    var perfClass = function (name, parent) {
+        if (window[name]) return window[name];
+        var C = function () { throw new TypeError('Illegal constructor'); };
+        try { C.prototype = Object.create(parent ? parent.prototype : Object.prototype); C.prototype.constructor = C; } catch (e) {}
+        window[name] = C;
+        return C;
+    };
+    var PerfEntry = perfClass('PerformanceEntry', null);
+    var PerfResource = perfClass('PerformanceResourceTiming', PerfEntry);
+    var PerfNavigation = perfClass('PerformanceNavigationTiming', PerfResource);
+    var PerfMark = perfClass('PerformanceMark', PerfEntry);
+    var PerfMeasure = perfClass('PerformanceMeasure', PerfEntry);
+    perfClass('PerformancePaintTiming', PerfEntry);
+    perfClass('PerformanceEventTiming', PerfEntry);
+    perfClass('PerformanceLongTaskTiming', PerfEntry);
+    perfClass('LargestContentfulPaint', PerfEntry);
+    perfClass('LayoutShift', PerfEntry);
+    perfClass('PerformanceObserverEntryList', null);
+    var perfObject = function (C, fields) { var o; try { o = Object.create(C.prototype); } catch (e) { o = {}; } for (var k in fields) if (fields.hasOwnProperty(k)) o[k] = fields[k]; return o; };
     if (!perf.getEntries) {
         // User Timing (mark / measure) and a navigation entry made from the timing above
         var entries = [];
         var navigationEntry = function () {
             var t = perf.timing, rel = function (v) { return v ? v - t0 : 0; };
-            var e = { name: location.href, entryType: 'navigation', startTime: 0, initiatorType: 'navigation', type: 'navigate', redirectCount: 0,
+            var e = perfObject(PerfNavigation, { name: location.href, entryType: 'navigation', startTime: 0, initiatorType: 'navigation', type: 'navigate', redirectCount: 0,
                       workerStart: 0, redirectStart: 0, redirectEnd: 0, fetchStart: 0, domainLookupStart: 0, domainLookupEnd: 0, connectStart: 0, connectEnd: 0,
                       secureConnectionStart: 0, requestStart: 0, responseStart: 0, responseEnd: 0, transferSize: 0, encodedBodySize: 0, decodedBodySize: 0,
                       unloadEventStart: 0, unloadEventEnd: 0, domInteractive: rel(t.domInteractive), domContentLoadedEventStart: rel(t.domContentLoadedEventStart),
                       domContentLoadedEventEnd: rel(t.domContentLoadedEventEnd), domComplete: rel(t.domComplete), loadEventStart: rel(t.loadEventStart), loadEventEnd: rel(t.loadEventEnd),
-                      nextHopProtocol: '', serverTiming: [] };
+                      nextHopProtocol: '', serverTiming: [] });
             e.duration = e.loadEventEnd;
             e.toJSON = function () { var o = {}; for (var k in this) if (typeof this[k] !== 'function') o[k] = this[k]; return o; };
             return e;
@@ -56,7 +76,7 @@
         perf.getEntries = function () { return all(); };
         perf.getEntriesByType = function (type) { var out = [], list = all(); for (var i = 0; i < list.length; i++) if (list[i].entryType === type) out.push(list[i]); return out; };
         perf.getEntriesByName = function (name, type) { var out = [], list = all(); for (var i = 0; i < list.length; i++) if (list[i].name === name && (!type || list[i].entryType === type)) out.push(list[i]); return out; };
-        var entry = function (name, type, start, duration, detail) { return { name: String(name), entryType: type, startTime: start, duration: duration, detail: detail === undefined ? null : detail, toJSON: function () { return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration, detail: this.detail }; } }; };
+        var entry = function (name, type, start, duration, detail) { return perfObject(type === 'mark' ? PerfMark : PerfMeasure, { name: String(name), entryType: type, startTime: start, duration: duration, detail: detail === undefined ? null : detail, toJSON: function () { return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration, detail: this.detail }; } }); };
         var timeOf = function (v) {
             if (typeof v === 'number') return v;
             if (typeof v === 'string') {
@@ -92,6 +112,7 @@
         window.PerformanceObserver = function () {};
         window.PerformanceObserver.prototype.observe = function () {};
         window.PerformanceObserver.prototype.disconnect = function () {};
+        window.PerformanceObserver.prototype.takeRecords = function () { return []; };
         window.PerformanceObserver.supportedEntryTypes = [];
     }
 
@@ -282,7 +303,9 @@
     if (!navigator.languages) try { navigator.languages = [navigator.language || 'en']; } catch (e4) {}
     if (!navigator.connection) navigator.connection = { effectiveType: '3g', saveData: false, addEventListener: function () {} };
     // navigator.clipboard is provided by shims-extra.js (writes go to the app)
-    if (!navigator.serviceWorker) navigator.serviceWorker = { register: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; }, getRegistrations: function () { return window.Promise ? window.Promise.resolve([]) : null; }, addEventListener: function () {}, controller: null, ready: window.Promise ? new window.Promise(function () {}) : null };
+    if (!navigator.serviceWorker) navigator.serviceWorker = { register: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; }, getRegistrations: function () { return window.Promise ? window.Promise.resolve([]) : null; },
+        getRegistration: function () { return window.Promise ? window.Promise.resolve(undefined) : null; }, startMessages: function () {}, addEventListener: function () {}, removeEventListener: function () {},
+        controller: null, oncontrollerchange: null, onmessage: null, ready: window.Promise ? new window.Promise(function () {}) : null };
     if (!navigator.storage) navigator.storage = { estimate: function () { return window.Promise ? window.Promise.resolve({ quota: 0, usage: 0 }) : null; } };
     if (!('onLine' in navigator)) navigator.onLine = true;
     if (!navigator.mediaDevices) navigator.mediaDevices = { getUserMedia: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; }, enumerateDevices: function () { return window.Promise ? window.Promise.resolve([]) : null; } };

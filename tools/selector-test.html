@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>selector retry test</title>
+</head>
+<body>
+<div id="root"><p class="a">a</p><p class="b">b</p><span class="c">c</span><ul id="list"><li>1</li><li>2</li></ul><input id="field"></div>
+<pre id="out"></pre>
+<script>
+// Selectors of today on the old engine (shims-extra "selectors ... that the old engine rejects"): each query must work
+// or give the same answer a current browser gives. Chrome passes natively.
+(function () {
+    var res = [], root = document.getElementById('root');
+    var check = function (name, fn, expect) {
+        var got;
+        try { got = fn(); } catch (e) { got = 'threw ' + e.message; }
+        res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+    };
+    check(':is() list', function () { return document.querySelectorAll('#root :is(.a, .c)').length; }, 2);
+    check(':where() list', function () { return root.querySelectorAll(':where(p, span).b, span').length; }, 2);
+    check(':not(a, b)', function () { return root.querySelectorAll('p:not(.a, .x)').length; }, 1);
+    check(':scope child', function () { return document.getElementById('list').querySelectorAll(':scope > li').length; }, 2);
+    check(':has() alternative dropped', function () { return root.querySelectorAll('p:has(b), span').length; }, 1);
+    check('matches :is', function () { return document.querySelector('.c').matches(':is(span, div)'); }, true);
+    check(':focus-visible', function () { return root.querySelectorAll('input:focus-visible').length; }, 0);
+    check('closest :is', function () { var c = document.querySelector('.c').closest(':is(#root, #none)'); return c ? c.id : null; }, 'root');
+    check('invalid stays invalid', function () { try { document.querySelector('p[['); return 'no'; } catch (e) { return 'threw'; } }, 'threw');
+    var pass = 0, lines = [];
+    for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+    document.getElementById('out').textContent = lines.join('\n');
+    document.title = 'selectors ' + pass + '/' + res.length;
+})();
+</script>
+</body>
+</html>

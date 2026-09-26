@@ -75,7 +75,24 @@ framerRuns.forEach(function (fr) {
   lines.push((ok ? 'OK   ' : 'FAIL ') + fr[0] + (ok ? '' : ': ' + info + ' ' + JSON.stringify(window.__framer) + ' ' + out.slice(0, 160)));
   if (ok) pass++;
 });
-CASES.length += 6;
+// `sym in obj` with a polyfilled Symbol (core-js on the old engine puts an accessor per symbol on Object.prototype):
+// the lowered code asks __br_in, which looks below Object.prototype
+(function () {
+  var RealSymbol = window.Symbol, ok = false, info = '';
+  var FakeSym = function (d) { var s = Object.create(FakeSym.prototype), tag = 'Symbol(' + d + ')_' + Math.random(); s._tag = tag; Object.defineProperty(Object.prototype, tag, { configurable: true, set: function (v) { Object.defineProperty(this, tag, { value: v, configurable: true, writable: true }); } }); return s; };
+  FakeSym.prototype.toString = function () { return this._tag; };
+  var code = '(function () { var s = Symbol("sb"); var a = {}, b = {}; b[s] = 1; class C {} return [s in a, s in b, "x" in a, s in new C()]; })()';
+  try {
+    window.Symbol = FakeSym;
+    var got = (0, eval)(JSFix.transpile(code, { force: true }));
+    ok = JSON.stringify(got) === JSON.stringify([false, true, false, false]);
+    info = JSON.stringify(got);
+  } catch (e) { info = 'error ' + e.message; }
+  window.Symbol = RealSymbol;
+  lines.push((ok ? 'OK   ' : 'FAIL ') + 'symbol in with a polyfilled Symbol' + (ok ? '' : ': ' + info));
+  if (ok) pass++;
+})();
+CASES.length += 7;
 document.getElementById('out').textContent = lines.join('\n');
 document.title = 'proxy ' + pass + '/' + CASES.length;
 </script>

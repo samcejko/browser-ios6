@@ -299,6 +299,18 @@
         __br_dsdel: function (el, key) {
             try { return delete el.dataset[key]; } catch (e) { return true; }
         },
+        // `k in o` where k may be a polyfilled symbol: core-js puts an accessor for every symbol on Object.prototype (so
+        // that obj[sym] = v works in an ES5 engine), and `sym in {}` came out true for every object (YouTube's signals
+        // then took every owner for a computed and threw "zc"); the symbol's key is looked for below Object.prototype
+        __br_in: function (k, o) {
+            var S = typeof Symbol === 'function' ? Symbol : null;
+            if (S && k !== null && typeof k === 'object' && S.prototype && Object.getPrototypeOf(k) === S.prototype && o !== null && (typeof o === 'object' || typeof o === 'function')) {
+                var key = String(k), OP = Object.prototype;
+                for (var p = o; p && p !== OP; p = Object.getPrototypeOf(p)) if (OP.hasOwnProperty.call(p, key)) return true;
+                return false;
+            }
+            return k in o;
+        },
         // async function expressions: Object.getPrototypeOf(async function () {}).constructor is an AsyncFunction
         // (Alpine compiles its expressions with it) whose functions return promises
         __br_asyncFn: function (fn) {
@@ -1171,6 +1183,8 @@
                 break;
             case 'BinaryExpression':
                 if (n.operator === '**') d = true;
+                // `key in obj` with a key that may be a symbol goes through a helper (see __br_in)
+                if (n.operator === 'in' && n.left.type !== 'PrivateIdentifier' && !(n.left.type === 'Literal' && (typeof n.left.value === 'string' || typeof n.left.value === 'number'))) { n.$in = true; d = true; }
                 if (n.left.type === 'PrivateIdentifier') { d = true; n.left.$p = n; } else if (this.v(n.left, n, s)) d = true;
                 if (this.v(n.right, n, s)) d = true;
                 break;
@@ -1797,6 +1811,7 @@
         var op = n.operator, p = BIN[op], code;
         if (op === '**') { code = 'Math.pow(' + this.E(n.left, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')'; this.prec = P_CALL; return code; }
         if (n.left.type === 'PrivateIdentifier') { code = quote(this.privName(n.left.name)) + ' in ' + this.E(n.right, 11); this.prec = 10; return code; }
+        if (n.$in) { code = this.h('__br_in') + '(' + this.E(n.left, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')'; this.prec = P_CALL; return code; }
         code = this.E(n.left, p) + ' ' + op + ' ' + this.E(n.right, p + 1);
         this.prec = p;
         return code;
@@ -3029,6 +3044,7 @@
             case 'UnaryExpression': return finish(n.operator + (/^[a-z]/.test(n.operator) ? ' ' : '') + this.gx(n.argument, false));
             case 'BinaryExpression': {
                 var l = viaTemp(null, n.left), r = viaTemp(null, n.right);
+                if (n.$in) return finish(this.h('__br_in') + '(' + l + ',' + r + ')');
                 return finish(n.operator === '**' ? 'Math.pow(' + l + ',' + r + ')' : l + ' ' + n.operator + ' ' + r);
             }
             case 'UpdateExpression': return finish(n.prefix ? n.operator + this.gx(n.argument, false) : this.gx(n.argument, false) + n.operator);

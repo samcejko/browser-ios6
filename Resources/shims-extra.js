@@ -5684,6 +5684,99 @@
         if (Ep.matches) Ep.matches = wrap(Ep.matches);
         if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector);
     })();
+    // ---- selectors of today that the old engine rejects with SYNTAX_ERR in querySelector(All) / matches (Adobe Launch
+    // on o2.cz, blesk.cz, zive.cz): the query is tried as written first; on that error :is()/:where() are spelled out,
+    // :not(a, b) becomes :not(a):not(b), :scope marks the element, :focus-visible is :focus, the state pseudo-classes
+    // become the classes the page shim keeps, and alternatives with :has() or "of S" (nothing to match them with here)
+    // are left out. When that does not parse either, the original error stands.
+    (function () {
+        if (!Ep || !document.querySelectorAll) return;
+        var STATES = { 'focus-within': '.br-focus-within', 'placeholder-shown': '.br-placeholder-shown', 'user-invalid': '.br-user-invalid',
+            'user-valid': '.br-user-valid', 'popover-open': '.br-popover-open', modal: '.br-modal', fullscreen: '.br-fullscreen', 'focus-visible': ':focus',
+            'any-link': ':link', defined: '', 'read-write': ':read-write', blank: '.br-blank', playing: '.br-playing', paused: '.br-paused' };
+        var splitList = function (s) {
+            var out = [], depth = 0, quote = '', start = 0;
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (c === ',' && depth === 0) { out.push(s.slice(start, i)); start = i + 1; }
+            }
+            out.push(s.slice(start));
+            return out;
+        };
+        var closeParen = function (s, open) {
+            var depth = 0;
+            for (var i = open; i < s.length; i++) { var c = s.charAt(i); if (c === '(') depth++; else if (c === ')' && --depth === 0) return i; }
+            return -1;
+        };
+        // one selector (no top-level commas) -> a list of selectors the old engine may take, [] when it cannot be had
+        var variants = function (sel) {
+            var m = /:(?:is|where|matches|-webkit-any)\(/i.exec(sel);
+            if (m) {
+                var open = m.index + m[0].length - 1, close = closeParen(sel, open);
+                if (close < 0) return [sel];
+                var inner = splitList(sel.slice(open + 1, close)), out = [];
+                for (var i = 0; i < inner.length; i++) out = out.concat(variants(sel.slice(0, m.index) + inner[i].replace(/^\s+|\s+$/g, '') + sel.slice(close + 1)));
+                return out;
+            }
+            if (/:has\(|:nth-(?:last-)?child\([^)]*\sof\s/i.test(sel)) return [];
+            var n = /:not\(/i.exec(sel);
+            while (n) {
+                var o = n.index + 4, c = closeParen(sel, o);
+                if (c < 0) break;
+                var parts = splitList(sel.slice(o + 1, c));
+                if (parts.length > 1) {
+                    var nots = '';
+                    for (var k = 0; k < parts.length; k++) nots += ':not(' + parts[k].replace(/^\s+|\s+$/g, '') + ')';
+                    sel = sel.slice(0, n.index) + nots + sel.slice(c + 1);
+                }
+                var next = /:not\(/i.exec(sel.slice(n.index + 5));
+                n = next ? { index: n.index + 5 + next.index } : null;
+            }
+            sel = sel.replace(/:([a-z-]+)(?![\w(-])/gi, function (all, name) { var s = STATES[name.toLowerCase()]; return s === undefined ? all : s; });
+            sel = sel.replace(/(\[[^\]"']*(?:"[^"]*"|'[^']*')?)\s+[is]\s*\]/g, '$1]');   // attribute case flags
+            return [sel];
+        };
+        var rewrite = function (sel) {
+            var parts = splitList(sel), out = [];
+            for (var i = 0; i < parts.length; i++) out = out.concat(variants(parts[i].replace(/^\s+|\s+$/g, '')));
+            return out;
+        };
+        var scopeSeq = 0;
+        var retry = function (el, sel, run, none) {
+            var list = rewrite(sel);
+            if (!list.length) return none();
+            var text = list.join(', '), marked = false;
+            if (/:scope\b/i.test(text)) {
+                if (el && el.nodeType === 1) { el.setAttribute('data-br-scope', String(++scopeSeq)); marked = true; text = text.replace(/:scope\b/gi, '[data-br-scope="' + scopeSeq + '"]'); }
+                else text = text.replace(/:scope\b/gi, ':root');
+            }
+            try { return run(text); } finally { if (marked) el.removeAttribute('data-br-scope'); }
+        };
+        var isSyntax = function (e) { return e && (e.code === 12 || /SYNTAX_ERR|SyntaxError/.test(String(e.name) + String(e.message))); };
+        var wrap = function (orig, none) {
+            return function (sel) {
+                try { return orig.apply(this, arguments); } catch (e) {
+                    if (typeof sel !== 'string' || !isSyntax(e)) throw e;
+                    var self = this;
+                    try { return retry(self, sel, function (text) { return orig.call(self, text); }, none); } catch (e2) { throw e; }
+                }
+            };
+        };
+        var emptyList = function () { return document.createDocumentFragment().querySelectorAll('br-none'); };
+        var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
+        for (var o = 0; o < owners.length; o++) {
+            if (!owners[o]) continue;
+            if (owners[o].querySelector) owners[o].querySelector = wrap(owners[o].querySelector, function () { return null; });
+            if (owners[o].querySelectorAll) owners[o].querySelectorAll = wrap(owners[o].querySelectorAll, emptyList);
+        }
+        if (Ep.matches) Ep.matches = wrap(Ep.matches, function () { return false; });
+        if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector, function () { return false; });
+        if (Ep.closest) Ep.closest = wrap(Ep.closest, function () { return null; });
+    })();
     // KeyboardEvent.key from keyCode
     if (window.KeyboardEvent && window.KeyboardEvent.prototype && !('key' in window.KeyboardEvent.prototype)) {
         var keyNames = { 8: 'Backspace', 9: 'Tab', 13: 'Enter', 16: 'Shift', 17: 'Control', 18: 'Alt', 20: 'CapsLock', 27: 'Escape', 32: ' ', 33: 'PageUp', 34: 'PageDown', 35: 'End', 36: 'Home', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 45: 'Insert', 46: 'Delete', 91: 'Meta', 93: 'ContextMenu', 186: ';', 187: '=', 188: ',', 189: '-', 190: '.', 191: '/', 192: '`', 219: '[', 220: '\\', 221: ']', 222: "'" };
@@ -7058,10 +7151,13 @@
         var add = function (Ctor, names, writable) {
             var proto = Ctor && Ctor.prototype;
             if (!proto) return;
+            // (only an instance's own attribute is read: on anything else inheriting from the prototype, a custom
+            // element's prototype for one, this[name] found this getter again and recursed until the stack ran out)
+            var own = Object.prototype.hasOwnProperty;
             for (var i = 0; i < names.length; i++) (function (name) {
-                if (Object.getOwnPropertyDescriptor(proto, name) || !(name in sample)) return;
-                var d = { configurable: true, enumerable: true, get: function () { return this === proto ? undefined : this[name]; } };
-                if (writable) d.set = function (v) { if (this !== proto) this[name] = v; };
+                if (Object.getOwnPropertyDescriptor(proto, name) || !(name in sample) || !own.call(sample, name)) return;
+                var d = { configurable: true, enumerable: true, get: function () { return this === proto || !own.call(this, name) ? undefined : this[name]; } };
+                if (writable) d.set = function (v) { if (this !== proto && own.call(this, name)) this[name] = v; };
                 try { Object.defineProperty(proto, name, d); } catch (e) {}
             })(names[i]);
         };
