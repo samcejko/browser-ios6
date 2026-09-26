@@ -238,6 +238,34 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
     malloc_zone_pressure_relief(NULL, 0);
 }
 
+// The engine's tiers: the interpreter, the baseline JIT and the optimizing JIT for hot code. Their switches are
+// JavaScriptCore's global JSC::Options (exported; JSC::initializeThreading sets the defaults once, and they are read
+// whenever a function is compiled). The optimizing JIT of this engine miscompiles some of today's minified code
+// (rohlik.cz: e[l++]+e[l++] read the same character twice and the page fell over; the interpreter alone got it right).
+// BRJSCMode: 0 all tiers, 1 no optimizing JIT, 2 the interpreter only (debugging; regular expressions keep their JIT).
+static const NSInteger BRJSCDefaultMode = 0;
+
++ (void)applyEngineTiers
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSInteger mode = [d objectForKey:@"BRJSCMode"] ? [d integerForKey:@"BRJSCMode"] : BRJSCDefaultMode;
+    void (*initialize)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "_ZN3JSC19initializeThreadingEv");
+    unsigned *candidates = (unsigned *)dlsym(RTLD_DEFAULT, "_ZN3JSC7Options44maximumOptimizationCandidateInstructionCountE");
+    int32_t *jitAfterWarmUp = (int32_t *)dlsym(RTLD_DEFAULT, "_ZN3JSC7Options26thresholdForJITAfterWarmUpE");
+    int32_t *jitSoon = (int32_t *)dlsym(RTLD_DEFAULT, "_ZN3JSC7Options19thresholdForJITSoonE");
+    if (!initialize || !candidates || !jitAfterWarmUp || !jitSoon) {
+        BRLog(@"JavaScriptCore tiers: the engine's switches were not found, all tiers stay");
+        return;
+    }
+    initialize();
+    unsigned oldCandidates = *candidates;
+    int32_t oldWarmUp = *jitAfterWarmUp;
+    if (mode >= 1) *candidates = 0;   // no function is small enough for the optimizing JIT
+    if (mode >= 2) { *jitAfterWarmUp = INT32_MAX; *jitSoon = INT32_MAX; }   // (the maximum: never)
+    BRLog(@"JavaScriptCore tiers: mode %ld (optimizing JIT for functions up to %u -> %u instructions, baseline JIT after %d -> %d runs)",
+          (long)mode, oldCandidates, *candidates, oldWarmUp, *jitAfterWarmUp);
+}
+
 // A bare JavaScriptCore context has no console, timers or globalThis; libraries expect them.
 static NSString * const BRContextPrelude =
 @"var globalThis = this; var self = this;"

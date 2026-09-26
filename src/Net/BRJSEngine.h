@@ -31,6 +31,8 @@ extern NSString * const BRJSEngineDidResetNotification;
 - (void)releaseContextNow;
 // Gives JavaScriptCore's free malloc pages back to the system (any thread; releasing a context does it too).
 + (void)returnFreeMemory;
+// Main thread, at launch before any script runs: which of the engine's compilers pages and engines use (BRJSCMode).
++ (void)applyEngineTiers;
 // Engine thread: the same once the engine has not been used for `seconds` and the process is above `minimumMB`
 // resident (0 = always). Heavy work leaves the heap large, which the other engines and the pages then lack.
 - (void)releaseWhenIdleFor:(NSTimeInterval)seconds aboveMB:(long)minimumMB;

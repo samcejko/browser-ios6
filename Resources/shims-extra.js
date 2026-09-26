@@ -5757,12 +5757,17 @@
             try { return run(text); } finally { if (marked) el.removeAttribute('data-br-scope'); }
         };
         var isSyntax = function (e) { return e && (e.code === 12 || /SYNTAX_ERR|SyntaxError/.test(String(e.name) + String(e.message))); };
+        var refusedLogged = 0;
         var wrap = function (orig, none) {
             return function (sel) {
                 try { return orig.apply(this, arguments); } catch (e) {
                     if (typeof sel !== 'string' || !isSyntax(e)) throw e;
                     var self = this;
-                    try { return retry(self, sel, function (text) { return orig.call(self, text); }, none); } catch (e2) { throw e; }
+                    try { return retry(self, sel, function (text) { return orig.call(self, text); }, none); } catch (e2) {
+                        // (debugging: which selector the retry could not take either)
+                        if (window.__brDebugErrors && refusedLogged < 5) { refusedLogged++; sendToApp('brlog', 'Selector refused: ' + sel.slice(0, 300) + ' page ' + location.hostname); }
+                        throw e;
+                    }
                 }
             };
         };

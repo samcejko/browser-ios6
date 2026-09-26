@@ -20,6 +20,8 @@
 {
     NSString *version = [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] ?: @"?";
     BRLog(@"Browser %@ starting on %@ (iOS %@)", version, [UIDevice currentDevice].model, [UIDevice currentDevice].systemVersion);
+    // before any script is compiled
+    [BRJSEngine applyEngineTiers];
 
     // Our own HTTP cache (filled explicitly by BRURLProtocol) and a permissive cookie jar, like a browser. The disk part
     // is big (the user offered 2.5 GB for caches: 1.5 GB here, 1 GB of lowered scripts): a page that comes back skips

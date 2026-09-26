@@ -158,6 +158,17 @@
         hidden(re, 'test', function (s) { return this.exec(s) !== null; });
         return re;
     };
+    // (debugging, BRDebugJSErrors: a pattern the engine refuses even after lowering goes to the app's log)
+    var logRefused = function (e, source, f) {
+        if (!G.__brDebugErrors || !G.document) return;
+        try {
+            var fr = G.document.createElement('iframe');
+            fr.style.display = 'none';
+            fr.src = 'brlog:' + encodeURIComponent('RegExp refused (' + e.message + '): /' + String(source).slice(0, 400) + '/' + f);
+            (G.document.body || G.document.documentElement).appendChild(fr);
+            setTimeout(function () { if (fr.parentNode) fr.parentNode.removeChild(fr); }, 100);
+        } catch (x) {}
+    };
     var BRRegExp = function RegExp(pattern, flags) {
         var isRe = pattern instanceof Native;
         if (!(this instanceof BRRegExp) && isRe && flags === undefined) return pattern;   // RegExp(re) is re
@@ -166,8 +177,8 @@
         try { return new Native(source, f); } catch (e) {
             if (!(e instanceof SyntaxError)) throw e;
             var l = lower(source, f);
-            if (!l) throw e;
-            return decorate(new Native(l.pattern, l.flags), l);
+            if (!l) { logRefused(e, source, f); throw e; }
+            try { return decorate(new Native(l.pattern, l.flags), l); } catch (e2) { logRefused(e2, source, f); throw e2; }
         }
     };
     BRRegExp.prototype = proto;
