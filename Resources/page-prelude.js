@@ -147,6 +147,109 @@
         try { window.CustomEvent = CE; } catch (e3) {}
     })();
 
+    // WebSQL (under this browser's IndexedDB): a transaction still waiting when its page is left - for the database file
+    // that the next page of the same site is writing - holds its callbacks and the page's window as roots as long as it
+    // waits; YouTube kept every page it was left for until iOS closed the app. So databases are opened by a hidden frame
+    // of the page: the roots are then that frame's window and small go-betweens of it, which reach the page's callbacks
+    // through a gate that closes when the page goes away. (No new transactions start after that.)
+    (function () {
+        var open = window.openDatabase;
+        if (typeof open !== 'function' || open.__brBoxed) return;
+        var fw = null, frame = null, gate = null, gates = [], make = null, calls = {}, next = 1;
+        var end = function (g) {
+            for (var i = 0; i < g.ids.length; i++) delete calls[g.ids[i]];
+            g.ids = [];
+            if (g.statements) {
+                for (var j = 0; j < g.statements.length; j++) end(g.statements[j]);
+                g.statements = [];
+            }
+        };
+        var Tx = function (n, g) { this.__brN = n; this.__brG = g; };
+        var dispatch = function (id, a, b) {
+            var c = calls[id];
+            if (!c) return;
+            var g = c.group, fn = c.fn;
+            if (c.kind === 'tx') return fn(g.tx || (g.tx = new Tx(a, g)));
+            end(g);
+            if (c.kind === 'st') return fn(g.tx, b);      // (statements: the page's transaction and the result or error)
+            if (c.kind === 'create') return fn(g.db);
+            return fn(a);                                  // (the transaction's error or success)
+        };
+        var helper = function () {
+            if (fw && frame.parentNode && frame.contentWindow === fw) return true;
+            fw = null;
+            try {
+                var root = document.head || document.documentElement;
+                if (!root) return false;
+                var f = document.createElement('iframe');
+                f.style.cssText = 'display:none!important';
+                f.setAttribute('aria-hidden', 'true');
+                f.tabIndex = -1;
+                root.appendChild(f);
+                var w = f.contentWindow;
+                if (!w || typeof w.openDatabase !== 'function') { root.removeChild(f); return false; }
+                make = w.Function('gate', 'id', 'return function (a, b) { var f = gate.f; if (f) return f(id, a, b); };');
+                gate = new w.Object();
+                gate.f = dispatch;
+                gates.push(gate);
+                frame = f;
+                fw = w;
+                return true;
+            } catch (e) { return false; }
+        };
+        var tramp = function (fn, kind, g) {
+            if (typeof fn !== 'function') return fn === undefined ? null : fn;
+            var id = next++;
+            calls[id] = { fn: fn, kind: kind, group: g };
+            g.ids.push(id);
+            return make(gate, id);
+        };
+        Tx.prototype.executeSql = function (sql, args, cb, err) {
+            var g = this.__brG, s = { ids: [], tx: this };
+            g.statements.push(s);
+            this.__brN.executeSql(sql, args, tramp(cb, 'st', s), tramp(err, 'st', s));
+        };
+        var Db = function (args) { this.__brArgs = args; this.__brN = null; this.__brW = null; };
+        var native = function (d) {
+            if (!helper()) throw new Error('The database is not available');
+            // (a frame the page removed is replaced; the database is opened again in the new one)
+            if (d.__brW !== fw) { d.__brN = fw.openDatabase.apply(fw, d.__brArgs); d.__brW = fw; }
+            return d.__brN;
+        };
+        try { Object.defineProperty(Db.prototype, 'version', { get: function () { return native(this).version; }, configurable: true }); } catch (e) {}
+        var run = function (k, n) {
+            return function () {
+                if (gone) return;
+                var a = Array.prototype.slice.call(arguments, 0, n + 3), g = { ids: [], tx: null, statements: [] };
+                a[n] = tramp(a[n], 'tx', g);
+                a[n + 1] = tramp(a[n + 1], 'end', g);
+                a[n + 2] = tramp(a[n + 2], 'end', g);
+                var d = native(this);
+                return d[k].apply(d, a);
+            };
+        };
+        Db.prototype.transaction = run('transaction', 0);
+        Db.prototype.readTransaction = run('readTransaction', 0);
+        Db.prototype.changeVersion = run('changeVersion', 2);
+        var od = function openDatabase(name, version, displayName, size, created) {
+            var d = new Db([name, version, displayName, size]);
+            if (gone) return d;
+            if (!helper()) return open.apply(window, arguments);
+            var g = { ids: [], db: d };
+            d.__brN = created === undefined ? fw.openDatabase(name, version, displayName, size) :
+                fw.openDatabase(name, version, displayName, size, tramp(created, 'create', g));
+            d.__brW = fw;
+            return d;
+        };
+        od.__brBoxed = true;
+        try { window.openDatabase = od; } catch (e1) {}
+        releases.push(function () {
+            for (var i = 0; i < gates.length; i++) gates[i].f = null;
+            gates = [];
+            calls = {};
+        });
+    })();
+
     window.addEventListener('pagehide', release, false);
     window.addEventListener('unload', release, false);
 })();
