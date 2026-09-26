@@ -13,6 +13,7 @@
 #import "BRWatchdog.h"
 #import "BRMemory.h"
 #import "BRCommon.h"
+#include <dlfcn.h>
 
 @implementation BRAppDelegate
 
@@ -210,6 +211,20 @@
         if ([target hasPrefix:@"goback?"]) [self.browserViewController goToHistoryItemAtIndex:[q[@"n"] integerValue]];
         else if ([target hasPrefix:@"type?"]) [self.browserViewController navigateToTypedText:q[@"text"] ?: @""];
         else [self.browserViewController answerAuthenticationWithUser:q[@"user"] ?: @"" password:q[@"password"] ?: @""];
+        return YES;
+    }
+    if ([target isEqualToString:@"screen"]) {
+        // browser:screen writes what the screen really shows to tmp/screen.png, videos included (the layers a snapshot
+        // cannot draw), through the system's own screen grab (private UIKit, resolved at run time)
+        CGImageRef (*grab)(void) = (CGImageRef (*)(void))dlsym(RTLD_DEFAULT, "UIGetScreenImage");
+        CGImageRef shot = grab ? grab() : NULL;
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"screen.png"];
+        BOOL ok = NO;
+        if (shot) {
+            ok = [UIImagePNGRepresentation([UIImage imageWithCGImage:shot]) writeToFile:path atomically:YES];
+            CGImageRelease(shot);
+        }
+        BRLog(@"Screen grab %@: %@", ok ? @"written to" : @"failed for", path);
         return YES;
     }
     if ([target isEqualToString:@"snapshot"]) {
