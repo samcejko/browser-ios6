@@ -4280,8 +4280,28 @@ var CSSFix = (function () {
     }
 
     // an inline script in ES2015+ syntax lowered by jsfix.js (loaded into the same context by the app); null: unchanged
+    // what a script costs the parser: a string literal counts as two characters (an inline script may carry a lot of
+    // markup in strings: Google's deferred search results, 800 KB, lower in about a second on the iPad)
+    function codeWeight(code) {
+        var weight = 0, n = code.length, i = 0, c, q;
+        while (i < n) {
+            c = code.charCodeAt(i);
+            if (c === 34 || c === 39) {
+                q = c;
+                i++;
+                while (i < n) { c = code.charCodeAt(i); if (c === 92) { i += 2; continue; } i++; if (c === q || c === 10) break; }
+                weight += 2;
+                continue;
+            }
+            weight++;
+            i++;
+        }
+        return weight;
+    }
+
     function transpileInline(code) {
-        if (typeof JSFix === 'undefined' || !code || !/[^\s]/.test(code) || code.length > 600000) return null;
+        if (typeof JSFix === 'undefined' || !code || !/[^\s]/.test(code)) return null;
+        if (code.length > 600000 && (code.length > 4000000 || codeWeight(code) > 400000)) return null;
         var key = hashString(code);
         if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
         var out = null;
