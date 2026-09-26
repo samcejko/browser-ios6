@@ -8,17 +8,25 @@
 #include <mach/mach.h>
 #include <unistd.h>
 
-NSString * const BRMemoryEmergencyNotification = @"BRMemoryEmergencyNotification";
 NSString * const BRMemoryGraphicsNotification = @"BRMemoryGraphicsNotification";
 
 // Levels by what the whole system has available (free + inactive + purgeable). Measured on the iPad 2 (512 MB):
 // with nothing open about 220-250 MB are available, iOS warns at 40-60 MB and kills the frontmost app at 15-25 MB
 // (memory can drop 15 MB in a few seconds while a big script is lowered, so the last resort starts well above that).
-static const long BRAvailTightMB = 100, BRAvailCriticalMB = 70, BRAvailEmergencyMB = 45;
+static const long BRAvailTightMB = 100, BRAvailCriticalMB = 70, BRAvailEmergencyMB = 55;
 static volatile BOOL g_pageLoading;
 static CFAbsoluteTime g_loadEnded;
-static CFAbsoluteTime g_lastEmergency;
 static CFAbsoluteTime g_lastGraphics;
+// The last resort: at the emergency level new requests wait (holdLoad:) until the critical level is left again, a
+// few per sample then (all at once would bring the shortage back); after BRHoldPatience seconds they go one by one
+// anyway, every BRHoldTrickle seconds, so that a page whose own memory never goes down still gets on. It used to stop
+// the page load, which also ended the page's running scripts (YouTube and Google broke).
+static const NSTimeInterval BRHoldPatience = 30, BRHoldTrickle = 1.5;
+static const NSUInteger BRHoldReleasePerSample = 4;
+static volatile BOOL g_holding;
+static NSMutableArray *g_heldLoads;
+static NSUInteger g_heldTotal;
+static CFAbsoluteTime g_holdSince, g_lastTrickle;
 // The page's graphics are too big when its layers hold this much (estimated; a normal page has 2-12 MB, one that
 // runs away grows by 50 MB a second: 41 -> 268 MB in 5 s on CNN) or there are this many of them (a composited video
 // or fixed box makes everything painted over it a layer too: 469 on CNN), less when the system is short, or when
@@ -189,7 +197,7 @@ static BOOL BRPageBusy(void)
     for (;;) {
         @autoreleasepool {
             BRMemoryLevel level = [self sample];
-            usleep(BRPageBusy() || level >= BRMemoryLevelTight ? 500000 : 2000000);
+            usleep(BRPageBusy() || level >= BRMemoryLevelTight || g_holding ? 500000 : 2000000);
         }
     }
 }
@@ -293,13 +301,54 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
         NSString *why = level >= BRMemoryLevelCritical ? [NSString stringWithFormat:@"%ld MB available", available] : [NSString stringWithFormat:@"%ld MB", mb];
         dispatch_async(dispatch_get_main_queue(), ^{ [BRMemory relieve:why]; });
     }
-    // the last resort while a page loads: stop loading it, so that iOS does not have to close the app
-    if (level == BRMemoryLevelEmergency && g_pageLoading && now - g_lastEmergency > 15) {
-        g_lastEmergency = now;
-        BRLog(@"Memory emergency: %ld MB available, %ld MB used: the page load is stopped", available, mb);
-        dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:BRMemoryEmergencyNotification object:nil]; });
+    // the last resort: new requests wait until memory is back (relief above frees what it can meanwhile)
+    if (!g_holding && level == BRMemoryLevelEmergency) {
+        @synchronized (self) { g_holding = YES; g_holdSince = now; g_lastTrickle = now; g_heldTotal = 0; }
+        BRLog(@"Memory emergency: %ld MB available, %ld MB used: new requests wait until memory is back", available, mb);
+        if (now - g_lastRelief > 3) {
+            g_lastRelief = now;
+            dispatch_async(dispatch_get_main_queue(), ^{ [BRMemory relieve:@"requests wait"]; });
+        }
+    }
+    if (g_holding) {
+        NSUInteger waiting, total;
+        @synchronized (self) { waiting = g_heldLoads.count; total = g_heldTotal; }
+        if (available >= BRAvailCriticalMB) {
+            [self releaseHeld:BRHoldReleasePerSample];
+            BOOL done = NO;
+            @synchronized (self) { if (!g_heldLoads.count) { g_holding = NO; done = YES; } }
+            if (done) BRLog(@"Memory back (%ld MB available): %lu requests waited, %ld s", available, (unsigned long)total, (long)(now - g_holdSince));
+        } else if (waiting && now - g_holdSince > BRHoldPatience && now - g_lastTrickle >= BRHoldTrickle) {
+            g_lastTrickle = now;
+            [self releaseHeld:1];
+        }
     }
     return level;
+}
+
++ (BOOL)holdLoad:(dispatch_block_t)start
+{
+    if (!g_holding || !start) return NO;
+    @synchronized (self) {
+        if (!g_holding) return NO;
+        if (!g_heldLoads) g_heldLoads = [NSMutableArray array];
+        [g_heldLoads addObject:[start copy]];
+        g_heldTotal++;
+    }
+    return YES;
+}
+
+// the sampler thread: the oldest held requests go on
++ (void)releaseHeld:(NSUInteger)count
+{
+    NSMutableArray *go = [NSMutableArray array];
+    @synchronized (self) {
+        while (go.count < count && g_heldLoads.count) {
+            [go addObject:g_heldLoads[0]];
+            [g_heldLoads removeObjectAtIndex:0];
+        }
+    }
+    for (dispatch_block_t start in go) start();
 }
 
 // the WebThread, or a thread holding the web lock

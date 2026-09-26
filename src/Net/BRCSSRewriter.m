@@ -405,7 +405,9 @@ static CGFloat g_devicePixelRatio = 1;
     BOOL lazyPart = [url.host isEqualToString:@"ios6-browser.invalid"];
     NSDate *noRoom = nil;
     @synchronized (self) { noRoom = _noRoom[key]; }
-    NSTimeInterval patience = (noRoom && -[noRoom timeIntervalSinceNow] < 120) ? 0 : lazyPart ? 10 : 30;
+    // (a script left as it is breaks the page: better slower, since the page's new requests wait meanwhile anyway; a
+    // factory asked for synchronously holds the page's thread, and the screen with it: shorter)
+    NSTimeInterval patience = (noRoom && -[noRoom timeIntervalSinceNow] < 120) ? 0 : lazyPart ? 10 : 60;
     BOOL fits = patience > 0 ? [BRMemory waitForAvailableMB:need timeout:patience reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
                              : [BRMemory availableMB] >= need;
     if (!fits && [BRMemory availableMB] < BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (2 * 1024 * 1024))) {

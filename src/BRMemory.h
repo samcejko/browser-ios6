@@ -8,9 +8,8 @@ typedef NS_ENUM(NSInteger, BRMemoryLevel) {
     BRMemoryLevelNormal = 0,
     BRMemoryLevelTight,        // heavy work waits for relief first
     BRMemoryLevelCritical,     // everything that can be freed is freed
-    BRMemoryLevelEmergency,    // the page load is stopped (BRMemoryEmergencyNotification) so that the app survives
+    BRMemoryLevelEmergency,    // new requests wait too (holdLoad:): the page loads slower, nothing is stopped
 };
-extern NSString * const BRMemoryEmergencyNotification;   // posted on the main thread while a page loads
 // posted on the main thread when the page's graphics (composited layers) eat the memory: the page should be drawn
 // without accelerated compositing
 extern NSString * const BRMemoryGraphicsNotification;
@@ -26,8 +25,13 @@ extern NSString * const BRMemoryGraphicsNotification;
 
 // Starts the sampler thread (every 2 s, every 0.5 s while a page loads or memory is short): logs jumps, tracks the
 // peak of the current page, asks the main thread for relief when the process crosses BRMemoryReliefMB (0 = off) or
-// the system runs short, and posts BRMemoryEmergencyNotification as the last resort.
+// the system runs short, and as the last resort holds new requests (holdLoad:) until memory is back.
 + (void)start;
+// A page's new request while the iPad is nearly out of memory: `start` runs later (on the sampler thread), when
+// memory is back, or one after another after a while even if it is not. The page loads slower instead of being
+// stopped (which also ended its running scripts) or the app being closed by iOS. NO when nothing needs to wait
+// (`start` is not kept). Any thread.
++ (BOOL)holdLoad:(dispatch_block_t)start;
 + (void)resetPeak;
 + (long)peakMB;
 
@@ -45,7 +49,7 @@ extern NSString * const BRMemoryGraphicsNotification;
 // what it can (the calling engine's heap at once, the rest through relief) and waits up to `timeout` seconds for the
 // system to catch up (the page loads slower instead of the app being killed). YES when the room is there.
 + (BOOL)waitForAvailableMB:(long)needMB timeout:(NSTimeInterval)timeout reason:(NSString *)reason engine:(BRJSEngine *)engine;
-// The watchdog tells whether a page is loading (the emergency stop only applies then).
+// The watchdog tells whether a page is loading (memory is sampled more often then).
 + (void)setPageLoading:(BOOL)loading;
 
 // The web view's layer: the graphics memory of the page (document tiles and composited layers, drawn by the GPU

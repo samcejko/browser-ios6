@@ -7,6 +7,7 @@
 #import "BRSpeech.h"
 #import "BRCommon.h"
 #import "BRSettings.h"
+#import "BRMemory.h"
 
 static const NSUInteger BRMaxRewriteBody = 4 * 1024 * 1024;
 
@@ -464,11 +465,14 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     if (stored && !BRHeader(headers, @"Authorization")) headers[@"Authorization"] = stored;
     NSData *body = request.HTTPBody ?: BRReadBodyStream(request.HTTPBodyStream);
 
-    // 3. Go
+    // 3. Go (a page's request waits while the iPad is nearly out of memory: see BRMemory holdLoad:)
     BOOL mainDocument = !request.mainDocumentURL || [url isEqual:request.mainDocumentURL];
     if (mainDocument) BRLog(@"%@ %@ (main document)", method, url.absoluteString);
     self.counted = YES;
     BRProgressRequestStarted(request);
+    if (!mainDocument && [BRMemory holdLoad:^{
+        [self performOnClientThread:^{ if (!self.httpRequest) [self sendRequestWithMethod:method headers:headers body:body]; }];
+    }]) return;
     [self sendRequestWithMethod:method headers:headers body:body];
 }
 

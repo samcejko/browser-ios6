@@ -77,7 +77,6 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, copy) NSString *currentTitle;
 @property (nonatomic, strong) NSURL *currentURL;               // last main frame URL that was navigated to
 @property (nonatomic, strong) NSURL *crashedURL;               // the page the previous run died loading (offered again)
-@property (nonatomic) BOOL memoryStopShown;                    // the "page too large" note of this load was shown
 @property (nonatomic) BOOL compositingOff;                     // accelerated compositing is off (the page's graphics were too big)
 @property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https fails
 @property (nonatomic) BOOL editingAddress;
@@ -418,7 +417,6 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(privateModeChanged:) name:@"BRPrivateModeDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageStyleChanged:) name:@"BRPageStyleDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openURLNotification:) name:@"BROpenURLNotification" object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(memoryEmergency:) name:BRMemoryEmergencyNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(graphicsMemoryHigh:) name:BRMemoryGraphicsNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageDocumentArrived:) name:BRPageDocumentNotification object:nil];
     [self privateModeChanged:nil];
@@ -1257,28 +1255,12 @@ static void BRWebThreadLock(void)
     // the page being loaded, written at once: when iOS kills the app for memory in the middle of it, the next launch
     // knows not to load it again by itself (see viewDidLoad)
     if (loading != was) {
-        if (loading) self.memoryStopShown = NO;
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         NSString *url = self.currentURL.absoluteString;
         if (loading && url.length && ![BRSettings isHomeURL:self.currentURL]) [d setObject:url forKey:@"BRLoadingURL"];
         else [d removeObjectForKey:@"BRLoadingURL"];
         [d synchronize];
     }
-}
-
-// the iPad is about to run out of memory while this page loads: the load stops (and the scripts waiting to be lowered
-// are dropped) so that iOS does not close the app; what loaded so far stays usable
-- (void)memoryEmergency:(NSNotification *)note
-{
-    if (!self.loading || self.memoryStopShown) return;
-    self.memoryStopShown = YES;
-    [BRCSSRewriter cancelPendingWork];
-    [self.webView stopLoading];
-    NSString *host = self.currentURL.host ?: self.currentURL.absoluteString ?: @"";
-    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Page too large")
-                                                    message:[NSString stringWithFormat:L(@"The iPad is running out of memory: %@ stopped loading so that the app stays open. What loaded so far works."), host]
-                                                   delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil];
-    [alert show];
 }
 
 // the page's composited layers eat the iPad's memory: it is drawn without them from now on (and the site is
