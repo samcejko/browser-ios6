@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 // keep: NO when the output is only a stand-in for this time (the original of a script left unlowered for lack of
 // memory, or of a text the rewriter could not take): it must not be cached, a later visit rewrites it
@@ -11,6 +12,8 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 
 + (instancetype)shared;
 + (void)warmUp;
+// The web view's size and orientation (main thread, on every layout): viewport units in pages become pixels of it.
++ (void)noteWebViewSize:(CGSize)size landscape:(BOOL)landscape;
 
 @property (nonatomic, readonly) BOOL available;
 

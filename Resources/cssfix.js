@@ -1166,8 +1166,51 @@ var CSSFix = (function () {
         return trim(args[0]);
     }
 
-    // viewport of the page being rewritten (set by run()), for clamp()/min()/max() with viewport units
+    // viewport of the page being rewritten (set by run()), for media-progress()
     var g_viewportWidth = 768, g_viewportHeight = 1024;
+    // Viewport units. Inside UIWebView the old engine measures vw/vh against the whole document (the web view is
+    // as large as the page, the scroll view around it shows a part): 100vh was the page's full height, 100vw its
+    // scroll width, and a box sized by them made the page larger still (sport.cz's header: 11043 px). They become
+    // pixels of the layout viewport: a rule's declarations with them go into orientation media queries right after
+    // the rule, one pixel value per orientation (g_vpPortrait / g_vpLandscape, from the app's web view size);
+    // style attributes and keyframes... see VP_UNIT_RE. g_vpW/g_vpH: the viewport the current pass converts with.
+    var g_vpPortrait = { w: 768, h: 930 }, g_vpLandscape = { w: 1024, h: 674 }, g_vpCurrent = g_vpPortrait;
+    var g_vpW = 768, g_vpH = 930;
+    var VP_UNIT_RE = /\d(?:[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max))\b/i;
+    function hasViewportUnits(v) { return VP_UNIT_RE.test(v) && VP_UNIT_RE.test(v.replace(/url\([^)]*\)|"[^"]*"|'[^']*'/g, '')); }
+    function setViewportPass(dims) { g_vpW = dims.w; g_vpH = dims.h; }
+    // the page is laid out `lw` px wide (0: the device width; 980 without a viewport meta tag)
+    function applyLayoutWidth(ctx, lw) {
+        ctx.layoutWidth = lw;
+        ctx.vpCurrent = layoutViewport(g_vpCurrent, lw);
+        setViewportPass(ctx.vpCurrent);
+    }
+    // the layout width a page's <meta name="viewport"> asks for (0: device width), or null for a fragment
+    function metaLayoutWidth(html) {
+        var tag = /<meta\b[^>]*\bname\s*=\s*["']?viewport\b[^>]*>/i.exec(html);
+        if (!tag) return /<head\b|<body\b|<html\b/i.test(html) ? 980 : null;
+        var cm = /\bcontent\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag[0]);
+        var c = cm ? (cm[2] !== undefined ? cm[2] : cm[3] !== undefined ? cm[3] : cm[4]) : '';
+        var wm = /(?:^|[,;\s])width\s*=\s*([\w.-]+)/i.exec(c);
+        if (wm) return /device-width/i.test(wm[1]) ? 0 : (parseFloat(wm[1]) > 0 ? Math.round(parseFloat(wm[1])) : 0);
+        return /initial-scale/i.test(c) ? 0 : 980;
+    }
+    var INSET_SIDES = { top: 1, right: 1, bottom: 1, left: 1 }, TRANSFORM_FAMILY = { transform: 1, translate: 1, rotate: 1, scale: 1 };
+    // whether declarations of a and b set (part of) the same thing: margin / margin-left, inset / top, ...
+    function propsOverlap(a, b) {
+        if (a === b || a.indexOf(b + '-') === 0 || b.indexOf(a + '-') === 0) return true;
+        if ((a === 'inset' && INSET_SIDES[b]) || (b === 'inset' && INSET_SIDES[a])) return true;
+        return !!(TRANSFORM_FAMILY[a] && TRANSFORM_FAMILY[b]);
+    }
+    function overlapsAny(p, list) {
+        for (var i = 0; i < list.length; i++) if (propsOverlap(p, list[i])) return true;
+        return false;
+    }
+    // the layout viewport of a page laid out `layoutWidth` px wide (0: device width) in the app's view of `view` size
+    function layoutViewport(view, layoutWidth) {
+        if (!layoutWidth || layoutWidth === view.w) return view;
+        return { w: layoutWidth, h: Math.round(layoutWidth * view.h / view.w) };
+    }
 
     // ---- manifest for the page shim: :has() selectors and @container queries the engine cannot evaluate are
     // rewritten to classes (.br-has-<hash>, .br-cq-<hash>) that shims-extra.js toggles on the elements; the
@@ -1571,10 +1614,10 @@ var CSSFix = (function () {
             case '': return { n: n, u: '' };
             case 'px': return { n: n, u: 'px' };
             case '%': return { n: n, u: '%' };
-            case 'vw': return { n: n * g_viewportWidth / 100, u: 'px' };
-            case 'vh': return { n: n * g_viewportHeight / 100, u: 'px' };
-            case 'vmin': return { n: n * Math.min(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
-            case 'vmax': return { n: n * Math.max(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
+            case 'vw': return { n: n * g_vpW / 100, u: 'px' };
+            case 'vh': return { n: n * g_vpH / 100, u: 'px' };
+            case 'vmin': return { n: n * Math.min(g_vpW, g_vpH) / 100, u: 'px' };
+            case 'vmax': return { n: n * Math.max(g_vpW, g_vpH) / 100, u: 'px' };
             case 'rem': case 'em': case 'ic': case 'ric': return { n: n * 16, u: 'px' };
             case 'lh': case 'rlh': return { n: n * 16 * 1.2, u: 'px' };
             case 'cap': case 'rcap': return { n: n * 16 * 0.7, u: 'px' };
@@ -1937,8 +1980,13 @@ var CSSFix = (function () {
             v = v.replace(/(\d)(dvh|svh|lvh|cqh|cqb|vb|svb|lvb|dvb)\b/g, '$1vh').replace(/(\d)(dvw|svw|lvw|cqw|cqi|vi|svi|lvi|dvi)\b/g, '$1vw')
                  .replace(/(\d)(cqmin|svmin|lvmin|dvmin)\b/g, '$1vmin').replace(/(\d)(cqmax|svmax|lvmax|dvmax)\b/g, '$1vmax');
         }
-        // vmax is missing in this engine: the larger viewport side does not change with the orientation
-        if (/\dvmax\b/.test(v)) v = v.replace(/(-?\d*\.?\d+)vmax\b/g, function (m, n) { return (Math.round(parseFloat(n) * Math.max(g_viewportWidth, g_viewportHeight)) / 100) + 'px'; });
+        // viewport units as pixels of the pass's viewport (see VP_UNIT_RE); addresses and strings stay as they are
+        if (/\dv(w|h|min|max)\b/i.test(v)) v = v.replace(/url\([^)]*\)|"[^"]*"|'[^']*'|(-?\d*\.?\d+)(vw|vh|vmin|vmax)\b/gi, function (m, n, u) {
+            if (!u) return m;
+            u = u.toLowerCase();
+            var base = u === 'vw' ? g_vpW : u === 'vh' ? g_vpH : u === 'vmin' ? Math.min(g_vpW, g_vpH) : Math.max(g_vpW, g_vpH);
+            return (Math.round(parseFloat(n) * base) / 100) + 'px';
+        });
         // font-relative units the engine lacks, as their typical em/rem equivalents
         if (/\d(lh|rlh|cap|rcap|ic|ric|rex|rch)\b/.test(v)) v = v.replace(/(-?\d*\.?\d+)(lh|rlh|cap|rcap|ic|ric|rex|rch)\b/g, function (m, num, unit) {
             var f = FONT_UNITS[unit];
@@ -2732,6 +2780,8 @@ var CSSFix = (function () {
         var flexPush = autoLeft !== autoRight;
         var out = [];
         var rt = !keyframe && g_manifest !== false ? ctx.rt : null;
+        // declarations with viewport units go to the orientation rules (see VP_UNIT_RE and transformRules)
+        var vpList = !keyframe && !ctx.vpPass && ctx.vpDecls ? ctx.vpDecls : null, vpProps = null;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             var p = d.p, imp = d.imp;
@@ -2767,6 +2817,16 @@ var CSSFix = (function () {
                 if (dvFallback !== null && !DV_PROPS[p]) push(out, p, fixValue(p, dvFallback), imp);
                 push(out, p, v, imp);   // the engine drops it; kept for reference
                 continue;
+            }
+            if (vpList) {
+                if (hasViewportUnits(v)) {
+                    vpList.push({ p: p, v: v, imp: imp });
+                    (vpProps || (vpProps = [])).push(p);
+                    continue;
+                }
+                // a later declaration of the same property (or of a longhand / shorthand of it) follows it into the
+                // orientation rules, so that it still wins there as it did in the rule
+                if (vpProps && overlapsAny(p, vpProps)) vpList.push({ p: p, v: v, imp: imp });
             }
             v = fixValue(p, v);
             // keyframes blend their values, and a calc length there crashes the old engine (see approximateCalc)
@@ -4038,6 +4098,49 @@ var CSSFix = (function () {
         return m ? (Math.round(parseFloat(m[1]) * 50) / 100) + m[2] : v;
     }
 
+    // whether the keyframes of an animation use viewport units (see VP_UNIT_RE)
+    function keyframesUseViewport(rules) {
+        for (var i = 0; i < rules.length; i++) {
+            var ds = rules[i].decls;
+            if (ds) for (var k = 0; k < ds.length; k++) if (hasViewportUnits(ds[k].v)) return true;
+        }
+        return false;
+    }
+    // "screen and (min-width: 600px)" + "(orientation: portrait)" -> one query list meaning both (null: never true)
+    function joinMedia(outer, inner) {
+        var a = splitTop(outer, ','), b = splitTop(inner, ','), out = [];
+        for (var i = 0; i < a.length; i++) for (var k = 0; k < b.length; k++) {
+            var q = joinQuery(trim(a[i]), trim(b[k]));
+            if (q) out.push(q);
+        }
+        return out.length ? out.join(', ') : null;
+    }
+    function joinQuery(a, b) {
+        var pa = queryParts(a), pb = queryParts(b);
+        if (!pa || !pb) return null;
+        if (pa.type && pb.type && pa.type !== pb.type) return null;
+        var type = pa.type || pb.type, rest = pa.rest.concat(pb.rest);
+        return (type ? type + (rest.length ? ' and ' : '') : '') + rest.join(' and ');
+    }
+    // {type, rest: [features]} of one media query ("all" counts as no type); null for "not ..." queries
+    function queryParts(q) {
+        var lq = q.toLowerCase();
+        if (/^not\b/.test(lq)) return null;
+        q = q.replace(/^only\s+/i, '');
+        var type = '', m = /^([a-z-]+)\s*(?:\band\b\s*)?/i.exec(q);
+        if (m && q.charAt(0) !== '(') { type = m[1].toLowerCase(); q = q.slice(m[0].length); }
+        if (type === 'all') type = '';
+        var rest = [], parts = trim(q) ? splitTop(q, ' ') : [], cur = '';
+        for (var i = 0; i < parts.length; i++) {
+            var p = trim(parts[i]);
+            if (!p) continue;
+            if (p.toLowerCase() === 'and') { if (cur) rest.push(cur); cur = ''; }
+            else cur = cur ? cur + ' ' + p : p;
+        }
+        if (cur) rest.push(cur);
+        return { type: type, rest: rest };
+    }
+
     function transformRules(rules, ctx, keyframe) {
         var out = [];
         for (var i = 0; i < rules.length; i++) {
@@ -4045,11 +4148,12 @@ var CSSFix = (function () {
             if (r.t === 'q') {
                 var sels = keyframe ? [r.sel] : fixSelectorList(r.sel);
                 if (!sels.length) continue;
-                var prevSels = ctx.curSels, prevCond = ctx.condRules, prevDefs = ctx.cvDefs, prevUses = ctx.cvUses;
+                var prevSels = ctx.curSels, prevCond = ctx.condRules, prevDefs = ctx.cvDefs, prevUses = ctx.cvUses, prevVp = ctx.vpDecls;
                 ctx.curSels = keyframe ? null : sels;
                 ctx.condRules = keyframe ? null : [];
                 ctx.cvDefs = ctx.rt && !keyframe ? [] : null;
                 ctx.cvUses = ctx.rt && !keyframe ? [] : null;
+                ctx.vpDecls = keyframe || ctx.vpPass ? null : [];
                 ctx.rowWrapRule = false;
                 var decls = fixDeclarations(r.decls, ctx, keyframe);
                 var rowWrap = ctx.rowWrapRule;   // (a remembered column flex container turned into a wrapping row)
@@ -4057,15 +4161,24 @@ var CSSFix = (function () {
                 if (ctx.cvDefs && (ctx.cvDefs.length || ctx.cvUses.length)) registerVarRule(ctx, sels, ctx.cvDefs, ctx.cvUses);
                 ctx.cvDefs = prevDefs;
                 ctx.cvUses = prevUses;
-                var condRules = ctx.condRules;
+                var condRules = ctx.condRules, vpDecls = ctx.vpDecls;
                 ctx.condRules = null;
+                ctx.vpDecls = prevVp;
+                if (vpDecls && vpDecls.length) {
+                    // viewport units: the declarations again per orientation, in the page's layout viewport pixels
+                    condRules.push({ m: '(orientation: portrait)', decls: vpDecls, vp: layoutViewport(g_vpPortrait, ctx.layoutWidth) },
+                                   { m: '(orientation: landscape)', decls: vpDecls, vp: layoutViewport(g_vpLandscape, ctx.layoutWidth) });
+                }
                 if (condRules && condRules.length) {
-                    // if() media branches: the same selectors inside @media, after the rule
+                    // if() media branches and orientation rules: the same selectors inside @media, after the rule
                     for (var ci = 0; ci < condRules.length; ci++) {
                         var cr0 = condRules[ci];
                         if (!ctx.mediaStack) ctx.mediaStack = [];
                         ctx.mediaStack.push(cr0.m);
-                        var cdecls = fixDeclarations([{ p: cr0.p, v: cr0.v, imp: cr0.imp }], ctx, false);
+                        var vpBefore = ctx.vpPass;
+                        if (cr0.vp) { ctx.vpPass = true; setViewportPass(cr0.vp); }
+                        var cdecls = fixDeclarations(cr0.decls || [{ p: cr0.p, v: cr0.v, imp: cr0.imp }], ctx, false);
+                        if (cr0.vp) { ctx.vpPass = vpBefore; setViewportPass(ctx.vpCurrent || g_vpCurrent); }
                         ctx.mediaStack.pop();
                         if (cdecls.length) condRules[ci] = { t: 'at', name: 'media', prelude: cr0.m, rules: [{ t: 'q', sel: sels.join(','), decls: cdecls }], decls: null, raw: null };
                         else condRules[ci] = null;
@@ -4152,7 +4265,18 @@ var CSSFix = (function () {
                 ctx.mediaStack.push(fixedMedia);   // deferred values remember the media queries around them
                 sub = transformRules(r.rules, ctx, keyframe);
                 ctx.mediaStack.pop();
-                if (sub.length) out.push({ t: 'at', name: 'media', prelude: fixedMedia, rules: sub, decls: null, raw: null });
+                // the old engine ignores @media inside @media (nesting, if() branches, orientation rules): an inner
+                // block goes out on its own with both queries joined, the rules around it keep their order
+                var seg = [];
+                for (k = 0; k < sub.length; k++) {
+                    var sr = sub[k];
+                    if (sr.t === 'at' && sr.name === 'media' && sr.rules) {
+                        if (seg.length) { out.push({ t: 'at', name: 'media', prelude: fixedMedia, rules: seg, decls: null, raw: null }); seg = []; }
+                        var joined = joinMedia(fixedMedia, sr.prelude);
+                        if (joined) out.push({ t: 'at', name: 'media', prelude: joined, rules: sr.rules, decls: null, raw: null });
+                    } else seg.push(sr);
+                }
+                if (seg.length) out.push({ t: 'at', name: 'media', prelude: fixedMedia, rules: seg, decls: null, raw: null });
             } else if (name === 'position-try') {
                 // "@position-try --name { top: anchor(bottom); ... }": the declarations go to the manifest for
                 // position-try-fallbacks; the engine gets nothing
@@ -4189,6 +4313,18 @@ var CSSFix = (function () {
                 }
             } else if (name === 'keyframes' || name === '-webkit-keyframes') {
                 if (!r.rules) continue;
+                if (!ctx.vpPass && keyframesUseViewport(r.rules)) {
+                    // viewport units: one copy of the animation per orientation (the engine takes @keyframes in @media)
+                    var orients = [['(orientation: portrait)', g_vpPortrait], ['(orientation: landscape)', g_vpLandscape]];
+                    for (var oi = 0; oi < orients.length; oi++) {
+                        setViewportPass(layoutViewport(orients[oi][1], ctx.layoutWidth));
+                        sub = transformRules(r.rules, ctx, true);
+                        out.push({ t: 'at', name: 'media', prelude: orients[oi][0], decls: null, raw: null,
+                                   rules: [{ t: 'at', name: '-webkit-keyframes', prelude: r.prelude, rules: sub, decls: null, raw: null }] });
+                    }
+                    setViewportPass(ctx.vpCurrent || g_vpCurrent);
+                    continue;
+                }
                 sub = transformRules(r.rules, ctx, true);
                 out.push({ t: 'at', name: '-webkit-keyframes', prelude: r.prelude, rules: sub, decls: null, raw: null });
             } else if (name === 'font-face') {
@@ -4227,7 +4363,7 @@ var CSSFix = (function () {
     }
 
     function makeContext(pageVars) {
-        var page = {}, pageScoped = null, pageCalc = null, pageTrans = null;
+        var page = {}, pageScoped = null, pageCalc = null, pageTrans = null, pageLayoutWidth = 0;
         if (pageVars) {
             if (typeof pageVars === 'string') { try { pageVars = JSON.parse(pageVars); } catch (e) { pageVars = null; } }
             if (pageVars && typeof pageVars === 'object') {
@@ -4243,11 +4379,14 @@ var CSSFix = (function () {
                         var props = String(pageVars[k]).split(/\s+/), set = null;
                         for (var c = 0; c < props.length; c++) if (props[c]) { if (!set) set = {}; set[props[c]] = true; }
                         if (k === ' calc') pageCalc = set; else pageTrans = set;
+                    } else if (k === ' vpw') {
+                        // the layout width of the page (its HTML's viewport meta tag, see metaLayoutWidth)
+                        pageLayoutWidth = parseInt(pageVars[k], 10) || 0;
                     } else page[k] = pageVars[k];
                 }
             }
         }
-        return { page: page, root: {}, other: {}, initial: {}, pageScoped: pageScoped, pageCalc: pageCalc, pageTrans: pageTrans };
+        return { page: page, root: {}, other: {}, initial: {}, pageScoped: pageScoped, pageCalc: pageCalc, pageTrans: pageTrans, pageLayoutWidth: pageLayoutWidth };
     }
     // {"calc":"...","trans":"..."}: the crash-prone calc properties and the transitioned ones this document has itself
     // (not the page's earlier ones), or null
@@ -4433,6 +4572,11 @@ var CSSFix = (function () {
     function fixHTML(html, ctx, opts) {
         var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, scripts = [];
         html = hideScripts(html, scripts);
+        // the layout width of the page (viewport units), also for its stylesheets rewritten after it
+        if (opts && opts.mainFrame) {
+            var lw = metaLayoutWidth(html);
+            if (lw !== null) { applyLayoutWidth(ctx, lw); ctx.root[' vpw'] = String(lw); }
+        }
         // 1. collect variables from every <style> block first (they usually hold the theme)
         var m;
         while ((m = styleRe.exec(html)) !== null) {
@@ -4458,7 +4602,7 @@ var CSSFix = (function () {
         // 3. inline style attributes
         html = html.replace(/(\sstyle\s*=\s*)("([^"]*)"|'([^']*)')/gi, function (all, prefix, quoted, dq, sq) {
             var css = dq !== undefined ? dq : sq;
-            if (!css || (css.indexOf('(') < 0 && css.indexOf('var') < 0 && css.indexOf('flex') < 0 && css.indexOf('transform') < 0 && css.indexOf('inset') < 0 && css.indexOf('#') < 0)) return all;
+            if (!css || (css.indexOf('(') < 0 && css.indexOf('var') < 0 && css.indexOf('flex') < 0 && css.indexOf('transform') < 0 && css.indexOf('inset') < 0 && css.indexOf('#') < 0 && !VP_UNIT_RE.test(css))) return all;
             var fixed = fixInlineStyle(css.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'), ctx);
             fixed = fixed.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
             return prefix + '"' + fixed + '"';
@@ -4481,6 +4625,13 @@ var CSSFix = (function () {
         if (opts && opts.viewportWidth > 0) ctx.viewportWidth = opts.viewportWidth;
         g_viewportWidth = (opts && opts.viewportWidth > 0) ? opts.viewportWidth : 768;
         g_viewportHeight = (opts && opts.viewportHeight > 0) ? opts.viewportHeight : Math.round(g_viewportWidth * 4 / 3);
+        // the app's web view in both orientations (device pixels = CSS pixels of a device-width page) and the
+        // current one (style attributes, and scripts' styles: see VP_UNIT_RE)
+        var dims = function (a, def) { return a && a.length === 2 && a[0] > 0 && a[1] > 0 ? { w: +a[0], h: +a[1] } : def; };
+        g_vpPortrait = dims(opts && opts.viewportPortrait, { w: 768, h: 930 });
+        g_vpLandscape = dims(opts && opts.viewportLandscape, { w: 1024, h: 674 });
+        g_vpCurrent = opts && opts.orientation === 'landscape' ? g_vpLandscape : g_vpPortrait;
+        applyLayoutWidth(ctx, ctx.pageLayoutWidth || 0);
         g_dpr = (opts && opts.devicePixelRatio > 0) ? opts.devicePixelRatio : 1;
         g_manifest = null;
         g_hostScope = opts && opts.hostScope ? String(opts.hostScope).replace(/[^\w-]/g, '') : null;
@@ -4516,7 +4667,13 @@ var CSSFix = (function () {
         try { return JSON.parse(m[1]); } catch (e) { return null; }
     }
 
-    return { run: run, fixCSS: fixCSS, fixHTML: fixHTML, fixInlineStyle: fixInlineStyle, makeContext: makeContext, evalSupports: evalSupports,
+    // the orientation (and layout width, 0 = device width) style attributes are converted for (the page shim's copy)
+    function setViewport(orientation, layoutWidth) {
+        g_vpCurrent = orientation === 'landscape' ? g_vpLandscape : g_vpPortrait;
+        setViewportPass(layoutViewport(g_vpCurrent, layoutWidth || 0));
+    }
+
+    return { run: run, fixCSS: fixCSS, fixHTML: fixHTML, fixInlineStyle: fixInlineStyle, makeContext: makeContext, evalSupports: evalSupports, setViewport: setViewport,
              fixSelectorList: fixSelectorList, fixMedia: fixMedia, transformFunctions: transformFunctions, parseColor: parseColor, readManifest: readManifest };
 })();
 

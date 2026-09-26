@@ -119,6 +119,23 @@ static NSString *BRLazyPartPath(NSString *base, long n)
 
 static CGFloat g_viewportWidth = 768;
 static CGFloat g_devicePixelRatio = 1;
+// the web view in both orientations and the current one (viewport units become pixels per orientation, see
+// VP_UNIT_RE in cssfix.js); set by the browser's layout on the main thread, read by the engines
+static CGSize g_viewPortrait = { 768, 930 }, g_viewLandscape = { 1024, 674 };
+static BOOL g_landscape = NO;
+
++ (void)noteWebViewSize:(CGSize)size landscape:(BOOL)landscape
+{
+    CGSize screen = [UIScreen mainScreen].bounds.size;   // portrait on iOS 6
+    CGFloat shortSide = MIN(screen.width, screen.height), longSide = MAX(screen.width, screen.height);
+    CGFloat chrome = (landscape ? shortSide : longSide) - size.height;   // status bar and our bars, the same both ways
+    if (size.width <= 0 || size.height <= 0 || chrome < 0) return;
+    @synchronized (self) {
+        g_viewPortrait = CGSizeMake(shortSide, longSide - chrome);
+        g_viewLandscape = CGSizeMake(longSide, shortSide - chrome);
+        g_landscape = landscape;
+    }
+}
 
 + (void)warmUp
 {
@@ -842,6 +859,12 @@ static NSString *BRPageKey(NSURL *url)
     {
         NSMutableDictionary *opts = [@{ @"pageURL": pageURL.absoluteString ?: @"", @"viewportWidth": @(g_viewportWidth),
                                         @"devicePixelRatio": @(g_devicePixelRatio) } mutableCopy];
+        @synchronized ([BRCSSRewriter class]) {
+            opts[@"viewportPortrait"] = @[ @(g_viewPortrait.width), @(g_viewPortrait.height) ];
+            opts[@"viewportLandscape"] = @[ @(g_viewLandscape.width), @(g_viewLandscape.height) ];
+            opts[@"orientation"] = g_landscape ? @"landscape" : @"portrait";
+        }
+        if ([kind isEqualToString:@"html"] && mainFrame) opts[@"mainFrame"] = @YES;
         // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
         if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
         if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;

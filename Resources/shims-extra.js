@@ -4310,13 +4310,17 @@
         };
         // ---- a declaration through the page's copy of the rewriter: [[property, value, important]]
         var fixDecl = function (p, v) {
-            var key = p + ':' + v;
+            // (viewport units become pixels of the current orientation)
+            var land = window.orientation === 90 || window.orientation === -90, key = (land ? 'L' : 'P') + p + ':' + v;
             if (fixCache.hasOwnProperty(key)) return fixCache[key];
             var out = [], lib = loadCSSFix();
             if (!lib) out.push([p, v]);
             else {
                 var text = '';
-                try { text = lib.fixInlineStyle(p + ':' + v, lib.makeContext(null)); } catch (e) { text = p + ':' + v; }
+                try {
+                    if (lib.setViewport) lib.setViewport(land ? 'landscape' : 'portrait');
+                    text = lib.fixInlineStyle(p + ':' + v, lib.makeContext(null));
+                } catch (e) { text = p + ':' + v; }
                 var parts = text.split(';');
                 for (var i = 0; i < parts.length; i++) {
                     var c = parts[i].indexOf(':');
@@ -6443,7 +6447,8 @@
             if (!lib || !lib.run) return null;
             var r;
             try {
-                var vw = Math.min(screen.width || 768, screen.height || 1024), opts = { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1 };
+                var vw = Math.min(screen.width || 768, screen.height || 1024), opts = { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1,
+                    orientation: window.orientation === 90 || window.orientation === -90 ? 'landscape' : 'portrait' };
                 if (hostScope) opts.hostScope = hostScope;   // a stylesheet inside an emulated shadow root (see hostSelector)
                 r = JSON.parse(lib.run('css', css, pageVars(), opts));
             } catch (e) { return null; }

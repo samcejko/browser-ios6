@@ -583,6 +583,8 @@ static void BRWebThreadLock(void);
     }
     CGFloat contentTop = BRBarHeight + tabsHeight + findHeight;
     self.webView.frame = CGRectMake(0, contentTop, width, b.size.height - contentTop - bottom);
+    // (without the find bar, which comes and goes: the page's viewport units follow the usual size)
+    if (!findHeight) [BRCSSRewriter noteWebViewSize:self.webView.frame.size landscape:b.size.width > b.size.height];
     if (self.suggestionsTable) self.suggestionsTable.frame = CGRectMake(0, BRBarHeight + tabsHeight, width, b.size.height - BRBarHeight - tabsHeight - bottom);
     self.progressView.frame = CGRectMake(0, 0, floor(self.urlField.bounds.size.width * [self currentProgress]), self.urlField.bounds.size.height);
 
