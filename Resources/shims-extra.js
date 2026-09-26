@@ -1958,13 +1958,22 @@
         if (!MEp.captureStream) MEp.captureStream = MEp.mozCaptureStream = function () { return new window.MediaStream(); };
         if (!('playsInline' in MEp)) defineBoolAttrProp(MEp, 'playsInline');
         if (!MEp.setMediaKeys) MEp.setMediaKeys = rejectWith('NotSupportedError', 'Encrypted media is not available');
-        // play() returns a promise in modern browsers; many players rely on that
+        // play() returns a promise in modern browsers; many players rely on that. It rejects with NotAllowedError when
+        // the browser does not let the media start (iOS plays only from a tap): the engine then leaves it paused, and
+        // players show their play button again (YouTube's autoplay waited for playback forever, a black box without
+        // a button, when the promise said it had started).
         var origPlay = MEp.play;
         if (origPlay) {
             try {
                 var probe = document.createElement('audio');
                 if (!(probe.play() && typeof probe.play().then === 'function')) {
-                    MEp.play = function () { var r; try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; } return (r && r.then) ? r : resolved(); };
+                    MEp.play = function () {
+                        var r;
+                        try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; }
+                        if (r && r.then) return r;
+                        if (this.paused && P) return P.reject(domException('NotAllowedError', 'play() can only be started by a tap'));
+                        return resolved();
+                    };
                 }
             } catch (e3) {}
         }
