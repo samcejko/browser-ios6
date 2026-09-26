@@ -41,6 +41,9 @@ var cases = [
   ['calc longhands in shorthand transitions', '.a{margin-left:calc(10% + 4px);transition:margin .2s, opacity .2s}.b{border-radius:calc(50% - 2px);transform:translateY(calc(-50% + 2px));transition:border-radius .2s,transform .3s}',
     '.a{margin-left:-webkit-calc(10% + 4px);-webkit-transition:margin-top .2s, margin-right .2s, margin-bottom .2s, opacity .2s;transition:margin .2s, opacity .2s}\n.b{border-radius:-webkit-calc(50% - 2px);-webkit-transform:translateY(-50%) translateY(2px);transform:translateY(-webkit-calc(-50% + 2px));-webkit-transition:border-radius .2s,-webkit-transform .3s;transition:border-radius .2s,transform .3s}\n/*br-page:{"calc":"margin-left","trans":"-webkit-transform border-radius margin-bottom margin-right margin-top opacity"}*/'],
   ['calc', '.k{width:calc(100% - 20px)}', '.k{width:-webkit-calc(100% - 20px)}'],
+  // keyframes blend lengths like transitions: calc lengths there become their percentage (or length) part
+  ['calc in keyframes', '@keyframes grow{0%{opacity:1}to{height:calc(100% + 150px);opacity:.3}}@keyframes w{from{width:calc(50% - 2 * 12px)}to{width:calc(10px + 2px);margin-left:calc(-1 * 24px)}}.l{height:0%;animation:grow 1s forwards}',
+    '@-webkit-keyframes grow{0%{opacity:1}\nto{height:100%;opacity:.3}}\n@-webkit-keyframes w{from{width:50%}\nto{width:12px;margin-left:-24px}}\n.l{height:0%;-webkit-animation:grow 1s forwards;animation:grow 1s forwards}'],
   ['calc with percentages only', '.w{width:calc(100% / 3)}.m{width:min(50%, 30%)}.p{left:calc(50% + 0)}.mix{width:calc(100% - 20px)}',
     '.w{width:33.33333%}\n.m{width:30%}\n.p{left:50%}\n.mix{width:-webkit-calc(100% - 20px)}'],
   // tailwind 4: registered non-inheriting properties are 0 where no rule of the element defines them (not the last

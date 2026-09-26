@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>standard style names test</title>
+<style>
+/* a calc length on the page: transitions scripts set leave width out (see the shim) */
+.c { width: calc(100% - 10px); }
+#box { width: 40px; height: 40px; background: #c00; }
+@keyframes pop { from { opacity: 0.5; } to { opacity: 1; } }
+#anim.go { animation: pop .15s 1; }
+body { font: 13px monospace; }
+.ok { color: #080; } .fail { color: #b00; }
+</style>
+</head>
+<body>
+<div class="c"></div>
+<div id="box"></div>
+<div id="anim">anim</div>
+<div id="out"></div>
+<script>
+// Checks the standard names for -webkit- style properties and the standard transition/animation events (shims-extra
+// "standard names" block). Chrome passes natively; the device passes through the shim.
+(function () {
+    var results = [], box = document.getElementById('box'), anim = document.getElementById('anim');
+    var check = function (name, ok, info) { results.push([name, !!ok, info === undefined ? '' : String(info)]); };
+    var st = box.style;
+    check('transform in style', 'transform' in st);
+    st.transform = 'translate(10px, 0px)';
+    var cs = getComputedStyle(box);
+    check('style.transform sets the transform', /matrix\(1, 0, 0, 1, 10, 0\)/.test(cs.transform || cs.webkitTransform), cs.transform + ' / ' + cs.webkitTransform);
+    check('style.transform reads back', /translate\(10px/.test(st.transform), st.transform);
+    st.setProperty('transform', 'translate(20px, 0px)', '');
+    check('setProperty(transform)', /matrix\(1, 0, 0, 1, 20, 0\)/.test(getComputedStyle(box).getPropertyValue('transform')), getComputedStyle(box).getPropertyValue('transform'));
+    check('getPropertyValue(transform)', /translate\(20px/.test(st.getPropertyValue('transform')), st.getPropertyValue('transform'));
+    st.removeProperty('transform');
+    check('removeProperty(transform)', !st.getPropertyValue('transform'), st.getPropertyValue('transform'));
+    st.transition = 'transform .1s ease, opacity .1s';
+    check('transition names mapped', /transform/.test(st.transition) && /opacity/.test(st.transition), st.transition);
+    check('computed transitionDuration', /^0?\.10*\d*s/.test(getComputedStyle(box).transitionDuration), getComputedStyle(box).transitionDuration);
+    st.transition = 'width .2s, opacity .2s';
+    var native = !!(window.CSS && CSS.supports && CSS.supports('transform', 'none') && !window.__brDebugErrors && /Chrome/.test(navigator.userAgent));
+    check('calc property left out of transitions', native || !/width/.test(st.transition), st.transition);
+    st.transition = 'all .2s';
+    check('all without calc properties', native || (!/(^|[\s,])width/.test(st.transition) && /opacity/.test(st.transition)), String(st.transition).slice(0, 80));
+    st.transition = '';
+    check('userSelect', 'userSelect' in st);
+    // events: the standard twins of the prefixed ones
+    var fired = {};
+    ['transitionend', 'animationstart', 'animationend'].forEach(function (t) {
+        document.addEventListener(t, function (e) { fired[t] = (fired[t] || 0) + 1; if (t === 'transitionend') fired.prop = e.propertyName; }, false);
+    });
+    st.transition = 'opacity .1s';
+    setTimeout(function () { st.opacity = '0.3'; anim.className = 'go'; }, 100);
+    setTimeout(function () {
+        check('transitionend fires once', fired.transitionend === 1, JSON.stringify(fired));
+        check('transitionend propertyName', fired.prop === 'opacity', fired.prop);
+        check('animationstart / animationend', fired.animationstart === 1 && fired.animationend === 1, JSON.stringify(fired));
+        var pass = 0, html = [];
+        for (var i = 0; i < results.length; i++) {
+            if (results[i][1]) pass++;
+            html.push('<div class="' + (results[i][1] ? 'ok' : 'fail') + '">' + (results[i][1] ? 'OK   ' : 'FAIL ') + results[i][0] + (results[i][1] ? '' : ' -- ' + results[i][2].replace(/</g, '&lt;')) + '</div>');
+        }
+        document.getElementById('out').innerHTML = html.join('');
+        document.title = 'stdnames ' + pass + '/' + results.length;
+    }, 900);
+})();
+</script>
+</body>
+</html>

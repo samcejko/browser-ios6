@@ -17,6 +17,39 @@
         return e;
     }
     function rejectWith(name, message) { return function () { return P ? P.reject(domException(name, message)) : null; }; }
+    // -webkit-calc() values in the engine's Length properties crash WebKit 536 once the element restyles while such a
+    // property is transitioned (see guardCalcTransitions in cssfix.js; nextjs.org: a custom property made a height a
+    // calc at run time next to `transition-property: height`). Values the shims set go in as px then: calcRisk() says
+    // whether a value needs that (the page transitions the property somewhere), calcToPx() measures it with the value
+    // in place (the callers hold the element's transitions) or evaluates it, [[longhand, px]] or null.
+    var CALC_CRASH = { width: 0, height: 0, 'min-width': 0, 'min-height': 0, 'max-width': 0, 'max-height': 0, top: 0, right: 0, bottom: 0, left: 0,
+        'margin-top': 0, 'margin-right': 0, 'margin-bottom': 0, 'margin-left': 0, 'padding-top': 0, 'padding-right': 0, 'padding-bottom': 0,
+        'padding-left': 0, 'text-indent': 0, '-webkit-background-size': 0,
+        margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'], padding: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'] };
+    function calcRisk(p, v) {
+        if (!CALC_CRASH.hasOwnProperty(p) || String(v).indexOf('-webkit-calc(') < 0) return false;
+        var trans = null;
+        try { trans = runtimeCSS.transSet(); } catch (e) { trans = null; }
+        if (!trans) return true;
+        if (trans[p] || trans.all) return true;
+        var parts = CALC_CRASH[p];
+        if (parts) for (var i = 0; i < parts.length; i++) if (trans[parts[i]]) return true;
+        return false;
+    }
+    function calcToPx(el, p, v, important) {
+        var names = CALC_CRASH[p] || [p], out = [], st = el.style, i;
+        var prev = st.getPropertyValue(p), prevPriority = st.getPropertyPriority(p);
+        st.setProperty(p, v, important ? 'important' : '');
+        var cs = getComputedStyle(el);
+        for (i = 0; i < names.length && out; i++) {
+            var got = cs.getPropertyValue(names[i]);
+            if (!/^-?\d*\.?\d+px$/.test(got)) got = null;
+            if (got === null && !CALC_CRASH[p] && window.__brDeferred && window.__brDeferred.lengthPx) got = window.__brDeferred.lengthPx(el, names[i], v);
+            if (got === null) out = null; else out.push([names[i], got]);
+        }
+        if (prev) st.setProperty(p, prev, prevPriority); else st.removeProperty(p);
+        return out;
+    }
     function fire(target, type, detail) {
         try {
             var e = document.createEvent('Event');
@@ -652,6 +685,26 @@
         })(owners[o]);
         window.addEventListener('unhandledrejection', function (e) { report('promise', e && (e.reason !== undefined ? e.reason : e.detail)); }, false);
         window.addEventListener('error', function (e) { if (e && e.error) report('onerror', e.error); }, false);
+        // errors a library catches itself (React's error boundaries: Next.js then shows "This page couldn't load") end
+        // in console.error
+        if (window.console && typeof window.console.error === 'function') {
+            var origConsoleError = window.console.error;
+            window.console.error = function () {
+                try {
+                    if (logged < 20) {
+                        var parts = [];
+                        for (var i = 0; i < arguments.length && i < 4; i++) {
+                            var a = arguments[i];
+                            parts.push(a && typeof a === 'object' && (a.message !== undefined || a.stack) ? describe(a) : String(a).slice(0, 300));
+                            if (a && typeof a === 'object') { try { a.__brLogged = true; } catch (e1) {} }
+                        }
+                        logged++;
+                        sendToApp('brlog', 'JS debug (console.error): ' + parts.join(' ').slice(0, 700) + ' page ' + location.hostname);
+                    }
+                } catch (e2) {}
+                return origConsoleError.apply(window.console, arguments);
+            };
+        }
     })();
     // Web Share goes to the app's share sheet
     if (!navigator.share) {
@@ -2604,6 +2657,7 @@
         };
         // ---- inline styles we set, with what the page had, so that a later pass can give it back
         var setProp = function (el, prop, value) {
+            if (calcRisk(prop, value)) return;   // (evalValue gives px where it can; a calc left over would crash transitions)
             if (!el.__brDVOrig) { el.__brDVOrig = {}; el.__brDVSet = {}; tracked.push(el); }
             if (!el.__brDVOrig.hasOwnProperty(prop)) el.__brDVOrig[prop] = [el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)];
             el.__brDVSet[prop] = gen;
@@ -3767,6 +3821,13 @@
             needsMarkers: function () { return hasInline; },
             apply: function () { pass(false); },
             speech: function (el) { return speechOf(el); },
+            // a length value of `prop` on `el` evaluated to px (percentages against the containing block), or null
+            lengthPx: function (el, prop, value) {
+                var st = null;
+                try { if (/^(absolute|fixed)$/.test(getComputedStyle(el).position)) st = { cb: containingBlock(el) }; } catch (e) { st = null; }
+                var len = evalLength(value, el, pctBaseFor(el, prop, st));
+                return len && len.u === 'px' ? round2(len.n) + 'px' : null;
+            },
             reposition: function () { pass(true); },
             state: function () { return { entries: entries.length, positioned: positioned.length, anchors: anchors }; }
         };
@@ -3952,6 +4013,12 @@
         };
         // ---- inline styles we set, with what the page had there
         var setInline = function (el, p, v, imp) {
+            if (calcRisk(p, v)) {
+                // a calc length in a property the page transitions: its px value instead (the element is frozen here)
+                var px = calcToPx(el, p, v, imp);
+                if (px) for (var q = 0; q < px.length; q++) setInline(el, px[q][0], px[q][1], imp);
+                return;
+            }
             if (!el.__brCVOrig) { el.__brCVOrig = {}; el.__brCVSet = {}; el.__brCVVal = {}; tracked.push(el); }
             if (!el.__brCVOrig.hasOwnProperty(p)) el.__brCVOrig[p] = [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)];
             el.__brCVSet[p] = gen;
@@ -5882,7 +5949,16 @@
             ruleCacheSize++;
             return res;
         };
-        return { fixText: fixText, rewriteRule: rewriteRule };
+        // the page's properties with -webkit-calc() values / the transitioned ones as sets (for transitions scripts
+        // set and values the shims set, see calcRisk)
+        var nameSet = function (key) {
+            var o = pageVars(), set = {}, names = typeof o[key] === 'string' ? o[key].split(' ') : [];
+            for (var i = 0; i < names.length; i++) if (names[i]) set[names[i]] = 1;
+            return set;
+        };
+        var calcSet = function () { return nameSet(' calc'); };
+        var transSet = function () { return nameSet(' trans'); };
+        return { fixText: fixText, rewriteRule: rewriteRule, calcSet: calcSet, transSet: transSet };
     })();
     if (window.CSSStyleSheet && window.CSSStyleSheet.prototype.insertRule && !window.CSSStyleSheet.prototype.__brWrapped) {
         // the old engine also requires the index argument; modern code omits it (append)
@@ -5957,6 +6033,153 @@
             }
         });
         try { styleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}
+    })();
+    // ---- standard names for the -webkit- style properties and events. The old engine knows transform, transition,
+    // animation, perspective, user-select... only prefixed (style.transform is a plain expando there and
+    // setProperty('transform', ...) does nothing) and fires only webkitTransitionEnd / webkitAnimationStart|Iteration|End
+    // (both checked on the device). React inline styles, Popper and sliders set style.transform, UI kits wait for
+    // transitionend. So the style objects get accessors for the standard names (one on CSSStyleDeclaration.prototype
+    // serves element and computed styles alike), setProperty() & co. take the dashed names, and every prefixed event is
+    // followed by its standard twin on the same target (libraries that now find style.transition listen for those).
+    // Transition values get the engine's property names, and while the page has -webkit-calc() lengths they leave
+    // those properties out (see guardCalcTransitions in cssfix.js: such a transition crashes the engine).
+    (function () {
+        var CSDp = window.CSSStyleDeclaration && window.CSSStyleDeclaration.prototype, probe = document.createElement('div').style;
+        if (!CSDp || !probe || ('transform' in probe) || !('webkitTransform' in probe) || CSDp.__brStdNames) return;
+        CSDp.__brStdNames = true;
+        var NAMES = ['transform', 'transformOrigin', 'transformStyle', 'perspective', 'perspectiveOrigin', 'backfaceVisibility', 'transition',
+            'transitionProperty', 'transitionDuration', 'transitionTimingFunction', 'transitionDelay', 'animation', 'animationName', 'animationDuration',
+            'animationTimingFunction', 'animationDelay', 'animationIterationCount', 'animationDirection', 'animationFillMode', 'animationPlayState',
+            'userSelect', 'appearance', 'mask', 'maskImage', 'maskSize', 'maskPosition', 'maskRepeat', 'maskClip', 'maskOrigin', 'columns', 'columnCount',
+            'columnGap', 'columnWidth', 'columnRule', 'columnRuleColor', 'columnRuleStyle', 'columnRuleWidth', 'columnSpan', 'columnFill',
+            'hyphens', 'textSizeAdjust', 'fontFeatureSettings', 'fontKerning', 'boxDecorationBreak', 'textEmphasis', 'textEmphasisColor',
+            'textEmphasisStyle', 'textEmphasisPosition', 'textStroke', 'textStrokeColor', 'textStrokeWidth', 'textFillColor', 'lineClamp',
+            'tapHighlightColor', 'touchCallout', 'clipPath', 'shapeOutside', 'textOrientation', 'boxReflect', 'textCombineUpright'];
+        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var dashed = function (camel) { return camel.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); }); };
+        var camel = function (d) { return d.replace(/^-webkit-/, 'webkit-').replace(/-([a-z])/g, function (m, c) { return c.toUpperCase(); }); };
+        var DASHED = {};   // standard dashed name -> the prefixed one the engine knows
+        var i, name, pref;
+        for (i = 0; i < NAMES.length; i++) {
+            name = NAMES[i];
+            pref = 'webkit' + name.charAt(0).toUpperCase() + name.slice(1);
+            if ((name in probe) || !(pref in probe)) continue;
+            DASHED[dashed(name)] = '-webkit-' + dashed(name);
+        }
+        // transition lists: what `all` stands for while calc lengths are around (cssfix's list, see transitionAllList)
+        var ANIMATABLE = ('background-color,border-top-color,border-right-color,border-bottom-color,border-left-color,border-top-left-radius,' +
+            'border-top-right-radius,border-bottom-left-radius,border-bottom-right-radius,box-shadow,-webkit-box-shadow,clip,color,' +
+            '-webkit-column-rule-color,-webkit-filter,fill,fill-opacity,flood-color,flood-opacity,lighting-color,max-height,opacity,' +
+            'outline-color,outline-offset,outline-width,stop-color,stroke,stroke-opacity,stroke-width,-webkit-text-fill-color,' +
+            '-webkit-text-stroke-color,text-shadow,-webkit-transform,-webkit-transform-origin,visibility,z-index,zoom,margin-top,margin-right,' +
+            'margin-bottom,margin-left,padding-top,padding-right,padding-bottom,padding-left,border-top-width,border-right-width,' +
+            'border-bottom-width,border-left-width,letter-spacing,word-spacing,font-size,line-height,text-indent,-webkit-background-size,' +
+            '-webkit-perspective').split(',');
+        var PARTS = { margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'], padding: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+            '-webkit-transform-origin': ['-webkit-transform-origin-x', '-webkit-transform-origin-y'], 'background-position': ['background-position-x', 'background-position-y'] };
+        var WORDS = { ease: 1, linear: 1, 'ease-in': 1, 'ease-out': 1, 'ease-in-out': 1, 'step-start': 1, 'step-end': 1, initial: 1, inherit: 1, unset: 1,
+            normal: 1, 'allow-discrete': 1 };
+        var splitList = function (s) {
+            var parts = [], depth = 0, start = 0;
+            for (var k = 0; k < s.length; k++) {
+                var c = s.charAt(k);
+                if (c === '(') depth++; else if (c === ')') depth--; else if (c === ',' && depth === 0) { parts.push(s.slice(start, k)); start = k + 1; }
+            }
+            parts.push(s.slice(start));
+            return parts;
+        };
+        var calcHit = function (prop, calc) {
+            if (calc[prop]) return true;
+            var parts = PARTS[prop];
+            if (parts) for (var k = 0; k < parts.length; k++) if (calc[parts[k]]) return true;
+            return false;
+        };
+        // one property name as the engine knows it ('' when it knows none, null for `all`)
+        var engineName = function (p) {
+            p = p.toLowerCase();
+            if (p === 'all') return null;
+            if (DASHED[p]) return DASHED[p];
+            if (p === 'filter') return '-webkit-filter';
+            return camel(p) in probe && p.indexOf('--') !== 0 ? p : '';
+        };
+        var safeTransition = function (value, list) {
+            if (value === null || value === undefined) return value;
+            var s = String(value);
+            if (!/[a-z]/i.test(s) || /^\s*(none|inherit|initial|unset|revert)\s*$/i.test(s)) return value;
+            var calc = {};
+            try { calc = runtimeCSS.calcSet(); } catch (e) { calc = {}; }
+            var items = splitList(s), out = [], changed = false, allList = null;
+            for (var k = 0; k < items.length; k++) {
+                var item = trim(items[k]), toks = item.split(/\s+/), at = -1, j;
+                if (list) at = 0;
+                else for (j = 0; j < toks.length; j++) if (/^-{0,2}[a-z][\w-]*$/i.test(toks[j]) && !WORDS[toks[j].toLowerCase()]) { at = j; break; }
+                var prop = at >= 0 ? toks[at] : 'all', en = engineName(prop);
+                if (en === null) {
+                    // `all`: the animatable properties without the ones holding calc lengths (unless there are none)
+                    var anyCalc = false;
+                    for (var c in calc) if (calc.hasOwnProperty(c)) { anyCalc = true; break; }
+                    if (!anyCalc) { out.push(item); continue; }
+                    if (!allList) { allList = []; for (j = 0; j < ANIMATABLE.length; j++) if (!calcHit(ANIMATABLE[j], calc)) allList.push(ANIMATABLE[j]); }
+                    for (j = 0; j < allList.length; j++) {
+                        var t2 = toks.slice(0);
+                        if (at >= 0) t2[at] = allList[j]; else t2.unshift(allList[j]);
+                        out.push(t2.join(' '));
+                    }
+                    changed = true;
+                    continue;
+                }
+                if (en && calcHit(en, calc)) { changed = true; continue; }
+                // a name the engine does not know would invalidate the whole list: a harmless one keeps the positions
+                if (!en) en = '-webkit-user-select';
+                if (en !== prop) { toks[at] = en; item = toks.join(' '); changed = true; }
+                out.push(item);
+            }
+            return changed ? (out.length ? out.join(', ') : 'none') : value;
+        };
+        for (name in DASHED) {
+            if (!DASHED.hasOwnProperty(name)) continue;
+            (function (std, prefixed) {
+                var guard = std === 'transition' ? 1 : std === 'transitionProperty' ? 2 : 0;
+                try {
+                    Object.defineProperty(CSDp, std, {
+                        get: function () { return this[prefixed]; },
+                        set: function (v) { this[prefixed] = guard ? safeTransition(v, guard === 2) : v; },
+                        configurable: true
+                    });
+                } catch (e) {}
+            })(camel(name), camel(DASHED[name]));
+        }
+        var origSet = CSDp.setProperty, origGet = CSDp.getPropertyValue, origRemove = CSDp.removeProperty, origPriority = CSDp.getPropertyPriority;
+        var mapName = function (n) { return typeof n === 'string' ? DASHED[n.toLowerCase()] || null : null; };
+        CSDp.setProperty = function (n, value, priority) {
+            var m = mapName(n);
+            if (!m) {
+                if (typeof n === 'string' && /^-webkit-transition(-property)?$/i.test(n)) return origSet.call(this, n, safeTransition(value, /property$/i.test(n)), priority || '');
+                return origSet.apply(this, arguments);
+            }
+            if (m === '-webkit-transition' || m === '-webkit-transition-property') value = safeTransition(value, m === '-webkit-transition-property');
+            return origSet.call(this, m, value, priority || '');
+        };
+        CSDp.getPropertyValue = function (n) { var m = mapName(n); return m ? origGet.call(this, m) : origGet.apply(this, arguments); };
+        CSDp.removeProperty = function (n) { var m = mapName(n); return m ? origRemove.call(this, m) : origRemove.apply(this, arguments); };
+        if (origPriority) CSDp.getPropertyPriority = function (n) { var m = mapName(n); return m ? origPriority.call(this, m) : origPriority.apply(this, arguments); };
+        // the standard twins of the prefixed events (bubbling like them, with their fields)
+        if (!('ontransitionend' in window)) {
+            var TWINS = { webkitTransitionEnd: 'transitionend', webkitAnimationStart: 'animationstart', webkitAnimationIteration: 'animationiteration',
+                webkitAnimationEnd: 'animationend' };
+            var twin = function (ev) {
+                var type = TWINS[ev.type], target = ev.target;
+                if (!type || !target || !target.dispatchEvent) return;
+                var e = document.createEvent('Event');
+                e.initEvent(type, true, type === 'transitionend');
+                e.propertyName = ev.propertyName || '';
+                e.animationName = ev.animationName || '';
+                e.elapsedTime = ev.elapsedTime || 0;
+                e.pseudoElement = '';
+                try { target.dispatchEvent(e); } catch (x) {}
+            };
+            for (var t in TWINS) if (TWINS.hasOwnProperty(t)) window.addEventListener(t, twin, true);
+        }
     })();
     if (!window.CSSLayerBlockRule) { window.CSSLayerBlockRule = function CSSLayerBlockRule() {}; window.CSSContainerRule = function CSSContainerRule() {}; window.CSSSupportsRule = window.CSSSupportsRule || function CSSSupportsRule() {}; }
     // ---- CSSOM interfaces the engine lacks, and the interface objects inheriting from their parents as WebIDL has it

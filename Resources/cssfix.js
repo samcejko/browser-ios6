@@ -2129,6 +2129,44 @@ var CSSFix = (function () {
         if (parts) for (var i = 0; i < parts.length; i++) if (calc[parts[i]]) return true;
         return false;
     }
+    // Keyframe animations blend lengths just like transitions, and WebKit 536 dies on a -webkit-calc() there as well
+    // (nextjs.org: `@keyframes x { to { height: calc(100% + 150px) } }` on lines starting at height 0%, measured on the
+    // device). Inside @keyframes such a value becomes its percentage part alone (calc(100% + 150px) -> 100%), or its
+    // length part when it has no percentage; null when the expression has other shapes (the declaration is dropped).
+    function approximateCalc(v) {
+        var out = '', i = 0, lower = v.toLowerCase();
+        for (;;) {
+            var at = lower.indexOf('-webkit-calc(', i);
+            if (at < 0) { out += v.slice(i); break; }
+            var close = matchParen(v, at + 12);
+            if (close >= v.length) return null;
+            var inner = v.slice(at + 13, close).replace(/(-webkit-)?calc\(/gi, '(');
+            var terms = [], depth = 0, start = 0, k;
+            for (k = 0; k < inner.length; k++) {
+                var c = inner.charAt(k);
+                if (c === '(') depth++;
+                else if (c === ')') depth--;
+                else if (depth === 0 && (c === '+' || c === '-') && k > 0 && /\s/.test(inner.charAt(k - 1)) && /\s/.test(inner.charAt(k + 1))) {
+                    terms.push(inner.slice(start, k));
+                    start = k;
+                }
+            }
+            terms.push(inner.slice(start));
+            var pct = 0, len = 0, anyPct = false;
+            for (k = 0; k < terms.length; k++) {
+                var t = trim(terms[k]), sign = 1;
+                if (/^[+-]\s/.test(t)) { sign = t.charAt(0) === '-' ? -1 : 1; t = trim(t.slice(1)); }
+                var e = evalExpr(t);
+                if (!e) return null;
+                if (e.u === '%') { pct += sign * e.n; anyPct = true; }
+                else if (e.u === 'px' || (e.u === '' && e.n === 0)) len += sign * e.n;
+                else return null;
+            }
+            out += v.slice(i, at) + (anyPct ? Math.round(pct * 10000) / 10000 + '%' : Math.round(len * 100) / 100 + 'px');
+            i = close + 1;
+        }
+        return out;
+    }
     // the parts of a shorthand transition that stay (the engine knows them and they hold no calc value)
     function transitionSafeParts(name, calc) {
         var parts = TRANSITION_PARTS[name] || [], out = [];
@@ -2715,6 +2753,11 @@ var CSSFix = (function () {
                 continue;
             }
             v = fixValue(p, v);
+            // keyframes blend their values, and a calc length there crashes the old engine (see approximateCalc)
+            if (keyframe && v.indexOf('-webkit-calc(') >= 0 && calcCrashProps(p).length) {
+                v = approximateCalc(v);
+                if (v === null) continue;
+            }
             var lv = v.toLowerCase();
             // a math function whose result is negative is clamped to the property's range (a literal stays invalid)
             if (NON_NEGATIVE[p] && d.v.indexOf('(') >= 0 && /^-\d*\.?\d+[a-z%]*$/.test(lv)) { v = '0' + lv.replace(/^-\d*\.?\d+/, ''); lv = v; }

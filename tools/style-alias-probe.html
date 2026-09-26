@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>style alias probe</title>
+<style>
+#box { width: 50px; height: 50px; background: red; -webkit-transition: opacity .2s; }
+#box.off { opacity: 0.2; }
+@-webkit-keyframes spin { from { -webkit-transform: rotate(0deg); } to { -webkit-transform: rotate(90deg); } }
+#anim.go { -webkit-animation: spin .2s 1; }
+</style>
+</head>
+<body>
+<div id="box"></div>
+<div id="anim">anim</div>
+<pre id="out">running</pre>
+<script>
+// What the old engine does with unprefixed style names and event types (run on the device through /dev/).
+var log = [], box = document.getElementById('box'), anim = document.getElementById('anim');
+var st = box.style;
+log.push('in style: transform=' + ('transform' in st) + ' webkitTransform=' + ('webkitTransform' in st) + ' transition=' + ('transition' in st) + ' animation=' + ('animation' in st) + ' filter=' + ('filter' in st) + ' userSelect=' + ('userSelect' in st) + ' boxSizing=' + ('boxSizing' in st) + ' flex=' + ('flex' in st) + ' objectFit=' + ('objectFit' in st));
+log.push('own/proto: ' + Object.prototype.hasOwnProperty.call(st, 'webkitTransform') + '/' + ('webkitTransform' in CSSStyleDeclaration.prototype));
+// an accessor on the prototype for an unprefixed name
+var ok = 'n/a';
+try {
+    Object.defineProperty(CSSStyleDeclaration.prototype, 'probeTransform', { get: function () { return this.webkitTransform; }, set: function (v) { this.webkitTransform = v; }, configurable: true });
+    st.probeTransform = 'translate(10px, 0px)';
+    ok = 'set -> webkitTransform="' + st.webkitTransform + '", get="' + st.probeTransform + '"';
+} catch (e) { ok = 'error ' + e.message; }
+log.push('prototype accessor: ' + ok);
+try {
+    Object.defineProperty(CSSStyleDeclaration.prototype, 'transform', { get: function () { return this.webkitTransform; }, set: function (v) { this.webkitTransform = v; }, configurable: true });
+    st.transform = 'translate(20px, 0px)';
+    log.push('transform accessor: webkitTransform="' + st.webkitTransform + '" transform="' + st.transform + '" computed="' + getComputedStyle(box).transform + '"');
+} catch (e2) { log.push('transform accessor error ' + e2.message); }
+try { st.setProperty('transform', 'translate(30px, 0px)', ''); log.push('setProperty(transform): webkitTransform="' + st.webkitTransform + '"'); } catch (e3) { log.push('setProperty error ' + e3.message); }
+// which transition / animation events fire
+var fired = {};
+['transitionend', 'webkitTransitionEnd', 'animationstart', 'webkitAnimationStart', 'animationend', 'webkitAnimationEnd'].forEach(function (t) {
+    document.addEventListener(t, function () { fired[t] = (fired[t] || 0) + 1; }, true);
+});
+setTimeout(function () { box.className = 'off'; anim.className = 'go'; }, 300);
+setTimeout(function () {
+    log.push('events: ' + JSON.stringify(fired));
+    document.getElementById('out').textContent = log.join('\n');
+    document.title = 'probe done';
+}, 1500);
+</script>
+</body>
+</html>
