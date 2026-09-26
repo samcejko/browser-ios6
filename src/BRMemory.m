@@ -152,6 +152,10 @@ static BOOL BRCallClassVoid(NSString *className, NSString *selectorName)
     g_pageLoading = loading;
 }
 
+static volatile BOOL g_compositing = YES;
++ (void)setCompositing:(BOOL)on { g_compositing = on; }
++ (BOOL)compositing { return g_compositing; }
+
 // loading, or its scripts are still settling (lazy images, ads and players come in right after the load)
 static BOOL BRPageBusy(void)
 {
@@ -409,9 +413,25 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
     return [self webKitNumbers];
 }
 
+// A relief that freed next to nothing is not repeated for a while (unless the system lost 10 MB more meanwhile):
+// its garbage collection holds the page for 0.5-1 s, and on a page whose own heap fills the iPad (YouTube after a
+// while: 95 MB, 1.6 million objects) it ran every 1-2 s, the page stalled and was killed all the same.
+static BOOL g_reliefRunning;
+static CFAbsoluteTime g_reliefStarted, g_reliefEnded;
+static long g_reliefGainMB = 100, g_reliefEndAvailable;
+
 + (void)relieve:(NSString *)reason
 {
-    long before = (long)BRResidentMemoryMB();
+    long before = (long)BRResidentMemoryMB(), availableBefore = [self availableMB];
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    BOOL forced = [reason isEqualToString:@"requested"];
+    @synchronized (self) {
+        if (g_reliefRunning && !forced && now - g_reliefStarted < 20) return;
+        NSTimeInterval pause = g_reliefGainMB < 4 ? 30 : 2;
+        if (!forced && now - g_reliefEnded < pause && availableBefore > g_reliefEndAvailable - 10) return;
+        g_reliefRunning = YES;
+        g_reliefStarted = now;
+    }
     // our two script engines: whole heaps, recreated on the next use (0.3 to 0.5 s each)
     [[BRJSEngine transpiler] resetContext];
     [[BRJSEngine shared] resetContext];
@@ -422,8 +442,15 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
         BRCallClassVoid(@"WebCoreStatistics", @"garbageCollectJavaScriptObjects");
         BRCallClassVoid(@"WebCache", @"emptyInMemoryResources");
         BRCallClassVoid(@"WebCoreStatistics", @"returnFreeMemoryToSystem");
-        BRLog(@"Memory relief (%@): %ld -> %ld MB, %ld MB available, WebKit part %ld ms; %@", reason, before, (long)BRResidentMemoryMB(),
-              [BRMemory availableMB], (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), [BRMemory webKitNumbers]);
+        long after = (long)BRResidentMemoryMB(), availableAfter = [BRMemory availableMB];
+        @synchronized ([BRMemory class]) {
+            g_reliefRunning = NO;
+            g_reliefEnded = CFAbsoluteTimeGetCurrent();
+            g_reliefGainMB = MAX(before - after, availableAfter - availableBefore);
+            g_reliefEndAvailable = availableAfter;
+        }
+        BRLog(@"Memory relief (%@): %ld -> %ld MB, %ld MB available, WebKit part %ld ms; %@", reason, before, after,
+              availableAfter, (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), [BRMemory webKitNumbers]);
     };
     BRWebThreadRunFn run = BRWebThreadRun();
     if (run) run(webkit);

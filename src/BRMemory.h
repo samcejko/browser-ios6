@@ -51,6 +51,9 @@ extern NSString * const BRMemoryGraphicsNotification;
 + (BOOL)waitForAvailableMB:(long)needMB timeout:(NSTimeInterval)timeout reason:(NSString *)reason engine:(BRJSEngine *)engine;
 // The watchdog tells whether a page is loading (memory is sampled more often then).
 + (void)setPageLoading:(BOOL)loading;
+// Whether the page is drawn with accelerated compositing (the browser switches it off for heavy pages); any thread.
++ (void)setCompositing:(BOOL)on;
++ (BOOL)compositing;
 
 // The web view's layer: the graphics memory of the page (document tiles and composited layers, drawn by the GPU
 // outside the app's resident memory) is estimated from the layers under it. Main thread.

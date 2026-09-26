@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>touch scroll test</title>
+<script>
+// the shim's one-finger scrolling runs where touch events exist: the desktop browser pretends to have them
+if (!('ontouchstart' in window)) window.ontouchstart = null;
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+<style>
+body { margin: 0; font: 14px sans-serif; }
+.box { position: absolute; left: 10px; width: 200px; height: 100px; overflow: auto; background: #eee; }
+</style>
+</head>
+<body>
+<div id="v" class="box" style="top:10px"><div style="height:500px">vertical</div></div>
+<div id="h" class="box" style="top:130px;overflow-y:hidden"><div style="width:900px;height:50px">horizontal</div></div>
+<div id="n" class="box" style="top:250px"><div style="height:50px">fits, nothing to scroll</div></div>
+<pre id="out" style="margin-top:380px">running</pre>
+<script>
+(function () {
+    var res = [];
+    var touch = function (el, x, y) { return new Touch({ identifier: 1, target: el, clientX: x, clientY: y, pageX: x, pageY: y }); };
+    var fire = function (type, el, x, y) {
+        var t = touch(el, x, y);
+        var ev = new TouchEvent(type, { touches: type === 'touchend' ? [] : [t], targetTouches: type === 'touchend' ? [] : [t], changedTouches: [t], bubbles: true, cancelable: true });
+        el.dispatchEvent(ev);
+        return ev.defaultPrevented;
+    };
+    var drag = function (el, points) {
+        var prevented = [];
+        fire('touchstart', el, points[0][0], points[0][1]);
+        for (var i = 1; i < points.length; i++) prevented.push(fire('touchmove', el, points[i][0], points[i][1]));
+        fire('touchend', el, points[points.length - 1][0], points[points.length - 1][1]);
+        return prevented;
+    };
+    var check = function (name, got, expect) { res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]); };
+    var v = document.getElementById('v'), h = document.getElementById('h'), n = document.getElementById('n');
+    // up by 10 (decides the axis), then 30 and 30: the box moves 60 and the page keeps still
+    var p1 = drag(v.firstChild, [[50, 80], [50, 70], [50, 40], [50, 10]]);
+    check('vertical box follows the finger', v.scrollTop, 60);
+    check('the page does not move with it', p1, [false, true, true]);
+    // back at the top, pulled down: the box cannot move, the page gets the gesture
+    v.scrollTop = 0;
+    var p2 = drag(v.firstChild, [[50, 10], [50, 20], [50, 50]]);
+    check('box at its end leaves it to the page', [v.scrollTop, p2], [0, [false, false]]);
+    var p3 = drag(h.firstChild, [[150, 150], [140, 150], [100, 150], [60, 150]]);
+    check('horizontal box', h.scrollLeft, 80);
+    var p4 = drag(n.firstChild, [[50, 280], [50, 270], [50, 240]]);
+    check('box with nothing to scroll: untouched', [n.scrollTop, p4], [0, [false, false]]);
+    var pass = 0, lines = [];
+    for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+    document.getElementById('out').textContent = lines.join('\n');
+    document.title = 'touchscroll ' + pass + '/' + res.length;
+})();
+</script>
+</body>
+</html>

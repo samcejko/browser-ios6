@@ -488,6 +488,7 @@ static void BRWebThreadLock(void);
     }
     // (the standard preferences save every change in the app's defaults: this one is for this run only)
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"WebKitAcceleratedCompositingEnabled"];
+    [BRMemory setCompositing:on];   // (the page shim asks: one-finger scrolling of boxes needs it, see shims-extra)
     // the page's styles and layout at once, while this thread has the page: the layers go now, not on the next timer
     if (!on && self.webView.request) [self.webView stringByEvaluatingJavaScriptFromString:@"document.documentElement ? document.documentElement.offsetHeight : 0"];
     BRLog(@"Accelerated compositing %@ (%@): %ld preference object(s)", on ? @"on" : @"off", reason, (long)done);

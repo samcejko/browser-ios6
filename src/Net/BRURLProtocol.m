@@ -952,6 +952,12 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         body = [[BRCSSRewriter shared] manifestJSONForPageURLString:doc ?: self.request.mainDocumentURL.absoluteString since:since];
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
+    } else if ([path isEqualToString:@"/state"]) {
+        // what the page shim cannot see itself: whether the page is drawn with accelerated compositing (without it iOS 6
+        // scrolls boxes with one finger only in the shim's own way)
+        body = [[NSString stringWithFormat:@"{\"compositing\":%@}", [BRMemory compositing] ? @"true" : @"false"] dataUsingEncoding:NSUTF8StringEncoding];
+        type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/speech/"]) {
         // speechSynthesis of the page shim: info (voices), speak / cancel / pause / resume, and the events poll
         NSMutableDictionary *q = [NSMutableDictionary dictionary];

@@ -2107,13 +2107,14 @@
     // A box that scrolls (overflow-y auto/scroll: marked br-scroll by cssfix) but grew to its content inside a box that
     // clips it: in a flex column it would have shrunk to the room left (a dialog's text scrolls and its buttons stay in
     // view), but flex columns are plain blocks here (YouTube's consent dialog had its buttons below the screen). It
-    // gets the height that fits, and scrolls with one finger; measured again from its own height at every marker scan.
+    // gets the height that fits (one finger scrolls it, see the block below); measured again from its own height at
+    // every marker scan.
     onMarkers(function (marked) {
         for (var i = 0; i < marked.length; i++) {
             if (marked[i].cr.indexOf('br-scroll') < 0) continue;
             var s = marked[i].el;
             try {
-                if (s.__brFit) { s.style.maxHeight = s.__brFit.maxHeight; s.style.webkitOverflowScrolling = s.__brFit.touch; s.__brFit = null; }
+                if (s.__brFit) { s.style.maxHeight = s.__brFit.maxHeight; s.__brFit = null; }
                 if (s.clientHeight < 80 || s.scrollHeight > s.clientHeight + 1) continue;   // (small, or it scrolls already)
                 var clip = null;
                 for (var a = s.parentNode, depth = 0; a && a.nodeType === 1 && a !== document.body && a !== document.documentElement && depth < 8; a = a.parentNode, depth++) {
@@ -2126,12 +2127,104 @@
                 if (over <= 1 || s.getBoundingClientRect().bottom <= clip.getBoundingClientRect().bottom + 1) continue;
                 var fit = s.clientHeight - over;
                 if (fit < 60) continue;
-                s.__brFit = { maxHeight: s.style.maxHeight, touch: s.style.webkitOverflowScrolling || '' };
+                s.__brFit = { maxHeight: s.style.maxHeight };
                 s.style.maxHeight = fit + 'px';
-                s.style.webkitOverflowScrolling = 'touch';
             } catch (e) {}
         }
     });
+    // One finger moves boxes that scroll. iOS 6 does that itself only for a box with -webkit-overflow-scrolling: touch
+    // on a page drawn with accelerated compositing, which the app switches off for heavy pages (YouTube); every other
+    // overflow: auto / scroll box takes two fingers, which nobody knows (the text of YouTube's consent dialog could not
+    // be moved to its buttons). Here the innermost box under the finger that can scroll along the gesture moves with
+    // it (the page when the box is at its end at the start), and glides on after the finger lets go.
+    (function () {
+        if (!('ontouchstart' in window) || !document.addEventListener) return;
+        var compositing = null, askedAt = 0, active = null, glide = null;
+        // (whether the page is drawn with compositing only the app knows; asked when a box with native touch
+        // scrolling is met, at most every 10 s)
+        var nativeTouch = function (el) {
+            var ws = '';
+            try { ws = getComputedStyle(el).webkitOverflowScrolling; } catch (e) {}
+            if (ws !== 'touch') return false;
+            if (compositing === null || Date.now() - askedAt > 10000) {
+                askedAt = Date.now();
+                try {
+                    var x = new XMLHttpRequest();
+                    x.open('GET', 'https://ios6-browser.invalid/state', false);
+                    x.send(null);
+                    compositing = x.status === 200 ? !!JSON.parse(x.responseText).compositing : true;
+                } catch (e2) { compositing = true; }
+            }
+            return compositing;
+        };
+        var boxesAt = function (target) {
+            var list = [];
+            for (var n = target && target.nodeType === 1 ? target : target && target.parentNode; n && n.nodeType === 1 && n !== document.body && n !== document.documentElement; n = n.parentNode) {
+                var cs = getComputedStyle(n);
+                var y = (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && n.scrollHeight > n.clientHeight + 1;
+                var x = (cs.overflowX === 'auto' || cs.overflowX === 'scroll') && n.scrollWidth > n.clientWidth + 1;
+                if (y || x) list.push({ el: n, y: y, x: x });
+            }
+            return list;
+        };
+        // (capture, and not passive where browsers make document touch listeners passive by default: the old engine
+        // takes the object as a true useCapture)
+        var listenOpts = { capture: true, passive: false };
+        var stopGlide = function () { if (glide) { clearTimeout(glide.timer); glide = null; } };
+        var pos = function (el, axis) { return axis === 'y' ? el.scrollTop : el.scrollLeft; };
+        var moveBy = function (el, axis, d) { var before = pos(el, axis); if (axis === 'y') el.scrollTop = before + d; else el.scrollLeft = before + d; return pos(el, axis) !== before; };
+        document.addEventListener('touchstart', function (e) {
+            stopGlide();
+            active = null;
+            if (!e.touches || e.touches.length !== 1) return;
+            var list = boxesAt(e.target);
+            if (!list.length) return;
+            var t = e.touches[0];
+            active = { list: list, sx: t.clientX, sy: t.clientY, x: t.clientX, y: t.clientY, axis: null, el: null, took: false, t: Date.now(), v: 0 };
+        }, listenOpts);
+        document.addEventListener('touchmove', function (e) {
+            if (!active) return;
+            if (!e.touches || e.touches.length !== 1) { active = null; return; }
+            var t = e.touches[0];
+            if (!active.axis) {
+                var ax = Math.abs(t.clientX - active.sx), ay = Math.abs(t.clientY - active.sy);
+                if (ax < 8 && ay < 8) return;   // (a tap so far)
+                active.axis = ay >= ax ? 'y' : 'x';
+                for (var i = 0; i < active.list.length; i++) if (active.list[i][active.axis]) { active.el = active.list[i].el; break; }
+                if (!active.el || nativeTouch(active.el)) { active = null; return; }
+                active.x = t.clientX;
+                active.y = t.clientY;
+                active.t = Date.now();
+                return;
+            }
+            var d = active.axis === 'y' ? active.y - t.clientY : active.x - t.clientX;
+            var moved = moveBy(active.el, active.axis, d);
+            var now = Date.now(), dt = Math.max(8, now - active.t);
+            active.v = 0.8 * (d / dt) + 0.2 * active.v;
+            active.t = now;
+            active.x = t.clientX;
+            active.y = t.clientY;
+            // (once the box has the gesture the page stays where it is; a box at its end at the start leaves it to the page)
+            if (moved) active.took = true;
+            if (active.took) e.preventDefault();
+        }, listenOpts);
+        document.addEventListener('touchend', function () {
+            var a = active;
+            active = null;
+            if (!a || !a.took || Date.now() - a.t > 120 || Math.abs(a.v) < 0.15) return;
+            var el = a.el, axis = a.axis;
+            glide = { v: a.v };
+            var step = function () {
+                if (!glide) return;
+                var moved = moveBy(el, axis, glide.v * 16);
+                glide.v *= 0.95;
+                if (!moved || Math.abs(glide.v) < 0.03) { glide = null; return; }
+                glide.timer = setTimeout(step, 16);
+            };
+            glide.timer = setTimeout(step, 16);
+        }, true);
+        document.addEventListener('touchcancel', function () { active = null; }, true);
+    })();
     // ---- Pseudo-classes as classes: cssfix rewrites :focus-within, :placeholder-shown, :user-invalid/:user-valid,
     // :blank, :target-within, :playing/:paused/:muted and :local-link to .br-* classes that are kept up to date here.
     (function () {
