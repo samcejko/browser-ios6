@@ -761,7 +761,8 @@ static NSString *BRPageKey(NSURL *url)
         if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugJSErrors"]) [d appendData:[@"window.__brDebugErrors=true;\n" dataUsingEncoding:NSUTF8StringEncoding]];
         // (jsfix-helpers: the transpiler's runtime helpers as globals, for lowered code a page keeps as text and runs
         // later, see tools/gen-helpers.js)
-        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"jsfix-helpers", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill",
+        // (page-prelude first: it keeps MutationObservers from holding left pages in memory, see the file)
+        for (NSString *name in @[@"page-prelude", @"core-js-custom", @"regenerator-runtime", @"jsfix-helpers", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill",
                                  @"dialog-polyfill", @"object-fit-images", @"shims", @"regexp-shim", @"shims-extra"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
