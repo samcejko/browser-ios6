@@ -199,6 +199,10 @@ cases.push(['html inline script transpiled', '<html><head></head><body><script>v
 // module scripts stay as they are (the old engine skips them and runs the nomodule fallback)
 cases.push(['html modules', '<html><head><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" data-br-src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>']);
+// another document of the page only reset the property ("--a: initial", YouTube): this document's value still counts
+cases.push(['page reset does not hide the value', ':root{--a:initial}.b{background:var(--a)}:root{--a:#fff}',
+  '.b{background:#fff}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"o7dqit","s":[":root"],"sp":[100],"d":[["--a","initial",0]]},{"h":"q201d4","s":[".b"],"sp":[100],"u":[["background","var(--a)",0,"#fff"]]},{"h":"fyaubi","s":[":root"],"sp":[100],"d":[["--a","#fff",0]]}]}*/',
+  null, '{"--a":"initial"}']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
 for (var i = 0; i < cases.length; i++) {

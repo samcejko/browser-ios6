@@ -440,10 +440,22 @@ var CSSFix = (function () {
         if (!reg || reg.init === undefined) return null;
         return !reg.inh || (ctx.rt && ctx.rt[name]) ? reg.init : null;
     }
+    // The value another document of the page gave a property (undefined: none that counts here). One that only resets
+    // it ("--x: initial") does not hide this document's own definition: YouTube resets every property in one stylesheet
+    // and defines them in the next, and its consent dialog lost its white background (the text and buttons were on
+    // the dark backdrop, and taps on the video went to the invisible dialog).
+    var RESET_VALUE = /^\s*(initial|inherit|unset|revert|revert-layer)\s*$/i;
+    function pageValue(name, ctx) {
+        if (!(name in ctx.page)) return undefined;
+        var pv = ctx.page[name];
+        if (name in ctx.root && RESET_VALUE.test(String(pv)) && !RESET_VALUE.test(String(ctx.root[name]))) return undefined;
+        return pv;
+    }
     // what resolveVars would substitute for one property (null: nothing known)
     function staticVarValue(name, local, ctx) {
+        var pv;
         if (local && local.hasOwnProperty(name)) return local[name];
-        if (name in ctx.page) return ctx.page[name];
+        if ((pv = pageValue(name, ctx)) !== undefined) return pv;
         if (name in ctx.root) return ctx.root[name];
         var rd = registeredDefault(name, ctx);
         if (rd !== null) return rd;
@@ -494,9 +506,9 @@ var CSSFix = (function () {
             var comma = scanUntil(inner, 0, inner.length, ',');
             var name = trim(inner.slice(0, comma));
             var fallback = comma < inner.length ? trim(inner.slice(comma + 1)) : null;
-            var val = null, rd = null;
+            var val = null, rd = null, pv;
             if (local && name in local) val = local[name];
-            else if (name in ctx.page) val = ctx.page[name];
+            else if ((pv = pageValue(name, ctx)) !== undefined) val = pv;
             else if (name in ctx.root) val = ctx.root[name];
             else if ((rd = registeredDefault(name, ctx)) !== null) val = rd;
             // a property only some rules define, resolved per element at run time, with a fallback here: the fallback is
@@ -506,7 +518,7 @@ var CSSFix = (function () {
             else if (name in ctx.other) val = ctx.other[name];
             else if (ctx.initial && name in ctx.initial) val = ctx.initial[name];
             // "--x: initial" is the guaranteed-invalid value (and inherit/unset cannot be known here): the fallback applies
-            if (val !== null && /^\s*(initial|inherit|unset|revert|revert-layer)\s*$/i.test(val)) val = null;
+            if (val !== null && RESET_VALUE.test(val)) val = null;
             if (val === null && fallback !== null) val = fallback;
             if (val === null) return null;
             v = v.slice(0, at) + trim(val) + v.slice(close + 1);
