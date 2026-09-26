@@ -43,3 +43,7 @@ NSString *BRIDNAEncodeHost(NSString *host);
 NSString *BRBase64Encode(NSData *data);
 // The reverse (also the URL-safe alphabet; whitespace skipped, stops at '=').
 NSData *BRBase64Decode(NSString *string);
+
+// Our reads and writes of the shared cookie jar hold this lock (@synchronized): the iOS 6 jar (CFNetwork) crashed
+// when requests of a loading page read and stored cookies from several threads at once.
+id BRCookieLock(void);

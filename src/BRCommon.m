@@ -125,6 +125,14 @@ NSString *BRBase64Encode(NSData *data)
     return out;
 }
 
+id BRCookieLock(void)
+{
+    static id lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
 NSData *BRBase64Decode(NSString *string)
 {
     NSData *ascii = [string dataUsingEncoding:NSASCIIStringEncoding allowLossyConversion:YES];

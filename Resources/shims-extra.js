@@ -2389,6 +2389,9 @@
         if (prev) s.setProperty('display', prev, prio); else s.removeProperty('display');
         return x;
     };
+    // (only boxes that are already running away are touched: taking elements out of the layout and back is not
+    // something to do on every page, and a growing one is far taller than the screen within a few layouts)
+    var runaway = function (h) { return h > Math.max(3000, 4 * (window.innerHeight || 700)); };
     onMarkers(function (marked) {
         var todo = [], i, g;
         for (i = 0; i < marked.length; i++) {
@@ -2397,6 +2400,7 @@
             g = marked[i].el;
             var item = g.parentNode, row = item && item.parentNode;
             if (!row || row.nodeType !== 1 || item.nodeType !== 1) continue;
+            if (!g.__brPct && !g.__brPctAuto && !runaway(g.offsetHeight)) continue;
             var rs = getComputedStyle(row);
             if (!isBox(rs.display) || rs.webkitBoxOrient !== 'horizontal' || rs.webkitBoxAlign !== 'stretch') {
                 // (not the child of a stretched item: a box whose parent has an auto height)

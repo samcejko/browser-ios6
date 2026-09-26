@@ -448,7 +448,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     if (self.thirdParty) {
         [headers removeObjectForKey:@"Cookie"];
     } else if (request.HTTPShouldHandleCookies && !BRHeader(headers, @"Cookie")) {
-        NSArray *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url];
+        NSArray *cookies = nil;
+        @synchronized (BRCookieLock()) { cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url]; }
         if (cookies.count) {
             NSString *cookieHeader = [NSHTTPCookie requestHeaderFieldsWithCookies:cookies][@"Cookie"];
             if (cookieHeader.length) headers[@"Cookie"] = cookieHeader;
@@ -592,7 +593,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
         for (NSString *value in r.setCookieHeaders) {
             NSArray *cookies = [NSHTTPCookie cookiesWithResponseHeaderFields:@{ @"Set-Cookie": value } forURL:url];
-            if (cookies.count) [jar setCookies:cookies forURL:url mainDocumentURL:self.request.mainDocumentURL ?: url];
+            if (cookies.count) { @synchronized (BRCookieLock()) { [jar setCookies:cookies forURL:url mainDocumentURL:self.request.mainDocumentURL ?: url]; } }
         }
     }
 

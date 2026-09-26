@@ -233,15 +233,23 @@ static void BRTallyLayers(CALayer *layer, BRLayerTally *t, NSMutableArray *big, 
         if (big && bytes >= 2 * 1024 * 1024)
             [big addObject:@[@(bytes), [NSString stringWithFormat:@"%@ %.0fx%.0f%@", NSStringFromClass([layer class]), size.width, size.height, tiled ? @" tiled" : @""]]];
     }
-    for (CALayer *sub in layer.sublayers) BRTallyLayers(sub, t, big, depth + 1);   // (a copy: safe while WebKit changes the tree)
+    // (sublayers is the layer's own array on iOS 6, not a copy: WebKit changing the tree meanwhile ended the app
+    // with "Collection <CALayerArray> was mutated while being enumerated"; a copy, and see layerTally)
+    NSArray *subs = [layer.sublayers copy];
+    for (CALayer *sub in subs) BRTallyLayers(sub, t, big, depth + 1);
 }
 
-// the layers under the watched layer with their backing store estimated from the size (4 bytes a pixel)
+// the layers under the watched layer with their backing store estimated from the size (4 bytes a pixel); layers -1
+// when the tree changed while it was walked (no numbers this time)
 + (BRLayerTally)layerTally:(NSMutableArray *)big
 {
     BRLayerTally t = { 0, 0, 0, 0 };
     CALayer *root = g_watchedLayer;
-    if (root) BRTallyLayers(root, &t, big, 0);
+    @try {
+        if (root) BRTallyLayers(root, &t, big, 0);
+    } @catch (NSException *e) {
+        t = (BRLayerTally){ -1, 0, 0, 0 };
+    }
     return t;
 }
 
@@ -273,7 +281,7 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
     // the page's graphics: estimated from its layers (CALayer reads are safe from any thread)
     long layerMB = -1, drawn = 0;
     if (g_watchedLayer) {
-        @autoreleasepool { BRLayerTally t = [self layerTally:nil]; layerMB = (long)(t.bytes / 1048576); drawn = t.drawn; }
+        @autoreleasepool { BRLayerTally t = [self layerTally:nil]; if (t.layers >= 0) { layerMB = (long)(t.bytes / 1048576); drawn = t.drawn; } }
     }
     long unexplained = BRUnexplainedDrop(now, available, mb);
     long last;

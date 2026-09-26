@@ -246,6 +246,7 @@ static NSInteger BRBuiltInUserAgentMode(NSString *hostKey)
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if (enabled == [self privateMode]) return;
     NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+    @synchronized (BRCookieLock()) {
     if (enabled) {
         // remember the cookies of the normal session; they come back when private browsing ends
         NSMutableArray *snapshot = [NSMutableArray array];
@@ -272,6 +273,7 @@ static NSInteger BRBuiltInUserAgentMode(NSString *hostKey)
         }
         [d removeObjectForKey:@"BRPrivateCookieSnapshot"];
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    }
     }
     [d setBool:enabled forKey:@"BRPrivateMode"];
     [d synchronize];

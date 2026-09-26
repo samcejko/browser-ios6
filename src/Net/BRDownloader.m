@@ -107,7 +107,8 @@ static NSString *BRFileNameForDownload(NSURL *url, NSDictionary *headers)
     r.verifyTLS = [BRSettings verifyTLS];
     r.highPriority = YES;
     r.readTimeout = 120;
-    NSArray *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url];
+    NSArray *cookies = nil;
+    @synchronized (BRCookieLock()) { cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url]; }
     NSMutableDictionary *headers = [NSMutableDictionary dictionary];
     if (cookies.count) headers[@"Cookie"] = [NSHTTPCookie requestHeaderFieldsWithCookies:cookies][@"Cookie"] ?: @"";
     headers[@"Accept"] = @"*/*";
