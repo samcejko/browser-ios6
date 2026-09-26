@@ -2852,14 +2852,24 @@ var CSSFix = (function () {
                 case 'flex-direction':
                     if (isGlobalKeyword(lv)) { push(out, '-webkit-box-orient', lv, imp); push(out, '-webkit-box-direction', lv, imp); }
                     else {
-                        if (!hasDisplay && /^row/.test(lv)) { var cfd = columnFlexDisplay(ctx); if (cfd) push(out, 'display', cfd, imp); }
+                        if (!hasDisplay && /^row/.test(lv)) {
+                            var cfd = columnFlexDisplay(ctx);
+                            // a row that wraps becomes what display:flex + flex-wrap:wrap becomes (the 2009 box cannot wrap:
+                            // Google's sign-in put its heading, form and buttons rows on one squeezed line)
+                            if (cfd && wrap) { push(out, 'display', cfd === '-webkit-inline-box' ? 'inline-block' : 'block', imp); ctx.rowWrapRule = true; }
+                            else if (cfd) push(out, 'display', cfd, imp);
+                        }
                         push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
                         push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
                     }
                     push(out, p, v, imp);
                     continue;
                 case 'flex-flow':
-                    if (!hasDisplay && /\brow/.test(lv) && !(/wrap/.test(lv) && !/nowrap/.test(lv))) { var cff = columnFlexDisplay(ctx); if (cff) push(out, 'display', cff, imp); }
+                    if (!hasDisplay && /\brow/.test(lv)) {
+                        var cff = columnFlexDisplay(ctx);
+                        if (cff && wrap) { push(out, 'display', cff === '-webkit-inline-box' ? 'inline-block' : 'block', imp); ctx.rowWrapRule = true; }   // (see flex-direction)
+                        else if (cff) push(out, 'display', cff, imp);
+                    }
                     if (/column|row/.test(lv)) {
                         push(out, '-webkit-box-orient', /column/.test(lv) ? 'vertical' : 'horizontal', imp);
                         push(out, '-webkit-box-direction', /reverse/.test(lv) ? 'reverse' : 'normal', imp);
@@ -4020,7 +4030,10 @@ var CSSFix = (function () {
                 ctx.condRules = keyframe ? null : [];
                 ctx.cvDefs = ctx.rt && !keyframe ? [] : null;
                 ctx.cvUses = ctx.rt && !keyframe ? [] : null;
+                ctx.rowWrapRule = false;
                 var decls = fixDeclarations(r.decls, ctx, keyframe);
+                var rowWrap = ctx.rowWrapRule;   // (a remembered column flex container turned into a wrapping row)
+                ctx.rowWrapRule = false;
                 if (ctx.cvDefs && (ctx.cvDefs.length || ctx.cvUses.length)) registerVarRule(ctx, sels, ctx.cvDefs, ctx.cvUses);
                 ctx.cvDefs = prevDefs;
                 ctx.cvUses = prevUses;
@@ -4057,6 +4070,7 @@ var CSSFix = (function () {
                         if (mtLd.length) out.push({ t: 'q', sel: mtLast.join(','), decls: mtLd });
                     }
                     var fi = flexContainerInfo(r.decls, ctx);
+                    if (rowWrap) { fi.flex = true; fi.wrap = true; fi.column = false; }
                     if (fi.flex) {
                         var childSel = [], gapSel = [], gs;
                         for (gs = 0; gs < sels.length; gs++) { childSel.push(sels[gs] + ' > *'); gapSel.push(sels[gs] + ' > * + *'); }
