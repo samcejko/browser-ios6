@@ -2104,6 +2104,34 @@
     };
     onReady(unboxControls);
     onSettled(unboxControls);
+    // A box that scrolls (overflow-y auto/scroll: marked br-scroll by cssfix) but grew to its content inside a box that
+    // clips it: in a flex column it would have shrunk to the room left (a dialog's text scrolls and its buttons stay in
+    // view), but flex columns are plain blocks here (YouTube's consent dialog had its buttons below the screen). It
+    // gets the height that fits, and scrolls with one finger; measured again from its own height at every marker scan.
+    onMarkers(function (marked) {
+        for (var i = 0; i < marked.length; i++) {
+            if (marked[i].cr.indexOf('br-scroll') < 0) continue;
+            var s = marked[i].el;
+            try {
+                if (s.__brFit) { s.style.maxHeight = s.__brFit.maxHeight; s.style.webkitOverflowScrolling = s.__brFit.touch; s.__brFit = null; }
+                if (s.clientHeight < 80 || s.scrollHeight > s.clientHeight + 1) continue;   // (small, or it scrolls already)
+                var clip = null;
+                for (var a = s.parentNode, depth = 0; a && a.nodeType === 1 && a !== document.body && a !== document.documentElement && depth < 8; a = a.parentNode, depth++) {
+                    var cs = getComputedStyle(a);
+                    if (cs.overflowY === 'hidden' || cs.position === 'fixed') { clip = a; break; }
+                    if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') break;   // (inside a scrolling box it is reachable)
+                }
+                if (!clip) continue;
+                var over = clip.scrollHeight - clip.clientHeight;
+                if (over <= 1 || s.getBoundingClientRect().bottom <= clip.getBoundingClientRect().bottom + 1) continue;
+                var fit = s.clientHeight - over;
+                if (fit < 60) continue;
+                s.__brFit = { maxHeight: s.style.maxHeight, touch: s.style.webkitOverflowScrolling || '' };
+                s.style.maxHeight = fit + 'px';
+                s.style.webkitOverflowScrolling = 'touch';
+            } catch (e) {}
+        }
+    });
     // ---- Pseudo-classes as classes: cssfix rewrites :focus-within, :placeholder-shown, :user-invalid/:user-valid,
     // :blank, :target-within, :playing/:paused/:muted and :local-link to .br-* classes that are kept up to date here.
     (function () {

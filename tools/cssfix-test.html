@@ -85,6 +85,8 @@ var cases = [
   ['text shadow spread dropped', '.a{text-shadow:1px 2px 3px 4px black, 0 0 2px red}', '.a{text-shadow:1px 2px 3px black, 0 0 2px red}'],
   ['aspect ratio marker', '.r{aspect-ratio:16/9}.s{aspect-ratio:auto 1.5}', '.r{aspect-ratio:16/9;counter-reset:br-aspect 16000 br-aspect-h 9000}\n.s{aspect-ratio:auto 1.5;counter-reset:br-aspect 1500 br-aspect-h 1000}'],
   ['scroll snap and smooth markers', '.c{scroll-snap-type:x mandatory;scroll-padding:0 0 0 20px;scroll-behavior:smooth}.i{scroll-snap-align:center}h1{text-wrap:balance}', '.c{scroll-snap-type:x mandatory;scroll-padding:0 0 0 20px;scroll-behavior:smooth;counter-reset:br-snap-x 1 br-snap-m 1 br-snap-pad 20 br-smooth 1}\n.i{scroll-snap-align:center;counter-reset:br-snap-align 2}\nh1{text-wrap:balance;counter-reset:br-balance 1}'],
+  ['scrolling boxes marked, two-value overflow', '.a{overflow-y:auto}.b{overflow:hidden auto}.c{overflow:overlay}.d{overflow-x:scroll}.e{overflow:auto;counter-reset:n 2}',
+    '.a{overflow-y:auto;counter-reset:br-scroll 1}\n.b{overflow-x:hidden;overflow-y:auto;counter-reset:br-scroll 1}\n.c{overflow:auto;counter-reset:br-scroll 1}\n.d{overflow-x:scroll}\n.e{overflow:auto;counter-reset:n 2;counter-reset:n 2 br-scroll 1}'],
   ['logical', '.s{margin-inline:auto;padding-block:1px 2px;inset:0;inline-size:50%}', '.s{margin-left:auto;margin-right:auto;padding-top:1px;padding-bottom:2px;top:0;right:0;bottom:0;left:0;width:50%}'],
   ['selectors is', ':is(.a,.b) .c{xx:1}', ':-webkit-any(.a,.b) .c{xx:1}'],
   ['selectors is complex', 'div:is(.a .b,.c){xx:1}', '.a div.b,div.c{xx:1}'],

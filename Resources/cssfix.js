@@ -2976,9 +2976,17 @@ var CSSFix = (function () {
                     push(out, 'margin-right', miEnd, imp);
                     continue;
                 }
-                case 'overflow': case 'overflow-x': case 'overflow-y':
-                    push(out, p, lv === 'overlay' ? 'auto' : lv === 'clip' ? 'hidden' : v, imp);
+                case 'overflow': case 'overflow-x': case 'overflow-y': {
+                    var ovs = splitWS(lv), ovMap = function (x) { return x === 'overlay' ? 'auto' : x === 'clip' ? 'hidden' : x; };
+                    // two values (x y) are two properties here
+                    if (p === 'overflow' && ovs.length === 2 && !isGlobalKeyword(ovs[0])) { push(out, 'overflow-x', ovMap(ovs[0]), imp); push(out, 'overflow-y', ovMap(ovs[1]), imp); }
+                    else push(out, p, ovs.length === 1 ? ovMap(lv) : v, imp);
+                    // a box that scrolls vertically: marked for the page shim, which limits its height where the flex
+                    // column that should have shrunk it is a plain block here (the buttons of a dialog below the screen)
+                    var ovY = p === 'overflow-x' ? '' : ovs[ovs.length - 1];
+                    if (!keyframe && (ovY === 'auto' || ovY === 'scroll' || ovY === 'overlay')) markers.push('br-scroll 1');
                     continue;
+                }
                 case 'opacity':
                     push(out, p, /%$/.test(lv) ? String(Math.round(parseFloat(lv) * 10) / 1000) : v, imp);
                     continue;

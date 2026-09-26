@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fit scroll test</title>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+<style>
+body { margin: 0; font: 14px sans-serif; }
+p { margin: 0; }
+</style>
+</head>
+<body>
+<!-- A dialog as the old engine lays it out after the flex column became a block (YouTube's consent dialog): the text box
+     scrolls (overflow-y: auto, marked br-scroll by cssfix) but grew to its content, so the dialog clips its buttons.
+     The shim gives the text box the height that fits. The second box sits in a scrolling page part: left alone. -->
+<div id="dlg" style="position:fixed;top:20px;left:20px;width:300px;max-height:300px;overflow:hidden;background:#eee">
+  <div style="height:60px">Title</div>
+  <div id="scroll" style="overflow-y:auto;counter-reset:br-scroll 1">
+    <p style="height:600px">Long text</p>
+    <div><button id="ok">OK</button></div>
+  </div>
+</div>
+<div id="main" style="height:200px;overflow:auto;margin-top:400px">
+  <div id="inner" style="overflow-y:auto;counter-reset:br-scroll 1"><p style="height:500px">Content</p></div>
+</div>
+<pre id="out">running</pre>
+<script>
+setTimeout(function () {
+    var dlg = document.getElementById('dlg'), s = document.getElementById('scroll'), inner = document.getElementById('inner');
+    var ok = document.getElementById('ok').getBoundingClientRect(), d = dlg.getBoundingClientRect();
+    var res = {
+        fitted: s.style.maxHeight,
+        dialogFits: dlg.scrollHeight <= dlg.clientHeight + 1,
+        textScrolls: s.scrollHeight > s.clientHeight,
+        buttonReachable: (s.scrollTop = s.scrollHeight, document.getElementById('ok').getBoundingClientRect().bottom <= dlg.getBoundingClientRect().bottom + 1),
+        innerUntouched: inner.style.maxHeight === ''
+    };
+    var pass = res.fitted === '240px' && res.dialogFits && res.textScrolls && res.buttonReachable && res.innerUntouched;
+    document.getElementById('out').textContent = JSON.stringify(res);
+    document.title = 'fitscroll ' + (pass ? 'PASS' : 'FAIL');
+}, 1500);
+</script>
+</body>
+</html>
