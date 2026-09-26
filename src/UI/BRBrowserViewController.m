@@ -418,6 +418,7 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageStyleChanged:) name:@"BRPageStyleDidChangeNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(openURLNotification:) name:@"BROpenURLNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(graphicsMemoryHigh:) name:BRMemoryGraphicsNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(memoryReload:) name:BRMemoryReloadNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageDocumentArrived:) name:BRPageDocumentNotification object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
@@ -1281,6 +1282,35 @@ static void BRWebThreadLock(void)
     if (self.compositingOff) return;
     self.compositingOff = YES;
     [self setAcceleratedCompositing:NO reason:[NSString stringWithFormat:@"the graphics of %@ are too big", host ?: @"the page"]];
+}
+
+// the page has filled the iPad and iOS is about to close the app: the page is loaded again (its heap goes), a note says why
+- (void)memoryReload:(NSNotification *)note
+{
+    if (!self.webView.request || self.loading || [UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+    [self.webView reload];
+    [self showNote:L(@"The iPad was running out of memory: the page was loaded again so that the app stays open.")];
+}
+
+// a short note over the top of the page that goes by itself (no button to press)
+- (void)showNote:(NSString *)text
+{
+    UILabel *note = [[UILabel alloc] init];
+    note.text = text;
+    note.numberOfLines = 0;
+    note.textAlignment = NSTextAlignmentCenter;
+    note.font = [UIFont systemFontOfSize:15];
+    note.textColor = [UIColor whiteColor];
+    note.backgroundColor = [UIColor colorWithWhite:0 alpha:0.78];
+    note.layer.cornerRadius = 10;
+    note.layer.masksToBounds = YES;
+    CGFloat width = MIN(self.webView.bounds.size.width - 40, 520);
+    CGSize size = [text sizeWithFont:note.font constrainedToSize:CGSizeMake(width - 24, 200) lineBreakMode:NSLineBreakByWordWrapping];
+    note.frame = CGRectMake(roundf((self.webView.bounds.size.width - width) / 2), 16, width, ceilf(size.height) + 20);
+    note.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    note.userInteractionEnabled = NO;
+    [self.webView addSubview:note];
+    [UIView animateWithDuration:0.4 delay:4 options:0 animations:^{ note.alpha = 0; } completion:^(BOOL finished) { [note removeFromSuperview]; }];
 }
 
 - (BOOL)compositingOffForHost:(NSString *)host

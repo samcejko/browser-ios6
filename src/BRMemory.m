@@ -9,6 +9,17 @@
 #include <unistd.h>
 
 NSString * const BRMemoryGraphicsNotification = @"BRMemoryGraphicsNotification";
+NSString * const BRMemoryReloadNotification = @"BRMemoryReloadNotification";
+// The very last resort: below this much available for BRReloadAfter seconds while the app holds more than
+// BRResidentReloadMB and relief frees nothing, the page is loaded again (at most once in BRReloadPause seconds).
+// iOS closed the app at 31-40 MB available after a long YouTube session (page JS heap 95 MB, 1.6 million objects).
+static const long BRAvailReloadMB = 36, BRResidentReloadMB = 250;
+static const NSTimeInterval BRReloadAfter = 4, BRReloadPause = 120;
+static CFAbsoluteTime g_reloadCriticalSince, g_lastReload;
+// relief (see relieve:): running, when, and what the last one freed
+static BOOL g_reliefRunning;
+static CFAbsoluteTime g_reliefStarted, g_reliefEnded;
+static long g_reliefGainMB = 100, g_reliefEndAvailable;
 
 // Levels by what the whole system has available (free + inactive + purgeable). Measured on the iPad 2 (512 MB):
 // with nothing open about 220-250 MB are available, iOS warns at 40-60 MB and kills the frontmost app at 15-25 MB
@@ -327,6 +338,18 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
             [self releaseHeld:1];
         }
     }
+    // the very last resort, on a page that is not loading: its own heap has filled the iPad and relief frees nothing
+    BOOL useless;
+    @synchronized (self) { useless = !g_reliefRunning && g_reliefGainMB < 4 && now - g_reliefEnded < 60; }
+    if (available < BRAvailReloadMB && mb > BRResidentReloadMB && useless && !g_pageLoading) {
+        if (!g_reloadCriticalSince) g_reloadCriticalSince = now;
+        if (now - g_reloadCriticalSince >= BRReloadAfter && now - g_lastReload > BRReloadPause) {
+            g_lastReload = now;
+            g_reloadCriticalSince = 0;
+            BRLog(@"Memory: %ld MB available, the page holds %ld MB and relief frees nothing: loaded again before iOS closes the app", available, mb);
+            dispatch_async(dispatch_get_main_queue(), ^{ [[NSNotificationCenter defaultCenter] postNotificationName:BRMemoryReloadNotification object:nil]; });
+        }
+    } else g_reloadCriticalSince = 0;
     return level;
 }
 
@@ -416,10 +439,6 @@ static long BRUnexplainedDrop(CFAbsoluteTime now, long available, long mb)
 // A relief that freed next to nothing is not repeated for a while (unless the system lost 10 MB more meanwhile):
 // its garbage collection holds the page for 0.5-1 s, and on a page whose own heap fills the iPad (YouTube after a
 // while: 95 MB, 1.6 million objects) it ran every 1-2 s, the page stalled and was killed all the same.
-static BOOL g_reliefRunning;
-static CFAbsoluteTime g_reliefStarted, g_reliefEnded;
-static long g_reliefGainMB = 100, g_reliefEndAvailable;
-
 + (void)relieve:(NSString *)reason
 {
     long before = (long)BRResidentMemoryMB(), availableBefore = [self availableMB];

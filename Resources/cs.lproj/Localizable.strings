@@ -154,4 +154,4 @@
 "Page too large" = "Stránka je pro iPad moc velká";
 "Load Again" = "Načíst znovu";
 "The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the page again?" = "iOS aplikaci zavřel během načítání %@ – iPadu došla paměť. Načíst stránku znovu?";
-"The iPad is running out of memory: %@ stopped loading so that the app stays open. What loaded so far works." = "iPadu dochází paměť: načítání %@ se zastavilo, aby aplikace zůstala otevřená. Co se stihlo načíst, funguje.";
+"The iPad was running out of memory: the page was loaded again so that the app stays open." = "iPadu docházela paměť: stránka se načetla znovu, aby aplikace zůstala otevřená.";

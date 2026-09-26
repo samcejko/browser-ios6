@@ -10,6 +10,9 @@ typedef NS_ENUM(NSInteger, BRMemoryLevel) {
     BRMemoryLevelCritical,     // everything that can be freed is freed
     BRMemoryLevelEmergency,    // new requests wait too (holdLoad:): the page loads slower, nothing is stopped
 };
+// posted on the main thread when the page itself has filled the iPad (relief frees nothing, iOS is about to close
+// the app): the page should be loaded again from scratch, which drops its heap (better than the app being closed)
+extern NSString * const BRMemoryReloadNotification;
 // posted on the main thread when the page's graphics (composited layers) eat the memory: the page should be drawn
 // without accelerated compositing
 extern NSString * const BRMemoryGraphicsNotification;
