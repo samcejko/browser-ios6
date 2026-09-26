@@ -2139,10 +2139,15 @@
     var fixPercentHeight = function (el) {
         var p = el.parentNode;
         if (!p || p.nodeType !== 1 || p.__brPctFix || el.offsetHeight > 2 || el.offsetWidth < 20) return;
+        // (a try that did not help is not repeated for the same box width: every try changes the style attribute
+        // twice, and the page's and our own observers took that for new content, so blesk.cz's lazy pictures kept
+        // the page busy for good)
+        if (el.__brPctTried === p.offsetWidth) return;
         var ph = p.clientHeight;
         if (ph < 20 || p.style.height) return;
         var cs = getComputedStyle(p), inner = ph - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
         if (inner < 20) return;
+        el.__brPctTried = p.offsetWidth;
         p.style.height = (cs.boxSizing === 'border-box' ? p.offsetHeight : inner) + 'px';
         if (el.offsetHeight > 2) { p.__brPctFix = p.offsetWidth; pctFixed.push(p); }
         else p.style.height = '';   // (not that: left as it was)
@@ -2218,7 +2223,18 @@
             for (var mh = 0; mh < markerHooks.length; mh++) try { markerHooks[mh](marked); } catch (e2) {}
         } catch (e) {}
     };
-    var scheduleAspect = function () { if (aspectTimer) return; aspectTimer = setTimeout(function () { aspectTimer = null; applyAspectRatios(); }, 200); };
+    // (the scan reads the style of every element: on a big page that changes all the time it waits five times its cost)
+    var aspectCost = 0, aspectEnd = 0;
+    var scheduleAspect = function () {
+        if (aspectTimer) return;
+        aspectTimer = setTimeout(function () {
+            aspectTimer = null;
+            var t0 = Date.now();
+            applyAspectRatios();
+            aspectEnd = Date.now();
+            aspectCost = aspectEnd - t0;
+        }, Math.max(200, aspectEnd + aspectCost * 5 - Date.now()));
+    };
     onReady(scheduleAspect);
     onSettled(scheduleAspect);
     window.addEventListener('resize', scheduleAspect, false);
@@ -2690,17 +2706,27 @@
             }
         };
         window.__brApplyContainerQueries = applyContainers;
+        var applyCost = 0, applyEnd = 0;
         var apply = function () {
             applyTimer = null;
             if (!manifest) return;
+            var t0 = Date.now();
             try { applyStructural(); } catch (e7) {}
             try { applyHas(); } catch (e) {}
             // the marker scan calls applyContainers and collects the inline deferred-value markers
             try { if (manifest.cq.length || (window.__brDeferred && window.__brDeferred.needsMarkers())) applyAspectRatios(); } catch (e2) {}
             try { if (window.__brVars) window.__brVars.apply(); } catch (e5) {}
             try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e3) {}
+            applyEnd = Date.now();
+            applyCost = applyEnd - t0;
         };
-        var schedule = function () { if (!applyTimer) applyTimer = setTimeout(apply, 120); };
+        // A pass costs what the page's size makes it cost (blesk.cz: 2.5 s, and the page changes all the time, so the
+        // passes ran back to back and the page itself hardly got to run): the next one waits five times as long as
+        // the last took.
+        var schedule = function () {
+            if (applyTimer) return;
+            applyTimer = setTimeout(apply, Math.max(120, applyEnd + applyCost * 5 - Date.now()));
+        };
         // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest
         var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [] };
         var mergeExtra = function (m) {
@@ -4838,7 +4864,8 @@
         };
         var schedule = function () {
             if (timer || !rules.length) return;
-            timer = setTimeout(pass, lastCost > 40 ? Math.min(1000, lastCost * 3) : 40);
+            // (an expensive pass waits four times its cost: blesk.cz's took 1.5 s and came every second)
+            timer = setTimeout(pass, lastCost > 40 ? Math.min(20000, lastCost * 4) : 40);
         };
         var watch = function () {
             if (observer || !window.MutationObserver) return;
