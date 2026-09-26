@@ -5737,6 +5737,23 @@
             }
             return s + quote + stack.reverse().join('');
         };
+        // ids and classes that are identifiers only since CSS Syntax 3 (starting with "--" or "-" and a digit: htmx
+        // looks for #--htmx-preserve-pantry--) as attribute selectors; attribute values and strings stay as they are
+        var modernIdents = function (s) {
+            var out = '', i = 0, quote = '', depth = 0, start = 0;
+            var flush = function (end) {
+                out += s.slice(start, end).replace(/([#.])(--[\w-]*|-\d[\w-]*)/g, function (all, kind, name) { return kind === '#' ? '[id="' + name + '"]' : '[class~="' + name + '"]'; });
+            };
+            for (; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (depth) { if (c === '"' || c === "'") quote = c; else if (c === ']') { depth = 0; out += s.slice(start, i + 1); start = i + 1; } continue; }
+                if (c === '[') { flush(i); start = i; depth = 1; }
+            }
+            if (depth) out += s.slice(start); else flush(s.length);
+            return out;
+        };
         // a combinator outside brackets, parentheses and strings
         var hasCombinator = function (s) {
             var depth = 0, quote = '';
@@ -5780,6 +5797,7 @@
             }
             sel = sel.replace(/:([a-z-]+)(?![\w(-])/gi, function (all, name) { var s = STATES[name.toLowerCase()]; return s === undefined ? all : s; });
             sel = sel.replace(/(\[[^\]"']*(?:"[^"]*"|'[^']*')?)\s+[is]\s*\]/g, '$1]');   // attribute case flags
+            sel = modernIdents(sel);
             if (!trim(sel) || /[\s>+~]$/.test(sel)) sel += '*';   // (the compound had only the complex :not)
             return [{ t: sel, x: excl || [] }];
         };
@@ -5855,8 +5873,9 @@
                         else if (kind === 'up') { for (var el = self; el && el.nodeType === 1; el = el.parentNode) if (matchesList(el, list)) { result = el; break; } }
                         else result = pick(self, list, qsa, kind === 'one');
                     } catch (e2) {
-                        // (debugging: which selector the retry could not take either)
-                        if (window.__brDebugErrors && refusedLogged < 5) { refusedLogged++; sendToApp('brlog', 'Selector refused: ' + sel.slice(0, 300) + ' page ' + location.hostname); }
+                        // (debugging: which selector the retry could not take either; other engines' prefixed ones, which
+                        // current browsers refuse too, are not worth a line)
+                        if (window.__brDebugErrors && refusedLogged < 8 && !/:-(?:moz|ms)-/.test(sel)) { refusedLogged++; sendToApp('brlog', 'Selector refused: ' + sel.slice(0, 300) + ' page ' + location.hostname); }
                         throw e;
                     }
                     return result;

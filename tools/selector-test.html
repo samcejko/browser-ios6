@@ -23,6 +23,7 @@ if (/[?&]emulate/.test(location.search)) {
             if (depth || quote) return true;
             if (/:(is|where|matches|has|scope|focus-visible|focus-within|placeholder-shown|any-link|defined)\b/i.test(sel)) return true;
             if (/\s[is]\s*\]/.test(sel)) return true;
+            if (/[#.]-(?:-|\d)/.test(sel.replace(/\[[^\]]*\]/g, ''))) return true;   // identifiers of CSS Syntax 3
             var re = /:not\(/g, m;
             while ((m = re.exec(sel))) {
                 var d = 0, j;
@@ -51,7 +52,7 @@ if (/[?&]emulate/.test(location.search)) {
 </head>
 <body>
 <div id="root"><p class="a">a</p><p class="b">b</p><span class="c">c</span><ul id="list"><li>1</li><li>2</li></ul><input id="field"></div>
-<div id="box-1"><a href="x?_ic=1">in</a></div><a id="out" href="y?_ic=2">out</a>
+<div id="box-1"><a href="x?_ic=1">in</a></div><a id="out" href="y?_ic=2">out</a><div id="--pantry" class="--x"></div>
 <pre id="out-text"></pre>
 <script>
 // Selectors of today on the old engine (shims-extra "selectors ... that the old engine rejects"): each query must work
@@ -84,6 +85,8 @@ if (/[?&]emulate/.test(location.search)) {
         for (var i = 0; i < all.length; i++) ids.push(all[i].id || all[i].tagName);
         return ids.join(',');
     }, 'box-1,out');
+    check('id and class starting with -- (htmx)', function () { var p = document.querySelector('#--pantry'), c = document.querySelectorAll('div.--x'); return [p ? p.id : null, c.length]; }, ['--pantry', 1]);
+    check('-- in an attribute value stays', function () { return document.querySelectorAll(':is([id="--pantry"]), a[href="#--none"], a[href=\'.-1x\']').length; }, 1);
     check('no marks left', function () { return document.querySelectorAll('[data-br-pick], [data-br-scope]').length; }, 0);
     var pass = 0, lines = [];
     for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
