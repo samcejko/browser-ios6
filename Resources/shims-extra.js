@@ -1128,6 +1128,78 @@
     }
     onReady(runResponsiveImages);
     onSettled(runResponsiveImages);
+    (function () {
+        var OFI = 'bfred-it:object-fit-images', setAttr = Element.prototype.setAttribute;
+        // object-fit-images shows a transparent placeholder in the element and paints the picture as its background.
+        // Its placeholder, an SVG, hid the picture here: an <img> showing an SVG that WebKit already holds takes it
+        // for opaque and skips its own background, so every picture after the first of the same size stayed blank
+        // (YouTube's thumbnails). The placeholder is a transparent GIF instead (the build patches the polyfill to
+        // ask for it). ImageIO refuses a GIF whose screen is much bigger than its single pixel, so the GIF keeps
+        // only the picture's proportions, in a few thousand pixels: enough for a box with one auto side. A box
+        // with both sides auto follows the picture's own size, where object-fit changes nothing: it shows the
+        // picture itself (its specified sizes are read while it is hidden, when WebKit reports them as written).
+        var GIF_TAIL = '\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x01D\x00;';
+        var gifs = {}, ours = {};
+        var proportions = function (w, h) {
+            // the last convergent of the continued fraction of w/h whose terms multiply to at most 3600, at most 50:1
+            var swap = w < h, x = swap ? h / w : w / h;
+            if (x > 50) x = 50;
+            var p0 = 1, q0 = 0, p1 = Math.floor(x), q1 = 1, r = x - p1;
+            while (r > 1e-9) {
+                r = 1 / r;
+                var a = Math.floor(r), p2 = a * p1 + p0, q2 = a * q1 + q0;
+                if (p2 * q2 > 3600) break;
+                p0 = p1; q0 = q1; p1 = p2; q1 = q2;
+                r -= a;
+            }
+            return swap ? [q1, p1] : [p1, q1];
+        };
+        var gif = function (w, h) {
+            w = Math.round(w) || 1; h = Math.round(h) || 1;
+            var pq = w * h <= 3600 && w <= 50 * h && h <= 50 * w ? [w, h] : proportions(w, h), key = pq[0] + 'x' + pq[1];
+            if (!gifs[key]) {
+                gifs[key] = 'data:image/gif;base64,' + btoa('GIF89a' + String.fromCharCode(pq[0] & 255, pq[0] >> 8, pq[1] & 255, pq[1] >> 8) + GIF_TAIL);
+                ours[gifs[key]] = true;
+            }
+            return gifs[key];
+        };
+        var bothAuto = function (el) {
+            var s = el.style, prev = s.getPropertyValue('display'), prio = s.getPropertyPriority('display');
+            s.setProperty('display', 'none', 'important');
+            var cs = getComputedStyle(el), auto = cs.width === 'auto' && cs.height === 'auto';
+            if (prev) s.setProperty('display', prev, prio); else s.removeProperty('display');
+            return auto;
+        };
+        window.__brOfiPH = function (el, w, h) {
+            try {
+                // (the attribute: the copy of a picture without an address yet reads the page's own address)
+                var st = el[OFI];
+                if (st && st.img && st.img.getAttribute('src') && bothAuto(el)) return st.img.src;
+            } catch (e) {}
+            return gif(w, h);
+        };
+        // Pictures that got their address after the polyfill took them (lazy loading: YouTube's thumbnails): it
+        // cannot follow the src property on this engine (the element's own, which cannot be redefined), so it kept
+        // painting an empty address and the page showed the picture uncropped. When such a picture loads, the
+        // polyfill's copy takes the new address and the element its placeholder again (the polyfill's own load
+        // handler, on the body, right after this one, paints the background from it). A picture the old engine
+        // squeezed to a 1 px wide or high box gets its size too (see fixThinPicture / fixPercentHeight).
+        document.addEventListener('load', function (e) {
+            var el = e.target;
+            if (!el || el.tagName !== 'IMG') return;
+            try {
+                var st = el[OFI], cur = el.src;
+                if (st && st.img && cur && !ours[cur] && cur.indexOf('data:image/svg+xml') !== 0 && cur !== st.img.src) {
+                    st.img.src = cur;
+                    setAttr.call(el, 'data-ofi-src', cur);
+                    var ph = window.__brOfiPH(el, el.naturalWidth || 1, el.naturalHeight || 0);
+                    if (ph !== cur) setAttr.call(el, 'src', ph);
+                }
+                fixPercentHeight(el);
+                fixThinPicture(el);
+            } catch (x) {}
+        }, true);
+    })();
 
     // ---- Streams (single-process, promise based; fetch responses expose a body stream over the buffered bytes)
     if (!window.ReadableStream && P) {
@@ -2059,11 +2131,50 @@
     // empty boxes with such a rule get their height from their width (and again when the viewport changes)
     var aspectTimer = null, aspectElements = [], containerElements = [], markerHooks = [];
     var onMarkers = function (fn) { markerHooks.push(fn); };   // fn(list of {el, cr}) after every marker scan
+    // A picture or video with height: 100% inside a box whose own height is a percentage (a thumbnail filling an
+    // absolutely positioned box in a padding-top ratio box: YouTube) gets 0 px from the old engine, which does not
+    // resolve such a chain: the box gets its height in pixels (what it has anyway), the percentage then resolves.
+    var PCT_TAGS = { IMG: 1, VIDEO: 1, CANVAS: 1, IFRAME: 1, PICTURE: 1, EMBED: 1, OBJECT: 1 };
+    var pctFixed = [];
+    var fixPercentHeight = function (el) {
+        var p = el.parentNode;
+        if (!p || p.nodeType !== 1 || p.__brPctFix || el.offsetHeight > 2 || el.offsetWidth < 20) return;
+        var ph = p.clientHeight;
+        if (ph < 20 || p.style.height) return;
+        var cs = getComputedStyle(p), inner = ph - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+        if (inner < 20) return;
+        p.style.height = (cs.boxSizing === 'border-box' ? p.offsetHeight : inner) + 'px';
+        if (el.offsetHeight > 2) { p.__brPctFix = p.offsetWidth; pctFixed.push(p); }
+        else p.style.height = '';   // (not that: left as it was)
+    };
+    // A loaded picture with height and no width (height: 100% and width: auto in a 2009 box: YouTube's round channel
+    // pictures were 1 px wide) gets the width its own proportions give.
+    var fixThinPicture = function (el) {
+        if (el.tagName !== 'IMG' || el.__brThin) return;
+        var w = el.offsetWidth, h = el.offsetHeight, nw = el.naturalWidth, nh = el.naturalHeight;
+        if (w > 2 || h < 10 || !nw || !nh) return;
+        // (the placeholder of object-fit-images has the picture's proportions too)
+        el.style.width = Math.round(h * nw / nh) + 'px';
+        el.__brThin = true;
+    };
+    // (a box that changed its width since, a rotation: measured again)
+    var recheckPercentHeights = function () {
+        var keep = [];
+        for (var i = 0; i < pctFixed.length; i++) {
+            var p = pctFixed[i];
+            if (p.parentNode && Math.abs(p.offsetWidth - p.__brPctFix) <= 1) { keep.push(p); continue; }
+            p.style.height = '';
+            p.__brPctFix = null;
+        }
+        pctFixed = keep;
+    };
     var applyAspectRatios = function () {
         try {
+            recheckPercentHeights();
             var all = document.getElementsByTagName('*'), found = [], containers = [], marked = [];
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
+                if (PCT_TAGS[el.tagName]) { fixPercentHeight(el); fixThinPicture(el); }
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 marked.push({ el: el, cr: cr });

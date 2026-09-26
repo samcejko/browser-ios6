@@ -163,6 +163,8 @@ jobs:
           curl -sSfL "https://cdn.jsdelivr.net/npm/picturefill@3.0.3/dist/picturefill.min.js" -o Resources/js/picturefill.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/dialog-polyfill@0.5.6/dist/dialog-polyfill.js" -o Resources/js/dialog-polyfill.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/object-fit-images@3.2.4/dist/ofi.min.js" -o Resources/js/object-fit-images.js
+          # endless size polling of lazy pictures, and the placeholder from the shim (see the script)
+          node tools/patch-ofi.js Resources/js/object-fit-images.js
           # served separately and fetched by pages on first use of indexedDB (WebSQL-backed shim)
           curl -sSfL "https://cdn.jsdelivr.net/npm/indexeddbshim@3.10.0/dist/indexeddbshim.min.js" -o Resources/js/indexeddbshim.js
           ls -la Resources/js
