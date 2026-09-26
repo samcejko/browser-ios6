@@ -730,8 +730,10 @@ static NSString *BRPageKey(NSURL *url)
         NSBundle *b = [NSBundle mainBundle];
         // (debugging switch: the page shim logs the real errors of callbacks and promises, see shims-extra.js)
         if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugJSErrors"]) [d appendData:[@"window.__brDebugErrors=true;\n" dataUsingEncoding:NSUTF8StringEncoding]];
-        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill", @"dialog-polyfill",
-                                 @"object-fit-images", @"shims", @"regexp-shim", @"shims-extra"]) {
+        // (jsfix-helpers: the transpiler's runtime helpers as globals, for lowered code a page keeps as text and runs
+        // later, see tools/gen-helpers.js)
+        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"jsfix-helpers", @"fetch", @"intersection-observer", @"resize-observer", @"picturefill",
+                                 @"dialog-polyfill", @"object-fit-images", @"shims", @"regexp-shim", @"shims-extra"]) {
             NSString *path = [b pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [b pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;
@@ -755,7 +757,7 @@ static NSString *BRPageKey(NSURL *url)
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableData *d = [NSMutableData data];
-        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"fetch", @"worker-shims", @"regexp-shim"]) {
+        for (NSString *name in @[@"core-js-custom", @"regenerator-runtime", @"jsfix-helpers", @"fetch", @"worker-shims", @"regexp-shim"]) {
             NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"js" inDirectory:@"js"];
             if (!path) path = [[NSBundle mainBundle] pathForResource:name ofType:@"js"];
             NSData *part = path ? [NSData dataWithContentsOfFile:path] : nil;

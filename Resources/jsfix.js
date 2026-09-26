@@ -3486,7 +3486,15 @@
     };
     // (lowerUnicode: the page's RegExp constructor lowers u/v patterns with it, see shims-extra.js)
     // (lazy: after a run that kept factories for later, "[[start,end],...]" of their text in the input, else '')
+    // every runtime helper as global function declarations: the polyfill bundle carries them (tools/gen-helpers.js),
+    // since lowered code a page keeps as text and runs later with new Function / eval (MediaWiki keeps its modules in
+    // localStorage) no longer sees the helpers of the script it came from
+    var helperSource = function () {
+        var names = [];
+        for (var k in RUNTIME) if (RUNTIME.hasOwnProperty(k)) names.push(k);
+        return helperText(names);
+    };
     root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex,
-                   lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts,
+                   lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts, helperSource: helperSource,
                    lazyScan: function (src) { var p = null; try { p = lazyParts(src); } catch (e) { p = null; } return p ? JSON.stringify(p) : ''; } };
 })(this);
