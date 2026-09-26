@@ -1365,7 +1365,12 @@
             key = '$' + id.name;
             b = null;
             for (var x = s; x; x = x.parent) { b = x.decls[key]; if (b) break; }
-            if (b) {
+            if (id.$impCheck) {
+                // (a function lowered while parsing printed this name as its import: it is analysed again when a
+                // declaration around it has the same name, e.g. `var e = function () { return e = ..., e(); }` inside
+                // a function of a module that imports an `e`; denik.cz)
+                if (!b || b.kind !== 'import') this.redo(id.$raw);
+            } else if (b) {
                 b.refs.push(id);
                 id.$b = b;
                 // (a binding renamed in an earlier round)
@@ -1418,7 +1423,11 @@
         p.strict = raw.strict;
         p.nextToken();
         stats.redos++;
-        var fresh = p.parseMaybeAssign();
+        // (the value of a method, getter or setter starts at its parameters; a function or class alone, without the
+        // call after it: `function e(s){...}(x)`; an arrow is a whole assignment expression)
+        var fresh = n.type === 'ArrowFunctionExpression' ? p.parseMaybeAssign() :
+            n.type === 'FunctionExpression' && this.src.charCodeAt(n.start) === 40 ?
+            p.parseMethod(!!n.generator, !!n.async, !!(n.$p && n.$p.type === 'MethodDefinition' && n.$p.kind === 'constructor')) : p.parseExprAtom();
         if (n.type === 'FunctionDeclaration' && fresh.type === 'FunctionExpression') fresh.type = 'FunctionDeclaration';
         if (n.type === 'ClassDeclaration' && fresh.type === 'ClassExpression') fresh.type = 'ClassDeclaration';
         if (fresh.type !== n.type || fresh.start !== n.start || fresh.end !== n.end) throw new Unsupported('early-redo');
@@ -1437,7 +1446,7 @@
         var raw = n.$raw, rs = new Scope('function', s, n, s.strict), free = raw.free;
         raw.node = n;
         raw.scope = s;
-        for (var j = 0; j < free.length; j++) this.ref({ type: 'Identifier', name: free[j].name, $raw: raw, $w: free[j].w, start: n.start, end: n.end }, rs, false);
+        for (var j = 0; j < free.length; j++) this.ref({ type: 'Identifier', name: free[j].name, $raw: raw, $w: free[j].w, $impCheck: free[j].imp, start: n.start, end: n.end }, rs, false);
         if (raw.text === null) return false;
         n.$d = true;
         return true;
@@ -1458,9 +1467,12 @@
             var seen = {};
             for (i = 0; i < this.refs.length; i += 2) {
                 id = this.refs[i];
-                if (id.$b) continue;
-                e = seen['$' + id.name];
-                if (!e) { e = seen['$' + id.name] = { name: id.name, w: false }; raw.free.push(e); }
+                // (a name taken for an import of the stand-in is checked in the real scopes too: a function around
+                // this one that the parser had not finished may declare the same name, see resolveRefs)
+                var imp = !!id.$b && id.$b.kind === 'import' && id.$b.scope === root && root === this.earlyRoot;
+                if (id.$b && !imp) continue;
+                e = seen[(imp ? '#' : '$') + id.name];
+                if (!e) { e = seen[(imp ? '#' : '$') + id.name] = { name: id.name, w: false, imp: imp }; raw.free.push(e); }
                 if (id.$w) e.w = true;
             }
             if (n.$d) {
