@@ -404,10 +404,13 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 
     // 0b. Ad and tracker blocking (never for the main document)
     BOOL subresource = request.mainDocumentURL && ![url isEqual:request.mainDocumentURL];
-    if (subresource && [BRSettings adBlockEnabled] && ![BRSettings adBlockDisabledForHost:request.mainDocumentURL.host] && [BRAdBlock shouldBlockHost:url.host]) {
-        [BRAdBlock noteBlockedRequest];
-        [self serveBlockedResponse];
-        return;
+    if ([self adBlockApplies]) {
+        BOOL knownTag = [BRAdBlock isKnownTagScriptURL:url];
+        if (knownTag || [BRAdBlock shouldBlockHost:url.host]) {
+            [BRAdBlock noteBlockedRequest];
+            [self serveBlockedResponseWithScript:(knownTag || [BRAdBlock isTagManagerHost:url.host]) ? [BRAdBlock tagScriptStub] : nil];
+            return;
+        }
     }
     // 0c. Data saver: images are answered with a blank picture
     if (subresource && ![BRSettings loadImages] && BRLooksLikeImageRequest(request)) {
@@ -776,6 +779,14 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         }];
         return;
     }
+    // Google's tag scripts from the site's own host (see BRAdBlock): the stub instead of a minute of lowering
+    if ([kind isEqualToString:@"js"] && [self adBlockApplies] && [BRAdBlock isTagManagerScript:buffered]) {
+        [BRAdBlock noteTagScriptAtURL:self.request.URL];
+        [BRAdBlock noteBlockedRequest];
+        self.cacheBody = nil;
+        [self serveBlockedResponseWithScript:[BRAdBlock tagScriptStub]];
+        return;
+    }
     NSString *charset = self.rewriteCharset;
     NSInteger status = self.pendingStatus;
     NSDictionary *fields = self.pendingHeaderFields;
@@ -1045,18 +1056,34 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 }
 
 // Empty script / stylesheet or a blank image, so the page does not wait or show broken elements.
+// ads and trackers: this request is not made (and a page's own requests to its main document never are)
+- (BOOL)adBlockApplies
+{
+    NSURLRequest *request = self.request;
+    BOOL subresource = request.mainDocumentURL && ![request.URL isEqual:request.mainDocumentURL];
+    return subresource && [BRSettings adBlockEnabled] && ![BRSettings adBlockDisabledForHost:request.mainDocumentURL.host];
+}
+
 - (void)serveBlockedResponse
 {
+    [self serveBlockedResponseWithScript:nil];
+}
+
+// script: the body when a script is expected (see BRAdBlock tagScriptStub), nil for an empty one
+- (void)serveBlockedResponseWithScript:(NSData *)script
+{
     NSString *accept = BRHeader(self.request.allHTTPHeaderFields, @"Accept") ?: @"";
-    NSData *body = [NSData data];
+    NSData *body = script ?: [NSData data];
     NSString *type = @"text/javascript";
     if ([accept rangeOfString:@"image"].location != NSNotFound || BRLooksLikeImageRequest(self.request)) {
         body = [NSData dataWithBytes:BRBlankGIF length:sizeof(BRBlankGIF)];
         type = @"image/gif";
     } else if ([accept rangeOfString:@"text/css"].location != NSNotFound) {
         type = @"text/css";
+        body = [NSData data];
     } else if ([accept rangeOfString:@"text/html"].location != NSNotFound) {
         type = @"text/html";
+        body = [NSData data];
     }
     NSDictionary *fields = @{ @"Content-Type": type, @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)body.length], @"Cache-Control": @"no-store" };
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:fields];
