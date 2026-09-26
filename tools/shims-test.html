@@ -23,6 +23,8 @@ if (/[?&]strip/.test(location.search)) {
     var streams = ['ReadableStream', 'WritableStream', 'TransformStream', 'TextDecoderStream', 'TextEncoderStream', 'ReadableStreamDefaultReader', 'WritableStreamDefaultWriter',
         'ByteLengthQueuingStrategy', 'CountQueuingStrategy'];
     for (var s = 0; s < streams.length; s++) try { delete window[streams[s]]; } catch (e6) {}
+    // a CSSStyleSheet nobody can construct (as in the old engine)
+    try { var RealSheet = window.CSSStyleSheet, NoCtor = function CSSStyleSheet() { throw new TypeError('not a constructor'); }; NoCtor.prototype = RealSheet.prototype; window.CSSStyleSheet = NoCtor; } catch (e7) {}
 }
 </script>
 <script src="../Resources/shims.js"></script>
@@ -70,6 +72,20 @@ if (/[?&]strip/.test(location.search)) {
         var drain = function (s, into, cb) { var rd = s.getReader(); (function st() { rd.read().then(function (r) { if (r.done) return cb(); into.push(r.value); st(); }); })(); };
         drain(pair[0], got1, function () { drain(pair[1], got2, function () { out.push('tee: ' + got1.join('') + '/' + got2.join('')); render(); }); });
     } catch (e7) { out.push('tee error: ' + e7.message); }
+    // constructable stylesheets: applied only while adopted
+    try {
+        var sheet = new CSSStyleSheet();
+        sheet.replaceSync('.cs-test { color: rgb(1, 2, 3); }');
+        var probeEl = document.createElement('div');
+        probeEl.className = 'cs-test';
+        document.body.appendChild(probeEl);
+        var before = getComputedStyle(probeEl).color;
+        document.adoptedStyleSheets = [sheet];
+        var on = getComputedStyle(probeEl).color;
+        document.adoptedStyleSheets = [];
+        var off = getComputedStyle(probeEl).color;
+        out.push('constructed sheet: ' + [before !== 'rgb(1, 2, 3)', on === 'rgb(1, 2, 3)', off !== 'rgb(1, 2, 3)', sheet.cssRules.length, sheet instanceof CSSStyleSheet].join('/'));
+    } catch (e9) { out.push('constructed sheet error: ' + e9.message); }
     // new Response(stream)
     try {
         var body = new ReadableStream({ start: function (c) { c.enqueue(new TextEncoder().encode('he')); c.enqueue(new TextEncoder().encode('llo')); c.close(); } });

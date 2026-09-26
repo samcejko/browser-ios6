@@ -17,6 +17,12 @@
         return e;
     }
     function rejectWith(name, message) { return function () { return P ? P.reject(domException(name, message)) : null; }; }
+    // an iterator over a list (what keys() / values() / entries() of set-like and map-like interfaces return)
+    function listIterator(list) {
+        var i = 0, it = { next: function () { return i < list.length ? { value: list[i++], done: false } : { value: undefined, done: true }; } };
+        if (window.Symbol && window.Symbol.iterator) it[window.Symbol.iterator] = function () { return this; };
+        return it;
+    }
     // -webkit-calc() values in the engine's Length properties crash WebKit 536 once the element restyles while such a
     // property is transitioned (see guardCalcTransitions in cssfix.js; nextjs.org: a custom property made a height a
     // calc at run time next to `transition-property: height`). Values the shims set go in as px then: calcRisk() says
@@ -918,7 +924,12 @@
             root.host = host;
             root.mode = (init && init.mode) || 'open';
             root.delegatesFocus = !!(init && init.delegatesFocus);
-            root.adoptedStyleSheets = [];
+            // (constructed sheets adopted here get <style> copies inside the root, see the constructable stylesheets)
+            var rootSheets = [];
+            try {
+                Object.defineProperty(root, 'adoptedStyleSheets', { configurable: true, get: function () { return rootSheets; },
+                    set: function (v) { rootSheets = v ? Array.prototype.slice.call(v) : []; if (window.__brAdoptInto) window.__brAdoptInto(root, rootSheets); } });
+            } catch (e0) { root.adoptedStyleSheets = []; }
             root.getElementById = function (id) { return root.querySelector('[id="' + String(id).replace(/"/g, '\\"') + '"]'); };
             root.elementFromPoint = function (x, y) { return document.elementFromPoint(x, y); };
             root.elementsFromPoint = function (x, y) { var el = document.elementFromPoint(x, y); return el ? [el] : []; };
@@ -5884,7 +5895,7 @@
         if (window.Highlight && !window.Highlight.prototype.has) {
             var hp = window.Highlight.prototype;
             hp.has = function () { return false; }; hp.add = function () { return this; }; hp['delete'] = function () { return false; }; hp.clear = noop; hp.forEach = noop;
-            hp.values = function () { return []; }; hp.keys = hp.values; hp.entries = hp.values; hp.size = 0; hp.priority = 0; hp.type = 'highlight';
+            hp.values = function () { return listIterator([]); }; hp.keys = hp.values; hp.entries = hp.values; hp.size = 0; hp.priority = 0; hp.type = 'highlight';
         }
         if (!window.CaretPosition) { window.CaretPosition = function CaretPosition() { this.offsetNode = null; this.offset = 0; }; window.CaretPosition.prototype.getClientRect = function () { return null; }; }
         if (!document.caretPositionFromPoint) document.caretPositionFromPoint = function (x, y) { var r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null; var c = new window.CaretPosition(); if (r) { c.offsetNode = r.startContainer; c.offset = r.startOffset; } return c; };
@@ -6027,7 +6038,7 @@
         };
         var calcSet = function () { return nameSet(' calc'); };
         var transSet = function () { return nameSet(' trans'); };
-        return { fixText: fixText, rewriteRule: rewriteRule, calcSet: calcSet, transSet: transSet };
+        return { fixText: fixText, rewriteRule: rewriteRule, calcSet: calcSet, transSet: transSet, splitRules: splitRules };
     })();
     if (window.CSSStyleSheet && window.CSSStyleSheet.prototype.insertRule && !window.CSSStyleSheet.prototype.__brWrapped) {
         // the old engine also requires the index argument; modern code omits it (append)
@@ -6102,6 +6113,108 @@
             }
         });
         try { styleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}
+    })();
+    // ---- constructable stylesheets: new CSSStyleSheet(), replace() / replaceSync(), document.adoptedStyleSheets (and
+    // the emulated shadow roots' adoptedStyleSheets, see attachShadow). The old engine cannot construct a sheet
+    // (vercel.com: "is not a constructor"), so each one is the sheet of a <style> element of ours, disabled (media
+    // "not all") until the document adopts it; its rules go in through insertRule, which rewrites them like the page's
+    // own. The document itself does not get the property on Document.prototype: Lit and similar libraries look there
+    // and then keep using <style> elements in their shadow roots, which the shadow emulation handles.
+    (function () {
+        var Base = window.CSSStyleSheet;
+        if (!Base || !Base.prototype || Base.__brConstructable) return;
+        try { new Base(); return; } catch (e) {}   // (an engine that constructs them itself)
+        var recordRule = function (sheet, text, index) {
+            // (the text is kept for copies in shadow roots; rules only change through our methods)
+            sheet.__brRules = sheet.__brRules || [];
+            sheet.__brRules.splice(Math.min(index, sheet.__brRules.length), 0, String(text));
+        };
+        var copies = [];   // [{ sheet, style }] <style> copies in shadow roots
+        var refreshCopies = function (sheet) {
+            for (var i = 0; i < copies.length; i++) if (copies[i].sheet === sheet) copies[i].style.textContent = (sheet.__brRules || []).join('\n');
+        };
+        var methods = {
+            insertRule: function (rule, index) {
+                if (index === undefined) index = this.cssRules ? this.cssRules.length : 0;
+                var r = Base.prototype.insertRule.call(this, rule, index);
+                recordRule(this, rule, index);
+                refreshCopies(this);
+                return r;
+            },
+            deleteRule: function (index) {
+                Base.prototype.deleteRule.call(this, index);
+                if (this.__brRules) this.__brRules.splice(index, 1);
+                refreshCopies(this);
+            },
+            replaceSync: function (text) {
+                text = String(text === undefined || text === null ? '' : text).replace(/@import[^;]*;/gi, '');   // (not in constructed sheets)
+                while (this.cssRules && this.cssRules.length) { try { Base.prototype.deleteRule.call(this, 0); } catch (e) { break; } }
+                this.__brRules = [];
+                var parts = runtimeCSS.splitRules(text);
+                for (var i = 0; i < parts.length; i++) { try { methods.insertRule.call(this, parts[i], this.cssRules.length); } catch (e2) {} }
+                refreshCopies(this);
+            },
+            replace: function (text) {
+                try { this.replaceSync(text); return P.resolve(this); } catch (e) { return P.reject(e); }
+            }
+        };
+        var Constructed = function CSSStyleSheet(options) {
+            var style = document.createElement('style');
+            style.__brOwn = true;   // (its rules are rewritten one by one by insertRule)
+            style.setAttribute('media', 'not all');
+            style.setAttribute('data-br-sheet', '');
+            (document.head || document.documentElement).appendChild(style);
+            var sheet = style.sheet;
+            if (!sheet) throw new TypeError('The stylesheet could not be created');
+            sheet.__brStyle = style;
+            var media = options && options.media;
+            sheet.__brMedia = media ? String(media.mediaText !== undefined ? media.mediaText : media) : '';
+            sheet.__brRules = [];
+            for (var m in methods) if (methods.hasOwnProperty(m)) sheet[m] = methods[m];
+            if (options && options.disabled) sheet.disabled = true;
+            return sheet;
+        };
+        Constructed.prototype = Base.prototype;
+        for (var k in Base) if (Base.hasOwnProperty(k)) Constructed[k] = Base[k];
+        Constructed.__brConstructable = true;
+        window.CSSStyleSheet = Constructed;
+        // adoption: our sheets are switched on in the document, the others stay as they are
+        var adopted = [];
+        var adopt = function (list) {
+            var i, s;
+            for (i = 0; i < adopted.length; i++) { s = adopted[i]; if (list.indexOf(s) < 0 && s && s.__brStyle) s.__brStyle.setAttribute('media', 'not all'); }
+            for (i = 0; i < list.length; i++) { s = list[i]; if (s && s.__brStyle) s.__brStyle.setAttribute('media', s.__brMedia || 'all'); }
+            adopted = list.slice();
+            live.length = 0;
+            Array.prototype.push.apply(live, adopted);
+        };
+        // (the property is an array scripts may also push to)
+        var live = [];
+        var mutator = function (name) { return function () { var copy = adopted.slice(); var r = Array.prototype[name].apply(copy, arguments); adopt(copy); return r; }; };
+        var names = ['push', 'pop', 'shift', 'unshift', 'splice'];
+        for (var n = 0; n < names.length; n++) { try { Object.defineProperty(live, names[n], { value: mutator(names[n]), configurable: true }); } catch (e3) {} }
+        try {
+            Object.defineProperty(document, 'adoptedStyleSheets', { configurable: true, get: function () { return live; }, set: function (v) { adopt(v ? Array.prototype.slice.call(v) : []); } });
+        } catch (e4) {}
+        // an emulated shadow root: a <style> inside it per adopted sheet, which the shadow emulation scopes to the host
+        window.__brAdoptInto = function (root, list) {
+            var keep = [], i;
+            list = list ? Array.prototype.slice.call(list) : [];
+            for (i = 0; i < copies.length; i++) {
+                if (copies[i].root !== root) { keep.push(copies[i]); continue; }
+                if (copies[i].style.parentNode) copies[i].style.parentNode.removeChild(copies[i].style);
+            }
+            copies = keep;
+            for (i = 0; i < list.length; i++) {
+                var sheet = list[i];
+                if (!sheet || !sheet.__brRules) continue;
+                var style = document.createElement('style');
+                style.setAttribute('data-br-adopted', '');
+                style.textContent = sheet.__brRules.join('\n');
+                root.insertBefore(style, root.firstChild);
+                copies.push({ root: root, sheet: sheet, style: style });
+            }
+        };
     })();
     // ---- standard names for the -webkit- style properties and events. The old engine knows transform, transition,
     // animation, perspective, user-select... only prefixed (style.transform is a plain expando there and
@@ -6290,9 +6403,11 @@
             has: function (s) { return this.__s.indexOf(String(s).replace(/^--/, '')) >= 0; },
             clear: function () { while (this.__s.length) this['delete'](this.__s[0]); },
             forEach: function (fn, thisArg) { var l = this.__s.slice(); for (var i = 0; i < l.length; i++) fn.call(thisArg, l[i], l[i], this); },
-            values: function () { return this.__s.slice(); }, keys: function () { return this.__s.slice(); }
+            values: function () { return listIterator(this.__s.slice()); }, keys: function () { return listIterator(this.__s.slice()); },
+            entries: function () { var out = []; for (var i = 0; i < this.__s.length; i++) out.push([this.__s[i], this.__s[i]]); return listIterator(out); }
         };
         try { Object.defineProperty(CustomStateSet.prototype, 'size', { get: function () { return this.__s.length; } }); } catch (e) {}
+        if (window.Symbol && window.Symbol.iterator) CustomStateSet.prototype[window.Symbol.iterator] = CustomStateSet.prototype.values;
         var ElementInternals = function ElementInternals(el) {
             this.__el = el; this.states = new CustomStateSet(el); this.__value = null; this.__validity = { valid: true, customError: false };
             this.validationMessage = ''; this.role = null;
@@ -6459,9 +6574,10 @@
             clear: function () { this.__list = []; },
             has: function (face) { return this.__list.indexOf(face) >= 0; },
             forEach: function (fn, thisArg) { var l = this.__list.slice(); for (var i = 0; i < l.length; i++) fn.call(thisArg, l[i], l[i], this); },
-            values: function () { return this.__list.slice(); },
-            keys: function () { return this.__list.slice(); },
-            entries: function () { var out = []; for (var i = 0; i < this.__list.length; i++) out.push([this.__list[i], this.__list[i]]); return out; },
+            // (set-like: iterators, not arrays; Google walks document.fonts.keys() with next())
+            values: function () { return listIterator(this.__list.slice()); },
+            keys: function () { return listIterator(this.__list.slice()); },
+            entries: function () { var out = []; for (var i = 0; i < this.__list.length; i++) out.push([this.__list[i], this.__list[i]]); return listIterator(out); },
             addEventListener: function (t, f) { (this.__l[t] = this.__l[t] || []).push(f); },
             removeEventListener: function (t, f) { var l = this.__l[t] || [], i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },
             dispatchEvent: function (e) { this.__fire(e.type); return true; },
@@ -6483,6 +6599,7 @@
             }
         };
         try { Object.defineProperty(FontFaceSet.prototype, 'size', { get: function () { return this.__list.length; } }); } catch (e) {}
+        if (window.Symbol && window.Symbol.iterator) FontFaceSet.prototype[window.Symbol.iterator] = FontFaceSet.prototype.values;
         window.FontFaceSetLoadEvent = function FontFaceSetLoadEvent(type, init) {
             var e = document.createEvent('Event');
             e.initEvent(type, false, false);
