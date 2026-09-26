@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 
-typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset);
+// keep: NO when the output is only a stand-in for this time (the original of a script left unlowered for lack of
+// memory, or of a text the rewriter could not take): it must not be cached, a later visit rewrites it
+typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep);
 
 // Runs Resources/cssfix.js over stylesheets and HTML documents so that modern CSS renders on the
 // iOS 6 WebKit. Keeps the :root custom properties seen per page so that stylesheets can use variables

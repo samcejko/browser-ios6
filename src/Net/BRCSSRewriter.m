@@ -788,10 +788,12 @@ static NSString *BRPageKey(NSURL *url)
         NSUInteger generation = g_workGeneration;
         [[BRJSEngine transpiler] performAsync:^{
             @autoreleasepool {
-                if (generation != g_workGeneration) { completion(data, charset); return; }   // (the page load was stopped)
+                if (generation != g_workGeneration) { completion(data, charset, NO); return; }   // (the page load was stopped)
+                _lastNoRoom = NO;
                 NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL module:module] : nil;
-                if (lowered) completion(lowered, @"utf-8");
-                else completion(data, charset);
+                // (a script left as it is for lack of memory is not cached as it is: base.js of YouTube stayed broken)
+                if (lowered) completion(lowered, @"utf-8", YES);
+                else completion(data, charset, !_lastNoRoom);
             }
         }];
         return;
@@ -799,7 +801,7 @@ static NSString *BRPageKey(NSURL *url)
     NSUInteger generation = g_workGeneration;
     [[BRJSEngine shared] performAsync:^{
         @autoreleasepool {
-            if (generation != g_workGeneration) { completion(data, charset); return; }   // (the page load was stopped)
+            if (generation != g_workGeneration) { completion(data, charset, NO); return; }   // (the page load was stopped)
             // (big documents and stylesheets wait for room like scripts, but are always rewritten)
             if (data.length > 256 * 1024)
                 [BRMemory waitForAvailableMB:BRRoomFloorMB + (long)(data.length * BRRoomPerMBDocument / (1024 * 1024)) timeout:15
@@ -809,8 +811,8 @@ static NSString *BRPageKey(NSURL *url)
             NSData *outData = [self rewrittenData:data kind:kind charset:charset pageURL:pageURL mainFrame:mainFrame];
             [BRMemory setActivity:nil forKey:@"css"];
             [[BRJSEngine shared] releaseWhenIdleFor:BRRewriterIdleRelease aboveMB:BRRewriterIdleReleaseAboveMB];
-            if (outData) completion(outData, @"utf-8");
-            else completion(data, charset);
+            if (outData) completion(outData, @"utf-8", YES);
+            else completion(data, charset, NO);   // (the rewriter failed this time: not cached as it is)
         }
     }];
 }

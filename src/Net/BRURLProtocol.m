@@ -801,7 +801,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     self.cacheBody = nil;
     BOOL mainFrame = !self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL];
     if (mainFrame && [kind isEqualToString:@"html"]) BRNotePageDocument(url, buffered, buffered.length);
-    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:BRURLWithoutModuleMarker(url) mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset) {
+    [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:BRURLWithoutModuleMarker(url) mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset, BOOL keep) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : [kind isEqualToString:@"js"] ? @"text/javascript" : @"text/html");
@@ -812,7 +812,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         }
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
-        if (cacheable && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
+        // (a stand-in for this time only, e.g. a script left unlowered for lack of memory, is not cached)
+        if (cacheable && keep && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
         [[BRCSSRewriter shared] registerManifestInData:out pageURL:page sourceURL:url];
         // (the page shim fetches the manifest from us: WebKit gets the text without it)
         NSData *body = [kind hasPrefix:@"js"] ? out : [BRCSSRewriter dataWithoutManifest:out];
