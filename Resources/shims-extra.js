@@ -1145,6 +1145,7 @@
                 else if (this.__error) w.reject(this.__error);
                 else w.resolve({ value: undefined, done: true });
             }
+            if (this.__closed && !this.__queue.length && this.__onClosed) { var done = this.__onClosed; this.__onClosed = null; done(); }
         };
         ReadableStream.prototype.__pull = function () {
             var self = this;
@@ -1170,7 +1171,7 @@
                 },
                 cancel: function (reason) { self.locked = false; return self.cancel(reason); },
                 releaseLock: function () { self.locked = false; },
-                closed: new P(function (resolve) { self.__onClosed = resolve; })
+                closed: new P(function (resolve) { self.__onClosed = resolve; if (self.__closed && !self.__queue.length) { self.__onClosed = null; resolve(); } })
             };
         };
         ReadableStream.prototype.cancel = function (reason) {
@@ -1178,10 +1179,33 @@
             this.__queue = [];
             try { if (this.__source.cancel) this.__source.cancel(reason); } catch (e) {}
             this.__flush();
-            if (this.__onClosed) this.__onClosed();
+            if (this.__onClosed) { var done = this.__onClosed; this.__onClosed = null; done(); }
             return resolved();
         };
-        ReadableStream.prototype.tee = function () { return [this, this]; };
+        // two branches with queues of their own, each getting every chunk (Next.js tees its initial page data: one
+        // stream shared by both readers gave each only part of the chunks, and React failed with "Connection closed");
+        // the source is cancelled once both branches are
+        ReadableStream.prototype.tee = function () {
+            var reader = this.getReader(), ctrl = [null, null], canceled = [false, false], inflight = null;
+            var each = function (fn) { for (var i = 0; i < 2; i++) if (!canceled[i] && ctrl[i]) { try { fn(ctrl[i]); } catch (e) {} } };
+            var pump = function () {
+                if (inflight) return inflight;
+                inflight = reader.read().then(function (r) {
+                    inflight = null;
+                    if (r.done) each(function (c) { c.close(); });
+                    else each(function (c) { c.enqueue(r.value); });
+                }, function (err) { inflight = null; each(function (c) { c.error(err); }); });
+                return inflight;
+            };
+            var branch = function (i) {
+                return new ReadableStream({
+                    start: function (c) { ctrl[i] = c; },
+                    pull: function () { return pump(); },
+                    cancel: function (reason) { canceled[i] = true; if (canceled[1 - i]) return reader.cancel(reason); }
+                });
+            };
+            return [branch(0), branch(1)];
+        };
         ReadableStream.prototype.pipeTo = function (dest) {
             var reader = this.getReader(), writer = dest.getWriter();
             function step() { return reader.read().then(function (r) { if (r.done) return writer.close(); return P.resolve(writer.write(r.value)).then(step); }); }
@@ -1248,6 +1272,51 @@
                     return self.__brBody;
                 }, configurable: true });
             } catch (e) {}
+        }
+        // new Response(readableStream): the fetch polyfill takes strings, blobs and buffers only (Next.js wraps the
+        // RSC data of client-side navigations this way); the body is collected when a reader method asks for it
+        var BaseResponse = window.Response;
+        if (BaseResponse && !BaseResponse.__brStreams) {
+            var StreamResponse = function Response(body, init) {
+                if (!(body instanceof ReadableStream)) return arguments.length ? new BaseResponse(body, init) : new BaseResponse();
+                var r = new BaseResponse(null, init), stream = body, collected = null;
+                var collect = function () {
+                    if (collected) return collected;
+                    try { r.bodyUsed = true; } catch (e) {}   // (a getter in engines with their own Response)
+                    collected = new P(function (resolve, reject) {
+                        var reader = stream.getReader(), parts = [], total = 0;
+                        var step = function () {
+                            reader.read().then(function (x) {
+                                if (x.done) {
+                                    var out = new Uint8Array(total), at = 0;
+                                    for (var i = 0; i < parts.length; i++) { out.set(parts[i], at); at += parts[i].length; }
+                                    resolve(out.buffer);
+                                    return;
+                                }
+                                var v = x.value;
+                                if (typeof v === 'string') v = new TextEncoder().encode(v);
+                                else if (!(v instanceof Uint8Array)) v = new Uint8Array(v.buffer || v);
+                                parts.push(v);
+                                total += v.length;
+                                step();
+                            }, reject);
+                        };
+                        step();
+                    });
+                    return collected;
+                };
+                r.__brBody = stream;   // (the body getter above hands out the stream itself)
+                r.arrayBuffer = collect;
+                r.text = function () { return collect().then(function (b) { return new TextDecoder().decode(new Uint8Array(b)); }); };
+                r.json = function () { return r.text().then(function (t) { return JSON.parse(t); }); };
+                r.blob = function () { return collect().then(function (b) { return new Blob([b]); }); };
+                r.clone = function () { var pair = stream.tee(); stream = pair[0]; return new StreamResponse(pair[1], { status: r.status, statusText: r.statusText, headers: r.headers }); };
+                return r;
+            };
+            StreamResponse.prototype = BaseResponse.prototype;
+            for (var rk in BaseResponse) if (BaseResponse.hasOwnProperty(rk)) StreamResponse[rk] = BaseResponse[rk];
+            StreamResponse.__brStreams = true;
+            window.Response = StreamResponse;
         }
     }
 

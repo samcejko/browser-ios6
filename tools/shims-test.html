@@ -19,6 +19,10 @@ if (/[?&]strip/.test(location.search)) {
     try { delete Element.prototype.computedStyleMap; delete Element.prototype.attributeStyleMap; delete HTMLElement.prototype.attributeStyleMap; delete document.startViewTransition; delete Document.prototype.startViewTransition; } catch (e2) {}
     try { delete HTMLElement.prototype.ontransitionend; delete HTMLElement.prototype.onanimationend; delete HTMLElement.prototype.popover; delete HTMLElement.prototype.showPopover; delete HTMLElement.prototype.hidePopover; delete HTMLElement.prototype.togglePopover; delete HTMLButtonElement.prototype.popoverTargetElement; delete window.ToggleEvent; } catch (e3) {}
     try { for (var k in window.CSS) if (typeof window.CSS[k] === 'function' && k !== 'supports' && k !== 'escape') delete window.CSS[k]; } catch (e4) {}
+    // the streams polyfill (the page's own Response stays: the shim wraps it for stream bodies)
+    var streams = ['ReadableStream', 'WritableStream', 'TransformStream', 'TextDecoderStream', 'TextEncoderStream', 'ReadableStreamDefaultReader', 'WritableStreamDefaultWriter',
+        'ByteLengthQueuingStrategy', 'CountQueuingStrategy'];
+    for (var s = 0; s < streams.length; s++) try { delete window[streams[s]]; } catch (e6) {}
 }
 </script>
 <script src="../Resources/shims.js"></script>
@@ -58,7 +62,20 @@ if (/[?&]strip/.test(location.search)) {
             });
         })();
     } catch (e) { out.push('stream error: ' + e.message); }
-    document.getElementById('out').textContent = out.join('\n');
+    var render = function () { document.getElementById('out').textContent = out.join('\n'); };
+    // tee(): both branches get every chunk
+    try {
+        var src = new ReadableStream({ start: function (c) { c.enqueue('x'); c.enqueue('y'); setTimeout(function () { c.enqueue('z'); c.close(); }, 10); } });
+        var pair = src.tee(), got1 = [], got2 = [];
+        var drain = function (s, into, cb) { var rd = s.getReader(); (function st() { rd.read().then(function (r) { if (r.done) return cb(); into.push(r.value); st(); }); })(); };
+        drain(pair[0], got1, function () { drain(pair[1], got2, function () { out.push('tee: ' + got1.join('') + '/' + got2.join('')); render(); }); });
+    } catch (e7) { out.push('tee error: ' + e7.message); }
+    // new Response(stream)
+    try {
+        var body = new ReadableStream({ start: function (c) { c.enqueue(new TextEncoder().encode('he')); c.enqueue(new TextEncoder().encode('llo')); c.close(); } });
+        new Response(body).text().then(function (t) { out.push('response stream: ' + t); render(); }, function (e) { out.push('response stream error: ' + e.message); render(); });
+    } catch (e8) { out.push('response error: ' + e8.message); }
+    render();
 })();
 </script>
 </body>
