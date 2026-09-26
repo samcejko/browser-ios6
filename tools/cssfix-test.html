@@ -193,7 +193,7 @@ window.JSFix = { run: function (src) { return src.indexOf('modern') >= 0 ? src.t
 cases.push(['html inline script transpiled', '<html><head></head><body><script>var modern = 1<\/script><script>var old = 1<\/script></body></html>', '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script>VAR MODERN = 1<\/script><script>var old = 1<\/script></body></html>']);
 // module scripts stay as they are (the old engine skips them and runs the nomodule fallback)
 cases.push(['html modules', '<html><head><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>',
-  '<html><head><script src="https://x.invalid/p.js"><\/script><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>']);
+  '<html><head><script src="https://x.invalid/p.js"><\/script><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" data-br-src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
 for (var i = 0; i < cases.length; i++) {

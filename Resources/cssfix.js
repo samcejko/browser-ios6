@@ -4306,7 +4306,10 @@ var CSSFix = (function () {
             if (!opts || !opts.transpile) return all;
             var src = attrValue(attrs, 'src');
             if (ltype === 'module') {
-                if (!modules) return all;
+                // the old engine never runs a module script, and one our loader does not take is not fetched either:
+                // WebKit's preload scanner would load it and the app would lower megabytes nothing uses (DuckDuckGo's
+                // modern bundles next to its nomodule ones cost 36 s on the device)
+                if (!modules) return src ? open.replace(/(\s)src(\s*=)/i, '$1data-br-src$2') + body + close : all;
                 if (src) return '<script>window.__brModules&&__brModules.entry(' + jsString(src.replace(/&amp;/g, '&')) + ');' + close;
                 if (!/[^\s]/.test(body) || typeof JSFix === 'undefined') return all;
                 var id = pageId + '#module-' + (++moduleCount), code = null;

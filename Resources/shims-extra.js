@@ -6158,20 +6158,21 @@
                 try { this.replaceSync(text); return P.resolve(this); } catch (e) { return P.reject(e); }
             }
         };
+        // (the old engine makes no sheet at all for a <style media="not all">: a sheet stays disabled until adopted)
         var Constructed = function CSSStyleSheet(options) {
-            var style = document.createElement('style');
+            var style = document.createElement('style'), media = options && options.media;
+            media = media ? String(media.mediaText !== undefined ? media.mediaText : media) : '';
             style.__brOwn = true;   // (its rules are rewritten one by one by insertRule)
-            style.setAttribute('media', 'not all');
+            if (media) style.setAttribute('media', media);
             style.setAttribute('data-br-sheet', '');
             (document.head || document.documentElement).appendChild(style);
             var sheet = style.sheet;
             if (!sheet) throw new TypeError('The stylesheet could not be created');
+            sheet.disabled = true;
             sheet.__brStyle = style;
-            var media = options && options.media;
-            sheet.__brMedia = media ? String(media.mediaText !== undefined ? media.mediaText : media) : '';
+            sheet.__brOff = !!(options && options.disabled);
             sheet.__brRules = [];
             for (var m in methods) if (methods.hasOwnProperty(m)) sheet[m] = methods[m];
-            if (options && options.disabled) sheet.disabled = true;
             return sheet;
         };
         Constructed.prototype = Base.prototype;
@@ -6182,8 +6183,8 @@
         var adopted = [];
         var adopt = function (list) {
             var i, s;
-            for (i = 0; i < adopted.length; i++) { s = adopted[i]; if (list.indexOf(s) < 0 && s && s.__brStyle) s.__brStyle.setAttribute('media', 'not all'); }
-            for (i = 0; i < list.length; i++) { s = list[i]; if (s && s.__brStyle) s.__brStyle.setAttribute('media', s.__brMedia || 'all'); }
+            for (i = 0; i < adopted.length; i++) { s = adopted[i]; if (list.indexOf(s) < 0 && s && s.__brStyle) s.disabled = true; }
+            for (i = 0; i < list.length; i++) { s = list[i]; if (s && s.__brStyle) s.disabled = !!s.__brOff; }
             adopted = list.slice();
             live.length = 0;
             Array.prototype.push.apply(live, adopted);
