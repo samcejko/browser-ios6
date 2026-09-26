@@ -27,17 +27,31 @@
     // Our own HTTP cache (filled explicitly by BRURLProtocol) and a permissive cookie jar, like a browser. The disk part
     // is big (the user offered 2.5 GB for caches: 1.5 GB here, 1 GB of lowered scripts): a page that comes back skips
     // the network and the rewriting; memory stays small, it is what the iPad lacks.
-    NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:1536 * 1024 * 1024 diskPath:@"browser-cache"];
-    [NSURLCache setSharedURLCache:cache];
-    // Cached bodies are stored after rewriting; drop them whenever the rewriters change.
+    // Cached bodies are stored after rewriting: whenever the rewriters change, the cache starts over in a directory of
+    // its own and the old one is deleted in the background. (Emptying a full cache on the main thread took longer than
+    // iOS allows for a launch: the app was killed at its first start after an update.)
     static const NSInteger BRCacheFormatVersion = 21;   // manifest "mk": the selectors of rules with markers
+    NSString *cacheName = [NSString stringWithFormat:@"browser-cache-%ld", (long)BRCacheFormatVersion];
+    NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:1536 * 1024 * 1024 diskPath:cacheName];
+    [NSURLCache setSharedURLCache:cache];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        @autoreleasepool {
+            // (iOS 6 keeps the cache as an SQLite file <diskPath> with -shm/-wal files in Caches/<bundle id>)
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+            NSString *own = [caches stringByAppendingPathComponent:[[NSBundle mainBundle] bundleIdentifier] ?: @""];
+            NSString *keepPrefix = [cacheName stringByAppendingString:@"-"];
+            for (NSString *dir in @[caches, own]) {
+                for (NSString *name in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
+                    if (![name hasPrefix:@"browser-cache"] || [name isEqualToString:cacheName] || [name hasPrefix:keepPrefix]) continue;
+                    NSDate *t0 = [NSDate date];
+                    [fm removeItemAtPath:[dir stringByAppendingPathComponent:name] error:NULL];
+                    BRLog(@"Old HTTP cache %@ deleted in %ld ms (format version %ld)", name, (long)(-[t0 timeIntervalSinceNow] * 1000), (long)BRCacheFormatVersion);
+                }
+            }
+        }
+    });
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults integerForKey:@"BRCacheFormatVersion"] != BRCacheFormatVersion) {
-        [cache removeAllCachedResponses];
-        [defaults setInteger:BRCacheFormatVersion forKey:@"BRCacheFormatVersion"];
-        [defaults synchronize];
-        BRLog(@"HTTP cache cleared (format version %ld)", (long)BRCacheFormatVersion);
-    }
     [[NSHTTPCookieStorage sharedHTTPCookieStorage] setCookieAcceptPolicy:NSHTTPCookieAcceptPolicyAlways];
     // WebKit reads its feature switches from the app's defaults: WebGL exists in the iOS 6 engine
     // but is switched off for third party apps.
