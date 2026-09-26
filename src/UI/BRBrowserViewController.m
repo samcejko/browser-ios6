@@ -286,7 +286,7 @@ static NSString *BRQueryEscape(NSString *s)
     }];
     self.webView.scalesPageToFit = YES;
     self.webView.dataDetectorTypes = UIDataDetectorTypeNone;
-    self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers
+    self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers (not without compositing, see setAcceleratedCompositing:)
     self.webView.keyboardDisplayRequiresUserAction = YES;     // like Safari: pages that autofocus a search box must not cover half the screen with the keyboard
     self.webView.mediaPlaybackAllowsAirPlay = YES;
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -489,6 +489,9 @@ static void BRWebThreadLock(void);
     // (the standard preferences save every change in the app's defaults: this one is for this run only)
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"WebKitAcceleratedCompositingEnabled"];
     [BRMemory setCompositing:on];   // (the page shim asks: one-finger scrolling of boxes needs it, see shims-extra)
+    // a video in the page is a composited layer: without compositing it stays black (YouTube played sound only), so
+    // such pages play video in the system's full-screen player, as Safari on the iPhone always did
+    self.webView.allowsInlineMediaPlayback = on;
     // the page's styles and layout at once, while this thread has the page: the layers go now, not on the next timer
     if (!on && self.webView.request) [self.webView stringByEvaluatingJavaScriptFromString:@"document.documentElement ? document.documentElement.offsetHeight : 0"];
     BRLog(@"Accelerated compositing %@ (%@): %ld preference object(s)", on ? @"on" : @"off", reason, (long)done);
