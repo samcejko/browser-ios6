@@ -2162,6 +2162,26 @@
         el.style.width = Math.round(h * nw / nh) + 'px';
         el.__brThin = true;
     };
+    // An outermost <svg> without a height attribute is 100% high on this engine (the SVG 1.1 default); in a stretched
+    // item of a flex row (a 2009 box) that percentage grows with every layout (The Guardian's logo: 124 000 px and
+    // counting). One that is absurdly high for its viewBox gets the height the viewBox gives its width, as in current
+    // browsers, and the box around is laid out from scratch (it keeps old heights otherwise).
+    var fixSvgHeight = function (el) {
+        if (el.__brSvgH || el.getAttribute('height') !== null) return;
+        var p = el.parentNode;
+        if (!p || p.nodeType !== 1 || p.namespaceURI === 'http://www.w3.org/2000/svg') return;
+        var vb = (el.getAttribute('viewBox') || '').split(/[\s,]+/), vw = parseFloat(vb[2]), vh = parseFloat(vb[3]);
+        var r = el.getBoundingClientRect();
+        if (!(vw > 0 && vh > 0) || r.width < 1) return;
+        var want = r.width * vh / vw;
+        if (r.height <= Math.max(2000, want * 10)) return;
+        el.style.setProperty('height', Math.round(want) + 'px', 'important');
+        el.__brSvgH = true;
+        for (var a = p; a && a.nodeType === 1; a = a.parentNode) {
+            var d = getComputedStyle(a).display;
+            if (d === '-webkit-box' || d === '-webkit-inline-box') { relayout(a); break; }
+        }
+    };
     // (a box that changed its width since, a rotation: measured again)
     var recheckPercentHeights = function () {
         var keep = [];
@@ -2224,7 +2244,7 @@
                 try { document.querySelector(joined); plan.push(joined); }
                 catch (e) { for (k = 0; k < chunk.length; k++) { try { document.querySelector(chunk[k]); plan.push(chunk[k]); } catch (e2) {} } }
             }
-            plan.push('[style*="counter-reset"]', 'img,video,canvas,iframe,embed,object,picture');
+            plan.push('[style*="counter-reset"]', 'img,video,canvas,iframe,embed,object,picture', 'svg');
             mkPlan = plan;
             mkKey = rules.key;
         }
@@ -2243,6 +2263,7 @@
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
                 if (PCT_TAGS[el.tagName]) { fixPercentHeight(el); fixThinPicture(el); }
+                else if (el.tagName === 'svg') fixSvgHeight(el);
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 marked.push({ el: el, cr: cr });
@@ -2290,6 +2311,81 @@
     onSettled(scheduleAspect);
     window.addEventListener('resize', scheduleAspect, false);
     window.addEventListener('load', scheduleAspect, false);
+    // A child with a percentage height (cssfix marks it "br-pcth <percent x 100>") of a stretched item of a flex row
+    // (a horizontal 2009 box here) grows with every layout on this engine, three times each time: a card's picture at
+    // height: 100% made The Guardian's page 86 million px tall. What the percentage means there is the item's
+    // stretched height, which the rest of the row's content gives: every such child is taken out (display: none) while
+    // the items are measured, then gets its item's height in pixels (or auto when nothing else gives the row a
+    // height: auto does not grow). Measured again when the row's or the item's width changes, or when the row grew
+    // around the child.
+    // A 2009 box with a percentage height whose parent's height is auto (a card at height: 100% in a plain block)
+    // grows the same way; there the percentage means auto (CSS 2.1), so the box gets auto. (The parent's own
+    // height is read while it is hidden, when the computed style gives the specified value.)
+    var isBox = function (d) { return d === '-webkit-box' || d === '-webkit-inline-box'; };
+    var specifiedHeight = function (p) {
+        var s = p.style, prev = s.getPropertyValue('display'), prio = s.getPropertyPriority('display');
+        s.setProperty('display', 'none', 'important');
+        var h = getComputedStyle(p).height;
+        if (prev) s.setProperty('display', prev, prio); else s.removeProperty('display');
+        return h;
+    };
+    // the engine keeps a 2009 box's old heights until the box is laid out from scratch (a card stayed a million
+    // px tall after its picture got 50 px): out of the layout and back
+    var relayout = function (el) {
+        var s = el.style, prev = s.getPropertyValue('display'), prio = s.getPropertyPriority('display');
+        s.setProperty('display', 'none', 'important');
+        var x = el.offsetHeight;
+        if (prev) s.setProperty('display', prev, prio); else s.removeProperty('display');
+        return x;
+    };
+    onMarkers(function (marked) {
+        var todo = [], i, g;
+        for (i = 0; i < marked.length; i++) {
+            var cr = marked[i].cr;
+            if (cr.indexOf('br-pcth') < 0) continue;
+            g = marked[i].el;
+            var item = g.parentNode, row = item && item.parentNode;
+            if (!row || row.nodeType !== 1 || item.nodeType !== 1) continue;
+            var rs = getComputedStyle(row);
+            if (!isBox(rs.display) || rs.webkitBoxOrient !== 'horizontal' || rs.webkitBoxAlign !== 'stretch') {
+                // (not the child of a stretched item: a box whose parent has an auto height)
+                var gcs = getComputedStyle(g);
+                if (!isBox(gcs.display) || /^(absolute|fixed)$/.test(gcs.position) || document.compatMode !== 'CSS1Compat' || item === document.documentElement) continue;
+                var akey = item.offsetWidth + 'x' + g.offsetWidth;
+                if (g.__brPctAuto === akey) continue;
+                g.__brPctAuto = akey;
+                if (specifiedHeight(item) === 'auto') { g.style.setProperty('height', 'auto', 'important'); relayout(g); }
+                continue;
+            }
+            var pm = /br-pcth\s+(\d+)/.exec(cr), pct = pm ? parseInt(pm[1], 10) / 10000 : 1;
+            var key = row.offsetWidth + 'x' + item.offsetWidth;
+            if (g.__brPct && g.__brPct.key === key) {
+                // (done for these widths; again only when the item became taller than what the child was given)
+                var ics0 = getComputedStyle(item), inner0 = item.clientHeight - (parseFloat(ics0.paddingTop) || 0) - (parseFloat(ics0.paddingBottom) || 0);
+                if (!g.__brPct.h || Math.abs(Math.round(inner0 * pct) - g.__brPct.h) <= 1) continue;
+            }
+            if (!g.__brPct) g.__brPct = { prev: g.style.height, prio: g.style.getPropertyPriority('height') };
+            todo.push({ g: g, item: item, row: row, pct: pct, key: key, disp: g.style.getPropertyValue('display'), dprio: g.style.getPropertyPriority('display') });
+            g.style.setProperty('display', 'none', 'important');
+        }
+        if (!todo.length) return;
+        var rows = [];
+        for (i = 0; i < todo.length; i++) if (rows.indexOf(todo[i].row) < 0) rows.push(todo[i].row);
+        for (i = 0; i < rows.length; i++) relayout(rows[i]);
+        for (i = 0; i < todo.length; i++) {
+            var t = todo[i], ics = getComputedStyle(t.item);
+            var inner = t.item.clientHeight - (parseFloat(ics.paddingTop) || 0) - (parseFloat(ics.paddingBottom) || 0);
+            t.h = Math.max(0, Math.round(inner * t.pct));
+        }
+        for (i = 0; i < todo.length; i++) {
+            var tg = todo[i].g;
+            if (todo[i].disp) tg.style.setProperty('display', todo[i].disp, todo[i].dprio); else tg.style.removeProperty('display');
+            tg.style.setProperty('height', todo[i].h > 0 ? todo[i].h + 'px' : 'auto', 'important');
+            tg.__brPct.key = todo[i].key;
+            tg.__brPct.h = todo[i].h;
+        }
+        for (i = 0; i < rows.length; i++) relayout(rows[i]);
+    });
     // Form controls and replaced elements styled with display:flex (Google's search box) become 2009 boxes after
     // the CSS rewrite, which draws their text outside the control: they go back to block / inline-block.
     var unboxControls = function () {

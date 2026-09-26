@@ -2753,6 +2753,7 @@ var CSSFix = (function () {
         // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
         // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
+        var pctHeightMarked = false;
         var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
@@ -2835,6 +2836,13 @@ var CSSFix = (function () {
                 if (v === null) continue;
             }
             var lv = v.toLowerCase();
+            // A percentage height is marked with its percentage for the shim: on this engine a child with a percentage
+            // height of a stretched item of a flex row (a 2009 box here) grows with every layout, three times each
+            // time (The Guardian's page reached 86 million px); the shim gives it the item's height in pixels.
+            if ((p === 'height' || p === 'block-size') && !keyframe && !pctHeightMarked && /^\d*\.?\d+%$/.test(trim(lv)) && parseFloat(lv) > 0) {
+                markers.push('br-pcth ' + Math.round(parseFloat(lv) * 100));
+                pctHeightMarked = true;
+            }
             // a math function whose result is negative is clamped to the property's range (a literal stays invalid)
             if (NON_NEGATIVE[p] && d.v.indexOf('(') >= 0 && /^-\d*\.?\d+[a-z%]*$/.test(lv)) { v = '0' + lv.replace(/^-\d*\.?\d+/, ''); lv = v; }
             // "logical" order in the box shorthands: block-start inline-start block-end inline-end
@@ -4009,6 +4017,39 @@ var CSSFix = (function () {
         return count;
     }
 
+    // A grid that flows into columns (grid-auto-flow: column: a horizontal strip, usually scrolled sideways like a
+    // carousel) cannot float its children into rows: they become inline blocks on one line, as wide as the column
+    // tracks ask (the size in repeat(N, size), a single track, or grid-auto-columns; fr/auto sizes leave the width to
+    // the content). Returns {width, gap} for a rule of such a grid (also a later rule of the same selectors, in a
+    // media query), or null.
+    var FLEX_TRACK = /fr\b|\bauto\b|min-content|max-content|fit-content|minmax/;
+    function gridColumnFlow(decls, ctx, key) {
+        var isGrid = false, flow = null, tracks = null, autoCols = null, gap = null;
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, v = resolveVars(decls[i].v, null, ctx);
+            if (v === null) continue;
+            var lv = trim(v).toLowerCase().replace(/\s+/g, ' ');
+            if (p === 'display') isGrid = /^(inline-)?grid$/.test(lv);
+            else if (p === 'grid-auto-flow') flow = lv;
+            else if (p === 'grid-template-columns') tracks = lv;
+            else if (p === 'grid-auto-columns') autoCols = lv;
+            else if (p === 'gap' || p === 'grid-gap') { var g = splitWS(lv); gap = g.length > 1 ? g[1] : g[0]; }
+            else if (p === 'column-gap' || p === 'grid-column-gap') gap = lv;
+        }
+        if (!key) return null;
+        if (!ctx.gridFlow) ctx.gridFlow = {};
+        if (flow !== null) ctx.gridFlow[key] = /\bcolumn\b/.test(flow);
+        if (!ctx.gridFlow[key]) return null;
+        var size = null;
+        if (tracks) {
+            var rep = /^repeat\(\s*\d+\s*,([\s\S]*)\)$/.exec(tracks);
+            var one = rep ? trim(rep[1]) : (splitWS(tracks).length === 1 ? tracks : null);
+            if (one && !FLEX_TRACK.test(one)) size = one;
+        }
+        if (!size && autoCols && splitWS(autoCols).length === 1 && !FLEX_TRACK.test(autoCols)) size = autoCols;
+        return { width: size, gap: gap && /^[\d.]+(px|rem|em|vw|vh|%)$/.test(gap) && parseFloat(gap) > 0 ? gap : null, grid: isGrid || flow !== null };
+    }
+
     // A fixed row height a grid container rule asks for ("grid-auto-rows: 100px", "minmax(6rem, auto)", "repeat(3, 100px)"),
     // or null. Only rules that are (or were) grid containers count.
     function gridRowHeight(decls, ctx, key) {
@@ -4152,7 +4193,7 @@ var CSSFix = (function () {
         for (var i = 0; i < rules.length; i++) {
             var r = rules[i];
             if (r.t === 'q') {
-                var sels = keyframe ? [r.sel] : fixSelectorList(r.sel);
+                var sels = keyframe ? [r.sel] : (r.fixedSels || fixSelectorList(r.sel));   // (rules made here have theirs)
                 if (!sels.length) continue;
                 var prevSels = ctx.curSels, prevCond = ctx.condRules, prevDefs = ctx.cvDefs, prevUses = ctx.cvUses, prevVp = ctx.vpDecls;
                 ctx.curSels = keyframe ? null : sels;
@@ -4228,6 +4269,23 @@ var CSSFix = (function () {
                         }
                     }
                     var gridKey = sels.join(',');
+                    var flowGrid = gridColumnFlow(r.decls, ctx, gridKey);
+                    if (flowGrid) {
+                        // one line of inline blocks (the strip scrolls sideways when the container says so)
+                        var flowChild = [], flowLast = [];
+                        for (var fs = 0; fs < sels.length; fs++) { flowChild.push(sels[fs] + ' > *'); flowLast.push(sels[fs] + ' > :last-child'); }
+                        if (flowGrid.grid) out.push({ t: 'q', sel: sels.join(','), decls: [{ p: 'white-space', v: 'nowrap', imp: false }] });
+                        var flowDecls = flowGrid.grid ? [{ p: 'display', v: 'inline-block', imp: false }, { p: 'vertical-align', v: 'top', imp: false }, { p: 'white-space', v: 'normal', imp: false }] : [];
+                        if (flowGrid.width) flowDecls.push({ p: 'width', v: flowGrid.width, imp: false });
+                        if (flowGrid.gap) flowDecls.push({ p: 'margin-right', v: flowGrid.gap, imp: false });
+                        if (flowDecls.length) {
+                            // (through the declaration pipeline: widths in vw and max()/calc() become pixels per orientation)
+                            var flowOut = transformRules([{ t: 'q', sel: flowChild.join(','), fixedSels: flowChild, decls: flowDecls }], ctx, false);
+                            for (var fo = 0; fo < flowOut.length; fo++) out.push(flowOut[fo]);
+                        }
+                        if (flowGrid.gap) out.push({ t: 'q', sel: flowLast.join(','), decls: [{ p: 'margin-right', v: '0', imp: false }] });
+                        continue;
+                    }
                     var columns = gridColumns(r.decls, ctx, gridKey);
                     var rowHeight = gridRowHeight(r.decls, ctx, gridKey);
                     if (rowHeight) {
