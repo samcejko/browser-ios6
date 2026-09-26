@@ -5793,6 +5793,29 @@
         var ruleCache = {}, ruleCacheSize = 0;
         var trimS = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
         var syncTried = false;
+        // the properties the page gives -webkit-calc() values and the ones it transitions (see guardCalcTransitions in
+        // cssfix.js): the app's documents bring theirs in the manifest's vars, and every style rewritten here adds its
+        // own (each insertRule is a document of its own for the rewriter)
+        var runState = { ' calc': {}, ' trans': {} };
+        var noteState = function (vars) {
+            if (!vars) return;
+            for (var key in runState) {
+                if (!runState.hasOwnProperty(key) || typeof vars[key] !== 'string') continue;
+                var names = vars[key].split(' ');
+                for (var i = 0; i < names.length; i++) if (names[i]) runState[key][names[i]] = 1;
+            }
+        };
+        var withState = function (o) {
+            for (var key in runState) {
+                if (!runState.hasOwnProperty(key)) continue;
+                var names = {}, list = [], n;
+                if (typeof o[key] === 'string') { var had = o[key].split(' '); for (n = 0; n < had.length; n++) if (had[n]) names[had[n]] = 1; }
+                for (n in runState[key]) if (runState[key].hasOwnProperty(n)) names[n] = 1;
+                for (n in names) if (names.hasOwnProperty(n)) list.push(n);
+                if (list.length) o[key] = list.join(' ');
+            }
+            return o;
+        };
         var pageVars = function () {
             var pv = window.__brPageVars;
             if (!pv && !syncTried) {
@@ -5810,11 +5833,12 @@
                     }
                 } catch (e) {}
             }
-            if (!pv) return null;
             var o = {};
-            for (var k in pv.vars) if (pv.vars.hasOwnProperty(k)) o[k] = pv.vars[k];
-            if (pv.scoped) o[' scoped'] = pv.scoped;
-            return o;
+            if (pv) {
+                for (var k in pv.vars) if (pv.vars.hasOwnProperty(k)) o[k] = pv.vars[k];
+                if (pv.scoped) o[' scoped'] = pv.scoped;
+            }
+            return withState(o);
         };
         var fixText = function (css, hostScope) {
             var lib = loadCSSFix();
@@ -5825,8 +5849,10 @@
                 if (hostScope) opts.hostScope = hostScope;   // a stylesheet inside an emulated shadow root (see hostSelector)
                 r = JSON.parse(lib.run('css', css, pageVars(), opts));
             } catch (e) { return null; }
+            noteState(r.vars);
             if (r.manifest && window.__brManifestAdd) { try { window.__brManifestAdd(r.manifest); } catch (e2) {} }
-            return String(r.out || '').replace(/\n?\/\*br-manifest:[\s\S]*$/, '');
+            // (the page-state and manifest comments close the output)
+            return String(r.out || '').replace(/\n?\/\*br-(page|manifest):[\s\S]*$/, '');
         };
         // top-level rules of a stylesheet text
         var splitRules = function (s) {

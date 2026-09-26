@@ -32,7 +32,21 @@ var cases = [
     '.t{-webkit-transition-property:color, -webkit-user-select, -webkit-transform, -webkit-user-select;transition-property:color,text-decoration-color,transform,backdrop-filter;-webkit-transition-duration:.1s,.2s,.3s,.4s;transition-duration:.1s,.2s,.3s,.4s}\n.u{-webkit-transition:opacity .2s cubic-bezier(.4,0,.2,1), -webkit-user-select .3s;transition:opacity .2s cubic-bezier(.4,0,.2,1),translate .3s}\n.w{-webkit-transition:-webkit-user-select 1s linear}\n.x{-webkit-transition:all .15s;-webkit-transition-property:' + ALL_SAFE + ';transition:all .15s}'],
   ['calc lengths leave the transitions', '.b{width:calc(100% - 2rem);transition:all .3s}.c{left:calc(50% - 20px);transition:left .2s, opacity .2s}.d{transition-property:left, color}',
     '.b{width:-webkit-calc(100% - 2rem);-webkit-transition:all .3s;-webkit-transition-property:' + ALL_SAFE + ';transition:all .3s}\n.c{left:-webkit-calc(50% - 20px);-webkit-transition:opacity .2s;transition:left .2s, opacity .2s}\n.d{-webkit-transition-property:color;transition-property:left, color}'],
+  // the other order: an earlier stylesheet of the page transitions height (page entry " trans"), this one gives it a
+  // calc value: the rule takes the transitions over; margin is not transitioned yet, the page state ends the output
+  ['calc after an earlier transition', '.h{height:calc(100% - 4px)}.m{margin:calc(50% - 10px) auto}.o{opacity:.5}',
+    '.h{height:-webkit-calc(100% - 4px);-webkit-transition-property:-webkit-transform,opacity !important}\n.m{margin:-webkit-calc(50% - 10px) auto}\n.o{opacity:.5}\n/*br-page:{"calc":"height margin margin-bottom margin-left margin-right margin-top"}*/',
+    null, { ' trans': 'height opacity -webkit-transform' }],
+  // a shorthand transition keeps the parts without calc values; the safe ones (transforms, radii) stay transitioned
+  ['calc longhands in shorthand transitions', '.a{margin-left:calc(10% + 4px);transition:margin .2s, opacity .2s}.b{border-radius:calc(50% - 2px);transform:translateY(calc(-50% + 2px));transition:border-radius .2s,transform .3s}',
+    '.a{margin-left:-webkit-calc(10% + 4px);-webkit-transition:margin-top .2s, margin-right .2s, margin-bottom .2s, opacity .2s;transition:margin .2s, opacity .2s}\n.b{border-radius:-webkit-calc(50% - 2px);-webkit-transform:translateY(-50%) translateY(2px);transform:translateY(-webkit-calc(-50% + 2px));-webkit-transition:border-radius .2s,-webkit-transform .3s;transition:border-radius .2s,transform .3s}\n/*br-page:{"calc":"margin-left","trans":"-webkit-transform border-radius margin-bottom margin-right margin-top opacity"}*/'],
   ['calc', '.k{width:calc(100% - 20px)}', '.k{width:-webkit-calc(100% - 20px)}'],
+  ['calc with percentages only', '.w{width:calc(100% / 3)}.m{width:min(50%, 30%)}.p{left:calc(50% + 0)}.mix{width:calc(100% - 20px)}',
+    '.w{width:33.33333%}\n.m{width:30%}\n.p{left:50%}\n.mix{width:-webkit-calc(100% - 20px)}'],
+  // tailwind 4: registered non-inheriting properties are 0 where no rule of the element defines them (not the last
+  // definition of another utility), and calc(calc(1/2 * 100%) * -1) is -50%
+  ['registered defaults in translate', '.tx{--tw-translate-x:calc(calc(1/2 * 100%) * -1);translate:var(--tw-translate-x) var(--tw-translate-y)}.ty{--tw-translate-y:calc(calc(3/4 * 100%) * -1);translate:var(--tw-translate-x) var(--tw-translate-y)}@property --tw-translate-x{syntax:"*";inherits:false;initial-value:0}@property --tw-translate-y{syntax:"*";inherits:false;initial-value:0}',
+    '.tx{-webkit-transform:translate(-50%, 0);transform:translate(-50%, 0)}\n.ty{-webkit-transform:translate(0, -75%);transform:translate(0, -75%)}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"b4juvi","r":["--tw-translate-x","0",0]},{"h":"otxvkf","r":["--tw-translate-y","0",0]},{"h":"1tsm9ro","s":[".tx"],"sp":[100],"d":[["--tw-translate-x","calc(calc(1/2 * 100%) * -1)",0]],"u":[["translate","var(--tw-translate-x) var(--tw-translate-y)",0,"calc(calc(1/2 * 100%) * -1) 0"]]},{"h":"1qg001g","s":[".ty"],"sp":[100],"d":[["--tw-translate-y","calc(calc(3/4 * 100%) * -1)",0]],"u":[["translate","var(--tw-translate-x) var(--tw-translate-y)",0,"0 calc(calc(3/4 * 100%) * -1)"]]}]}*/'],
   ['translate with calc splits', '.a{transform:translate(calc(-50% - 1rem), calc(-50% + .75rem * 2)) rotate(5deg)}.b{transform:translateX(calc(-50% + 10px))}',
     '.a{-webkit-transform:translate(-50%, -50%) translate(-16px, 24px) rotate(5deg);transform:translate(-webkit-calc(-50% - 1rem), -webkit-calc(-50% + .75rem * 2)) rotate(5deg)}\n.b{-webkit-transform:translateX(-50%) translateX(10px);transform:translateX(-webkit-calc(-50% + 10px))}'],
   ['calc with times', '.d{transition-delay:calc(.3s / 4);transition-duration:calc(150ms * 2)}', '.d{-webkit-transition-delay:0.075s;transition-delay:0.075s;-webkit-transition-duration:0.3s;transition-duration:0.3s}'],
@@ -185,8 +199,10 @@ for (var i = 0; i < cases.length; i++) {
     } else if (c[0].indexOf('html ') === 0) {
       got = JSON.parse(CSSFix.run('html', c[1], null, '{"polyfillURL":"https://x.invalid/p.js","transpile":true,"pageURL":"https://example.com/dir/page.html?x=1"}')).out;
     } else {
-      got = JSON.parse(CSSFix.run('css', c[1], null, c[3] || null)).out;
+      got = JSON.parse(CSSFix.run('css', c[1], c[4] || null, c[3] || null)).out;
     }
+    // the page-state comment (calc / transition findings) only where a case looks at it
+    if (c[2].indexOf('br-page:') < 0) got = got.replace(/\n(\/\*br-page:[^*]*\*\/|<!--br-page:[^>]*-->)/, '');
     ok = norm(got) === norm(c[2]);
   } catch (e) { got = 'EXCEPTION: ' + e.message + '\n' + (e.stack || ''); ok = false; }
   if (ok) pass++; else fail++;

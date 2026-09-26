@@ -431,11 +431,22 @@ var CSSFix = (function () {
         }
         return set;
     }
+    // A registered custom property (@property) that does not inherit has its initial value on every element without a
+    // definition of its own, and so has a registered one resolved per element at run time where no ancestor defines
+    // it: another rule's definition is not the static value then (tailwind 4 gave every translate utility the last
+    // --tw-translate-y definition, `calc(calc(3/4 * 100%) * -1)`, instead of 0). null: no such default.
+    function registeredDefault(name, ctx) {
+        var reg = ctx.registered && ctx.registered[name];
+        if (!reg || reg.init === undefined) return null;
+        return !reg.inh || (ctx.rt && ctx.rt[name]) ? reg.init : null;
+    }
     // what resolveVars would substitute for one property (null: nothing known)
     function staticVarValue(name, local, ctx) {
         if (local && local.hasOwnProperty(name)) return local[name];
         if (name in ctx.page) return ctx.page[name];
         if (name in ctx.root) return ctx.root[name];
+        var rd = registeredDefault(name, ctx);
+        if (rd !== null) return rd;
         if (name in ctx.other) return ctx.other[name];
         if (ctx.initial && name in ctx.initial) return ctx.initial[name];
         return null;
@@ -483,10 +494,11 @@ var CSSFix = (function () {
             var comma = scanUntil(inner, 0, inner.length, ',');
             var name = trim(inner.slice(0, comma));
             var fallback = comma < inner.length ? trim(inner.slice(comma + 1)) : null;
-            var val = null;
+            var val = null, rd = null;
             if (local && name in local) val = local[name];
             else if (name in ctx.page) val = ctx.page[name];
             else if (name in ctx.root) val = ctx.root[name];
+            else if ((rd = registeredDefault(name, ctx)) !== null) val = rd;
             else if (name in ctx.other) val = ctx.other[name];
             else if (ctx.initial && name in ctx.initial) val = ctx.initial[name];
             // "--x: initial" is the guaranteed-invalid value (and inherit/unset cannot be known here): the fallback applies
@@ -1531,7 +1543,10 @@ var CSSFix = (function () {
     function pxString(n) { return (Math.round(n * 100) / 100) + 'px'; }
 
     // ---- calc-style expressions evaluated statically: numbers with absolute, font or viewport units, + - * /, parentheses.
-    // Returns {n, u} with u '' (number), 'px' or 'deg', or null when something (%, ch, unknown idents) cannot be resolved.
+    // Returns {n, u} with u '' (number), 'px', '%', 'deg' or 's', or null when something (ch, unknown idents, a
+    // percentage mixed with a length) cannot be resolved. Percentages only combine with percentages and numbers:
+    // tailwind 4's -translate-x-1/2 is calc(calc(1/2 * 100%) * -1), which the old engine keeps as a calc it cannot
+    // use inside translate(), and -50% is what it means.
     var MATH_CONSTANTS = { e: Math.E, pi: Math.PI, infinity: Infinity, nan: NaN };
     function unitValue(num, unit) {
         var n = parseFloat(num);
@@ -1539,6 +1554,7 @@ var CSSFix = (function () {
         switch (unit) {
             case '': return { n: n, u: '' };
             case 'px': return { n: n, u: 'px' };
+            case '%': return { n: n, u: '%' };
             case 'vw': return { n: n * g_viewportWidth / 100, u: 'px' };
             case 'vh': return { n: n * g_viewportHeight / 100, u: 'px' };
             case 'vmin': return { n: n * Math.min(g_viewportWidth, g_viewportHeight) / 100, u: 'px' };
@@ -2057,7 +2073,69 @@ var CSSFix = (function () {
     // list, and `all` always becomes the animatable properties without them and without the geometry ones calc is
     // mostly used for (a later stylesheet, or a value the page shim sets, may still bring calc there). A lone
     // `-webkit-transition: all ...` keeps its timing and gets the list as -webkit-transition-property after it.
+    // The other order: an earlier document of the page transitions a property this one gives a calc value (nextjs.org:
+    // `transition-property: height` in one stylesheet, `height: calc(100% - 4px)` in the next one). That stylesheet is in
+    // the engine already, so the rule with the calc value takes the transitions of its elements over: an !important
+    // -webkit-transition-property with the page's transitioned properties (the " trans" page entry) minus the calc ones.
+    // Each output also ends with a /*br-page:{"calc":..,"trans":..}*/ comment of its own findings, which the app reads
+    // back from cached copies too (those are not rewritten again, see BRCSSRewriter registerManifestInData).
+    // Measured on the device (raw pages, a restyle loop and a class switching between two calc values): width, height,
+    // max-height, top, margin-left, padding-left, text-indent, -webkit-background-size crash; -webkit-transform, border
+    // radii, font-size, line-height and box shadows with calc values transition fine (the untested stay crash-prone).
     var CALC_GEOMETRY = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, left: 1, right: 1, top: 1, bottom: 1 };
+    var CALC_SAFE = { '-webkit-transform': 1, transform: 1, 'border-radius': 1, 'border-top-left-radius': 1, 'border-top-right-radius': 1,
+        'border-bottom-left-radius': 1, 'border-bottom-right-radius': 1, 'font-size': 1, 'line-height': 1, 'box-shadow': 1, '-webkit-box-shadow': 1 };
+    // the longhands a shorthand's calc lengths land in, and the ones a transition of the shorthand animates
+    var CALC_LONGHANDS = { margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'],
+        padding: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+        'border-width': ['border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width'],
+        border: ['border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width'], 'border-top': ['border-top-width'],
+        'border-right': ['border-right-width'], 'border-bottom': ['border-bottom-width'], 'border-left': ['border-left-width'], outline: ['outline-width'],
+        font: ['font-size', 'line-height'], '-webkit-column-rule': ['-webkit-column-rule-width'], '-webkit-columns': ['-webkit-column-width'],
+        '-webkit-perspective-origin': ['-webkit-perspective-origin-x', '-webkit-perspective-origin-y'],
+        '-webkit-transform-origin': ['-webkit-transform-origin-x', '-webkit-transform-origin-y', '-webkit-transform-origin-z'],
+        'background-position': ['background-position-x', 'background-position-y'], '-webkit-mask-position': ['-webkit-mask-position-x', '-webkit-mask-position-y'] };
+    var TRANSITION_PARTS = { margin: CALC_LONGHANDS.margin, padding: CALC_LONGHANDS.padding, 'border-width': CALC_LONGHANDS['border-width'],
+        border: CALC_LONGHANDS.border.concat(['border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color']),
+        'border-top': ['border-top-width', 'border-top-color'], 'border-right': ['border-right-width', 'border-right-color'],
+        'border-bottom': ['border-bottom-width', 'border-bottom-color'], 'border-left': ['border-left-width', 'border-left-color'],
+        outline: ['outline-width', 'outline-color'], font: ['font-size', 'line-height'], '-webkit-column-rule': ['-webkit-column-rule-width', '-webkit-column-rule-color'],
+        '-webkit-columns': ['-webkit-column-width', '-webkit-column-count'], '-webkit-perspective-origin': CALC_LONGHANDS['-webkit-perspective-origin'],
+        '-webkit-transform-origin': CALC_LONGHANDS['-webkit-transform-origin'], 'background-position': CALC_LONGHANDS['background-position'],
+        '-webkit-mask-position': CALC_LONGHANDS['-webkit-mask-position'] };
+    var TAKEOVER_MARK = String.fromCharCode(1) + 'brTakeover' + String.fromCharCode(1);
+    // the engine's Length properties (the crash-prone kind): a take-over list never names them, since a later
+    // stylesheet may give the element a calc value there that this one cannot know of (the element keeps its other
+    // transitions)
+    var CALC_LENGTH = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, top: 1, right: 1, bottom: 1, left: 1,
+        'margin-top': 1, 'margin-right': 1, 'margin-bottom': 1, 'margin-left': 1, 'padding-top': 1, 'padding-right': 1, 'padding-bottom': 1,
+        'padding-left': 1, 'text-indent': 1, '-webkit-background-size': 1, 'background-size': 1, 'background-position': 1, 'background-position-x': 1,
+        'background-position-y': 1, '-webkit-mask-size': 1, '-webkit-mask-position': 1, '-webkit-mask-position-x': 1, '-webkit-mask-position-y': 1,
+        '-webkit-transform-origin': 1, '-webkit-transform-origin-x': 1, '-webkit-transform-origin-y': 1, '-webkit-perspective-origin': 1,
+        '-webkit-perspective-origin-x': 1, '-webkit-perspective-origin-y': 1, clip: 1, 'vertical-align': 1 };
+    // the properties a calc value of `p` crashes transitions of (none for the safe ones)
+    function calcCrashProps(p) {
+        p = p.toLowerCase();
+        if (CALC_SAFE[p]) return [];
+        var parts = CALC_LONGHANDS[p], out = [];
+        if (!parts) return [p];
+        for (var i = 0; i < parts.length; i++) if (!CALC_SAFE[parts[i]]) out.push(parts[i]);
+        return out.length ? [p].concat(out) : [];
+    }
+    // does a transition of `name` (a longhand or a shorthand) animate a property in `calc`?
+    function transitionHitsCalc(name, calc) {
+        if (calc[name]) return true;
+        var parts = TRANSITION_PARTS[name];
+        if (parts) for (var i = 0; i < parts.length; i++) if (calc[parts[i]]) return true;
+        return false;
+    }
+    // the parts of a shorthand transition that stay (the engine knows them and they hold no calc value)
+    function transitionSafeParts(name, calc) {
+        var parts = TRANSITION_PARTS[name] || [], out = [];
+        if (!OLD_PROPS_SET) safeTransitionProps('', false);
+        for (var i = 0; i < parts.length; i++) if (!calc[parts[i]] && OLD_PROPS_SET[parts[i]]) out.push(parts[i]);
+        return out;
+    }
     var ANIMATABLE = ('background-color,border-top-color,border-right-color,border-bottom-color,border-left-color,border-top-left-radius,' +
         'border-top-right-radius,border-bottom-left-radius,border-bottom-right-radius,box-shadow,-webkit-box-shadow,clip,color,' +
         '-webkit-column-rule-color,-webkit-filter,fill,fill-opacity,flood-color,flood-opacity,lighting-color,max-height,opacity,' +
@@ -2079,7 +2157,7 @@ var CSSFix = (function () {
     // (a document: only its <style> blocks and style attributes are CSS)
     var STYLE_PARTS = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)|(\sstyle\s*=\s*")([^"]*)(")/gi;
     function guardCalcTransitions(out, ctx, kind) {
-        var calc = {}, k, m, names = [], css = kind === 'html' ? '' : out, scripts = [];
+        var calc = {}, own = {}, k, m, i, names = [], css = kind === 'html' ? '' : out, scripts = [];
         if (kind === 'html') {
             out = hideScripts(out, scripts);
             STYLE_PARTS.lastIndex = 0;
@@ -2087,23 +2165,71 @@ var CSSFix = (function () {
         }
         if (ctx.pageCalc) for (k in ctx.pageCalc) if (ctx.pageCalc.hasOwnProperty(k)) calc[k] = 1;
         CALC_DECL.lastIndex = 0;
-        while ((m = CALC_DECL.exec(css))) calc[m[2].toLowerCase()] = 1;
+        while ((m = CALC_DECL.exec(css))) {
+            var hit = calcCrashProps(m[2]);
+            for (i = 0; i < hit.length; i++) { calc[hit[i]] = 1; own[hit[i]] = 1; }
+        }
         for (k in calc) if (calc.hasOwnProperty(k)) names.push(k);
         if (names.length) ctx.root[' calc'] = names.join(' ');   // for the page's later documents
-        if (!/-webkit-transition/i.test(css)) return kind === 'html' ? showScripts(out, scripts) : out;
-        if (kind === 'html') {
-            return showScripts(out.replace(STYLE_PARTS, function (whole, o1, body1, c1, o2, body2, c2) {
-                return o1 !== undefined && o1 !== '' ? o1 + guardTransitionText(body1, calc) + c1 : o2 + guardTransitionText(body2, calc) + c2;
-            }), scripts);
+        ctx.docCalc = own;
+        var trans = {}, docTrans = {};
+        if (ctx.pageTrans) for (k in ctx.pageTrans) if (ctx.pageTrans.hasOwnProperty(k)) trans[k] = 1;
+        if (/-webkit-transition/i.test(css)) {
+            if (kind === 'html') {
+                out = out.replace(STYLE_PARTS, function (whole, o1, body1, c1, o2, body2, c2) {
+                    if (o1 !== undefined && o1 !== '') { body1 = guardTransitionText(body1, calc); noteTransitioned(body1, docTrans); return o1 + body1 + c1; }
+                    body2 = guardTransitionText(body2, calc);
+                    noteTransitioned(body2, docTrans);
+                    return o2 + body2 + c2;
+                });
+            } else {
+                out = guardTransitionText(out, calc);
+                noteTransitioned(out, docTrans);
+            }
         }
-        return guardTransitionText(out, calc);
+        for (k in docTrans) if (docTrans.hasOwnProperty(k)) trans[k] = 1;
+        names = [];
+        for (k in trans) if (trans.hasOwnProperty(k)) names.push(k);
+        if (names.length) ctx.root[' trans'] = names.join(' ');
+        ctx.docTrans = docTrans;
+        // rules with a calc value an earlier document transitions (see fixDeclarations): the page's transitioned
+        // properties without the calc ones
+        if (out.indexOf(TAKEOVER_MARK) >= 0) {
+            if (!OLD_PROPS_SET) safeTransitionProps('', false);
+            var list = [];
+            for (k in trans) if (trans.hasOwnProperty(k) && OLD_PROPS_SET[k] && !TRANSITION_PARTS[k] && !calc[k] && !CALC_LENGTH[k]) list.push(k);
+            list.sort();
+            out = out.split(TAKEOVER_MARK).join(list.length ? list.join(',') : 'none');
+        }
+        return kind === 'html' ? showScripts(out, scripts) : out;
+    }
+    // the properties the (guarded) transition declarations of a text name, shorthands with their parts
+    function noteTransitioned(text, set) {
+        var re = /-webkit-transition(-property)?\s*:\s*([^;{}"']*)/gi, m;
+        while ((m = re.exec(text))) {
+            var v = m[2].replace(/\s*!important\s*$/i, ''), items = splitTop(v, ',');
+            for (var i = 0; i < items.length; i++) {
+                var toks = splitWS(trim(items[i])), name = null;
+                for (var j = 0; j < toks.length; j++) {
+                    var t = toks[j].toLowerCase();
+                    if (!/^-{0,2}[a-z][\w-]*$/.test(t)) continue;
+                    if (!m[1] && TRANSITION_WORDS[t]) continue;
+                    name = t;
+                    break;
+                }
+                if (!name || name === 'all' || name === 'none' || TRANSITION_WORDS[name]) continue;
+                set[name] = 1;
+                var parts = TRANSITION_PARTS[name];
+                if (parts) for (var p = 0; p < parts.length; p++) set[parts[p]] = 1;
+            }
+        }
     }
     function guardTransitionText(text, calc) {
         if (!/-webkit-transition/i.test(text)) return text;
         var allList = null;
         return text.replace(/(-webkit-transition(-property)?\s*:\s*)([^;{}"']*)/gi, function (whole, head, longhand, value) {
             var imp = /\s*!important\s*$/i.exec(value), v = imp ? value.slice(0, imp.index) : value, items = splitTop(v, ','), kept = [], changed = false;
-            if (/^\s*(inherit|initial|unset|revert|none)\s*$/i.test(v)) return whole;
+            if (/^\s*(inherit|initial|unset|revert|none)\s*$/i.test(v) || v.indexOf(TAKEOVER_MARK) >= 0) return whole;
             if (!allList) allList = transitionAllList(calc);
             // a lone "all" in the shorthand: its timing stays, the property list follows as the longhand
             if (!longhand && items.length === 1) {
@@ -2112,10 +2238,13 @@ var CSSFix = (function () {
                 if (named === null || named === 'all') return whole + ';-webkit-transition-property:' + allList.join(',') + (imp ? ' !important' : '');
             }
             for (var i = 0; i < items.length; i++) {
-                var item = trim(items[i]);
+                var item = trim(items[i]), parts, a;
                 if (longhand) {
                     var lp = item.toLowerCase();
-                    if (lp === 'all') { kept = kept.concat(allList); changed = true; } else if (calc[lp]) changed = true; else kept.push(item);
+                    if (lp === 'all') { kept = kept.concat(allList); changed = true; }
+                    else if (calc[lp]) changed = true;
+                    else if (transitionHitsCalc(lp, calc)) { kept = kept.concat(transitionSafeParts(lp, calc)); changed = true; }   // (a shorthand)
+                    else kept.push(item);
                     continue;
                 }
                 // the shorthand: one property per item (none named: all)
@@ -2124,11 +2253,12 @@ var CSSFix = (function () {
                 var prop = at >= 0 ? toks[at].toLowerCase() : 'all';
                 if (prop === 'none') { kept.push(item); continue; }
                 if (calc[prop]) { changed = true; continue; }
-                if (prop !== 'all') { kept.push(item); continue; }
+                if (prop !== 'all' && !transitionHitsCalc(prop, calc)) { kept.push(item); continue; }
                 changed = true;
-                for (var a = 0; a < allList.length; a++) {
+                parts = prop === 'all' ? allList : transitionSafeParts(prop, calc);
+                for (a = 0; a < parts.length; a++) {
                     var t2 = toks.slice(0);
-                    if (at >= 0) t2[at] = allList[a]; else t2.unshift(allList[a]);
+                    if (at >= 0) t2[at] = parts[a]; else t2.unshift(parts[a]);
                     kept.push(t2.join(' '));
                 }
             }
@@ -3240,6 +3370,17 @@ var CSSFix = (function () {
             }
             push(out, '-webkit-font-feature-settings', fset.join(', '), false);
         }
+        // a -webkit-calc() length in a property an earlier document of the page transitions: the rule takes the
+        // transitions of its elements over (the list goes in at the end, see guardCalcTransitions)
+        if (ctx.pageTrans && !keyframe) {
+            var takeover = false;
+            for (var tk = 0; tk < out.length && !takeover; tk++) {
+                if (String(out[tk].v).indexOf('-webkit-calc(') < 0) continue;
+                var hitProps = calcCrashProps(out[tk].p);
+                for (var th = 0; th < hitProps.length; th++) if (ctx.pageTrans[hitProps[th]]) { takeover = true; break; }
+            }
+            if (takeover) push(out, '-webkit-transition-property', TAKEOVER_MARK, true);
+        }
         if (markers.length || markerKeyword) {
             // a counter-reset of the rule itself keeps its counters next to the markers
             var ownReset = null;
@@ -4005,7 +4146,7 @@ var CSSFix = (function () {
     }
 
     function makeContext(pageVars) {
-        var page = {}, pageScoped = null, pageCalc = null;
+        var page = {}, pageScoped = null, pageCalc = null, pageTrans = null;
         if (pageVars) {
             if (typeof pageVars === 'string') { try { pageVars = JSON.parse(pageVars); } catch (e) { pageVars = null; } }
             if (pageVars && typeof pageVars === 'object') {
@@ -4015,15 +4156,25 @@ var CSSFix = (function () {
                         // the page's scoped custom properties found in earlier documents (space separated)
                         var names = String(pageVars[k]).split(/\s+/);
                         for (var n = 0; n < names.length; n++) if (names[n]) { if (!pageScoped) pageScoped = {}; pageScoped[names[n]] = true; }
-                    } else if (k === ' calc') {
-                        // properties that got -webkit-calc values in earlier documents (see guardCalcTransitions)
-                        var props = String(pageVars[k]).split(/\s+/);
-                        for (var c = 0; c < props.length; c++) if (props[c]) { if (!pageCalc) pageCalc = {}; pageCalc[props[c]] = true; }
+                    } else if (k === ' calc' || k === ' trans') {
+                        // properties that got -webkit-calc values / are transitioned in earlier documents (see
+                        // guardCalcTransitions)
+                        var props = String(pageVars[k]).split(/\s+/), set = null;
+                        for (var c = 0; c < props.length; c++) if (props[c]) { if (!set) set = {}; set[props[c]] = true; }
+                        if (k === ' calc') pageCalc = set; else pageTrans = set;
                     } else page[k] = pageVars[k];
                 }
             }
         }
-        return { page: page, root: {}, other: {}, initial: {}, pageScoped: pageScoped, pageCalc: pageCalc };
+        return { page: page, root: {}, other: {}, initial: {}, pageScoped: pageScoped, pageCalc: pageCalc, pageTrans: pageTrans };
+    }
+    // {"calc":"...","trans":"..."}: the crash-prone calc properties and the transitioned ones this document has itself
+    // (not the page's earlier ones), or null
+    function pageState(ctx) {
+        var st = {}, any = false, k, list;
+        if (ctx.docCalc) { list = []; for (k in ctx.docCalc) if (ctx.docCalc.hasOwnProperty(k)) list.push(k); if (list.length) { st.calc = list.sort().join(' '); any = true; } }
+        if (ctx.docTrans) { list = []; for (k in ctx.docTrans) if (ctx.docTrans.hasOwnProperty(k)) list.push(k); if (list.length) { st.trans = list.sort().join(' '); any = true; } }
+        return any ? JSON.stringify(st) : null;
     }
 
     function fixCSS(text, ctx) {
@@ -4232,6 +4383,10 @@ var CSSFix = (function () {
         var out;
         try { out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx); } finally { g_hostScope = null; }
         out = guardCalcTransitions(out, ctx, kind);
+        // this document's own calc and transition findings, for the page's later documents also when this one comes
+        // from the cache (see guardCalcTransitions)
+        var state = pageState(ctx);
+        if (state && (kind !== 'html' || /<html|<head|<body/i.test(text))) out += kind === 'html' ? '\n<!--br-page:' + state + '-->' : '\n/*br-page:' + state + '*/';
         var manifest = null;
         if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length || g_manifest.sc.length)) {
             manifest = { has: g_manifest.has, cq: g_manifest.cq };

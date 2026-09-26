@@ -148,6 +148,38 @@ static CGFloat g_devicePixelRatio = 1;
 
 #pragma mark - Manifest (:has() and @container entries for the page shim)
 
+// "/*br-page:{"calc":"...","trans":"..."}*/" (or "<!--br-page:...-->") right before the manifest: the properties a
+// document gives -webkit-calc() values and the ones it transitions (see guardCalcTransitions in cssfix.js). They join
+// the page's " calc" / " trans" entries, which the page's later documents are rewritten with; a cached copy is not
+// rewritten again, so its comment is the only way its findings reach them.
+- (void)registerPageStateInData:(NSData *)data before:(NSUInteger)limit pageURL:(NSURL *)pageURL
+{
+    if (limit > data.length || limit < 16) return;
+    NSUInteger from = limit > 16384 ? limit - 16384 : 0;
+    NSRange marker = [data rangeOfData:[@"br-page:{" dataUsingEncoding:NSUTF8StringEncoding] options:NSDataSearchBackwards range:NSMakeRange(from, limit - from)];
+    if (marker.location == NSNotFound || marker.location < 2) return;
+    const char *bytes = data.bytes;
+    if (!(bytes[marker.location - 2] == '/' && bytes[marker.location - 1] == '*') && !(marker.location >= 4 && memcmp(bytes + marker.location - 4, "<!--", 4) == 0)) return;
+    NSUInteger start = marker.location + 8;   // at the "{"
+    NSRange end = [data rangeOfData:[@"}" dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(start, limit - start)];
+    if (end.location == NSNotFound) return;
+    NSDictionary *state = [NSJSONSerialization JSONObjectWithData:[data subdataWithRange:NSMakeRange(start, end.location + 1 - start)] options:0 error:NULL];
+    if (![state isKindOfClass:[NSDictionary class]]) return;
+    NSMutableDictionary *vars = [self varsForPage:BRPageKey(pageURL) create:YES];
+    @synchronized (self) {
+        for (NSString *kind in @[@"calc", @"trans"]) {
+            NSString *names = state[kind];
+            if (![names isKindOfClass:[NSString class]] || !names.length) continue;
+            NSString *entry = [@" " stringByAppendingString:kind];
+            NSString *old = [vars[entry] isKindOfClass:[NSString class]] ? vars[entry] : @"";
+            NSMutableOrderedSet *set = [NSMutableOrderedSet orderedSetWithArray:[old componentsSeparatedByString:@" "]];
+            [set addObjectsFromArray:[names componentsSeparatedByString:@" "]];
+            [set removeObject:@""];
+            vars[entry] = [set.array componentsJoinedByString:@" "];
+        }
+    }
+}
+
 - (void)registerManifestInData:(NSData *)data pageURL:(NSURL *)pageURL sourceURL:(NSURL *)sourceURL
 {
     if (data.length < 20 || !pageURL) return;
@@ -155,6 +187,10 @@ static CGFloat g_devicePixelRatio = 1;
     // property entries of a big framework it can be several hundred KB
     NSData *markerData = [@"br-manifest:" dataUsingEncoding:NSUTF8StringEncoding];
     NSRange marker = [data rangeOfData:markerData options:NSDataSearchBackwards range:NSMakeRange(0, data.length)];
+    // (the calc / transition findings come just before it, or last when there is no manifest)
+    NSUInteger stateLimit = data.length;
+    if (marker.location != NSNotFound) stateLimit = marker.location >= 4 && memcmp((const char *)data.bytes + marker.location - 4, "<!--", 4) == 0 ? marker.location - 4 : marker.location >= 2 ? marker.location - 2 : marker.location;
+    [self registerPageStateInData:data before:stateLimit pageURL:pageURL];
     if (marker.location == NSNotFound) return;
     NSUInteger start = marker.location + marker.length;
     NSRange tailRange = NSMakeRange(start, data.length - start);
