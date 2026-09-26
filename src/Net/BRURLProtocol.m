@@ -802,6 +802,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     self.cacheBody = nil;
     BOOL mainFrame = !self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL];
     if (mainFrame && [kind isEqualToString:@"html"]) BRNotePageDocument(url, buffered, buffered.length);
+    else if ([kind isEqualToString:@"html"]) BRLog(@"HTML subresource %@ (%lu KB, %@)", url.absoluteString.length > 160 ? [url.absoluteString substringToIndex:160] : url.absoluteString,
+                                                 (unsigned long)(buffered.length >> 10), BRHeader(fields, @"Content-Type") ?: @"?");
     [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:BRURLWithoutModuleMarker(url) mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset, BOOL keep) {
         if (self.stopped) return;
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
