@@ -249,8 +249,10 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
 // JavaScriptCore's global JSC::Options (exported; JSC::initializeThreading sets the defaults once, and they are read
 // whenever a function is compiled). The optimizing JIT of this engine miscompiles some of today's minified code
 // (rohlik.cz: e[l++]+e[l++] read the same character twice and the page fell over; the interpreter alone got it right).
-// BRJSCMode: 0 all tiers, 1 no optimizing JIT, 2 the interpreter only (debugging; regular expressions keep their JIT).
-static const NSInteger BRJSCDefaultMode = 0;
+// BRJSCMode: 0 all tiers, 1 no optimizing JIT (the default: page loads measured the same, lowering scripts ~10 %
+// slower, and a miscompiled transpiler would even spoil the cache), 2 the interpreter only (debugging; regular
+// expressions keep their JIT).
+static const NSInteger BRJSCDefaultMode = 1;
 
 // A symbol of a loaded library that dlsym does not see (not exported): from the library's own symbol table, which the
 // system's shared cache keeps mapped. name as in the table (with the leading underscore).
