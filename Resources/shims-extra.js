@@ -6729,6 +6729,12 @@
                 var next = /:not\(/i.exec(sel.slice(from));
                 n = next ? { index: from + next.index } : null;
             }
+            // :defined through the class undefined custom elements get (:not(:defined) became ":not()", a syntax error:
+            // Shoelace's autoloader looks for :not(:defined) elements)
+            if (/:defined\b/i.test(sel)) {
+                sel = sel.replace(/:not\(\s*:defined\s*\)/gi, '.br-undefined').replace(/:defined\b/gi, ':not(.br-undefined)');
+                if (!window.__brUndefinedActive && window.__brMarkUndefined) window.__brMarkUndefined(document);
+            }
             sel = sel.replace(/:([a-z-]+)(?![\w(-])/gi, function (all, name) { var s = STATES[name.toLowerCase()]; return s === undefined ? all : s; });
             sel = sel.replace(/(\[[^\]"']*(?:"[^"]*"|'[^']*')?)\s+[is]\s*\]/g, '$1]');   // attribute case flags
             sel = modernIdents(sel);
@@ -8441,6 +8447,17 @@
         var fetchRecord = function (r) {
             if (r.factory || r.error) return P.resolve(r);
             if (r.fetching) return r.fetching;
+            // a data: URL (reddit imports its inline modules that way): the text is here already, and the old engine's
+            // XHR cannot load one
+            if (/^data:/i.test(r.url)) {
+                r.fetching = new P(function (done) {
+                    var text = dataText(r.url);
+                    if (text === null || !defineText(text, r.url)) r.error = r.error || new TypeError('Failed to fetch module ' + r.url.slice(0, 100));
+                    else if (!r.factory && !r.error) r.error = new SyntaxError('Module ' + r.url.slice(0, 100) + ' did not register');
+                    done(r);
+                });
+                return r.fetching;
+            }
             r.fetching = new P(function (done) {
                 var x = new XMLHttpRequest(), hook = window.__brModuleTransform;   // (tests transform in the page)
                 x.open('GET', hook ? r.url : r.url + (r.url.indexOf('?') >= 0 ? '&' : '?') + '__brmod=1', true);

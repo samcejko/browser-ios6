@@ -87,6 +87,16 @@ if (/[?&]emulate/.test(location.search)) {
     }, 'box-1,out');
     check('id and class starting with -- (htmx)', function () { var p = document.querySelector('#--pantry'), c = document.querySelectorAll('div.--x'); return [p ? p.id : null, c.length]; }, ['--pantry', 1]);
     check('-- in an attribute value stays', function () { return document.querySelectorAll(':is([id="--pantry"]), a[href="#--none"], a[href=\'.-1x\']').length; }, 1);
+    // (Shoelace's autoloader: :not(:defined) once became ":not()", a syntax error)
+    check(':not(:defined)', function () {
+        var box = document.createElement('div'), def = document.createElement('div');
+        box.innerHTML = '<x-undef-el></x-undef-el>';
+        box.appendChild(def);
+        document.body.appendChild(box);
+        var r = box.querySelectorAll(':not(:defined)'), d = box.querySelectorAll('div:defined');
+        document.body.removeChild(box);
+        return [typeof r.length, [].indexOf.call(r, def) < 0, d.length];
+    }, ['number', true, 1]);
     check('no marks left', function () { return document.querySelectorAll('[data-br-pick], [data-br-scope]').length; }, 0);
     var pass = 0, lines = [];
     for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }

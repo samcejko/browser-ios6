@@ -209,6 +209,35 @@
             if (!Q.prepend) Q.prepend = function () { this.insertBefore(toNodes(arguments), this.firstChild); };
             if (!Q.replaceChildren) Q.replaceChildren = function () { while (this.lastChild) this.removeChild(this.lastChild); this.appendChild(toNodes(arguments)); };
         }
+        // ParentNode properties on fragments and documents, element siblings of text nodes (the old engine has them on
+        // elements only): walkers of template.content and shadow roots met undefined (lit.dev's declarative shadow DOM
+        // polyfill went through i = i.firstElementChild and then read i.tagName)
+        var parentProps = {
+            firstElementChild: function () { for (var c = this.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) return c; return null; },
+            lastElementChild: function () { for (var c = this.lastChild; c; c = c.previousSibling) if (c.nodeType === 1) return c; return null; },
+            childElementCount: function () { var n = 0; for (var c = this.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) n++; return n; },
+            children: function () {
+                var list = [];
+                for (var c = this.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) list.push(c);
+                list.item = function (i) { return this[i] || null; };
+                return list;
+            }
+        };
+        var siblingProps = {
+            nextElementSibling: function () { for (var c = this.nextSibling; c; c = c.nextSibling) if (c.nodeType === 1) return c; return null; },
+            previousElementSibling: function () { for (var c = this.previousSibling; c; c = c.previousSibling) if (c.nodeType === 1) return c; return null; }
+        };
+        var addProps = function (proto, probe, props) {
+            if (!proto || !probe) return;
+            for (var name in props) if (props.hasOwnProperty(name) && !(name in probe)) {
+                try { Object.defineProperty(proto, name, { get: props[name], configurable: true, enumerable: true }); } catch (e) {}
+            }
+        };
+        try {
+            addProps(window.DocumentFragment && window.DocumentFragment.prototype, document.createDocumentFragment(), parentProps);
+            addProps(window.Document && window.Document.prototype, document, parentProps);
+            addProps(window.CharacterData && window.CharacterData.prototype, document.createTextNode(''), siblingProps);
+        } catch (eParent) {}
         if (!Ep.getAttributeNames) Ep.getAttributeNames = function () { var r = [], a = this.attributes; for (var i = 0; i < a.length; i++) r.push(a[i].name); return r; };
         if (!Ep.toggleAttribute) Ep.toggleAttribute = function (name, force) { var has = this.hasAttribute(name); if (force === undefined ? has : !force) { if (has) this.removeAttribute(name); return false; } this.setAttribute(name, ''); return true; };
         // classList.toggle(name, force) and classList.replace
