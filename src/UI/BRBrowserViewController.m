@@ -1279,6 +1279,9 @@ static void BRWebThreadLock(void)
         [hosts addObject:host];
         while (hosts.count > 60) [hosts removeObjectAtIndex:0];
         [d setObject:hosts forKey:@"BRHeavyGraphicsHosts"];
+        NSMutableDictionary *since = [[d dictionaryForKey:@"BRHeavyGraphicsSince"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        since[host] = @([[NSDate date] timeIntervalSince1970]);
+        [d setObject:since forKey:@"BRHeavyGraphicsSince"];
         [d synchronize];   // (iOS may kill the app in a moment)
     }
     if (self.compositingOff) return;
@@ -1315,10 +1318,29 @@ static void BRWebThreadLock(void)
     [UIView animateWithDuration:0.4 delay:4 options:0 animations:^{ note.alpha = 0; } completion:^(BOOL finished) { [note removeFromSuperview]; }];
 }
 
+// (a site is remembered for a week: pages change, and without compositing it has no WebGL and no 3D transforms -
+// html5test.co lost its 3D points for good after one heavy visit)
 - (BOOL)compositingOffForHost:(NSString *)host
 {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    return [d boolForKey:@"BRDebugNoCompositing"] || (host.length && [[d arrayForKey:@"BRHeavyGraphicsHosts"] containsObject:[host lowercaseString]]);
+    if ([d boolForKey:@"BRDebugNoCompositing"]) return YES;
+    host = [host lowercaseString];
+    if (!host.length || ![[d arrayForKey:@"BRHeavyGraphicsHosts"] containsObject:host]) return NO;
+    NSMutableDictionary *since = [[d dictionaryForKey:@"BRHeavyGraphicsSince"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSNumber *when = since[host];
+    if (!when) {   // (remembered before the dates were kept: from now on)
+        since[host] = @(now);
+        [d setObject:since forKey:@"BRHeavyGraphicsSince"];
+        return YES;
+    }
+    if (now - when.doubleValue < 7 * 86400) return YES;
+    NSMutableArray *hosts = [[d arrayForKey:@"BRHeavyGraphicsHosts"] mutableCopy];
+    [hosts removeObject:host];
+    [since removeObjectForKey:host];
+    [d setObject:hosts forKey:@"BRHeavyGraphicsHosts"];
+    [d setObject:since forKey:@"BRHeavyGraphicsSince"];
+    return NO;
 }
 
 // A page on its way: a site whose graphics ran away before is drawn without compositing from the start. (Only this

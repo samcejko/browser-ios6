@@ -6012,6 +6012,131 @@
         };
     }
     if (!window.DragEvent) window.DragEvent = function DragEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.dataTransfer = (init && init.dataTransfer) || new window.DataTransfer(); return e; };
+    // ---- Drag and drop. The old engine has neither the draggable attribute nor drag events, and a finger cannot drag
+    // anything: the attributes and handler properties are here, and on a page that listens for drag events a finger
+    // that moves a draggable="true" element drags it - dragstart with a DataTransfer, a see-through copy following the
+    // finger, dragenter / dragover / dragleave on what is under it, drop where dragover said yes, then dragend
+    // (sortable lists, boards). A page that takes the touch itself (preventDefault) keeps it.
+    (function () {
+        if (!Ep) return;
+        var probe = document.createElement('div'), TYPES = ['drag', 'dragstart', 'dragenter', 'dragover', 'dragleave', 'dragend', 'drop'];
+        if (!('draggable' in probe)) {
+            try {
+                Object.defineProperty(Ep, 'draggable', {
+                    get: function () {
+                        var v = this.getAttribute('draggable');
+                        return v === 'true' ? true : v === 'false' ? false : this.tagName === 'IMG' || (this.tagName === 'A' && this.hasAttribute('href'));
+                    },
+                    set: function (v) { this.setAttribute('draggable', v ? 'true' : 'false'); },
+                    configurable: true
+                });
+            } catch (e0) {}
+        }
+        if (!('dropzone' in probe)) defineAttrProp(Ep, 'dropzone');
+        for (var ti = 0; ti < TYPES.length; ti++) (function (type) {
+            if (('on' + type) in probe) return;
+            var key = '__brOn' + type;
+            try {
+                Object.defineProperty(Ep, 'on' + type, {
+                    get: function () { return this[key] || null; },
+                    set: function (fn) {
+                        if (this[key]) this.removeEventListener(type, this[key], false);
+                        this[key] = typeof fn === 'function' ? fn : null;
+                        if (this[key]) { this.addEventListener(type, this[key], false); window.__brPageDnD = true; }
+                    },
+                    configurable: true
+                });
+            } catch (e1) {}
+        })(TYPES[ti]);
+        if (!('ontouchstart' in window)) return;
+        var transfer = function () {
+            var dt;
+            try { dt = new window.DataTransfer(); } catch (e2) { dt = null; }
+            if (!dt || !dt.setData) {
+                dt = { __data: {}, types: [], files: [], items: [] };
+                dt.setData = function (t, v) { this.__data[t] = String(v); if (this.types.indexOf(t) < 0) this.types.push(t); };
+                dt.getData = function (t) { return this.__data[t] || ''; };
+                dt.clearData = function (t) { if (t) delete this.__data[t]; else { this.__data = {}; this.types = []; } };
+            }
+            try { dt.effectAllowed = 'all'; dt.dropEffect = 'none'; } catch (e3) {}
+            dt.setDragImage = function (el, x, y) { this.__brImage = el; this.__brX = x || 0; this.__brY = y || 0; };
+            return dt;
+        };
+        // (a plain event with the mouse event's fields as its own properties: a MouseEvent of this engine has a read-only
+        // dataTransfer of its own, which stays null)
+        var fire = function (target, type, t, dt, cancelable) {
+            var e = document.createEvent('Event');
+            e.initEvent(type, true, cancelable);
+            var own = { dataTransfer: dt, clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY, pageX: t.clientX + window.pageXOffset,
+                        pageY: t.clientY + window.pageYOffset, offsetX: 0, offsetY: 0, button: 0, buttons: type === 'drop' || type === 'dragend' ? 0 : 1, which: 1,
+                        ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, relatedTarget: null };
+            for (var k in own) { try { Object.defineProperty(e, k, { value: own[k], configurable: true, enumerable: true }); } catch (e4) { e[k] = own[k]; } }
+            try { if (window.MouseEvent && window.MouseEvent.prototype) e.__proto__ = window.MouseEvent.prototype; } catch (e5) {}
+            return target.dispatchEvent(e);   // (false: the page prevented it)
+        };
+        var ghostOf = function (s, t) {
+            var src = s.dt.__brImage && s.dt.__brImage.nodeType === 1 ? s.dt.__brImage : s.src, r = src.getBoundingClientRect(), g = src.cloneNode(true);
+            var ids = g.querySelectorAll ? g.querySelectorAll('[id]') : [];
+            g.removeAttribute('id');
+            for (var i = 0; i < ids.length; i++) ids[i].removeAttribute('id');
+            s.dx = s.dt.__brImage ? s.dt.__brX : t.clientX - r.left;
+            s.dy = s.dt.__brImage ? s.dt.__brY : t.clientY - r.top;
+            g.style.cssText += ';position:fixed!important;left:0!important;top:0!important;margin:0!important;pointer-events:none!important;opacity:.6;z-index:2147483647;' +
+                'width:' + r.width + 'px;height:' + r.height + 'px;-webkit-box-sizing:border-box';
+            document.body.appendChild(g);
+            return g;
+        };
+        var state = null;
+        var draggableFrom = function (el) {
+            for (; el && el.nodeType === 1; el = el.parentNode) {
+                var a = el.getAttribute('draggable');
+                if (a === 'true') return el;
+                if (a === 'false') return null;
+            }
+            return null;
+        };
+        document.addEventListener('touchstart', function (ev) {
+            state = null;
+            if (!window.__brPageDnD || ev.defaultPrevented || !ev.touches || ev.touches.length !== 1) return;
+            var src = draggableFrom(ev.target);
+            if (src) state = { src: src, x: ev.touches[0].clientX, y: ev.touches[0].clientY, dragging: false, over: null, ok: false };
+        }, false);
+        document.addEventListener('touchmove', function (ev) {
+            if (!state) return;
+            var t = ev.touches[0], s = state;
+            if (!s.dragging) {
+                if (ev.defaultPrevented || ev.touches.length !== 1) { state = null; return; }
+                if (Math.abs(t.clientX - s.x) + Math.abs(t.clientY - s.y) < 8) return;
+                s.dt = transfer();
+                if (!fire(s.src, 'dragstart', t, s.dt, true)) { state = null; return; }
+                s.dragging = true;
+                s.ghost = ghostOf(s, t);
+            }
+            ev.preventDefault();   // (the finger drags; the page does not scroll)
+            s.ghost.style.webkitTransform = 'translate3d(' + (t.clientX - s.dx) + 'px,' + (t.clientY - s.dy) + 'px,0)';
+            fire(s.src, 'drag', t, s.dt, true);
+            var under = document.elementFromPoint(t.clientX, t.clientY);
+            if (under !== s.over) {
+                if (under) fire(under, 'dragenter', t, s.dt, true);
+                if (s.over) fire(s.over, 'dragleave', t, s.dt, false);
+                s.over = under;
+            }
+            s.ok = under ? !fire(under, 'dragover', t, s.dt, true) : false;
+        }, false);
+        var end = function (ev) {
+            var s = state;
+            state = null;
+            if (!s || !s.dragging) return;
+            var t = ev.changedTouches && ev.changedTouches[0] ? ev.changedTouches[0] : { clientX: 0, clientY: 0, screenX: 0, screenY: 0 };
+            if (s.over && s.ok && ev.type === 'touchend') fire(s.over, 'drop', t, s.dt, true);
+            else { try { s.dt.dropEffect = 'none'; } catch (e5) {} }
+            fire(s.src, 'dragend', t, s.dt, false);
+            if (s.ghost && s.ghost.parentNode) s.ghost.parentNode.removeChild(s.ghost);
+            ev.preventDefault();   // (no click after a drag)
+        };
+        document.addEventListener('touchend', end, false);
+        document.addEventListener('touchcancel', end, false);
+    })();
     if (!window.InputEvent) window.InputEvent = function InputEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.data = (init && init.data) || null; e.inputType = (init && init.inputType) || ''; e.isComposing = false; return e; };
     if (!window.FocusEvent) window.FocusEvent = function FocusEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.relatedTarget = (init && init.relatedTarget) || null; return e; };
     if (!window.SecurityPolicyViolationEvent) window.SecurityPolicyViolationEvent = function SecurityPolicyViolationEvent() {};
@@ -6298,6 +6423,8 @@
         var origAdd = obj.addEventListener, origRemove = obj.removeEventListener;
         obj.addEventListener = function (type, fn, options) {
             if (!fn) return;
+            // (a page that listens for drag events gets dragging by finger, see the drag and drop block)
+            if (typeof type === 'string' && (type === 'drop' || type.slice(0, 4) === 'drag')) window.__brPageDnD = true;
             if (options && typeof options === 'object') {
                 var capture = !!options.capture, actual = fn;
                 if (options.once) {

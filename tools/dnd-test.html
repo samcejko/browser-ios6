@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dnd test</title>
+<!-- Drag and drop by finger (shims-extra.js, the drag and drop block): a sortable list with HTML5 drag events, dragged
+     by synthetic touches (document.createTouch / initTouchEvent of the iOS engine). Open through the /dev/ route; the
+     result is the title. -->
+<style>
+body { font: 16px Helvetica, sans-serif; margin: 20px; }
+li { display: block; height: 50px; line-height: 50px; margin: 6px 0; background: #cde; padding: 0 10px; }
+li.over { background: #fc8; }
+</style>
+</head>
+<body>
+<ul id="list"><li draggable="true" id="a">A</li><li draggable="true" id="b">B</li><li draggable="true" id="c">C</li></ul>
+<pre id="out"></pre>
+<script>
+var log = [], dragged = null;
+var list = document.getElementById('list');
+list.addEventListener('dragstart', function (e) { dragged = e.target; e.dataTransfer.setData('text/plain', e.target.id); log.push('start ' + e.target.id); }, false);
+list.addEventListener('dragover', function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, false);
+list.addEventListener('dragenter', function (e) { if (e.target.tagName === 'LI') e.target.className = 'over'; }, false);
+list.addEventListener('dragleave', function (e) { if (e.target.tagName === 'LI') e.target.className = ''; }, false);
+list.addEventListener('drop', function (e) {
+  e.preventDefault();
+  var id = e.dataTransfer.getData('text/plain'), t = e.target;
+  log.push('drop ' + id + ' on ' + t.id);
+  t.className = '';
+  if (t.tagName === 'LI' && t.id !== id) list.insertBefore(document.getElementById(id), t);
+}, false);
+list.addEventListener('dragend', function (e) { log.push('end ' + e.target.id); }, false);
+
+function touch(type, el, x, y) {
+  var t = document.createTouch(window, el, 1, x + window.pageXOffset, y + window.pageYOffset, x, y);
+  var ev = document.createEvent('TouchEvent'), tl = document.createTouchList(t), none = document.createTouchList();
+  var active = type === 'touchend' ? none : tl;
+  ev.initTouchEvent(type, true, true, window, 0, x, y, x, y, false, false, false, false, active, active, tl, 1, 0);
+  el.dispatchEvent(ev);
+}
+setTimeout(function () {
+  var checks = ['draggable' in document.createElement('div'), 'ondrop' in document.createElement('div'), 'ondragstart' in document.createElement('div')];
+  var props = checks.every(function (x) { return x; });
+  if (!document.createTouch) { document.title = 'dnd props ' + props + ' | no touch creation (not the iOS engine)'; return; }
+  var a = document.getElementById('a'), c = document.getElementById('c');
+  var ra = a.getBoundingClientRect(), rc = c.getBoundingClientRect();
+  var x = ra.left + 20, y0 = ra.top + 20, y1 = rc.top + 20;
+  touch('touchstart', a, x, y0);
+  touch('touchmove', a, x, y0 + 15);
+  touch('touchmove', a, x, (y0 + y1) / 2);
+  touch('touchmove', a, x, y1);
+  touch('touchend', a, x, y1);
+  setTimeout(function () {
+    var order = [].map.call(list.children, function (li) { return li.id; }).join('');
+    var ok = props && order === 'bac' && log.join(',') === 'start a,drop a on c,end a';
+    document.getElementById('out').textContent = 'order ' + order + '\n' + log.join('\n');
+    document.title = 'dnd ' + (ok ? 'OK' : 'FAIL') + ' | props ' + props + ' order ' + order + ' | ' + log.join(',');
+  }, 300);
+}, 1500);
+</script>
+</body>
+</html>
