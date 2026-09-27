@@ -642,7 +642,7 @@
     document.addEventListener('DOMContentLoaded', function () { sendToApp('brlog', 'timing: DOMContentLoaded after ' + (Date.now() - brT0) + ' ms, busy gap so far ' + maxGap + ' ms'); }, false);
     window.addEventListener('load', function () {
         sendToApp('brlog', 'timing: load after ' + (Date.now() - brT0) + ' ms, longest busy gap ' + maxGap + ' ms at ' + maxGapAt + ' ms, scripts ' + document.scripts.length + ', errors ' + reportedErrors + ', nodes ' + document.getElementsByTagName('*').length);
-        setTimeout(function () { clearInterval(tickTimer); }, 30000);
+        setTimeout(function () { clearInterval(tickTimer); tickTimer = null; }, 30000);
     }, false);
     // Uncaught errors of the page reach the app's log (brlog: scheme) so that broken sites can be diagnosed over SSH
     var reportedErrors = 0;
@@ -669,13 +669,30 @@
             try { if (err && typeof err === 'object') err.__brLogged = true; } catch (e) {}
             sendToApp('brlog', 'JS debug (' + kind + '): ' + describe(err).slice(0, 600) + ' page ' + location.hostname);
         };
+        // (and the callbacks that keep the page busy for long: which one, with the start of its text)
+        var slow = 0;
+        var noteSlow = function (what, ms, text) {
+            if (ms < 1500 || slow >= 15) return;
+            slow++;
+            sendToApp('brlog', 'JS debug (slow ' + what + '): ' + ms + ' ms' + (text ? ' in ' + String(text).replace(/\s+/g, ' ').slice(0, 200) : '') + ' page ' + location.hostname);
+        };
+        window.__brNoteSlow = noteSlow;
         var guard = function (fn, kind) {
             if (typeof fn !== 'function') return fn;
             if (fn.__brGuard) return fn.__brGuard;
-            var g = function () { try { return fn.apply(this, arguments); } catch (err) { report(kind, err); throw err; } };
+            var g = function () {
+                var t0 = Date.now();
+                try { return fn.apply(this, arguments); } catch (err) { report(kind, err); throw err; } finally { noteSlow(kind, Date.now() - t0, fn); }
+            };
             try { Object.defineProperty(fn, '__brGuard', { value: g, configurable: true }); } catch (e) {}
             return g;
         };
+        // a script that ran long: its load event comes long after the last tick of the busy-gap timer
+        document.addEventListener('load', function (e) {
+            var s = e.target;
+            if (!s || s.tagName !== 'SCRIPT' || !tickTimer) return;
+            noteSlow('script',Date.now() - lastTick - 1000, 'since the last tick, up to the load of ' + (s.src || 'an inline script'));
+        }, true);
         var timers = ['setTimeout', 'setInterval', 'requestAnimationFrame', 'webkitRequestAnimationFrame', 'queueMicrotask', 'setImmediate', 'requestIdleCallback'];
         for (var t = 0; t < timers.length; t++) (function (name) {
             var orig = window[name];
@@ -3202,6 +3219,7 @@
             try { if (window.__brGrid) window.__brGrid.apply(); } catch (e8) {}
             applyEnd = Date.now();
             applyCost = applyEnd - t0;
+            if (window.__brNoteSlow) window.__brNoteSlow('style pass', applyCost, '');
         };
         // A pass costs what the page's size makes it cost (blesk.cz: 2.5 s, and the page changes all the time, so the
         // passes ran back to back and the page itself hardly got to run): the next one waits five times as long as

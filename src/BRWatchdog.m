@@ -26,7 +26,7 @@ static void BRWatchdogSignalHandler(int sig)
     g_frameCount = backtrace(g_frames, BRWatchdogMaxFrames);
 }
 
-static pthread_t BRFindThreadNamed(const char *name)
+pthread_t BRFindThreadNamed(const char *name)
 {
     thread_act_array_t threads = NULL;
     mach_msg_type_number_t count = 0;
