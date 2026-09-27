@@ -5018,29 +5018,112 @@
             for (var i = 0; i < list.length; i++) { try { if (!window.matchMedia(list[i]).matches) return false; } catch (e) { return false; } }
             return true;
         };
-        var collect = function () {
-            var recs = [], i, b, k, d;
+        // Entries that say something grid-specific find their elements with querySelectorAll; the others (alignment,
+        // gaps, order, display: the utility rules of a document that has grids, often a thousand flex rules) are only
+        // tried on the grid containers and items found, through an index by the key of their subject (a class, id or
+        // tag), like an engine's rule hash (aktualne.cz: 1254 entries took 745 ms a pass with querySelectorAll).
+        var prepared = null;
+        // (escapes count: Tailwind's .md\:items-center is the class "md:items-center")
+        var subjectKey = function (sel) {
+            var s = String(sel), i, c, depth = 0, quote = '', start = 0;
+            for (i = 0; i < s.length; i++) {
+                c = s.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && /[\s>+~]/.test(c)) start = i + 1;
+            }
+            var last = s.slice(start), ident = function (from) {
+                var out = '';
+                for (var j = from; j < last.length; j++) {
+                    var ch = last.charAt(j);
+                    if (ch === '\\' && j + 1 < last.length) { out += last.charAt(j + 1); j++; }
+                    else if (/[\w-]/.test(ch) || ch.charCodeAt(0) > 127) out += ch;
+                    else break;
+                }
+                return out;
+            };
+            var tag = ident(0), id = '';
+            depth = 0;
+            for (i = 0; i < last.length; i++) {
+                c = last.charAt(i);
+                if (c === '\\') { i++; continue; }
+                if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && c === '.') { var cls = ident(i + 1); if (cls) return 'c:' + cls; }
+                else if (!depth && c === '#' && !id) id = ident(i + 1);
+            }
+            if (id) return 'i:' + id;
+            return tag && tag !== '*' ? 't:' + tag.toLowerCase() : '*';
+        };
+        var prepare = function () {
+            var list = [], index = {}, i, d, b;
             for (i = 0; i < entries.length; i++) {
                 var e = entries[i];
-                if (!e.s || !e.d || !mediaOk(e.m)) continue;
-                var decls = [];
+                if (!e.s || !e.d) continue;
+                var decls = [], specific = false;
                 for (d = 0; d < e.d.length; d++) {
-                    var lh = longhands(e.d[d][0], e.d[d][1]);
+                    var p0 = e.d[d][0], v0 = String(e.d[d][1]);
+                    if (/^grid/.test(p0) || (p0 === 'display' && /grid/i.test(v0))) specific = true;
+                    var lh = longhands(p0, v0);
                     for (var lp in lh) if (lh.hasOwnProperty(lp)) decls.push([lp, lh[lp], !!e.d[d][2]]);
                 }
-                for (b = 0; b < e.s.length; b++) {
-                    var list = null;
-                    try { list = document.querySelectorAll(e.s[b]); } catch (x) { list = null; }
-                    if (!list) continue;
-                    var spec = e.sp ? e.sp[b] : 0;
-                    for (k = 0; k < list.length; k++) {
-                        var el = list[k], rec = el.__brGD;
-                        if (!rec || rec.gen !== gen) { rec = el.__brGD = { gen: gen, el: el, props: {} }; recs.push(rec); }
-                        for (d = 0; d < decls.length; d++) {
-                            var p = decls[d][0], imp = decls[d][2], cur = rec.props[p];
-                            if (cur && ((cur.imp && !imp) || (cur.imp === imp && (cur.spec > spec || (cur.spec === spec && cur.order > i))))) continue;
-                            rec.props[p] = { v: decls[d][1], spec: spec, order: i, imp: imp };
-                        }
+                var pe = { order: i, s: e.s, sp: e.sp || [], m: e.m ? e.m.join('&') : '', decls: decls, specific: specific };
+                list.push(pe);
+                if (!specific) for (b = 0; b < e.s.length; b++) { var key = subjectKey(e.s[b]); (index[key] || (index[key] = [])).push([pe, b]); }
+            }
+            return { list: list, index: index };
+        };
+        var collect = function () {
+            if (!prepared) prepared = prepare();
+            var recs = [], i, b, k, d, media = {};
+            var ok = function (m) { if (!m) return true; if (media[m] === undefined) media[m] = mediaOk(m.split('&')); return media[m]; };
+            var consider = function (el, pe, spec) {
+                var rec = el.__brGD;
+                if (!rec || rec.gen !== gen) { rec = el.__brGD = { gen: gen, el: el, props: {} }; recs.push(rec); }
+                for (var q = 0; q < pe.decls.length; q++) {
+                    var p = pe.decls[q][0], imp = pe.decls[q][2], cur = rec.props[p];
+                    if (cur && ((cur.imp && !imp) || (cur.imp === imp && (cur.spec > spec || (cur.spec === spec && cur.order > pe.order))))) continue;
+                    rec.props[p] = { v: pe.decls[q][1], spec: spec, order: pe.order, imp: imp };
+                }
+            };
+            for (i = 0; i < prepared.list.length; i++) {
+                var pe = prepared.list[i];
+                if (!pe.specific || !ok(pe.m)) continue;
+                for (b = 0; b < pe.s.length; b++) {
+                    var found = null;
+                    try { found = document.querySelectorAll(pe.s[b]); } catch (x) { found = null; }
+                    if (found) for (k = 0; k < found.length; k++) consider(found[k], pe, pe.sp[b] || 0);
+                }
+            }
+            // the containers and their children get the other entries that match them
+            var targets = [];
+            for (i = 0; i < recs.length; i++) {
+                var dv = recs[i].props.display;
+                if (!dv || !/grid/i.test(dv.v)) continue;
+                targets.push(recs[i].el);
+                for (var c = recs[i].el.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) targets.push(c);
+            }
+            var index = prepared.index, matchFn = Ep.webkitMatchesSelector || Ep.matches;
+            for (i = 0; i < targets.length; i++) {
+                var el = targets[i], keys = ['*', 't:' + el.tagName.toLowerCase()];
+                if (el.id) keys.push('i:' + el.id);
+                var cls = String(el.getAttribute('class') || '').split(/\s+/);
+                for (k = 0; k < cls.length; k++) if (cls[k]) keys.push('c:' + cls[k]);
+                var tried = {};
+                for (k = 0; k < keys.length; k++) {
+                    var cand = index[keys[k]];
+                    if (!cand) continue;
+                    for (d = 0; d < cand.length; d++) {
+                        var pc = cand[d][0], bi = cand[d][1], tk = pc.order + ':' + bi;
+                        if (tried[tk]) continue;
+                        tried[tk] = 1;
+                        if (!ok(pc.m)) continue;
+                        var hit = false;
+                        try { hit = matchFn.call(el, pc.s[bi]); } catch (x2) { hit = false; }
+                        if (hit) consider(el, pc, pc.sp[bi] || 0);
                     }
                 }
             }
@@ -5337,6 +5420,17 @@
                           v: num(ics.paddingTop) + num(ics.paddingBottom) + num(ics.borderTopWidth) + num(ics.borderBottomWidth) };
                     item.w1 = item.el.offsetWidth;
                     item.autoW = Math.abs(item.w1 - Math.max(0, pbw - item.m.l - item.m.r)) < 1.5;
+                    // (a percentage width is of the grid area, not of the container the item is placed in here)
+                    item.pctW = null;
+                    if (!item.autoW) {
+                        var specW = item.el.style.width;
+                        if (!specW && window.getMatchedCSSRules) {
+                            var mr = null;
+                            try { mr = window.getMatchedCSSRules(item.el, ''); } catch (eM) { mr = null; }
+                            for (var q = mr ? mr.length - 1 : -1; q >= 0; q--) { if (mr[q].style && mr[q].style.width) { specW = mr[q].style.width; break; } }
+                        }
+                        if (/^[\d.]+%$/.test(specW || '')) item.pctW = parseFloat(specW);
+                    }
                     item.autoH = Math.abs(item.el.offsetHeight - Math.max(0, pbh - item.m.t - item.m.b)) < 1.5;
                     item.order = parseInt(prop(item.rec, 'order', '0'), 10) || 0;
                     item.finalW = item.w1;
@@ -5455,6 +5549,11 @@
                     var js = ALIGN(prop(it.rec, 'justify-self', 'auto') === 'auto' ? g.justifyItems : prop(it.rec, 'justify-self', 'auto'));
                     var outerW = it.natW || it.w1 + it.m.l + it.m.r, x = g.colPos[it.c] !== undefined ? g.colPos[it.c] : g.pad.l;
                     it.setW = null;
+                    if (it.pctW !== null) {
+                        it.setW = Math.max(0, areaW * it.pctW / 100);
+                        it.finalW = it.setW + it.box.h;
+                        outerW = it.finalW + it.m.l + it.m.r;
+                    }
                     if (stretches(js, it.el) && it.autoW) {
                         it.setW = Math.max(0, areaW - it.m.l - it.m.r - it.box.h);
                         it.finalW = Math.max(0, areaW - it.m.l - it.m.r);
@@ -5556,7 +5655,7 @@
             }
         }, true);
         window.__brGrid = {
-            setManifest: function (m) { entries = (m && m.gd) || []; },
+            setManifest: function (m) { entries = (m && m.gd) || []; prepared = null; },
             apply: apply,
             state: function () { return stats; }
         };
