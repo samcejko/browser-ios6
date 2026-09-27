@@ -50,6 +50,9 @@ body { font: 14px/18px Helvetica, Arial, sans-serif; margin: 10px; }
 #t24 .g, #t25 .g { display: grid; min-height: 300px; grid-template-rows: 1fr 1px auto; }
 #t25 .big { height: 500px; }
 #t26 .g { display: grid; height: 200px; grid-template-rows: 1fr 2fr; }
+/* an inner grid that is an item of a min-height grid (tailwindcss.com's main column) */
+#t27 .g { display: grid; min-height: 200px; grid-template-rows: 1fr auto; }
+#t27 .in { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } #t27 .in > div { height: 60px; }
 </style>
 </head>
 <body>
@@ -80,6 +83,7 @@ body { font: 14px/18px Helvetica, Arial, sans-serif; margin: 10px; }
 <div class="case" id="t24"><div class="g"><div>short main</div><div></div><div>footer</div></div></div>
 <div class="case" id="t25"><div class="g"><div class="big">tall main</div><div></div><div>footer</div></div></div>
 <div class="case" id="t26"><div class="g"><div>one</div><div>two</div></div></div>
+<div class="case" id="t27"><div class="g"><div class="in"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div></div><div>footer</div></div></div>
 </div>
 <pre id="out">running</pre>
 <script>

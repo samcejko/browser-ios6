@@ -4909,6 +4909,15 @@
             return { tracks: tracks, lines: lines, fit: fit };
         };
         var hasAutoRepeat = function (list) { for (var i = 0; i < list.length; i++) if (list[i].repeat !== undefined && typeof list[i].repeat !== 'number') return true; return false; };
+        // a list with tracks sized by their content (the items' natural widths are measured for those)
+        var intrinsicList = function (list) {
+            for (var i = 0; i < list.length; i++) {
+                var it = list[i];
+                if (it.track && (/^(auto|min|max|fit)$/.test(it.track.max.k) || /^(min|max)$/.test(it.track.min.k))) return true;
+                if (it.repeat !== undefined && intrinsicList(it.list)) return true;
+            }
+            return false;
+        };
         // grid-template-areas -> {rows, cols, areas: {name: {r0, r1, c0, c1}}}
         var parseAreas = function (v) {
             var strs = String(v || '').match(/"[^"]*"|'[^']*'/g);
@@ -5239,7 +5248,11 @@
         var layoutAll = function () {
             gen++;
             fontCache = null;
+            var t0 = Date.now();
             var recs = collect(), grids = [], byEl = [], i, j, g;
+            stats.collectMs = Date.now() - t0;
+            stats.items = 0;
+            stats.entries = entries.length;
             for (i = 0; i < recs.length; i++) {
                 var rec = recs[i], d = prop(rec, 'display', '').toLowerCase();
                 if (d !== 'grid' && d !== 'inline-grid') continue;
@@ -5279,148 +5292,191 @@
             for (i = 0; i < grids.length; i++) maxDepth = Math.max(maxDepth, grids[i].depth);
             var level = function (dpt) { var out = []; for (var k = 0; k < grids.length; k++) if (grids[k].depth === dpt) out.push(grids[k]); return out; };
             var L, lv, it;
-            // columns, top-down
-            for (L = 0; L <= maxDepth; L++) {
-                lv = level(L);
-                // write: the container turns the stand-in off; its items leave the flow, stretched to both edges
-                for (i = 0; i < lv.length; i++) {
-                    g = lv[i];
-                    if (!g.el.__brGridBox) { g.el.className = trim(g.el.className + ' br-grid'); g.el.__brGridBox = true; }
-                    setStyle(g.el, 'height', null);
-                    // (an item of an outer grid is absolute already: a containing block as it is)
-                    if (g.static && g.el.style.getPropertyValue('position') !== 'absolute') setStyle(g.el, 'position', 'relative');
-                    for (j = 0; j < g.items.length; j++) {
-                        it = g.items[j].el;
-                        setStyle(it, 'position', 'absolute');
-                        setStyle(it, 'left', '0px'); setStyle(it, 'right', '0px'); setStyle(it, 'top', '0px'); setStyle(it, 'bottom', '0px');
-                        setStyle(it, 'width', null); setStyle(it, 'height', null);
-                    }
-                }
-                // read: the room, and which items take the stretch (auto sizes fill both edges)
-                for (i = 0; i < lv.length; i++) {
-                    g = lv[i];
-                    var gcs = getComputedStyle(g.el);
-                    g.W = g.el.clientWidth - g.pad.l - g.pad.r;
-                    // (a container sized by its content lost it: it keeps the width it had)
-                    g.keepW = g.W < g.w0 - 1 ? g.w0 : null;
-                    if (g.keepW) g.W = g.keepW;
-                    var h0 = g.el.clientHeight - g.pad.t - g.pad.b;
-                    g.H = h0 > 0.5 ? h0 : null;
-                    // (the height min-height gives: flexible rows fill it, and it grows when the rows need more)
-                    var minH = num(gcs.minHeight) - (g.border ? g.pad.t + g.pad.b + g.border.v : 0);
-                    g.minMode = g.H !== null && minH > 0 && minH >= g.H - 1;
-                    // (an item stretched to both edges with an auto size fills the padding box as it is now)
-                    var pbw = g.el.clientWidth, pbh = g.el.clientHeight;
-                    for (j = 0; j < g.items.length; j++) {
-                        var item = g.items[j], ics = getComputedStyle(item.el);
-                        item.m = { l: num(ics.marginLeft), r: num(ics.marginRight), t: num(ics.marginTop), b: num(ics.marginBottom) };
-                        item.box = ics.boxSizing === 'border-box' ? { h: 0, v: 0 } :
-                            { h: num(ics.paddingLeft) + num(ics.paddingRight) + num(ics.borderLeftWidth) + num(ics.borderRightWidth),
-                              v: num(ics.paddingTop) + num(ics.paddingBottom) + num(ics.borderTopWidth) + num(ics.borderBottomWidth) };
-                        item.autoW = Math.abs(item.el.offsetWidth - Math.max(0, pbw - item.m.l - item.m.r)) < 1.5;
-                        item.autoH = Math.abs(item.el.offsetHeight - Math.max(0, pbh - item.m.t - item.m.b)) < 1.5;
-                        item.order = parseInt(prop(item.rec, 'order', '0'), 10) || 0;
-                    }
-                }
-                // write: natural widths (shrink to fit)
-                for (i = 0; i < lv.length; i++) {
-                    g = lv[i];
-                    if (g.keepW) setStyle(g.el, 'width', (g.border ? g.keepW + g.pad.l + g.pad.r + g.border.h : g.keepW) + 'px');
-                    for (j = 0; j < g.items.length; j++) { setStyle(g.items[j].el, 'right', 'auto'); setStyle(g.items[j].el, 'bottom', 'auto'); }
-                }
-                // read: natural widths
-                for (i = 0; i < lv.length; i++) {
-                    g = lv[i];
-                    // (fractional widths up: a track a fraction too narrow wraps its text)
-                    for (j = 0; j < g.items.length; j++) g.items[j].natW = Math.ceil(g.items[j].el.getBoundingClientRect().width - 0.01) + g.items[j].m.l + g.items[j].m.r;
-                }
-                // placement and columns
-                for (i = 0; i < lv.length; i++) {
-                    g = lv[i];
-                    var r0 = g.rec, el = g.el;
-                    g.colGap = lengthPx(prop(r0, 'column-gap', '0').replace(/^normal$/i, '0'), el, g.W) || 0;
-                    g.rowGap = lengthPx(prop(r0, 'row-gap', '0').replace(/^normal$/i, '0'), el, g.H) || 0;
-                    var colList = parseList(prop(r0, 'grid-template-columns', 'none')), rowList = parseList(prop(r0, 'grid-template-rows', 'none'));
-                    var cx = expand(colList, hasAutoRepeat(colList) ? autoCount(colList, g.W, g.colGap, el) : 1);
-                    var rx = expand(rowList, hasAutoRepeat(rowList) ? autoCount(rowList, g.H, g.rowGap, el) : 1);
-                    var areas = parseAreas(prop(r0, 'grid-template-areas', 'none'));
-                    if (areas) {
-                        while (cx.tracks.length < areas.cols) { cx.tracks.push(parseTrack('auto')); cx.lines.push([]); }
-                        while (rx.tracks.length < areas.rows) { rx.tracks.push(parseTrack('auto')); rx.lines.push([]); }
-                        for (var an in areas.areas) if (areas.areas.hasOwnProperty(an)) {
-                            var ar = areas.areas[an];
-                            cx.lines[ar.c0].push(an + '-start'); cx.lines[ar.c1].push(an + '-end');
-                            rx.lines[ar.r0].push(an + '-start'); rx.lines[ar.r1].push(an + '-end');
-                        }
-                    }
-                    var list = g.items.slice(0);
-                    for (j = 0; j < list.length; j++) list[j].idx = j;
-                    list.sort(function (x, y) { return x.order - y.order || x.idx - y.idx; });
-                    for (j = 0; j < list.length; j++) {
-                        var ir = list[j].rec;
-                        var ca = placeAxis(parseLine(prop(ir, 'grid-column-start', 'auto')), parseLine(prop(ir, 'grid-column-end', 'auto')), cx.lines);
-                        var ra = placeAxis(parseLine(prop(ir, 'grid-row-start', 'auto')), parseLine(prop(ir, 'grid-row-end', 'auto')), rx.lines);
-                        list[j].c = ca.start; list[j].cs = ca.span; list[j].r = ra.start; list[j].rs = ra.span;
-                    }
-                    var dims = placeItems(list, cx.tracks.length, /dense/i.test(prop(r0, 'grid-auto-flow', 'row')));
-                    // implicit tracks
-                    var autoCols = parseList(prop(r0, 'grid-auto-columns', 'auto')), autoRows = parseList(prop(r0, 'grid-auto-rows', 'auto'));
-                    var ac = expand(autoCols, 1).tracks, arw = expand(autoRows, 1).tracks;
-                    if (!ac.length) ac = [parseTrack('auto')];
-                    if (!arw.length) arw = [parseTrack('auto')];
-                    var explicitCols = cx.tracks.length, explicitRows = rx.tracks.length;
-                    for (j = cx.tracks.length; j < dims.cols; j++) cx.tracks.push(ac[(j - explicitCols) % ac.length]);
-                    for (j = rx.tracks.length; j < dims.rows; j++) rx.tracks.push(arw[(j - explicitRows) % arw.length]);
-                    // auto-fit: repeated tracks without items collapse (their gaps too): they leave the list before sizing
-                    if (cx.fit.length) {
-                        var used = {}, keepIdx = [], newIdx = {};
-                        for (j = 0; j < list.length; j++) for (var uc = list[j].c; uc < list[j].c + list[j].cs; uc++) used[uc] = true;
-                        var fitSet = {};
-                        for (j = 0; j < cx.fit.length; j++) fitSet[cx.fit[j]] = true;
-                        for (j = 0; j < cx.tracks.length; j++) if (!fitSet[j] || used[j]) { newIdx[j] = keepIdx.length; keepIdx.push(j); }
-                        if (keepIdx.length < cx.tracks.length) {
-                            var kept = [];
-                            for (j = 0; j < keepIdx.length; j++) kept.push(cx.tracks[keepIdx[j]]);
-                            cx.tracks = kept;
-                            for (j = 0; j < list.length; j++) list[j].c = newIdx[list[j].c];
-                        }
-                        cx.fit = [];
-                    }
-                    g.cols = cx; g.rows = rx;
-                    var contrib = [];
-                    for (j = 0; j < list.length; j++) if (list[j].cs === 1) contrib[list[j].c] = Math.max(contrib[list[j].c] || 0, list[j].natW);
-                    var jc = prop(r0, 'justify-content', 'normal');
-                    var sizes = sizeTracks(cx.tracks, g.W, g.colGap, contrib, el, /^(normal|stretch)$/i.test(jc));
-                    var total = 0;
-                    for (j = 0; j < sizes.length; j++) total += sizes[j];
-                    total += Math.max(0, sizes.length - 1) * g.colGap;
-                    var dj = distribute(jc, g.W - total, sizes.length);
-                    g.colSizes = sizes;
-                    g.colPos = offsets(sizes, g.colGap, g.pad.l + dj[0], dj[1]);
-                    g.colGapX = g.colGap + dj[1];
-                    g.list = list;
-                    g.justifyItems = prop(r0, 'justify-items', 'normal');
-                    g.alignItems = prop(r0, 'align-items', 'normal');
-                    g.alignContent = prop(r0, 'align-content', 'normal');
-                }
-                // write: widths and left edges
-                for (i = 0; i < lv.length; i++) {
-                    g = lv[i];
-                    for (j = 0; j < g.list.length; j++) {
-                        it = g.list[j];
-                        var areaW = spanSize(g.colSizes, g.colPos, it.c, it.cs, g.colGapX);
-                        var js = ALIGN(prop(it.rec, 'justify-self', 'auto') === 'auto' ? g.justifyItems : prop(it.rec, 'justify-self', 'auto'));
-                        var outerW = it.natW, x = g.colPos[it.c] !== undefined ? g.colPos[it.c] : g.pad.l;
-                        if (stretches(js, it.el) && it.autoW) {
-                            setStyle(it.el, 'width', Math.max(0, areaW - it.m.l - it.m.r - it.box.h) + 'px');
-                            outerW = areaW;
-                        } else if (js === 'center') x += (areaW - outerW) / 2;
-                        else if (js === 'end') x += areaW - outerW;
-                        setStyle(it.el, 'left', Math.round(x * 100) / 100 + 'px');
-                        it.areaW = areaW;
-                    }
+            var t1 = Date.now();
+            stats.r0Ms = t1 - t0 - stats.collectMs;
+            // columns: one write and one read for every grid at once (a layout each, not a few per nesting level),
+            // then the sizes top-down in script, an inner grid's room following the width its outer item gets
+            var byDepth = grids.slice(0).sort(function (x, y) { return x.depth - y.depth; });
+            // write: the container turns the stand-in off; its items leave the flow, stretched to both edges (outer
+            // grids first: an inner container that is an outer item is absolute by then, a containing block as it is)
+            for (i = 0; i < byDepth.length; i++) {
+                g = byDepth[i];
+                if (!g.el.__brGridBox) { g.el.className = trim(g.el.className + ' br-grid'); g.el.__brGridBox = true; }
+                setStyle(g.el, 'height', null);
+                if (g.static && g.el.style.getPropertyValue('position') !== 'absolute') setStyle(g.el, 'position', 'relative');
+                for (j = 0; j < g.items.length; j++) {
+                    it = g.items[j].el;
+                    it.__brGridItem = g.items[j];
+                    g.items[j].pass = gen;
+                    setStyle(it, 'position', 'absolute');
+                    setStyle(it, 'left', '0px'); setStyle(it, 'right', '0px'); setStyle(it, 'top', '0px'); setStyle(it, 'bottom', '0px');
+                    setStyle(it, 'width', null); setStyle(it, 'height', null);
                 }
             }
+            // read: the room, and which items take the stretch (auto sizes fill both edges of the padding box)
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                var gcs = getComputedStyle(g.el);
+                g.W = g.el.clientWidth - g.pad.l - g.pad.r;
+                // (a container sized by its content lost it: it keeps the width it had)
+                g.keepW = g.W < g.w0 - 1 ? g.w0 : null;
+                if (g.keepW) g.W = g.keepW;
+                var h0 = g.el.clientHeight - g.pad.t - g.pad.b;
+                g.H = h0 > 0.5 ? h0 : null;
+                // (the height min-height gives: flexible rows fill it, and it grows when the rows need more)
+                g.minH = num(gcs.minHeight) - (g.border ? g.pad.t + g.pad.b + g.border.v : 0);
+                g.minMode = g.H !== null && g.minH > 0 && g.minH >= g.H - 1;
+                g.edges = g.pad.l + g.pad.r + num(gcs.borderLeftWidth) + num(gcs.borderRightWidth);
+                var pbw = g.el.clientWidth, pbh = g.el.clientHeight;
+                g.needNat = false;
+                for (j = 0; j < g.items.length; j++) {
+                    var item = g.items[j], ics = getComputedStyle(item.el);
+                    item.m = { l: num(ics.marginLeft), r: num(ics.marginRight), t: num(ics.marginTop), b: num(ics.marginBottom) };
+                    item.box = ics.boxSizing === 'border-box' ? { h: 0, v: 0 } :
+                        { h: num(ics.paddingLeft) + num(ics.paddingRight) + num(ics.borderLeftWidth) + num(ics.borderRightWidth),
+                          v: num(ics.paddingTop) + num(ics.paddingBottom) + num(ics.borderTopWidth) + num(ics.borderBottomWidth) };
+                    item.w1 = item.el.offsetWidth;
+                    item.autoW = Math.abs(item.w1 - Math.max(0, pbw - item.m.l - item.m.r)) < 1.5;
+                    item.autoH = Math.abs(item.el.offsetHeight - Math.max(0, pbh - item.m.t - item.m.b)) < 1.5;
+                    item.order = parseInt(prop(item.rec, 'order', '0'), 10) || 0;
+                    item.finalW = item.w1;
+                    // (items centred or at the end need their own width; so do content-sized tracks, below)
+                    var jsv = ALIGN(prop(item.rec, 'justify-self', 'auto') === 'auto' ? prop(g.rec, 'justify-items', 'normal') : prop(item.rec, 'justify-self', 'auto'));
+                    if (jsv === 'center' || jsv === 'end') g.needNat = true;
+                    if (item.rec && (item.rec.props['grid-column-start'] || item.rec.props['grid-column-end'])) g.colPlaced = true;
+                }
+                var tcols = parseList(prop(g.rec, 'grid-template-columns', 'none'));
+                var implicitCols = !tcols.length && (g.colPlaced || !/^none$/i.test(prop(g.rec, 'grid-template-areas', 'none')));
+                if (intrinsicList(tcols) || (implicitCols && intrinsicList(parseList(prop(g.rec, 'grid-auto-columns', 'auto'))))) g.needNat = true;
+            }
+            // (a container that is an item of an outer grid is stretched to that grid's height right now: with an auto
+            // height of its own it is not definite)
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                var asItem = g.el.__brGridItem && g.el.__brGridItem.pass === gen ? g.el.__brGridItem : null;
+                if (asItem && asItem.autoH) { g.H = g.minH > 0 ? g.minH : null; g.minMode = g.minH > 0; }
+            }
+            // write, read: natural widths (shrink to fit) where they are needed
+            var anyNat = false;
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                if (g.keepW) setStyle(g.el, 'width', (g.border ? g.keepW + g.pad.l + g.pad.r + g.border.h : g.keepW) + 'px');
+                if (!g.needNat) continue;
+                anyNat = true;
+                for (j = 0; j < g.items.length; j++) { setStyle(g.items[j].el, 'right', 'auto'); setStyle(g.items[j].el, 'bottom', 'auto'); }
+            }
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                // (fractional widths up: a track a fraction too narrow wraps its text)
+                for (j = 0; j < g.items.length; j++) g.items[j].natW = g.needNat ? Math.ceil(g.items[j].el.getBoundingClientRect().width - 0.01) + g.items[j].m.l + g.items[j].m.r : 0;
+            }
+            stats.nat = anyNat;
+            // placement and columns, outer grids first
+            for (i = 0; i < byDepth.length; i++) {
+                g = byDepth[i];
+                // an inner grid's room: what its nearest ancestor that is an outer item gains or loses from the stretch
+                if (g.depth > 0) {
+                    for (var carrier = g.el; carrier && carrier.nodeType === 1 && !(carrier.__brGridItem && carrier.__brGridItem.gen === gen); carrier = carrier.parentNode) { /* up */ }
+                    if (carrier && carrier.nodeType === 1) {
+                        var ci = carrier.__brGridItem;
+                        if (carrier === g.el) g.W = Math.max(0, ci.finalW - g.edges);
+                        else g.W = Math.max(0, g.W + ci.finalW - ci.w1);
+                    }
+                }
+                var r0 = g.rec, el = g.el;
+                g.colGap = lengthPx(prop(r0, 'column-gap', '0').replace(/^normal$/i, '0'), el, g.W) || 0;
+                g.rowGap = lengthPx(prop(r0, 'row-gap', '0').replace(/^normal$/i, '0'), el, g.H) || 0;
+                var colList = parseList(prop(r0, 'grid-template-columns', 'none')), rowList = parseList(prop(r0, 'grid-template-rows', 'none'));
+                var cx = expand(colList, hasAutoRepeat(colList) ? autoCount(colList, g.W, g.colGap, el) : 1);
+                var rx = expand(rowList, hasAutoRepeat(rowList) ? autoCount(rowList, g.H, g.rowGap, el) : 1);
+                var areas = parseAreas(prop(r0, 'grid-template-areas', 'none'));
+                if (areas) {
+                    while (cx.tracks.length < areas.cols) { cx.tracks.push(parseTrack('auto')); cx.lines.push([]); }
+                    while (rx.tracks.length < areas.rows) { rx.tracks.push(parseTrack('auto')); rx.lines.push([]); }
+                    for (var an in areas.areas) if (areas.areas.hasOwnProperty(an)) {
+                        var ar = areas.areas[an];
+                        cx.lines[ar.c0].push(an + '-start'); cx.lines[ar.c1].push(an + '-end');
+                        rx.lines[ar.r0].push(an + '-start'); rx.lines[ar.r1].push(an + '-end');
+                    }
+                }
+                var list = g.items.slice(0);
+                for (j = 0; j < list.length; j++) list[j].idx = j;
+                list.sort(function (x, y) { return x.order - y.order || x.idx - y.idx; });
+                for (j = 0; j < list.length; j++) {
+                    var ir = list[j].rec;
+                    var ca = placeAxis(parseLine(prop(ir, 'grid-column-start', 'auto')), parseLine(prop(ir, 'grid-column-end', 'auto')), cx.lines);
+                    var ra = placeAxis(parseLine(prop(ir, 'grid-row-start', 'auto')), parseLine(prop(ir, 'grid-row-end', 'auto')), rx.lines);
+                    list[j].c = ca.start; list[j].cs = ca.span; list[j].r = ra.start; list[j].rs = ra.span;
+                }
+                var dims = placeItems(list, cx.tracks.length, /dense/i.test(prop(r0, 'grid-auto-flow', 'row')));
+                // implicit tracks
+                var autoCols = parseList(prop(r0, 'grid-auto-columns', 'auto')), autoRows = parseList(prop(r0, 'grid-auto-rows', 'auto'));
+                var ac = expand(autoCols, 1).tracks, arw = expand(autoRows, 1).tracks;
+                if (!ac.length) ac = [parseTrack('auto')];
+                if (!arw.length) arw = [parseTrack('auto')];
+                var explicitCols = cx.tracks.length, explicitRows = rx.tracks.length;
+                for (j = cx.tracks.length; j < dims.cols; j++) cx.tracks.push(ac[(j - explicitCols) % ac.length]);
+                for (j = rx.tracks.length; j < dims.rows; j++) rx.tracks.push(arw[(j - explicitRows) % arw.length]);
+                // auto-fit: repeated tracks without items collapse (their gaps too): they leave the list before sizing
+                if (cx.fit.length) {
+                    var used = {}, keepIdx = [], newIdx = {};
+                    for (j = 0; j < list.length; j++) for (var uc = list[j].c; uc < list[j].c + list[j].cs; uc++) used[uc] = true;
+                    var fitSet = {};
+                    for (j = 0; j < cx.fit.length; j++) fitSet[cx.fit[j]] = true;
+                    for (j = 0; j < cx.tracks.length; j++) if (!fitSet[j] || used[j]) { newIdx[j] = keepIdx.length; keepIdx.push(j); }
+                    if (keepIdx.length < cx.tracks.length) {
+                        var keptTracks = [];
+                        for (j = 0; j < keepIdx.length; j++) keptTracks.push(cx.tracks[keepIdx[j]]);
+                        cx.tracks = keptTracks;
+                        for (j = 0; j < list.length; j++) list[j].c = newIdx[list[j].c];
+                    }
+                    cx.fit = [];
+                }
+                g.cols = cx; g.rows = rx;
+                var contrib = [];
+                for (j = 0; j < list.length; j++) if (list[j].cs === 1) contrib[list[j].c] = Math.max(contrib[list[j].c] || 0, list[j].natW);
+                var jc = prop(r0, 'justify-content', 'normal');
+                var sizes = sizeTracks(cx.tracks, g.W, g.colGap, contrib, el, /^(normal|stretch)$/i.test(jc));
+                var total = 0;
+                for (j = 0; j < sizes.length; j++) total += sizes[j];
+                total += Math.max(0, sizes.length - 1) * g.colGap;
+                var dj = distribute(jc, g.W - total, sizes.length);
+                g.colSizes = sizes;
+                g.colPos = offsets(sizes, g.colGap, g.pad.l + dj[0], dj[1]);
+                g.colGapX = g.colGap + dj[1];
+                g.list = list;
+                g.justifyItems = prop(r0, 'justify-items', 'normal');
+                g.alignItems = prop(r0, 'align-items', 'normal');
+                g.alignContent = prop(r0, 'align-content', 'normal');
+                // the items' widths and left edges (written below, all at once)
+                for (j = 0; j < list.length; j++) {
+                    it = list[j];
+                    var areaW = spanSize(g.colSizes, g.colPos, it.c, it.cs, g.colGapX);
+                    var js = ALIGN(prop(it.rec, 'justify-self', 'auto') === 'auto' ? g.justifyItems : prop(it.rec, 'justify-self', 'auto'));
+                    var outerW = it.natW || it.w1 + it.m.l + it.m.r, x = g.colPos[it.c] !== undefined ? g.colPos[it.c] : g.pad.l;
+                    it.setW = null;
+                    if (stretches(js, it.el) && it.autoW) {
+                        it.setW = Math.max(0, areaW - it.m.l - it.m.r - it.box.h);
+                        it.finalW = Math.max(0, areaW - it.m.l - it.m.r);
+                    } else if (js === 'center') x += (areaW - outerW) / 2;
+                    else if (js === 'end') x += areaW - outerW;
+                    it.x = Math.round(x * 100) / 100;
+                    it.areaW = areaW;
+                    it.gen = gen;
+                }
+            }
+            // write: widths and left edges
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                for (j = 0; j < g.list.length; j++) {
+                    it = g.list[j];
+                    if (it.setW !== null) setStyle(it.el, 'width', it.setW + 'px');
+                    setStyle(it.el, 'left', it.x + 'px');
+                    if (!g.needNat) { setStyle(it.el, 'right', 'auto'); setStyle(it.el, 'bottom', 'auto'); }
+                }
+            }
+            var t2 = Date.now();
+            stats.downMs = t2 - t1;
             // rows, bottom-up (an item holding a grid is measured after that grid has its height)
             for (L = maxDepth; L >= 0; L--) {
                 lv = level(L);
@@ -5470,6 +5526,8 @@
                     stats.items += g.list.length;
                 }
             }
+            stats.upMs = Date.now() - t2;
+            stats.levels = maxDepth + 1;
             stats.grids = grids.length;
             // elements laid out before and not now (a media query, a removed rule) get their own styles back
             var keep = [];
@@ -5500,7 +5558,7 @@
         window.__brGrid = {
             setManifest: function (m) { entries = (m && m.gd) || []; },
             apply: apply,
-            state: function () { return { entries: entries.length, grids: stats.grids, items: stats.items, passes: stats.passes, ms: stats.ms }; }
+            state: function () { return stats; }
         };
     })();
     // ---- The CSS rewriter inside the page (cssfix.js, loaded on first use): values computed here and styles that
