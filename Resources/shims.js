@@ -809,6 +809,31 @@
             return clone(value);
         };
     })();
+    // matchMedia with today's queries (the rewriter does the same for stylesheets, see fixMedia in cssfix.js): range
+    // syntax, rem (refused by the old engine inside media queries: the whole query fails; there it means the initial
+    // font size, like em), and hover / pointer / prefers-* features it does not know (a touch device with the defaults)
+    if (window.matchMedia && !window.matchMedia.__brFix) (function () {
+        var nativeMatchMedia = window.matchMedia;
+        var strict = function (v, op, up) {
+            var m = /^(-?[\d.]+)(px|em|rem)$/i.exec(v.replace(/^\s+|\s+$/g, ''));
+            if (op.length > 1 || !m) return v;
+            var n = parseFloat(m[1]) + (up ? 1 : -1) * (/px/i.test(m[2]) ? 0.02 : 0.001);
+            return (Math.round(n * 1000) / 1000) + m[2];
+        };
+        var fixQuery = function (q) {
+            return String(q)
+                .replace(/\(\s*(-?[\d.]+(?:px|em|rem))\s*(<=|<)\s*(width|height)\s*(<=|<)\s*(-?[\d.]+(?:px|em|rem))\s*\)/gi, function (m, a, o1, f, o2, b) { return '(min-' + f + ': ' + strict(a, o1, true) + ') and (max-' + f + ': ' + strict(b, o2, false) + ')'; })
+                .replace(/\(\s*(width|height)\s*(>=|>)\s*([^)]+?)\s*\)/gi, function (m, f, o, v) { return '(min-' + f + ': ' + strict(v, o, true) + ')'; })
+                .replace(/\(\s*(width|height)\s*(<=|<)\s*([^)]+?)\s*\)/gi, function (m, f, o, v) { return '(max-' + f + ': ' + strict(v, o, false) + ')'; })
+                .replace(/(\d*\.?\d+)rem\b/gi, '$1em')
+                .replace(/\(\s*(?:any-)?hover\s*:\s*none\s*\)|\(\s*(?:any-)?pointer\s*:\s*coarse\s*\)|\(\s*prefers-reduced-motion\s*:\s*no-preference\s*\)|\(\s*prefers-color-scheme\s*:\s*light\s*\)|\(\s*prefers-contrast\s*:\s*no-preference\s*\)|\(\s*forced-colors\s*:\s*none\s*\)|\(\s*display-mode\s*:\s*browser\s*\)|\(\s*scripting\s*:\s*enabled\s*\)|\(\s*dynamic-range\s*:\s*standard\s*\)/gi, '(min-width: 0px)')
+                .replace(/\(\s*(?:any-)?hover(?:\s*:\s*hover)?\s*\)|\(\s*(?:any-)?pointer\s*:\s*(?:fine|none)\s*\)|\(\s*prefers-reduced-motion(?:\s*:\s*reduce)?\s*\)|\(\s*prefers-color-scheme\s*:\s*dark\s*\)|\(\s*prefers-contrast\s*:\s*[a-z]+\s*\)|\(\s*forced-colors\s*:\s*active\s*\)|\(\s*display-mode\s*:\s*[a-z-]+\s*\)|\(\s*dynamic-range\s*:\s*high\s*\)/gi, '(max-width: 0px)');
+        };
+        var wrapped = function matchMedia(query) { return nativeMatchMedia.call(window, fixQuery(query)); };
+        wrapped.__brFix = true;
+        wrapped.__brNative = nativeMatchMedia;
+        try { window.matchMedia = wrapped; } catch (eMM) {}
+    })();
     // Object.assign onto an element (a helper that makes a node from a tag and properties): what the old engine keeps
     // read-only goes through the attribute (a button's type; today that property sets it), and void elements ignore
     // innerText (today they take it, here it throws DOM Exception 7). Other failures stay failures.

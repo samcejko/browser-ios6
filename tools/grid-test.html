@@ -46,6 +46,10 @@ body { font: 14px/18px Helvetica, Arial, sans-serif; margin: 10px; }
 @media (min-width: 400px) { .md-grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 #t23 .g { display: grid; grid-template-columns: 100px 1fr; }
 #t23 .g > :nth-child(1) { grid-area: 2 / 2 / 3 / 3; }
+/* min-height pages (tailwindcss.com): 1fr rows fill it when short and grow with their content */
+#t24 .g, #t25 .g { display: grid; min-height: 300px; grid-template-rows: 1fr 1px auto; }
+#t25 .big { height: 500px; }
+#t26 .g { display: grid; height: 200px; grid-template-rows: 1fr 2fr; }
 </style>
 </head>
 <body>
@@ -73,6 +77,9 @@ body { font: 14px/18px Helvetica, Arial, sans-serif; margin: 10px; }
 <div class="case" id="t21"><div class="g grid grid-cols-3 gap-4 items-center"><div class="tall">tall</div><div class="col-span-2">spans two</div><div>c</div><div class="order-first">first by order</div></div></div>
 <div class="case" id="t22"><div class="g grid grid-cols-3 md-grid-cols-4 gap-4"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div></div></div>
 <div class="case" id="t23"><div class="g"><div>moved to 2/2</div><div>b</div><div>c</div></div></div>
+<div class="case" id="t24"><div class="g"><div>short main</div><div></div><div>footer</div></div></div>
+<div class="case" id="t25"><div class="g"><div class="big">tall main</div><div></div><div>footer</div></div></div>
+<div class="case" id="t26"><div class="g"><div>one</div><div>two</div></div></div>
 </div>
 <pre id="out">running</pre>
 <script>

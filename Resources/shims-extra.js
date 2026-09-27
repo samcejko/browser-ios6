@@ -5146,12 +5146,14 @@
 
         // ---- track sizing: sizes of tracks for the room avail (null: indefinite) with gaps; contrib[i] = the largest
         // natural size of the items that sit in track i alone
-        var sizeTracks = function (tracks, avail, gap, contrib, el, stretchAuto) {
+        // (contentMin: an auto minimum is the content's size, as for rows, where the content height is known; for
+        // columns it would be the min-content width, which is not measured, so 0)
+        var sizeTracks = function (tracks, avail, gap, contrib, el, stretchAuto, contentMin) {
             var n = tracks.length, base = [], limit = [], flex = [], i, sum = 0, flexSum = 0;
             var lenOf = function (sz) { return sz.k === 'len' ? lengthPx(sz.v, el, avail) : null; };
             for (i = 0; i < n; i++) {
                 var t = tracks[i], c = contrib[i] || 0, mn = lenOf(t.min), mx;
-                base[i] = mn !== null ? mn : 0;
+                base[i] = mn !== null ? mn : contentMin && t.min.k !== 'len' ? c : 0;
                 if (t.max.k === 'fr') { flex[i] = t.max.n; limit[i] = Infinity; }
                 else if (t.max.k === 'len') { mx = lenOf(t.max); limit[i] = mx !== null ? mx : c; }
                 else if (t.max.k === 'fit') { mx = lengthPx(t.max.v, el, avail); limit[i] = mx !== null ? Math.min(c, mx) : c; }
@@ -5304,6 +5306,9 @@
                     if (g.keepW) g.W = g.keepW;
                     var h0 = g.el.clientHeight - g.pad.t - g.pad.b;
                     g.H = h0 > 0.5 ? h0 : null;
+                    // (the height min-height gives: flexible rows fill it, and it grows when the rows need more)
+                    var minH = num(gcs.minHeight) - (g.border ? g.pad.t + g.pad.b + g.border.v : 0);
+                    g.minMode = g.H !== null && minH > 0 && minH >= g.H - 1;
                     // (an item stretched to both edges with an auto size fills the padding box as it is now)
                     var pbw = g.el.clientWidth, pbh = g.el.clientHeight;
                     for (j = 0; j < g.items.length; j++) {
@@ -5427,7 +5432,7 @@
                     g = lv[i];
                     var rcontrib = [], k2;
                     for (j = 0; j < g.list.length; j++) if (g.list[j].rs === 1) rcontrib[g.list[j].r] = Math.max(rcontrib[g.list[j].r] || 0, g.list[j].natH);
-                    var rsizes = sizeTracks(g.rows.tracks, g.H, g.rowGap, rcontrib, g.el, /^(normal|stretch)$/i.test(g.alignContent));
+                    var rsizes = sizeTracks(g.rows.tracks, g.H, g.rowGap, rcontrib, g.el, /^(normal|stretch)$/i.test(g.alignContent), true);
                     // items over several rows: what does not fit goes to their auto rows
                     for (j = 0; j < g.list.length; j++) {
                         it = g.list[j];
@@ -5446,7 +5451,8 @@
                     g.rowSizes = rsizes;
                     g.rowPos = offsets(rsizes, g.rowGap, g.pad.t + dA[0], dA[1]);
                     g.rowGapX = g.rowGap + dA[1];
-                    g.contentH = g.H !== null ? null : rtotal;
+                    // (a height that only comes from min-height grows with rows that need more)
+                    g.contentH = g.H === null || (g.minMode && rtotal > g.H + 0.5) ? rtotal : null;
                 }
                 for (i = 0; i < lv.length; i++) {
                     g = lv[i];

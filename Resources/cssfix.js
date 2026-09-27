@@ -3931,12 +3931,23 @@ var CSSFix = (function () {
 
     // ------------------------------------------------------------------ at-rules
 
+    // a strict bound of a range query just inside ("width < 40rem" stops short of 40rem, not at it)
+    function strictBound(v, op, up) {
+        if (op.length > 1) return v;
+        var m = /^(-?[\d.]+)(px|em|rem)$/i.exec(trim(v));
+        if (!m) return v;
+        var d = /px/i.test(m[2]) ? 0.02 : 0.001, n = parseFloat(m[1]) + (up ? d : -d);
+        return (Math.round(n * 1000) / 1000) + m[2];
+    }
     function fixMedia(q) {
-        q = q.replace(/\(\s*(-?[\d.]+(?:px|em|rem))\s*(<=|<)\s*(width|height)\s*(<=|<)\s*(-?[\d.]+(?:px|em|rem))\s*\)/gi, '(min-$3: $1) and (max-$3: $5)')
-             .replace(/\(\s*(width|height)\s*(>=|>)\s*([^)]+?)\s*\)/gi, '(min-$1: $3)')
-             .replace(/\(\s*(width|height)\s*(<=|<)\s*([^)]+?)\s*\)/gi, '(max-$1: $3)')
-             .replace(/\(\s*([^)]+?)\s*(<=|<)\s*(width|height)\s*\)/gi, '(min-$3: $1)')
-             .replace(/\(\s*([^)]+?)\s*(>=|>)\s*(width|height)\s*\)/gi, '(max-$3: $1)')
+        q = q.replace(/\(\s*(-?[\d.]+(?:px|em|rem))\s*(<=|<)\s*(width|height)\s*(<=|<)\s*(-?[\d.]+(?:px|em|rem))\s*\)/gi, function (m, a, op1, f, op2, b) { return '(min-' + f + ': ' + strictBound(a, op1, true) + ') and (max-' + f + ': ' + strictBound(b, op2, false) + ')'; })
+             .replace(/\(\s*(width|height)\s*(>=|>)\s*([^)]+?)\s*\)/gi, function (m, f, op, v) { return '(min-' + f + ': ' + strictBound(v, op, true) + ')'; })
+             .replace(/\(\s*(width|height)\s*(<=|<)\s*([^)]+?)\s*\)/gi, function (m, f, op, v) { return '(max-' + f + ': ' + strictBound(v, op, false) + ')'; })
+             .replace(/\(\s*([^)]+?)\s*(<=|<)\s*(width|height)\s*\)/gi, function (m, v, op, f) { return '(min-' + f + ': ' + strictBound(v, op, true) + ')'; })
+             .replace(/\(\s*([^)]+?)\s*(>=|>)\s*(width|height)\s*\)/gi, function (m, v, op, f) { return '(max-' + f + ': ' + strictBound(v, op, false) + ')'; })
+             // (the old engine takes no rem in media queries, the whole query fails; there both mean the initial font
+             // size: Tailwind's breakpoints are rem, so no sm:/md:/lg: style ever applied)
+             .replace(/(\d*\.?\d+)rem\b/gi, '$1em')
              .replace(/\(\s*(min-|max-)?resolution\s*:\s*([\d.]+)\s*(dppx|x)\s*\)/gi, function (m, mm, n) { return '(-webkit-' + (mm || '') + 'device-pixel-ratio: ' + n + ')'; })
              .replace(/\(\s*(min-|max-)?resolution\s*:\s*([\d.]+)\s*dpi\s*\)/gi, function (m, mm, n) { return '(-webkit-' + (mm || '') + 'device-pixel-ratio: ' + (Math.round(n / 96 * 100) / 100) + ')'; })
              .replace(/\(\s*(?:any-)?hover\s*:\s*none\s*\)/gi, '(min-width: 0px)')
