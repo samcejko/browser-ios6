@@ -2124,7 +2124,9 @@ var CSSFix = (function () {
                     if (!e || (e.u && e.u !== 'px')) return whole;
                     l += sign * e.n;
                 }
-                pct.push(Math.round(p * 10000) / 10000 + '%');
+                // (translate3d's z takes no percentage: "0%" there drops the whole declaration)
+                if (i === 2 && p) return whole;
+                pct.push(i === 2 ? '0px' : Math.round(p * 10000) / 10000 + '%');
                 len.push(Math.round(l * 10000) / 10000 + 'px');
             }
             return any ? fn + '(' + pct.join(', ') + ') ' + fn + '(' + len.join(', ') + ')' : whole;
@@ -2761,7 +2763,7 @@ var CSSFix = (function () {
         decls = expandFirstValid(decls);
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
-        var autoLeft = false, autoRight = false, hasDisplay = false, dispVal = '', gapRow = null, gapCol = null, shrink = null;
+        var autoLeft = false, autoRight = false, hasDisplay = false, dispVal = '', gapRow = null, gapCol = null, shrink = null, multicol = false;
         // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
         // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
@@ -2851,6 +2853,8 @@ var CSSFix = (function () {
             }
             var lv = v.toLowerCase();
             if (!keyframe && (p === 'flex' || p === 'flex-shrink') && !isGlobalKeyword(trim(lv))) shrink = flexShrinkOf(p, trim(lv));
+            // (column-gap of a multi-column box is its column spacing, which the engine has)
+            if ((p === 'columns' || p === 'column-count' || p === 'column-width') && !/^(auto|auto auto|initial|unset|inherit)$/.test(trim(lv))) multicol = true;
             if (!keyframe && GAP_NAMES[p]) {
                 var gparts = splitWS(trim(lv));
                 if (p === 'gap' || p === 'grid-gap') { gapRow = gparts[0]; gapCol = gparts.length > 1 ? gparts[1] : gparts[0]; }
@@ -3565,7 +3569,7 @@ var CSSFix = (function () {
         // (a style attribute has no rule for the margins; a later rule of a known grid has its own form)
         var gapKey = ctx.curSels ? ctx.curSels.join(',') : null;
         var gapGrid = gapKey && ((ctx.gridSels && ctx.gridSels[gapKey] > 0) || (ctx.gridFlow && ctx.gridFlow[gapKey]));
-        if (!keyframe && (gapRow || gapCol) && (ctx.inlineStyle || !/flex|grid/.test(dispVal)) && !gapGrid) {
+        if (!keyframe && (gapRow || gapCol) && !multicol && (ctx.inlineStyle || !/flex|grid/.test(dispVal)) && !gapGrid) {
             var gapMark = function (kind, gv) {
                 var gm = gv && /^(\d*\.?\d+)(px|rem|em)$/.exec(gv);
                 if (gm && parseFloat(gm[1]) > 0) markers.push('br-' + kind + 'gap-' + gm[2] + ' ' + Math.round(parseFloat(gm[1]) * 100));

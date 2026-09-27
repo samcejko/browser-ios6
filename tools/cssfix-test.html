@@ -58,6 +58,11 @@ var cases = [
     '.tx{-webkit-transform:translate(-50%, 0);transform:translate(-50%, 0)}\n.ty{-webkit-transform:translate(0, -75%);transform:translate(0, -75%)}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"b4juvi","r":["--tw-translate-x","0",0]},{"h":"otxvkf","r":["--tw-translate-y","0",0]},{"h":"1tsm9ro","s":[".tx"],"sp":[100],"d":[["--tw-translate-x","calc(calc(1/2 * 100%) * -1)",0]],"u":[["translate","var(--tw-translate-x) var(--tw-translate-y)",0,"calc(calc(1/2 * 100%) * -1) 0"]]},{"h":"1qg001g","s":[".ty"],"sp":[100],"d":[["--tw-translate-y","calc(calc(3/4 * 100%) * -1)",0]],"u":[["translate","var(--tw-translate-x) var(--tw-translate-y)",0,"0 calc(calc(3/4 * 100%) * -1)"]]}]}*/'],
   ['translate with calc splits', '.a{transform:translate(calc(-50% - 1rem), calc(-50% + .75rem * 2)) rotate(5deg)}.b{transform:translateX(calc(-50% + 10px))}',
     '.a{-webkit-transform:translate(-50%, -50%) translate(-16px, 24px) rotate(5deg);transform:translate(-webkit-calc(-50% - 1rem), -webkit-calc(-50% + .75rem * 2)) rotate(5deg)}\n.b{-webkit-transform:translateX(-50%) translateX(10px);transform:translateX(-webkit-calc(-50% + 10px))}'],
+  // (column-gap of a multi-column box is its column spacing: no gap marker)
+  ['multi-column gap unmarked', '.k{columns:3 200px;column-gap:2rem}', '.k{-webkit-columns:3 200px;columns:3 200px;-webkit-column-gap:2rem;column-gap:2rem}'],
+  // (translate3d's z takes no percentage: the percentage half keeps a 0px z)
+  ['translate3d with calc splits', '.g{transform:translate3d(calc(-50% + 10px),0,0)}',
+    '.g{-webkit-transform:translate3d(-50%, 0%, 0px) translate3d(10px, 0px, 0px);transform:translate3d(-webkit-calc(-50% + 10px),0,0)}'],
   ['calc with times', '.d{transition-delay:calc(.3s / 4);transition-duration:calc(150ms * 2)}', '.d{-webkit-transition-delay:0.075s;transition-delay:0.075s;-webkit-transition-duration:0.3s;transition-duration:0.3s}'],
   ['gradient to right', '.l{background:linear-gradient(to right,#fff,#000)}', '.l{background:-webkit-linear-gradient(left, #fff, #000)}'],
   ['gradient angle', '.m{background:linear-gradient(180deg,red 0%,blue 100%)}', '.m{background:-webkit-linear-gradient(270deg, red 0%, blue 100%)}'],

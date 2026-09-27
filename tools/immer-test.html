@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>immer test</title>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// Immer (Redux Toolkit's state updates) on the Proxy stand-in: the library lowered with proxy: true (its Proxy.revocable
+// becomes the stand-in's) must give the same results as the real one on the engine's Proxy, including keys the recipe
+// adds or deletes (handed to the traps when Immer reads its state symbol before finalizing).
+var IMMER = 'https://cdn.jsdelivr.net/npm/immer@10.1.1/dist/cjs/immer.cjs.production.js';
+function load(text) {
+  var module = { exports: {} };
+  (0, eval)('(function (module, exports) {' + text + '\n})')(module, module.exports);
+  return module.exports;
+}
+var BASE = function () {
+  return { a: 1, x: { y: 0 }, other: { keep: true }, list: [1, 2, 3], items: [{ id: 1, done: false }, { id: 2, done: false }, { id: 3, done: false }],
+           entities: { '1': { id: 1, name: 'one' }, '2': { id: 2, name: 'two' } }, ids: [1, 2] };
+};
+// [name, recipe (d, api) -> optional return, extra check (result, base, api) -> value compared too]
+var CASES = [
+  ['set existing', function (d) { d.a = 2; }],
+  ['add key', function (d) { d.b = 3; }],
+  ['delete key', function (d) { delete d.a; }],
+  ['nested set', function (d) { d.x.y = 1; }, function (r, b) { return [r.other === b.other, r.list === b.list]; }],
+  ['nested add', function (d) { d.entities['5'] = { id: 5, name: 'five' }; d.ids.push(5); }, function (r, b) { return r.entities['1'] === b.entities['1']; }],
+  ['nested delete', function (d) { delete d.entities['1']; d.ids.splice(d.ids.indexOf(1), 1); }],
+  ['push', function (d) { d.list.push(4); }],
+  ['splice', function (d) { d.list.splice(1, 1); }],
+  ['splice then push', function (d) { d.list.splice(0, 1); d.list.push(9); d.list.push(10); }],
+  ['index set', function (d) { d.list[0] = 10; }],
+  ['truncate', function (d) { d.list.length = 1; }],
+  ['filter replace', function (d) { d.list = d.list.filter(function (v) { return v > 1; }); }],
+  ['unchanged', function () {}, function (r, b) { return r === b; }],
+  ['return replacement', function () { return { fresh: 1 }; }],
+  ['item update', function (d) { d.items[1].done = true; }, function (r, b) { return [r.items[0] === b.items[0], r.items[1] === b.items[1]]; }],
+  ['find and mutate', function (d) { var it = d.items.find(function (i) { return i.id === 2; }); it.done = true; it.extra = 'x'; }],
+  ['keys after add', function (d) { d.q = 1; d.entities['9'] = { id: 9 }; return undefined; }, null, function (d) { return [Object.keys(d).join(), Object.keys(d.entities).join()]; }],
+  ['current mid-recipe', function (d, api) { d.a = 5; var c = api.current(d); d.z = c.a + 1; }],
+  ['isDraft and original', function (d, api) { d.x.y = 7; }, null, function (d, api) { return [api.isDraft(d), api.isDraft(d.x), api.original(d.x).y, api.isDraft({})]; }],
+  ['sort, reverse, unshift, pop, shift', function (d) { d.list.sort(function (a, b) { return b - a; }); d.list.reverse(); d.list.unshift(0); d.list.pop(); d.list.shift(); d.list.unshift(-1); }],
+  ['spread into new array', function (d) { d.list = d.list.concat([5]); d.items = d.items.slice(1); }],
+  ['for-in and JSON inside', function (d) { d.n = 1; }, null, function (d) { var ks = []; for (var k in d.x) ks.push(k); d.x.w = 2; return [ks.join(), JSON.stringify(d.list), Array.isArray(d.list)]; }],
+  ['frozen result', function (d) { d.entities['3'] = { id: 3 }; }, function (r) { return [Object.isFrozen(r), Object.isFrozen(r.entities), Object.isFrozen(r.entities['3'])]; }],
+  ['draft assigned elsewhere', function (d) { d.copyOfX = d.x; d.x.y = 3; }, function (r) { return r.copyOfX === r.x; }],
+  ['entity adapter upsert', function (d) { ['7', '8'].forEach(function (id) { d.entities[id] = { id: +id, name: 'n' + id }; d.ids.push(+id); }); d.entities['2'].name = 'TWO'; }]
+];
+function run(immer, standin) {
+  var api = { current: immer.current, original: immer.original, isDraft: immer.isDraft };
+  return CASES.map(function (c) {
+    var base = BASE(), inside = null, result, err = null;
+    try {
+      result = immer.produce(base, function (d) { var r = c[1](d, api); if (c[3]) inside = c[3](d, api); return r; });
+    } catch (e) { err = String(e && e.message || e); }
+    var extra = null;
+    try { if (!err && c[2]) extra = c[2](result, base, api); } catch (e2) { extra = 'error ' + e2.message; }
+    return JSON.stringify({ result: err ? 'ERROR ' + err : result, inside: inside, extra: extra, baseUntouched: JSON.stringify(base) === JSON.stringify(BASE()) });
+  });
+}
+fetch(IMMER).then(function (r) { return r.text(); }).then(function (src) {
+  var real = load(src);
+  var lowered = JSFix.transpile(src, { proxy: true });
+  if (!/__br_Proxy\.revocable/.test(lowered)) throw new Error('Proxy.revocable was not retargeted');
+  var standin = load(lowered);
+  var want = run(real), got = run(standin, true), pass = 0, lines = [];
+  // createDraft / finishDraft
+  var cd = function (im) { var dr = im.createDraft(BASE()); dr.a = 5; dr.newk = 1; delete dr.other; dr.list.push(4); return JSON.stringify(im.finishDraft(dr)); };
+  want.push(cd(real)); got.push(cd(standin));
+  for (var i = 0; i < want.length; i++) {
+    var name = i < CASES.length ? CASES[i][0] : 'createDraft/finishDraft', ok = want[i] === got[i];
+    if (ok) pass++;
+    lines.push((ok ? 'OK   ' : 'FAIL ') + name + (ok ? '' : '\n   want ' + want[i] + '\n   got  ' + got[i]));
+  }
+  // speed: 200 reducer calls on a 500-entity state
+  var big = { entities: {}, ids: [] };
+  for (var n = 0; n < 500; n++) { big.entities[n] = { id: n, v: 0 }; big.ids.push(n); }
+  var t0 = Date.now(), s = big;
+  for (var k = 0; k < 200; k++) s = standin.produce(s, function (d) { d.entities[k % 500].v++; d.entities['new' + k] = { id: k }; d.ids.push('new' + k); });
+  var ms = Date.now() - t0;
+  lines.push('speed: 200 updates of a 500-entity state in ' + ms + ' ms (' + s.ids.length + ' ids)');
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'immer ' + pass + '/' + want.length + ' | ' + ms + ' ms';
+}).catch(function (e) { document.title = 'immer ERROR ' + e.message; document.getElementById('out').textContent = String(e.stack || e); });
+</script>
+</body>
+</html>

@@ -2642,6 +2642,8 @@
             while ((m = re.exec(cr)) !== null) gaps[m[1]] = gapLength(m[2], +m[3] / 100, el);
             var box = cs.display === '-webkit-box' || cs.display === '-webkit-inline-box';
             if (!box && cs.display !== 'block') continue;
+            // (a multi-column box spaces its columns itself)
+            if (!box && ((cs.webkitColumnCount && cs.webkitColumnCount !== 'auto') || (cs.webkitColumnWidth && cs.webkitColumnWidth !== 'auto'))) continue;
             var row = box && cs.webkitBoxOrient !== 'vertical' && cs.webkitBoxOrient !== 'block-axis';
             var rev = box && cs.webkitBoxDirection === 'reverse';
             var prop = row ? (rev ? 'marginRight' : 'marginLeft') : (rev ? 'marginBottom' : 'marginTop');

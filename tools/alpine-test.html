@@ -18,7 +18,12 @@
 <pre id="out">running</pre>
 <script>
 // Alpine 3 as the device gets it: transpiled with the Proxy stand-in (the desktop Proxy is removed first).
-var src = (function () { var x = new XMLHttpRequest(); x.open('GET', '/samples/alpine.js', false); x.send(null); return x.responseText; })();
+// (samples/ of a bsdev root, else tools/babel-test/ of the repo, which git ignores)
+var src = (function () {
+  var paths = ['/samples/alpine.js', 'babel-test/alpine.js'];
+  for (var i = 0; i < paths.length; i++) { var x = new XMLHttpRequest(); x.open('GET', paths[i], false); x.send(null); if (x.status === 200) return x.responseText; }
+  return '';
+})();
 var out = JSFix.transpile(src, { proxy: true });
 var usesStandIn = /__br_Proxy/.test(out) && !/new Proxy\(/.test(out);
 window.Proxy = undefined;

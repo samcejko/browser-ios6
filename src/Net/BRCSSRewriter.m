@@ -14,8 +14,14 @@ static const NSTimeInterval BRRewriterIdleRelease = 15;
 static const long BRRewriterIdleReleaseAboveMB = 170;
 // what the system should have available before heavy work starts (MB): a floor plus a share of the input size
 // (measured: lowering a 1-1.5 MB script function by function takes 45-75 MB, Vimeo's 3.3 MB chunk 125 MB while the
-// page kept growing next to it; rewriting takes less)
+// page kept growing next to it, mapy.com's 4.4 MB bundle 94 MB: past 1.5 MB a script costs less per MB, see
+// BRScriptRoomMB; rewriting takes less)
 static const long BRRoomFloorMB = 55, BRRoomPerMBScript = 45, BRRoomPerMBDocument = 25;
+static long BRScriptRoomMB(long bytes)
+{
+    long small = (long)((long long)bytes * BRRoomPerMBScript / (1024 * 1024)), big = 30 + (long)((long long)bytes * 25 / (1024 * 1024));
+    return MIN(small, big);
+}
 // bumped when a page load is stopped for lack of memory: queued work of that page is dropped
 static volatile NSUInteger g_workGeneration;
 static NSString *BRPageKey(NSURL *url);
@@ -428,7 +434,7 @@ static NSArray *BRManifestKinds(void)
     // waits for (a synchronous request: the page stands still) waits less, and one that did not fit a moment ago does
     // not wait again (a page may ask for it over and over).
     long work = MAX(0L, (long)data.length - lazyBytes);
-    long need = BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (1024 * 1024));
+    long need = BRRoomFloorMB + BRScriptRoomMB(work);
     BOOL lazyPart = [url.host isEqualToString:@"ios6-browser.invalid"];
     NSDate *noRoom = nil;
     @synchronized (self) { noRoom = _noRoom[key]; }
@@ -437,7 +443,7 @@ static NSArray *BRManifestKinds(void)
     NSTimeInterval patience = (noRoom && -[noRoom timeIntervalSinceNow] < 120) ? 0 : lazyPart ? 10 : 60;
     BOOL fits = patience > 0 ? [BRMemory waitForAvailableMB:need timeout:patience reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
                              : [BRMemory availableMB] >= need;
-    if (!fits && [BRMemory availableMB] < BRRoomFloorMB + (long)(work * BRRoomPerMBScript / (2 * 1024 * 1024))) {
+    if (!fits && [BRMemory availableMB] < BRRoomFloorMB + BRScriptRoomMB(work) / 2) {
         BRLog(@"jsfix %@: left unlowered, not enough memory", name);
         @synchronized (self) {
             if (!_noRoom) _noRoom = [NSMutableDictionary dictionary];

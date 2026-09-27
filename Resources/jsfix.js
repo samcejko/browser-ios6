@@ -148,21 +148,71 @@
             try { Object.defineProperty(f, '__br_n', { value: n }); } catch (e2) {}
             return n;
         },
-        // Proxy for scripts that use it without a fallback (Alpine's reactivity and scope proxies): an ES5 engine
-        // intercepts only properties that exist as accessors, so the proxy gets one per key the target has (own keys,
-        // the handler's ownKeys(), Vue's reactivity flags), added again after every set; array proxies keep accessors
-        // a little past the end, so push() reaches the set trap, and pass Array.isArray. has, deleteProperty,
-        // defineProperty and keys that appear later are not intercepted. Function targets call apply/construct.
+        // Proxy for scripts that use it without a fallback (Alpine's reactivity and scope proxies, Immer's drafts): an
+        // ES5 engine intercepts only properties that exist as accessors, so the proxy gets one per key the handler's
+        // ownKeys() reports (the target's own keys without that trap; enumerable as its getOwnPropertyDescriptor()
+        // says), Vue's reactivity flags and Immer's state symbol; array proxies keep accessors a little past the end,
+        // so push() reaches the set trap, and pass Array.isArray. Keys the page adds or deletes are not intercepted
+        // when it happens: proxies of Proxy.revocable (Immer's drafts) hand them to the set / deleteProperty traps when
+        // the state symbol is read (Immer reads it before it finalizes a draft). has and defineProperty are not
+        // intercepted. Function targets call apply/construct.
         __br_Proxy: function (target, handler) {
-            if (!(this instanceof __br_Proxy)) throw new TypeError("Constructor Proxy requires 'new'");
+            var P = __br_Proxy, slice = Array.prototype.slice, hasOwn = Object.prototype.hasOwnProperty;
+            if (!P.revocable) {
+                // (statics: the helper text calls __br_Proxy() once)
+                P.live = [];
+                P.clean = false;
+                P.revocable = function (t, h) {
+                    var p = new P(t, h), entry = { p: p, on: true }, live = P.live;
+                    if (live.length > 64) { for (var i = live.length - 1; i >= 0; i--) if (!live[i].on) live.splice(i, 1); }
+                    live.push(entry);
+                    P.clean = false;
+                    return { proxy: p, revoke: function () { entry.on = false; } };
+                };
+                // (once per burst: page code touching a proxy, or a new one, starts the next)
+                P.sweepAll = function () {
+                    if (P.clean) return;
+                    P.clean = true;
+                    for (var i = P.live.length - 1; i >= 0; i--) {
+                        var e = P.live[i];
+                        if (!e.on) P.live.splice(i, 1);
+                        else e.p.__br_sweep();
+                    }
+                };
+            }
+            if (!(this instanceof P)) {
+                if (target === undefined && handler === undefined) return;
+                throw new TypeError("Constructor Proxy requires 'new'");
+            }
             if (target === null || (typeof target !== 'object' && typeof target !== 'function') || handler === null || typeof handler !== 'object') {
                 throw new TypeError('Cannot create proxy with a non-object as target or handler');
             }
-            var slice = Array.prototype.slice, proxy, done = {}, isArr = Object.prototype.toString.call(target) === '[object Array]';
+            var proxy, done = {}, getters = {}, isArr = Object.prototype.toString.call(target) === '[object Array]', slack = 0;
+            var INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1 }, INDEX = /^(?:0|[1-9]\d*)$/;
             // (the receiver of a set is the target: Reflect.set(target, key, v, proxy) would find our accessor on the
             // proxy and refuse)
             var read = function (key) { return handler.get ? handler.get(target, key, proxy) : target[key]; };
             var write = function (key, v) { if (handler.set) handler.set(target, key, v, target); else target[key] = v; };
+            var ownKeys = function () {
+                if (!handler.ownKeys) return Object.getOwnPropertyNames(target);
+                try { return handler.ownKeys(target); } catch (e) { return []; }
+            };
+            // as the trap says; array indices by the length, index keys of objects without asking the trap (Immer asks
+            // its base for each key: a call and an object per key of a big map)
+            var enumerable = function (key, len) {
+                if (INDEX.test(key)) { if (isArr) return +key < len; if (handler.getOwnPropertyDescriptor) return true; }
+                else if (isArr && key === 'length') return false;
+                var d = null;
+                try { d = handler.getOwnPropertyDescriptor ? handler.getOwnPropertyDescriptor(target, key) : Object.getOwnPropertyDescriptor(target, key); } catch (e) {}
+                return !!(d && d.enumerable);
+            };
+            // (an Immer array draft's target is [state]: the length comes through the trap)
+            var arrLength = function () {
+                if (handler.getOwnPropertyDescriptor && handler.get) { var n = +read('length'); if (n >= 0) return n; }
+                return target.length;
+            };
+            var proto = null;
+            try { proto = handler.getPrototypeOf ? handler.getPrototypeOf(target) : Object.getPrototypeOf(target); } catch (e0) { proto = Object.getPrototypeOf(target); }
             if (typeof target === 'function') {
                 proxy = function () {
                     var args = slice.call(arguments);
@@ -170,25 +220,82 @@
                     return handler.apply ? handler.apply(target, this, args) : target.apply(this, args);
                 };
                 proxy.prototype = target.prototype;
-            } else proxy = Object.create(Object.getPrototypeOf(target));
-            var define = function (key) {
-                if (typeof key !== 'string' || done['$' + key]) return;
-                done['$' + key] = 1;
-                var d = Object.prototype.hasOwnProperty.call(target, key) ? Object.getOwnPropertyDescriptor(target, key) : null;
+            } else proxy = Object.create(proto === undefined ? Object.prototype : proto);
+            // (again when the key's enumerability changed: an array index past the end that got a value)
+            var define = function (key, len) {
+                if (typeof key !== 'string') return;
+                var en = enumerable(key, len), was = done['$' + key];
+                if (was === en) return;
+                done['$' + key] = en;
+                var get = getters['$' + key] = function () { P.clean = false; return read(key); };
                 try {
-                    Object.defineProperty(proxy, key, { get: function () { return read(key); }, set: function (v) { write(key, v); keys(); },
-                                                        enumerable: !!(d && d.enumerable), configurable: true });
+                    Object.defineProperty(proxy, key, { get: get, set: function (v) { P.clean = false; write(key, v); grown(key); }, enumerable: en, configurable: true });
                 } catch (e) {}
             };
-            var keys = function () {
-                var list = Object.getOwnPropertyNames(target), k;
-                for (k = 0; k < list.length; k++) define(list[k]);
-                if (isArr) for (k = 0; k < target.length + 16; k++) define(String(k));
-                if (handler.ownKeys) { try { list = handler.ownKeys(target); for (k = 0; k < list.length; k++) define(list[k]); } catch (e) {} }
+            var getterOf = proxy.__lookupGetter__ ? function (key) { return proxy.__lookupGetter__(key); }
+                                                  : function (key) { var d = Object.getOwnPropertyDescriptor(proxy, key); return d && d.get; };
+            // accessors for keys that are not the target's: read only through the trap (not counted, not swept)
+            var special = function (key, sweep) {
+                try {
+                    Object.defineProperty(proxy, key, { get: function () { if (sweep) P.sweepAll(); return read(key); },
+                                                        set: function (v) { write(key, v); }, enumerable: false, configurable: true });
+                } catch (e) {}
             };
+            var extend = function (len) {
+                var n = len + 16;
+                for (var k = slack; k < n; k++) define(String(k), len);
+                if (n > slack) slack = n;
+            };
+            var grown = function (key) {
+                if (!isArr) return;
+                var len = arrLength();
+                if (key === 'length') { for (var k = len; k < slack; k++) define(String(k), len); }
+                else define(key, len);
+                extend(len);
+            };
+            var keys = function () {
+                var list = ownKeys(), len = isArr ? arrLength() : 0;
+                for (var k = 0; k < list.length; k++) define(list[k], len);
+                if (isArr) extend(len);
+            };
+            // keys the page added (plain values, also where it had deleted our accessor) or deleted since: to the traps
+            var sweep = function () {
+                if (typeof proxy === 'function') return;
+                var own = Object.getOwnPropertyNames(proxy), k, key, d, gone = [], changed = false;
+                for (k = 0; k < own.length; k++) {
+                    key = own[k];
+                    if (INNER[key] || (getters['$' + key] && getterOf(key) === getters['$' + key])) continue;
+                    d = Object.getOwnPropertyDescriptor(proxy, key);
+                    if (d && 'value' in d) {
+                        delete proxy[key];
+                        done['$' + key] = getters['$' + key] = undefined;
+                        write(key, d.value);
+                        changed = true;
+                    }
+                }
+                for (var dk in done) {
+                    if (dk.charAt(0) === '$' && done[dk] !== undefined && !hasOwn.call(proxy, dk.slice(1))) gone.push(dk.slice(1));
+                }
+                if (gone.length) {
+                    var still = {}, list = ownKeys();
+                    for (k = 0; k < list.length; k++) if (typeof list[k] === 'string') still['$' + list[k]] = 1;
+                    for (k = 0; k < gone.length; k++) {
+                        key = gone[k];
+                        done['$' + key] = getters['$' + key] = undefined;
+                        if (still['$' + key]) { if (handler.deleteProperty) handler.deleteProperty(target, key); else delete target[key]; }
+                    }
+                    changed = true;
+                }
+                if (!changed) return;
+                keys();
+                if (isArr) { var len = arrLength(); for (k = 0; k < gone.length; k++) if (INDEX.test(gone[k]) && +gone[k] < slack) define(gone[k], len); }
+            };
+            try { Object.defineProperty(proxy, '__br_sweep', { value: sweep }); } catch (e1) {}
             keys();
             var flags = ['__v_skip', '__v_isReactive', '__v_isReadonly', '__v_isShallow', '__v_raw'];
-            for (var f = 0; f < flags.length; f++) define(flags[f]);
+            for (var f = 0; f < flags.length; f++) if (done['$' + flags[f]] === undefined) special(flags[f], false);
+            // Immer's state (a registered symbol; the polyfilled ones are keys of their own)
+            if (typeof Symbol === 'function' && Symbol['for']) { try { special(Symbol['for']('immer-state'), true); } catch (e3) {} }
             // a factory proxy (framer-motion's motion.div / m.span, created by its get trap on first use): a function
             // target with a get trap answers for the element and SVG tag names too
             if (typeof target === 'function' && handler.get) {
@@ -212,6 +319,17 @@
                     var isArray = Array.isArray;
                     Array.isArray = function (x) { return isArray(x) || (x !== null && typeof x === 'object' && x.__br_proxyArray === true); };
                     Array.isArray.__brProxy = true;
+                }
+                // (concat spreads only real arrays: `draft.list.concat([5])` gave [[1,2,3],5])
+                var concat = Array.prototype.concat;
+                if (!concat.__brProxy) {
+                    var spread = function (x) { return x !== null && typeof x === 'object' && x.__br_proxyArray === true ? slice.call(x) : x; };
+                    Array.prototype.concat = function () {
+                        var args = slice.call(arguments);
+                        for (var i = 0; i < args.length; i++) args[i] = spread(args[i]);
+                        return concat.apply(spread(this), args);
+                    };
+                    Array.prototype.concat.__brProxy = true;
                 }
             }
             return proxy;
@@ -1589,6 +1707,7 @@
             var s = String(RUNTIME[this.helpers[i]]);
             out += 'function ' + this.helpers[i] + s.slice(s.indexOf('(')) + '\n';
             if (this.helpers[i] === '__br_BigInt') out += '__br_BigInt(0);\n';   // (its statics exist before a first call)
+            if (this.helpers[i] === '__br_Proxy') out += '__br_Proxy();\n';
         }
         return out;
     };
@@ -3170,7 +3289,8 @@
     };
     // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
     // without it (a bundle often holds both kinds)
-    var PROXY_USE = /\bnew\s+Proxy\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/, DIRECT_EVAL = /(?:^|[^.\w$])eval\s*\(/;
+    // (Proxy.revocable: Immer makes every draft with it)
+    var PROXY_USE = /\bnew\s+Proxy\s*\(|(?:^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/, DIRECT_EVAL = /(?:^|[^.\w$])eval\s*\(/;
     var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src); };
     var needsBigInt = function (src) { return typeof root.BigInt !== 'function' && BIGINT_USE.test(src); };
     // a script the engine parses that only needs the stand-ins: `new Proxy(` / `BigInt(` replaced in the text (no
@@ -3200,6 +3320,7 @@
             var s = String(RUNTIME[n]);
             out += 'function ' + n + s.slice(s.indexOf('(')) + '\n';
             if (n === '__br_BigInt') out += '__br_BigInt(0);\n';
+            if (n === '__br_Proxy') out += '__br_Proxy();\n';
         };
         for (var i = 0; i < names.length; i++) add(names[i]);
         return out;
@@ -3459,7 +3580,10 @@
             if (!evals && !STANDIN_OWN.test(src)) {
                 // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
                 var text = src, used = [];
-                if (np) { text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy('); used.push('__br_Proxy'); }
+                if (np) {
+                    text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2');
+                    used.push('__br_Proxy');
+                }
                 if (nb) { text = text.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); used.push('__br_BigInt'); }
                 stats.lowered++;
                 stats.last = 'stand-in';
