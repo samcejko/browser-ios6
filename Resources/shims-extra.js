@@ -1163,12 +1163,30 @@
             }
             return gifs[key];
         };
+        // (read for many pictures at once and kept per window size: each read hides the picture, which lays the page
+        // out again - one layout per picture took seznam.cz's 101 pictures 10 s, at every settle)
+        var autoKey = function () { return window.innerWidth + 'x' + window.innerHeight; };
+        window.__brOfiPrep = function (list) {
+            var key = autoKey(), todo = [], saved = [], i, s;
+            for (i = 0; i < list.length; i++) if (list[i].__brAutoKey !== key) todo.push(list[i]);
+            for (i = 0; i < todo.length; i++) {
+                s = todo[i].style;
+                saved.push(s.getPropertyValue('display'), s.getPropertyPriority('display'));
+                s.setProperty('display', 'none', 'important');
+            }
+            for (i = 0; i < todo.length; i++) {
+                var cs = getComputedStyle(todo[i]);
+                todo[i].__brAuto = cs.width === 'auto' && cs.height === 'auto';
+                todo[i].__brAutoKey = key;
+            }
+            for (i = 0; i < todo.length; i++) {
+                s = todo[i].style;
+                if (saved[2 * i]) s.setProperty('display', saved[2 * i], saved[2 * i + 1]); else s.removeProperty('display');
+            }
+        };
         var bothAuto = function (el) {
-            var s = el.style, prev = s.getPropertyValue('display'), prio = s.getPropertyPriority('display');
-            s.setProperty('display', 'none', 'important');
-            var cs = getComputedStyle(el), auto = cs.width === 'auto' && cs.height === 'auto';
-            if (prev) s.setProperty('display', prev, prio); else s.removeProperty('display');
-            return auto;
+            if (el.__brAutoKey !== autoKey()) window.__brOfiPrep([el]);
+            return el.__brAuto;
         };
         window.__brOfiPH = function (el, w, h) {
             try {
@@ -1184,6 +1202,21 @@
         // polyfill's copy takes the new address and the element its placeholder again (the polyfill's own load
         // handler, on the body, right after this one, paints the background from it). A picture the old engine
         // squeezed to a 1 px wide or high box gets its size too (see fixThinPicture / fixPercentHeight).
+        // (the sizes of loaded pictures are read in batches, all of them before any change: a read right after a
+        // change lays the page out again, and pages load dozens of pictures)
+        var loaded = [], loadedTimer = 0;
+        var checkLoaded = function () {
+            loadedTimer = 0;
+            var list = loaded, odd = [], i;
+            loaded = [];
+            try {
+                for (i = 0; i < list.length; i++) {
+                    var w = list[i].offsetWidth, h = list[i].offsetHeight;
+                    if ((h <= 2 && w >= 20) || (w <= 2 && h >= 10)) odd.push(list[i]);
+                }
+                for (i = 0; i < odd.length; i++) { fixPercentHeight(odd[i]); fixThinPicture(odd[i]); }
+            } catch (x) {}
+        };
         document.addEventListener('load', function (e) {
             var el = e.target;
             if (!el || el.tagName !== 'IMG') return;
@@ -1195,9 +1228,9 @@
                     var ph = window.__brOfiPH(el, el.naturalWidth || 1, el.naturalHeight || 0);
                     if (ph !== cur) setAttr.call(el, 'src', ph);
                 }
-                fixPercentHeight(el);
-                fixThinPicture(el);
             } catch (x) {}
+            loaded.push(el);
+            if (!loadedTimer) loadedTimer = setTimeout(checkLoaded, 120);
         }, true);
     })();
 
@@ -2443,16 +2476,17 @@
     });
     // Form controls and replaced elements styled with display:flex (Google's search box) become 2009 boxes after
     // the CSS rewrite, which draws their text outside the control: they go back to block / inline-block.
+    // (all styles are read first, then the controls changed: a read after a change lays the page out again)
     var unboxControls = function () {
         try {
-            var controls = document.querySelectorAll('textarea, input, select, button, img, video, canvas, iframe');
-            for (var i = 0; i < controls.length; i++) {
+            var controls = document.querySelectorAll('textarea, input, select, button, img, video, canvas, iframe'), change = [], i;
+            for (i = 0; i < controls.length; i++) {
                 var c = controls[i];
                 if (c.__brUnboxed) continue;
                 var disp = getComputedStyle(c).display;
-                if (disp === '-webkit-box') { c.style.display = 'block'; c.__brUnboxed = true; }
-                else if (disp === '-webkit-inline-box') { c.style.display = 'inline-block'; c.__brUnboxed = true; }
+                if (disp === '-webkit-box' || disp === '-webkit-inline-box') change.push(c, disp === '-webkit-box' ? 'block' : 'inline-block');
             }
+            for (i = 0; i < change.length; i += 2) { change[i].style.display = change[i + 1]; change[i].__brUnboxed = true; }
         } catch (e) {}
     };
     onReady(unboxControls);

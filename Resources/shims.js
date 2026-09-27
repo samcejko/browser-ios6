@@ -15,6 +15,69 @@
         window.cancelIdleCallback = function (id) { window.clearTimeout(id); };
     }
 
+    // Dates: the old engine reads a date and time without an offset ("2026-09-27T10:00") as UTC, and refuses forms
+    // every current browser takes: a space for the T ("2026-09-27 10:00:00"), offsets without a colon (+0200), 1-digit
+    // months and days. Since ES2015 a date-time without an offset is local time (a date alone stays UTC): times on
+    // pages were two hours off, and "Invalid Date" broke others (sport.cz). Date and Date.parse read these forms here;
+    // everything else goes to the engine's own parser.
+    (function () {
+        var ND = window.Date;
+        if (!ND || ND.__brNative) return;
+        var ISO = /^([+-]\d{6}|\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?(?:(?:[Tt]|\s+)(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?(?:([Zz])|([+-])(\d{2}):?(\d{2})?)?)?$/;
+        var readDate = function (s) {
+            var m = ISO.exec(s);
+            if (!m) return ND.parse(s);
+            var y = +m[1], mo = m[2] ? m[2] - 1 : 0, d = m[3] ? +m[3] : 1;
+            var h = m[4] ? +m[4] : 0, mi = m[5] ? +m[5] : 0, sec = m[6] ? +m[6] : 0, ms = m[7] ? +(m[7] + '00').slice(0, 3) : 0;
+            if (mo > 11 || d < 1 || d > 31 || h > 24 || mi > 59 || sec > 59 || (h === 24 && (mi || sec || ms))) return NaN;
+            // UTC: an offset, or a date alone in the standard form; local: a date-time without an offset, or a date
+            // alone written otherwise (2026-9-7, like the other browsers)
+            var utc = m[8] || m[9] || (!m[4] && (!m[2] || m[2].length === 2) && (!m[3] || m[3].length === 2)), t;
+            if (utc) {
+                t = ND.UTC(y, mo, d, h, mi, sec, ms);
+                if (y >= 0 && y < 100) { var u = new ND(t); u.setUTCFullYear(y); t = u.getTime(); }
+                if (m[9]) t -= (m[9] === '-' ? -1 : 1) * (+m[10] * 60 + (m[11] ? +m[11] : 0)) * 60000;
+            } else {
+                var l = new ND(y, mo, d, h, mi, sec, ms);
+                if (y >= 0 && y < 100) l.setFullYear(y);
+                t = l.getTime();
+            }
+            return t;
+        };
+        var isDate = function (v) { return Object.prototype.toString.call(v) === '[object Date]'; };
+        var D = function Date(year, month, day, hours, minutes, seconds, ms) {
+            if (!(this instanceof D)) return ND();   // (called as a function: the current time as text)
+            var n = arguments.length, r;
+            if (n === 0) r = new ND();
+            else if (n === 1) {
+                // (a date object keeps its milliseconds: the engine went through its text)
+                r = typeof year === 'string' ? new ND(readDate(year)) : isDate(year) ? new ND(year.getTime()) : new ND(year);
+            } else {
+                // (as many arguments as given: a missing one is not undefined to the engine)
+                switch (n) {
+                    case 2: r = new ND(year, month); break;
+                    case 3: r = new ND(year, month, day); break;
+                    case 4: r = new ND(year, month, day, hours); break;
+                    case 5: r = new ND(year, month, day, hours, minutes); break;
+                    case 6: r = new ND(year, month, day, hours, minutes, seconds); break;
+                    default: r = new ND(year, month, day, hours, minutes, seconds, ms);
+                }
+            }
+            // (a subclass constructing: its prototype)
+            var p = Object.getPrototypeOf(this);
+            if (p !== D.prototype) { try { r.__proto__ = p; } catch (e) {} }
+            return r;
+        };
+        D.prototype = ND.prototype;
+        D.parse = function parse(s) { return readDate(String(s)); };
+        D.UTC = ND.UTC;
+        D.now = ND.now;
+        D.toString = function () { return 'function Date() {\n    [native code]\n}'; };
+        D.__brNative = ND;
+        try { Object.defineProperty(ND.prototype, 'constructor', { value: D, writable: true, configurable: true, enumerable: false }); } catch (e1) { ND.prototype.constructor = D; }
+        window.Date = D;
+    })();
+
     // performance: the old engine has no Navigation/User Timing (iOS 8 brought them). Times are taken from here (the
     // polyfills run first in the page, so this is close to the start of the document): the network part of a
     // navigation is not known and counts as instant; the document's own moments are filled in as they happen.

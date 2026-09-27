@@ -20,7 +20,23 @@ replace('setTimeout(n,100,t,e)', 't.getAttribute("src")&&!t.complete&&setTimeout
 // load event brings it back): its src property reads as the page's own address, so the copy and the background
 // asked for the page itself as a picture - YouTube's whole 700 KB page was fetched and rewritten every few seconds.
 replace('if(!o.img){o.img=new Image(t.width,t.height)',
-        'if(!o.img){var a0=b.call(t,"src");if(!b.call(t,"data-ofi-src")&&!b.call(t,"data-ofi-srcset")&&!(a0&&/\\S/.test(a0))&&!t.srcset)return;o.img=new Image(t.width,t.height)');
+        'if(!o.img){var a0=b.call(t,"src");if(!b.call(t,"data-ofi-src")&&!b.call(t,"data-ofi-srcset")&&!(a0&&/\\S/.test(a0))&&!t.srcset)return;o.img=new Image(W!=null?W:t.width,H!=null?H:t.height)');
+// Reading a computed style or a size lays the page out again when anything changed since, and the library read one
+// picture's style right after changing the previous picture: a layout per picture (seznam.cz: 10-16 s at
+// DOMContentLoaded and again after every settle). All styles and sizes are read first, then the pictures are changed;
+// pictures that load are taken in batches.
+replace('function c(t){var c=i(t),o=t[l];', 'function c(t){var o=t[l],c=o.st||i(t),W=o.w,H=o.h;o.st=o.w=o.h=null;');
+replace('r(t,t.naturalWidth||t.width,t.naturalHeight||t.height)', 'r(t,t.naturalWidth||(W!=null?W:t.width),t.naturalHeight||(H!=null?H:t.height))');
+// (GS: the style reader, whose name i is taken by a variable inside fix)
+// (window.__brOfiPrep, shims-extra.js: what the shim's placeholder needs to know of the pictures to change, read for
+// all of them at once)
+replace('for(var r=0;r<t.length;r++)t[r][l]=t[r][l]||{skipTest:e.skipTest},c(t[r]);',
+        'for(var r=0;r<t.length;r++){var q0=t[r][l]=t[r][l]||{skipTest:e.skipTest};q0.st=GS(t[r]);q0.w=t[r].width;q0.h=t[r].height}' +
+        'if(window.__brOfiPrep){var P0=[];for(r=0;r<t.length;r++){var s0=t[r][l].st;s0&&s0["object-fit"]&&"fill"!==s0["object-fit"]&&P0.push(t[r])}P0.length&&window.__brOfiPrep(P0)}' +
+        'for(r=0;r<t.length;r++)c(t[r]);');
+replace('"IMG"===t.target.tagName&&a(t.target,{skipTest:e.skipTest})',
+        '"IMG"===t.target.tagName&&(Q.push(t.target),QT||(QT=setTimeout(function(){var z=Q;Q=[];QT=0;a(z,{skipTest:e.skipTest})},120)))');
+replace('var l="bfred-it:object-fit-images",', 'var Q=[],QT=0,GS=i,l="bfred-it:object-fit-images",');
 // The placeholder comes from the shim (window.__brOfiPH in shims-extra.js): the library's SVG placeholder made
 // WebKit skip the element's background, which carries the picture.
 replace('var n=t(i||1,r||0)', 'var n=window.__brOfiPH?window.__brOfiPH(e,i||1,r||0):t(i||1,r||0)');
