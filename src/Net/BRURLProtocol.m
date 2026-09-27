@@ -10,6 +10,16 @@
 #import "BRMemory.h"
 
 static const NSUInteger BRMaxRewriteBody = 4 * 1024 * 1024;
+// (scripts: a site's whole application can be one file, mapy.com's is 4.5 MB; the rewriter waits for memory first)
+static const NSUInteger BRMaxScriptRewriteBody = 8 * 1024 * 1024;
+static const NSUInteger BRMaxFontRewriteBody = 8 * 1024 * 1024, BRMaxImageRewriteBody = 6 * 1024 * 1024;
+static NSUInteger BRRewriteLimit(NSString *kind)
+{
+    if ([kind hasPrefix:@"js"]) return BRMaxScriptRewriteBody;
+    if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"]) return BRMaxFontRewriteBody;
+    if ([kind isEqualToString:@"webp"]) return BRMaxImageRewriteBody;
+    return BRMaxRewriteBody;
+}
 
 // The page's ES module loader (shims-extra.js) asks for module files with this query marker: the response is the
 // lowered module (a __brModules.define registration). The marker is removed before the request goes out.
@@ -699,7 +709,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     // ES modules requested by the page's module loader (marker ?__brmod=1): registrations for the loader
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && BRIsModuleRequest(url) && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-        if (declared <= (long long)BRMaxRewriteBody) kind = @"jsmodule";
+        if (declared <= (long long)BRMaxScriptRewriteBody) kind = @"jsmodule";
     }
     // scripts: ES2015+ syntax lowered to ES5 (jsfix.js); scripts the engine parses pass through unchanged
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
@@ -708,7 +718,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         if (!script && (!ctype.length || [ctype hasPrefix:@"text/plain"] || [ctype hasPrefix:@"application/octet-stream"]) &&
             ([path hasSuffix:@".js"] || [path hasSuffix:@".mjs"])) script = YES;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-        if (script && declared <= (long long)BRMaxRewriteBody) kind = @"js";
+        if (script && declared <= (long long)BRMaxScriptRewriteBody) kind = @"js";
     }
     // WOFF2 fonts are decoded to TTF (no JavaScript involved, so this works even without the rewriter)
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"]) {
@@ -716,21 +726,21 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         if ([ctype hasPrefix:@"font/woff2"] || [ctype hasPrefix:@"application/font-woff2"] || [ctype hasPrefix:@"application/x-font-woff2"] ||
             [path hasSuffix:@".woff2"] || [url.absoluteString rangeOfString:@".woff2?"].location != NSNotFound) {
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-            if (declared <= 8 * 1024 * 1024) kind = @"font";
+            if (declared <= (long long)BRMaxFontRewriteBody) kind = @"font";
         } else if ([ctype hasPrefix:@"font/woff"] || [ctype hasPrefix:@"application/font-woff"] || [ctype hasPrefix:@"application/x-font-woff"] ||
                    [path hasSuffix:@".woff"] || [url.absoluteString rangeOfString:@".woff?"].location != NSNotFound) {
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-            if (declared <= 8 * 1024 * 1024) kind = @"woff";
+            if (declared <= (long long)BRMaxFontRewriteBody) kind = @"woff";
         } else if ([ctype hasPrefix:@"font/ttf"] || [ctype hasPrefix:@"font/otf"] || [ctype hasPrefix:@"font/sfnt"] ||
                    [ctype hasPrefix:@"application/x-font-ttf"] || [ctype hasPrefix:@"application/x-font-opentype"] ||
                    [ctype hasPrefix:@"application/font-sfnt"] || [ctype hasPrefix:@"application/vnd.ms-opentype"] ||
                    [path hasSuffix:@".ttf"] || [path hasSuffix:@".otf"]) {
             // plain TrueType/OpenType: only variable fonts need work (variation tables are dropped)
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-            if (declared <= 8 * 1024 * 1024) kind = @"sfnt";
+            if (declared <= (long long)BRMaxFontRewriteBody) kind = @"sfnt";
         } else if ([ctype hasPrefix:@"image/webp"] || [path hasSuffix:@".webp"] || [url.absoluteString rangeOfString:@".webp?"].location != NSNotFound) {
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-            if (declared <= 6 * 1024 * 1024) kind = @"webp";
+            if (declared <= (long long)BRMaxImageRewriteBody) kind = @"webp";
         }
     }
     BOOL mainHTML = (!self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL]) && ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]);
@@ -853,7 +863,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     if (self.stopped || self.done) return;
     if (self.rewriteBuffer) {
         [self.rewriteBuffer appendData:chunk];
-        if (self.rewriteBuffer.length > BRMaxRewriteBody) [self abandonRewrite];
+        if (self.rewriteBuffer.length > BRRewriteLimit(self.rewriteKind)) [self abandonRewrite];
         return;
     }
     if (self.cacheBody) {
