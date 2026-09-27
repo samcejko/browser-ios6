@@ -131,12 +131,12 @@ static CGSize g_viewPortrait = { 768, 930 }, g_viewLandscape = { 1024, 674 };
 static BOOL g_landscape = NO;
 
 // the kinds of manifest entries cssfix.js writes (see manifestAdd there): :has(), @container, deferred values,
-// @position-try, runtime custom properties, structural selectors, rules with markers
+// @position-try, runtime custom properties, structural selectors, rules with markers, grid rules
 static NSArray *BRManifestKinds(void)
 {
     static NSArray *kinds;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ kinds = @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc", @"mk"]; });
+    dispatch_once(&once, ^{ kinds = @[@"has", @"cq", @"dv", @"pt", @"cv", @"sc", @"mk", @"gd"]; });
     return kinds;
 }
 

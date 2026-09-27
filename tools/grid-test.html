@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>grid test</title>
+<script src="../Resources/cssfix.js"></script>
+<style id="css">
+body { font: 14px/18px Helvetica, Arial, sans-serif; margin: 10px; }
+.case { width: 700px; margin: 0 0 24px; border: 1px solid #999; }
+.case > div > div, .case > div > img { background: #cde; }
+.tall { height: 60px; }
+#t1 .g { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+#t2 .g { display: grid; grid-template-columns: 200px 1fr 100px; grid-template-rows: 50px auto; column-gap: 8px; }
+#t3 .g { display: grid; grid-template-areas: "head head" "side main" "foot foot"; grid-template-columns: 150px 1fr; gap: 6px 12px; }
+#t3 .h { grid-area: head; } #t3 .s { grid-area: side; } #t3 .m { grid-area: main; } #t3 .f { grid-area: foot; }
+#t4 .g { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+#t4 .a { grid-column: 1 / 3; } #t4 .b { grid-row: span 2; }
+#t5 .g { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+#t6 .g { display: grid; grid-template-columns: [viewport-start] 20px [content-start] repeat(4, 1fr) [content-end] 20px [viewport-end]; }
+#t6 .w { grid-column: viewport-start / viewport-end; } #t6 .c { grid-column: content-start / content-end; } #t6 .q { grid-column: content-start / span 2; }
+#t7 .g { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 80px; justify-items: center; align-items: end; }
+#t7 .g > div { width: 50px; } #t7 .st { justify-self: start; align-self: start; }
+#t8 .g { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; }
+#t9 .g { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+#t9 .inner { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: #eee; }
+#t10 .g { display: grid; grid-template-columns: 100px 100px; justify-content: center; gap: 10px; }
+#t11 .g { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-flow: row dense; gap: 2px; }
+#t11 .wide { grid-column: span 3; }
+#t12 .g { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+#t12 .full { grid-column: 1 / -1; } #t12 .last { grid-column: -2; }
+#t13 .g { display: grid; grid: auto-flow / 1fr 1fr; gap: 5px; }
+#t14 .g { display: grid; grid-template: "a a" 40px "b c" auto / 1fr 2fr; }
+#t14 .a { grid-area: a; } #t14 .b { grid-area: b; } #t14 .c { grid-area: c; }
+#t15 .g { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#t15 .pad { margin: 5px 10px; padding: 8px; border: 2px solid #333; }
+#t15 .fixed { width: 120px; }
+#t16 .g { display: grid; grid-template-columns: 25% 75%; }
+#t17 .g { display: grid; grid-template-columns: 200px 1fr; }
+#t18 .g { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+#t19 .g { display: grid; grid-template-columns: minmax(0, 1fr) 300px; padding: 10px 20px; gap: 16px; }
+#t20 .g { display: grid; grid-template-rows: 30px 30px; grid-template-columns: repeat(2, 100px); }
+#t20 .x { grid-row: 2; grid-column: 2; } #t20 .y { grid-row: 1 / 3; }
+/* utility classes (Tailwind): display, columns, gap, spans and alignment in rules of their own */
+.grid { display: grid; } .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } .gap-4 { gap: 1rem; }
+.col-span-2 { grid-column: span 2 / span 2; } .items-center { align-items: center; } .order-first { order: -9999; }
+@media (min-width: 400px) { .md-grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+#t23 .g { display: grid; grid-template-columns: 100px 1fr; }
+#t23 .g > :nth-child(1) { grid-area: 2 / 2 / 3 / 3; }
+</style>
+</head>
+<body>
+<div id="cases">
+<div class="case" id="t1"><div class="g"><div>one</div><div class="tall">two tall</div><div>three</div><div>four with a much longer text that wraps onto several lines in its column</div><div>five</div><div>six</div><div>seven</div></div></div>
+<div class="case" id="t2"><div class="g"><div>a</div><div>b</div><div>c</div><div>d with more text to make the row taller than the others in it</div><div>e</div><div>f</div></div></div>
+<div class="case" id="t3"><div class="g"><div class="h">head</div><div class="s">side</div><div class="m">main content with some words that go on and on for a while so it wraps</div><div class="f">foot</div></div></div>
+<div class="case" id="t4"><div class="g"><div class="a">a (cols 1-2)</div><div class="b">b (rows span 2)</div><div>c</div><div>d</div><div>e</div><div>f</div></div></div>
+<div class="case" id="t5"><div class="g"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div></div></div>
+<div class="case" id="t6"><div class="g"><div class="w">wide</div><div class="c">content</div><div>auto 1</div><div>auto 2</div><div class="q">two from content-start</div></div></div>
+<div class="case" id="t7"><div class="g"><div>1</div><div class="st">st</div><div>3</div></div></div>
+<div class="case" id="t8"><div class="g"><div>logo</div><div>navigation takes the rest</div><div>sign in</div></div></div>
+<div class="case" id="t9"><div class="g"><div>left</div><div class="inner"><div>i1</div><div>i2 is a bit longer so it wraps maybe</div><div>i3</div></div></div></div>
+<div class="case" id="t10"><div class="g"><div>1</div><div>2</div><div>3</div></div></div>
+<div class="case" id="t11"><div class="g"><div>1</div><div class="wide">wide 3</div><div>3</div><div>4</div><div>5</div></div></div>
+<div class="case" id="t12"><div class="g"><div class="full">full</div><div>a</div><div class="last">last col</div><div>b</div></div></div>
+<div class="case" id="t13"><div class="g"><div>1</div><div>2</div><div>3</div></div></div>
+<div class="case" id="t14"><div class="g"><div class="a">a</div><div class="b">b</div><div class="c">c with text</div></div></div>
+<div class="case" id="t15"><div class="g"><div class="pad">padded item with borders and margins</div><div class="fixed">fixed 120</div><div>plain</div></div></div>
+<div class="case" id="t16"><div class="g"><div>quarter</div><div>three quarters</div></div></div>
+<div class="case" id="t17"><div class="g"><img width="80" height="40" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="><div class="tall">tall text column</div></div></div>
+<div class="case" id="t18"><div class="g"><div>1</div><div>2</div></div></div>
+<div class="case" id="t19"><div class="g"><div>main</div><div>aside</div></div></div>
+<div class="case" id="t20"><div class="g"><div class="x">x</div><div class="y">y</div><div>z</div></div></div>
+<div class="case" id="t21"><div class="g grid grid-cols-3 gap-4 items-center"><div class="tall">tall</div><div class="col-span-2">spans two</div><div>c</div><div class="order-first">first by order</div></div></div>
+<div class="case" id="t22"><div class="g grid grid-cols-3 md-grid-cols-4 gap-4"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div></div></div>
+<div class="case" id="t23"><div class="g"><div>moved to 2/2</div><div>b</div><div>c</div></div></div>
+</div>
+<pre id="out">running</pre>
+<script>
+// CSS grid on the old engine (shims-extra.js "CSS grid layout", fed by cssfix.js manifest "gd"): every case is laid out
+// by this browser's own grid first; then the stylesheet is replaced by the rewriter's output (display: block and the
+// floated stand-in), the shims are loaded with window.__brGridForce, and the shim's layout must put every item where
+// the real grid did (within 1.5 px).
+function measure() {
+  var res = {}, cases = document.querySelectorAll('.case');
+  for (var i = 0; i < cases.length; i++) {
+    var g = cases[i].querySelector('.g'), gr = g.getBoundingClientRect(), items = [];
+    var all = g.querySelectorAll('*');
+    for (var k = 0; k < all.length; k++) { var r = all[k].getBoundingClientRect(); items.push([Math.round(r.left - gr.left), Math.round(r.top - gr.top), Math.round(r.width), Math.round(r.height)]); }
+    res[cases[i].id] = { h: Math.round(gr.height), items: items };
+  }
+  return res;
+}
+var want = measure();
+var css = document.getElementById('css');
+var fixed = JSON.parse(CSSFix.run('css', css.textContent, null, JSON.stringify({ viewportWidth: innerWidth, viewportHeight: innerHeight })));
+css.textContent = fixed.out;
+window.__brGridForce = true;
+var load = function (src, next) { var s = document.createElement('script'); s.src = src; s.onload = next; document.head.appendChild(s); };
+load('../Resources/shims.js', function () {
+  load('../Resources/shims-extra.js', function () {
+    window.__brGrid.setManifest(fixed.manifest || { gd: [] });
+    window.__brGrid.apply();
+    var got = measure(), pass = 0, total = 0, lines = [];
+    for (var id in want) {
+      total++;
+      var w = want[id], g = got[id], bad = [];
+      if (Math.abs(w.h - g.h) > 1.5) bad.push('height ' + g.h + ' want ' + w.h);
+      for (var k = 0; k < w.items.length; k++) {
+        var a = w.items[k], b = g.items[k] || [];
+        for (var q = 0; q < 4; q++) if (Math.abs(a[q] - b[q]) > 1.5) { bad.push('item ' + k + ' [' + b.join(',') + '] want [' + a.join(',') + ']'); break; }
+      }
+      if (!bad.length) pass++;
+      lines.push((bad.length ? 'FAIL ' : 'OK   ') + id + (bad.length ? ': ' + bad.join('; ') : ''));
+    }
+    var st = window.__brGrid.state();
+    lines.push('grids ' + st.grids + ', ' + st.ms + ' ms');
+    document.getElementById('out').textContent = lines.join('\n');
+    document.title = 'grid ' + pass + '/' + total;
+  });
+});
+</script>
+</body>
+</html>

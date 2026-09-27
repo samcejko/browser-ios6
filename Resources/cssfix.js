@@ -1590,9 +1590,44 @@ var CSSFix = (function () {
         return comma < m[2].length ? trim(m[2].slice(comma + 1)) : null;
     }
 
+    // CSS grid for the page shim (manifest "gd"): per rule that says something grid-specific, its selectors (with
+    // specificity and the media queries around it) and its grid, alignment, gap and order declarations ([property,
+    // value, important]). The shim lays the grids out; the floated columns of gridColumns are what shows until then.
+    // (A rule with only display matters when its selectors made a grid before: a media query turning it into a block.)
+    var GRID_SPECIFIC = /^(grid|grid-template|grid-template-(columns|rows|areas)|grid-auto-(flow|rows|columns)|grid-(column|row)(-(start|end))?|grid-area)$/;
+    var GRID_RELATED = /^(justify-items|align-items|place-items|justify-content|align-content|place-content|justify-self|align-self|place-self|gap|row-gap|column-gap|grid-gap|grid-row-gap|grid-column-gap|order)$/;
+    function registerGridRule(ctx, sels, decls, key) {
+        var d = [], specific = false, display = null;
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, isDisplay = p === 'display';
+            if (!isDisplay && !GRID_SPECIFIC.test(p) && !GRID_RELATED.test(p)) continue;
+            var v = resolveVars(decls[i].v, null, ctx);
+            if (v === null) continue;
+            v = trim(v);
+            if (isDisplay) { display = v.toLowerCase(); if (/^(inline-)?grid$/.test(display)) specific = true; }
+            else if (GRID_SPECIFIC.test(p)) specific = true;
+            d.push([p, v, decls[i].imp ? 1 : 0]);
+        }
+        var wasGrid = display !== null && ctx.gridSels && ctx.gridSels[key] !== undefined;
+        if (!d.length || (!specific && !wasGrid && display !== null && d.length === 1)) return;
+        var media = ctx.mediaStack && ctx.mediaStack.length ? ctx.mediaStack.slice(0) : null;
+        var entry = { h: manifestHash('gd|' + sels.join(',') + '|' + JSON.stringify(d) + '|' + (media ? media.join('&') : '')), s: sels, sp: [], d: d };
+        for (var k = 0; k < sels.length; k++) entry.sp.push(specificity(sels[k]));
+        if (media) entry.m = media;
+        // (alignment, gaps and order in rules of their own, utility classes: they matter only in a document that has
+        // grids, and go out with its manifest at the end)
+        if (!specific && !wasGrid) { (ctx.gdPending || (ctx.gdPending = [])).push(entry); return; }
+        ctx.gdAny = true;
+        manifestAdd('gd', entry);
+    }
+    function flushGridRules(ctx) {
+        if (ctx.gdAny && ctx.gdPending) for (var i = 0; i < ctx.gdPending.length; i++) manifestAdd('gd', ctx.gdPending[i]);
+        ctx.gdPending = null;
+    }
+
     function manifestAdd(kind, entry) {
         if (g_suppressManifest) return;
-        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], seen: {} };
+        if (!g_manifest) g_manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [], seen: {} };
         var key = kind + ':' + entry.h;
         if (g_manifest.seen[key]) return;
         g_manifest.seen[key] = true;
@@ -4325,6 +4360,7 @@ var CSSFix = (function () {
                         }
                     }
                     var gridKey = sels.join(',');
+                    if (g_manifest !== false && !keyframe) registerGridRule(ctx, sels, r.decls, gridKey);
                     var flowGrid = gridColumnFlow(r.decls, ctx, gridKey);
                     if (flowGrid) {
                         // one line of inline blocks (the strip scrolls sideways when the container says so)
@@ -4344,22 +4380,24 @@ var CSSFix = (function () {
                     }
                     var columns = gridColumns(r.decls, ctx, gridKey);
                     var rowHeight = gridRowHeight(r.decls, ctx, gridKey);
+                    // (the stand-in stops where the page shim has laid the grid out: it marks the container br-grid)
+                    var gridOff = function (s) { return s + ':not(.br-grid)'; };
                     if (rowHeight) {
                         // fixed row tracks (grid-auto-rows: 120px, minmax(120px, auto), repeat(3, 8rem)): the children get that minimum height
                         var rowSels = [];
-                        for (var rh = 0; rh < sels.length; rh++) rowSels.push(sels[rh] + ' > *');
+                        for (var rh = 0; rh < sels.length; rh++) rowSels.push(gridOff(sels[rh]) + ' > *');
                         out.push({ t: 'q', sel: rowSels.join(','), decls: [{ p: 'min-height', v: rowHeight, imp: false }] });
                     }
                     if (columns === -1) {
                         // the same container goes back to a single column (a media query): the floats are undone
                         var resetSels = [];
-                        for (var rs = 0; rs < sels.length; rs++) resetSels.push(sels[rs] + ' > *');
+                        for (var rs = 0; rs < sels.length; rs++) resetSels.push(gridOff(sels[rs]) + ' > *');
                         out.push({ t: 'q', sel: resetSels.join(','), decls: [{ p: 'float', v: 'none', imp: false }, { p: 'width', v: 'auto', imp: false }, { p: 'margin-right', v: '0', imp: false }] });
                     } else if (columns > 1) {
                         // CSS grid does not exist here: the children float into equal columns instead of piling up;
                         // a column gap is taken out of the widths, a row gap becomes a bottom margin
                         var childSels = [], afterSels = [], lastSels = [];
-                        for (var gs = 0; gs < sels.length; gs++) { childSels.push(sels[gs] + ' > *'); afterSels.push(sels[gs] + '::after'); lastSels.push(sels[gs] + ' > *:nth-child(' + columns + 'n)'); }
+                        for (var gs = 0; gs < sels.length; gs++) { childSels.push(gridOff(sels[gs]) + ' > *'); afterSels.push(gridOff(sels[gs]) + '::after'); lastSels.push(gridOff(sels[gs]) + ' > *:nth-child(' + columns + 'n)'); }
                         var gaps = gridGaps(r.decls, ctx), colGap = gaps[1], rowGap = gaps[0];
                         var pct = (Math.floor(10000 / columns) / 100) + '%';
                         var childDecls = [{ p: 'float', v: 'left', imp: false }];
@@ -4763,14 +4801,16 @@ var CSSFix = (function () {
         // from the cache (see guardCalcTransitions)
         var state = pageState(ctx);
         if (state && (kind !== 'html' || /<html|<head|<body/i.test(text))) out += kind === 'html' ? '\n<!--br-page:' + state + '-->' : '\n/*br-page:' + state + '*/';
+        flushGridRules(ctx);
         var manifest = null;
-        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length || g_manifest.sc.length || g_manifest.mk.length)) {
+        if (g_manifest && (g_manifest.has.length || g_manifest.cq.length || g_manifest.dv.length || g_manifest.pt.length || g_manifest.cv.length || g_manifest.sc.length || g_manifest.mk.length || g_manifest.gd.length)) {
             manifest = { has: g_manifest.has, cq: g_manifest.cq };
             if (g_manifest.dv.length) manifest.dv = g_manifest.dv;
             if (g_manifest.pt.length) manifest.pt = g_manifest.pt;
             if (g_manifest.cv.length) manifest.cv = g_manifest.cv;
             if (g_manifest.sc.length) manifest.sc = g_manifest.sc;
             if (g_manifest.mk.length) manifest.mk = g_manifest.mk;
+            if (g_manifest.gd.length) manifest.gd = g_manifest.gd;
             // the entries ride along in the output (so a cached copy keeps them); "*/" cannot occur inside
             var json = JSON.stringify(manifest).replace(/\*\//g, '*\\/');
             out += kind === 'html' ? '\n<!--br-manifest:' + json.replace(/--/g, '-\\u002d') + '-->' : '\n/*br-manifest:' + json + '*/';

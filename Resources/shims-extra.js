@@ -3199,6 +3199,7 @@
             try { if (manifest.cq.length || (window.__brDeferred && window.__brDeferred.needsMarkers())) applyAspectRatios(); } catch (e2) {}
             try { if (window.__brVars) window.__brVars.apply(); } catch (e5) {}
             try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e3) {}
+            try { if (window.__brGrid) window.__brGrid.apply(); } catch (e8) {}
             applyEnd = Date.now();
             applyCost = applyEnd - t0;
         };
@@ -3210,7 +3211,7 @@
             applyTimer = setTimeout(apply, Math.max(120, applyEnd + applyCost * 5 - Date.now()));
         };
         // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest
-        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [] };
+        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
         var mergeExtra = function (m) {
             for (var kind in extra) {
                 if (!extra.hasOwnProperty(kind) || !extra[kind].length) continue;
@@ -3251,16 +3252,17 @@
                 any = true;
             }
             if (!any) return;
-            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [] };
+            if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
             for (var k2 in add) if (add.hasOwnProperty(k2) && extra.hasOwnProperty(k2) && add[k2]) manifest[k2] = (manifest[k2] || []).concat(add[k2]);
             noteMarkerRules(manifest);
             try { if (window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e) {}
             try { if (window.__brVars) window.__brVars.setManifest(manifest); } catch (e2) {}
+            try { if (window.__brGrid) window.__brGrid.setManifest(manifest); } catch (e8) {}
             schedule();
         };
         // what the network layer registered so far (the page asks only for what came since: GitHub's is 2.3 MB), and
         // the count of its root variables and stylesheets
-        var KINDS = ['has', 'cq', 'dv', 'pt', 'cv', 'sc', 'mk'], base = null, baseVars = 0;
+        var KINDS = ['has', 'cq', 'dv', 'pt', 'cv', 'sc', 'mk', 'gd'], base = null, baseVars = 0;
         var sinceParam = function () {
             if (!base || window.__brManifestURL) return '';
             var parts = [];
@@ -3285,7 +3287,7 @@
                     lastText = x.responseText;
                     if (got.mk && !window.__brManifestURL) mkKnown = true;
                     // (a full answer: the first one, a test URL, or reset because the network layer forgot the page)
-                    if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [] };
+                    if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
                     for (i = 0; i < KINDS.length; i++) { k = KINDS[i]; if (got[k] && got[k].length) base[k] = base[k].concat(got[k]); }
                     if (got.sheets) base.sheets = got.sheets;
                     if (got.vars) { base.vars = got.vars; baseVars = 0; for (k in got.vars) if (got.vars.hasOwnProperty(k)) baseVars++; }
@@ -3294,6 +3296,7 @@
                     if (manifest) { notePageVars(manifest); mergeExtra(manifest); noteMarkerRules(manifest); }
                     try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
                     try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}
+                    try { if (manifest && window.__brGrid) window.__brGrid.setManifest(manifest); } catch (e9) {}
                     schedule();
                 };
                 x.send(null);
@@ -3303,7 +3306,7 @@
         onReady(scheduleLoad);
         window.addEventListener('load', scheduleLoad, false);
         onSettled(function () { scheduleLoad(); if (manifest) schedule(); });
-        window.addEventListener('resize', function () { if (manifest && (manifest.cq.length || manifest.dv.length)) schedule(); }, false);
+        window.addEventListener('resize', function () { if (manifest && (manifest.cq.length || manifest.dv.length || (manifest.gd && manifest.gd.length))) schedule(); }, false);
         var reevaluate = function () { if (manifest && manifest.has.length) schedule(); };
         observeAdded(function () { if (manifest && ((manifest.sc && manifest.sc.length) || manifest.has.length)) schedule(); });
         document.addEventListener('input', reevaluate, true);
@@ -4690,6 +4693,808 @@
             },
             reposition: function () { pass(true); },
             state: function () { return { entries: entries.length, positioned: positioned.length, anchors: anchors }; }
+        };
+    })();
+    // ---- CSS grid layout (manifest "gd", see registerGridRule in cssfix.js). The old engine has no grid: the rewriter
+    // floats the children into equal columns as a stand-in, and here grids are laid out for real: tracks from
+    // grid-template-* / grid / grid-auto-* (lengths, %, fr, auto, min-/max-content, minmax(), fit-content(), repeat()
+    // with auto-fill/auto-fit, line names, areas), items placed by grid-row/-column/-area or automatically (row flow,
+    // dense), then positioned absolutely inside the container (position: relative, its height the rows'), stretched
+    // or aligned (justify-/align-items, -self, -content). The container gets .br-grid, which turns the stand-in off.
+    // Columns are sized top-down through nested grids and rows bottom-up, with a read and a write phase per nesting
+    // level (a layout each, not one per grid). Column-flow grids keep the stand-in strip. Min-content sizes count as 0
+    // and items spanning several tracks do not size them.
+    (function () {
+        var probe = document.createElement('div');
+        try { probe.style.display = 'grid'; } catch (e0) {}
+        if (probe.style.display === 'grid' && !window.__brGridForce) { window.__brGrid = { setManifest: function () {}, apply: function () {} }; return; }
+        var entries = [], gen = 0, touched = [], stats = { passes: 0, grids: 0, items: 0, ms: 0 };
+        var PROPS = ['position', 'left', 'top', 'right', 'bottom', 'width', 'height'];
+        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var num = function (v) { var n = parseFloat(v); return isNaN(n) ? 0 : n; };
+        // top-level tokens: whitespace separates; (...), [...] and strings stay whole
+        var tokens = function (s) {
+            var out = [], cur = '', depth = 0, quote = '';
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (quote) { cur += c; if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+                if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                if (!depth && /\s/.test(c)) { if (cur) out.push(cur); cur = ''; continue; }
+                cur += c;
+            }
+            if (cur) out.push(cur);
+            return out;
+        };
+        // index of the first top-level ch (outside brackets and strings), -1 when none
+        var topIndex = function (s, ch) {
+            var depth = 0, quote = '';
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (quote) { if (c === quote) quote = ''; continue; }
+                if (c === '"' || c === "'") quote = c;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && c === ch) return i;
+            }
+            return -1;
+        };
+        var splitTopAll = function (s, ch) {
+            var out = [], i;
+            while ((i = topIndex(s, ch)) >= 0) { out.push(s.slice(0, i)); s = s.slice(i + 1); }
+            out.push(s);
+            return out;
+        };
+
+        // ---- lengths: px, font and viewport units, percentages of a base, calc()/min()/max()/clamp()
+        var fontCache = null;
+        var fontSize = function (el) {
+            if (!el || el.nodeType !== 1) el = document.documentElement;
+            if (fontCache && fontCache.el === el) return fontCache.v;
+            var v = num(getComputedStyle(el).fontSize) || 16;
+            fontCache = { el: el, v: v };
+            return v;
+        };
+        var unitPx = function (n, u, el, base) {
+            switch (u) {
+                case '': case 'px': return n;
+                case '%': return base === null || base === undefined ? NaN : n * base / 100;
+                case 'em': return n * fontSize(el);
+                case 'ex': case 'ch': return n * fontSize(el) / 2;
+                case 'rem': return n * fontSize(document.documentElement);
+                case 'vw': return n * window.innerWidth / 100;
+                case 'vh': case 'svh': case 'lvh': case 'dvh': return n * window.innerHeight / 100;
+                case 'svw': case 'lvw': case 'dvw': return n * window.innerWidth / 100;
+                case 'vmin': return n * Math.min(window.innerWidth, window.innerHeight) / 100;
+                case 'vmax': return n * Math.max(window.innerWidth, window.innerHeight) / 100;
+                case 'pt': return n * 4 / 3;
+                case 'pc': return n * 16;
+                case 'in': return n * 96;
+                case 'cm': return n * 96 / 2.54;
+                case 'mm': return n * 96 / 25.4;
+                case 'q': return n * 96 / 101.6;
+            }
+            return NaN;
+        };
+        var calcPx = function (v, el, base) {
+            var s = v.toLowerCase().replace(/-webkit-calc\(/g, 'calc('), i = 0;
+            var ws = function () { while (i < s.length && /\s/.test(s.charAt(i))) i++; };
+            var expr;
+            var factor = function () {
+                ws();
+                if (s.charAt(i) === '(') { i++; var r = expr(); ws(); if (s.charAt(i) === ')') i++; return r; }
+                var fm = /^(calc|min|max|clamp)\(/.exec(s.slice(i));
+                if (fm) {
+                    i += fm[0].length;
+                    var args = [];
+                    for (;;) {
+                        args.push(expr());
+                        ws();
+                        if (s.charAt(i) === ',') { i++; continue; }
+                        if (s.charAt(i) === ')') { i++; break; }
+                        return NaN;
+                    }
+                    if (fm[1] === 'calc') return args[0];
+                    if (fm[1] === 'min') return Math.min.apply(Math, args);
+                    if (fm[1] === 'max') return Math.max.apply(Math, args);
+                    return args.length === 3 ? Math.max(args[0], Math.min(args[1], args[2])) : NaN;
+                }
+                var nm = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)/.exec(s.slice(i));
+                if (!nm) return NaN;
+                i += nm[0].length;
+                return unitPx(parseFloat(nm[1]), nm[2], el, base);
+            };
+            var term = function () {
+                var r = factor();
+                for (;;) {
+                    ws();
+                    var c = s.charAt(i);
+                    if (c === '*') { i++; r *= factor(); } else if (c === '/') { i++; r /= factor(); } else return r;
+                }
+            };
+            expr = function () {
+                var r = term();
+                for (;;) {
+                    ws();
+                    var c = s.charAt(i);
+                    if ((c === '+' || c === '-') && /\s/.test(s.charAt(i + 1))) { i++; var t = term(); r = c === '+' ? r + t : r - t; } else return r;
+                }
+            };
+            var out = expr();
+            return isNaN(out) ? null : out;
+        };
+        // v in px (percentages of base), or null for anything that is not a length
+        var lengthPx = function (v, el, base) {
+            v = trim(String(v)).toLowerCase();
+            var m = /^(-?(?:\d+\.?\d*|\.\d+))([a-z%]*)$/.exec(v);
+            if (m) { var r = unitPx(parseFloat(m[1]), m[2], el, base); return isNaN(r) ? null : r; }
+            if (/^(calc|min|max|clamp|-webkit-calc)\(/.test(v)) return calcPx(v, el, base);
+            return null;
+        };
+
+        // ---- track lists
+        var sizeFn = function (t) {
+            var lt = trim(t).toLowerCase(), fr = /^([\d.]+)fr$/.exec(lt);
+            if (lt === 'auto') return { k: 'auto' };
+            if (lt === 'min-content') return { k: 'min' };
+            if (lt === 'max-content') return { k: 'max' };
+            if (fr) return { k: 'fr', n: parseFloat(fr[1]) };
+            return { k: 'len', v: trim(t) };
+        };
+        var parseTrack = function (t) {
+            var m = /^minmax\(([\s\S]*)\)$/i.exec(t);
+            if (m) {
+                var args = splitTopAll(m[1], ','), mn = sizeFn(args[0]), mx = sizeFn(args[1] || 'auto');
+                if (mn.k === 'fr') mn = { k: 'auto' };   // (a flexible minimum is invalid)
+                return { min: mn, max: mx };
+            }
+            m = /^fit-content\(([\s\S]*)\)$/i.exec(t);
+            if (m) return { min: { k: 'auto' }, max: { k: 'fit', v: trim(m[1]) } };
+            var one = sizeFn(t);
+            return one.k === 'fr' ? { min: { k: 'auto' }, max: one } : { min: one, max: one };
+        };
+        var lineNames = function (t) { var s = trim(t.slice(1, -1)); return s ? s.split(/\s+/) : []; };
+        // [{names}, {track}, {repeat: n | 'auto-fill' | 'auto-fit', list}] in order
+        var parseList = function (text) {
+            var out = [], toks = tokens(trim(text || ''));
+            for (var i = 0; i < toks.length; i++) {
+                var t = toks[i], m;
+                if (t.charAt(0) === '[') out.push({ names: lineNames(t) });
+                else if ((m = /^repeat\(([\s\S]*)\)$/i.exec(t))) {
+                    var c = topIndex(m[1], ','), cnt = trim(m[1].slice(0, c)).toLowerCase();
+                    out.push({ repeat: /^\d+$/.test(cnt) ? parseInt(cnt, 10) : cnt, list: parseList(m[1].slice(c + 1)) });
+                } else if (!/^(none|subgrid|masonry)$/i.test(t)) out.push({ track: parseTrack(t) });
+            }
+            return out;
+        };
+        // the size a track is sure to have (a length for its maximum, else its minimum), 0 when neither is one
+        var definite = function (tr, el, base) {
+            var mx = tr.max.k === 'len' ? lengthPx(tr.max.v, el, base) : null;
+            if (mx !== null) return mx;
+            var mn = tr.min.k === 'len' ? lengthPx(tr.min.v, el, base) : null;
+            return mn !== null ? mn : 0;
+        };
+        // how many times repeat(auto-fill / auto-fit) goes into the room
+        var autoCount = function (list, avail, gap, el) {
+            var other = 0, otherN = 0, unit = 0, unitN = 0, i, k;
+            for (i = 0; i < list.length; i++) {
+                var it = list[i];
+                if (it.track) { other += definite(it.track, el, avail); otherN++; }
+                else if (it.repeat !== undefined && typeof it.repeat === 'number') {
+                    for (k = 0; k < it.list.length; k++) if (it.list[k].track) { other += it.repeat * definite(it.list[k].track, el, avail); otherN += it.repeat; }
+                } else if (it.repeat !== undefined) {
+                    for (k = 0; k < it.list.length; k++) if (it.list[k].track) { unit += definite(it.list[k].track, el, avail); unitN++; }
+                }
+            }
+            if (unit <= 0 || avail === null) return 1;
+            var n = Math.floor((avail - other - Math.max(0, otherN - 1) * gap + gap) / (unit + unitN * gap));
+            return Math.max(1, n);
+        };
+        // -> {tracks: [track], lines: [[names]], fit: [index of auto-fit tracks]}
+        var expand = function (list, count) {
+            var tracks = [], lines = [[]], fit = [];
+            var add = function (items, fitting) {
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i];
+                    if (it.names) lines[lines.length - 1] = lines[lines.length - 1].concat(it.names);
+                    else if (it.track) { if (fitting) fit.push(tracks.length); tracks.push(it.track); lines.push([]); }
+                    else if (it.repeat !== undefined) {
+                        var n = typeof it.repeat === 'number' ? it.repeat : count;
+                        for (var r = 0; r < n; r++) add(it.list, it.repeat === 'auto-fit');
+                    }
+                }
+            };
+            add(list, false);
+            return { tracks: tracks, lines: lines, fit: fit };
+        };
+        var hasAutoRepeat = function (list) { for (var i = 0; i < list.length; i++) if (list[i].repeat !== undefined && typeof list[i].repeat !== 'number') return true; return false; };
+        // grid-template-areas -> {rows, cols, areas: {name: {r0, r1, c0, c1}}}
+        var parseAreas = function (v) {
+            var strs = String(v || '').match(/"[^"]*"|'[^']*'/g);
+            if (!strs) return null;
+            var areas = {}, cols = 0;
+            for (var r = 0; r < strs.length; r++) {
+                var cells = trim(strs[r].slice(1, -1)).split(/\s+/);
+                cols = Math.max(cols, cells.length);
+                for (var c = 0; c < cells.length; c++) {
+                    var n = cells[c];
+                    if (!n || /^\.+$/.test(n)) continue;
+                    var a = areas[n];
+                    if (!a) areas[n] = { r0: r, r1: r + 1, c0: c, c1: c + 1 };
+                    else { a.r0 = Math.min(a.r0, r); a.r1 = Math.max(a.r1, r + 1); a.c0 = Math.min(a.c0, c); a.c1 = Math.max(a.c1, c + 1); }
+                }
+            }
+            return { rows: strs.length, cols: cols, areas: areas };
+        };
+
+        // ---- shorthands into longhands (the cascade then works per longhand)
+        var expandTemplate = function (v) {
+            v = trim(v);
+            if (/^none$/i.test(v)) return { 'grid-template-rows': 'none', 'grid-template-columns': 'none', 'grid-template-areas': 'none' };
+            var slash = topIndex(v, '/'), left = slash < 0 ? v : v.slice(0, slash), right = slash < 0 ? 'none' : trim(v.slice(slash + 1));
+            if (!/["']/.test(left)) return { 'grid-template-rows': trim(left), 'grid-template-columns': right, 'grid-template-areas': 'none' };
+            var toks = tokens(left), rows = [], areas = [];
+            for (var i = 0; i < toks.length; i++) {
+                var t = toks[i];
+                if (t.charAt(0) === '"' || t.charAt(0) === "'") {
+                    areas.push(t);
+                    if (i + 1 < toks.length && !/^["'\[]/.test(toks[i + 1])) { rows.push(toks[i + 1]); i++; } else rows.push('auto');
+                } else if (t.charAt(0) === '[') rows.push(t);
+            }
+            return { 'grid-template-rows': rows.join(' '), 'grid-template-columns': right, 'grid-template-areas': areas.join(' ') };
+        };
+        var expandGrid = function (v) {
+            var out = { 'grid-template-rows': 'none', 'grid-template-columns': 'none', 'grid-template-areas': 'none', 'grid-auto-flow': 'row', 'grid-auto-rows': 'auto', 'grid-auto-columns': 'auto' };
+            var slash = topIndex(v, '/');
+            if (slash >= 0) {
+                var l = trim(v.slice(0, slash)), r = trim(v.slice(slash + 1)), rest;
+                if (/\bauto-flow\b/i.test(r)) {
+                    out['grid-template-rows'] = l;
+                    out['grid-auto-flow'] = 'column' + (/\bdense\b/i.test(r) ? ' dense' : '');
+                    rest = trim(r.replace(/\bauto-flow\b|\bdense\b/gi, ''));
+                    if (rest) out['grid-auto-columns'] = rest;
+                    return out;
+                }
+                if (/\bauto-flow\b/i.test(l)) {
+                    out['grid-template-columns'] = r;
+                    out['grid-auto-flow'] = 'row' + (/\bdense\b/i.test(l) ? ' dense' : '');
+                    rest = trim(l.replace(/\bauto-flow\b|\bdense\b/gi, ''));
+                    if (rest) out['grid-auto-rows'] = rest;
+                    return out;
+                }
+            }
+            var t = expandTemplate(v);
+            for (var k in t) if (t.hasOwnProperty(k)) out[k] = t[k];
+            return out;
+        };
+        var twoLines = function (v, a, b) {
+            var parts = splitTopAll(v, '/'), o = {};
+            o[a] = trim(parts[0]);
+            if (parts.length > 1) o[b] = trim(parts[1]);
+            else o[b] = /^[a-z_-][\w-]*$/i.test(o[a]) && !/^(auto|span)$/i.test(o[a]) ? o[a] : 'auto';   // (a name: both lines)
+            return o;
+        };
+        var longhands = function (p, v) {
+            var o = {}, t, parts;
+            switch (p) {
+                case 'grid-template': return expandTemplate(v);
+                case 'grid': return expandGrid(v);
+                case 'gap': case 'grid-gap':
+                    t = tokens(v); o['row-gap'] = t[0]; o['column-gap'] = t.length > 1 ? t[1] : t[0]; return o;
+                case 'grid-row-gap': o['row-gap'] = v; return o;
+                case 'grid-column-gap': o['column-gap'] = v; return o;
+                case 'place-items': t = tokens(v); o['align-items'] = t[0]; o['justify-items'] = t.length > 1 ? t[1] : t[0]; return o;
+                case 'place-content': t = tokens(v); o['align-content'] = t[0]; o['justify-content'] = t.length > 1 ? t[1] : t[0]; return o;
+                case 'place-self': t = tokens(v); o['align-self'] = t[0]; o['justify-self'] = t.length > 1 ? t[1] : t[0]; return o;
+                case 'grid-row': return twoLines(v, 'grid-row-start', 'grid-row-end');
+                case 'grid-column': return twoLines(v, 'grid-column-start', 'grid-column-end');
+                case 'grid-area':
+                    parts = splitTopAll(v, '/');
+                    for (var i = 0; i < parts.length; i++) parts[i] = trim(parts[i]);
+                    var name = /^[a-z_-][\w-]*$/i.test(parts[0]) && !/^(auto|span)$/i.test(parts[0]);
+                    o['grid-row-start'] = parts[0];
+                    o['grid-column-start'] = parts.length > 1 ? parts[1] : name ? parts[0] : 'auto';
+                    o['grid-row-end'] = parts.length > 2 ? parts[2] : name ? parts[0] : 'auto';
+                    o['grid-column-end'] = parts.length > 3 ? parts[3] : parts.length > 1 && /^[a-z_-][\w-]*$/i.test(parts[1]) && !/^(auto|span)$/i.test(parts[1]) ? parts[1] : name && parts.length === 1 ? parts[0] : 'auto';
+                    return o;
+            }
+            o[p] = v;
+            return o;
+        };
+
+        // ---- the cascade: per element, the winning value of every longhand among the rules that match it
+        var mediaOk = function (list) {
+            if (!list) return true;
+            for (var i = 0; i < list.length; i++) { try { if (!window.matchMedia(list[i]).matches) return false; } catch (e) { return false; } }
+            return true;
+        };
+        var collect = function () {
+            var recs = [], i, b, k, d;
+            for (i = 0; i < entries.length; i++) {
+                var e = entries[i];
+                if (!e.s || !e.d || !mediaOk(e.m)) continue;
+                var decls = [];
+                for (d = 0; d < e.d.length; d++) {
+                    var lh = longhands(e.d[d][0], e.d[d][1]);
+                    for (var lp in lh) if (lh.hasOwnProperty(lp)) decls.push([lp, lh[lp], !!e.d[d][2]]);
+                }
+                for (b = 0; b < e.s.length; b++) {
+                    var list = null;
+                    try { list = document.querySelectorAll(e.s[b]); } catch (x) { list = null; }
+                    if (!list) continue;
+                    var spec = e.sp ? e.sp[b] : 0;
+                    for (k = 0; k < list.length; k++) {
+                        var el = list[k], rec = el.__brGD;
+                        if (!rec || rec.gen !== gen) { rec = el.__brGD = { gen: gen, el: el, props: {} }; recs.push(rec); }
+                        for (d = 0; d < decls.length; d++) {
+                            var p = decls[d][0], imp = decls[d][2], cur = rec.props[p];
+                            if (cur && ((cur.imp && !imp) || (cur.imp === imp && (cur.spec > spec || (cur.spec === spec && cur.order > i))))) continue;
+                            rec.props[p] = { v: decls[d][1], spec: spec, order: i, imp: imp };
+                        }
+                    }
+                }
+            }
+            return recs;
+        };
+        var prop = function (rec, p, dflt) { return rec && rec.props[p] ? trim(rec.props[p].v) : dflt; };
+
+        // ---- styles we set, and the page's own values to put back
+        var setStyle = function (el, p, v) {
+            var saved = el.__brGridSaved;
+            if (!saved) {
+                saved = el.__brGridSaved = {};
+                for (var i = 0; i < PROPS.length; i++) saved[PROPS[i]] = [el.style.getPropertyValue(PROPS[i]), el.style.getPropertyPriority(PROPS[i])];
+                touched.push(el);
+            }
+            el.__brGridGen = gen;
+            // (null: the page's own inline value again)
+            if (v === null) { if (saved[p] && saved[p][0]) el.style.setProperty(p, saved[p][0], saved[p][1]); else el.style.removeProperty(p); }
+            else el.style.setProperty(p, v, 'important');
+        };
+        var restore = function (el) {
+            var saved = el.__brGridSaved;
+            if (!saved) return;
+            for (var p in saved) if (saved.hasOwnProperty(p)) {
+                if (saved[p][0]) el.style.setProperty(p, saved[p][0], saved[p][1]); else el.style.removeProperty(p);
+            }
+            el.__brGridSaved = null;
+            if (el.__brGridBox) { var c = ' ' + el.className + ' '; el.className = trim(c.replace(' br-grid ', ' ')); el.__brGridBox = false; }
+        };
+
+        // ---- line placement
+        var parseLine = function (v) {
+            v = trim(String(v || 'auto'));
+            if (/^auto$/i.test(v)) return { auto: true };
+            var toks = v.split(/\s+/), s = { span: false, n: null, name: null };
+            for (var i = 0; i < toks.length; i++) {
+                if (/^span$/i.test(toks[i])) s.span = true;
+                else if (/^[+-]?\d+$/.test(toks[i])) s.n = parseInt(toks[i], 10);
+                else s.name = toks[i];
+            }
+            return s;
+        };
+        var findLines = function (lines, name) { var out = []; for (var i = 0; i < lines.length; i++) if (lines[i].indexOf(name) >= 0) out.push(i); return out; };
+        var lineIndex = function (s, lines, side) {
+            if (s.name) {
+                var idx = findLines(lines, s.name + (side === 'start' ? '-start' : '-end'));
+                if (!idx.length) idx = findLines(lines, s.name);
+                if (!idx.length) return null;
+                var k = s.n || 1;
+                if (k > 0) return k <= idx.length ? idx[k - 1] : idx[idx.length - 1];
+                return -k <= idx.length ? idx[idx.length + k] : idx[0];
+            }
+            if (s.n === null || s.n === 0) return null;
+            return s.n > 0 ? s.n - 1 : Math.max(0, lines.length + s.n);
+        };
+        // -> {start: line index or null (auto), span}
+        var placeAxis = function (st, en, lines) {
+            var s = st.auto || st.span ? null : lineIndex(st, lines, 'start');
+            var e = en.auto || en.span ? null : lineIndex(en, lines, 'end');
+            var spanS = st.span ? (st.n || 1) : 0, spanE = en.span ? (en.n || 1) : 0;
+            if (s !== null && e !== null) { if (e < s) { var t = s; s = e; e = t; } return { start: s, span: Math.max(1, e - s) }; }
+            if (s !== null) return { start: s, span: spanE || 1 };
+            if (e !== null) { var sp = spanS || 1; return { start: Math.max(0, e - sp), span: Math.max(1, Math.min(sp, e)) }; }
+            return { start: null, span: spanS || spanE || 1 };
+        };
+        // auto-placement in row flow; items get r, c (track indices) and rs, cs (spans)
+        var placeItems = function (items, colCount, dense) {
+            var occ = [], i, r, c;
+            var free = function (r0, c0, rs, cs) {
+                if (c0 + cs > colCount) return false;
+                for (var y = r0; y < r0 + rs; y++) { var row = occ[y]; if (!row) continue; for (var x = c0; x < c0 + cs; x++) if (row[x]) return false; }
+                return true;
+            };
+            var take = function (it) { for (var y = it.r; y < it.r + it.rs; y++) { var row = occ[y] || (occ[y] = []); for (var x = it.c; x < it.c + it.cs; x++) row[x] = true; } };
+            for (i = 0; i < items.length; i++) colCount = Math.max(colCount, items[i].c !== null ? items[i].c + items[i].cs : items[i].cs);
+            for (i = 0; i < items.length; i++) { var it0 = items[i]; if (it0.r !== null && it0.c !== null) take(it0); }
+            // locked to a row
+            for (i = 0; i < items.length; i++) {
+                var it1 = items[i];
+                if (it1.r === null || it1.c !== null) continue;
+                for (c = 0; c + it1.cs <= colCount && !free(it1.r, c, it1.rs, it1.cs); c++) { /* the first free column */ }
+                if (c + it1.cs > colCount) { c = colCount; colCount += it1.cs; }
+                it1.c = c;
+                take(it1);
+            }
+            var cr = 0, cc = 0;
+            for (i = 0; i < items.length; i++) {
+                var it = items[i];
+                if (it.r !== null) continue;
+                if (dense) { cr = 0; cc = 0; }
+                if (it.c !== null) {
+                    // a column of its own: the next row where it fits
+                    r = cr + (it.c < cc ? 1 : 0);
+                    while (r < 5000 && !free(r, it.c, it.rs, it.cs)) r++;
+                    it.r = r;
+                    cr = r; cc = it.c;
+                } else {
+                    for (r = cr, c = cc; r < 5000; ) {
+                        if (c + it.cs > colCount) { r++; c = 0; continue; }
+                        if (free(r, c, it.rs, it.cs)) break;
+                        c++;
+                    }
+                    it.r = r; it.c = c;
+                    cr = r; cc = c + it.cs;
+                }
+                take(it);
+            }
+            var rows = 0;
+            for (i = 0; i < items.length; i++) rows = Math.max(rows, items[i].r + items[i].rs);
+            return { cols: colCount, rows: rows };
+        };
+
+        // ---- track sizing: sizes of tracks for the room avail (null: indefinite) with gaps; contrib[i] = the largest
+        // natural size of the items that sit in track i alone
+        var sizeTracks = function (tracks, avail, gap, contrib, el, stretchAuto) {
+            var n = tracks.length, base = [], limit = [], flex = [], i, sum = 0, flexSum = 0;
+            var lenOf = function (sz) { return sz.k === 'len' ? lengthPx(sz.v, el, avail) : null; };
+            for (i = 0; i < n; i++) {
+                var t = tracks[i], c = contrib[i] || 0, mn = lenOf(t.min), mx;
+                base[i] = mn !== null ? mn : 0;
+                if (t.max.k === 'fr') { flex[i] = t.max.n; limit[i] = Infinity; }
+                else if (t.max.k === 'len') { mx = lenOf(t.max); limit[i] = mx !== null ? mx : c; }
+                else if (t.max.k === 'fit') { mx = lengthPx(t.max.v, el, avail); limit[i] = mx !== null ? Math.min(c, mx) : c; }
+                else limit[i] = c;
+                if (!flex[i] && limit[i] < base[i]) limit[i] = base[i];
+                // (an indefinite room makes flexible tracks auto ones)
+                if (flex[i] && avail === null) { base[i] = Math.max(base[i], c); flex[i] = 0; limit[i] = base[i]; }
+            }
+            var gaps = Math.max(0, n - 1) * gap;
+            var size = base.slice(0);
+            // grow toward the limits
+            if (avail !== null) {
+                for (var guard = 0; guard < 20; guard++) {
+                    sum = 0;
+                    for (i = 0; i < n; i++) sum += size[i];
+                    var freeSpace = avail - gaps - sum, growable = [];
+                    if (freeSpace <= 0.5) break;
+                    for (i = 0; i < n; i++) if (!flex[i] && limit[i] > size[i] + 0.01) growable.push(i);
+                    if (!growable.length) break;
+                    var share = freeSpace / growable.length, grown = false;
+                    for (i = 0; i < growable.length; i++) {
+                        var g = growable[i], add = Math.min(share, limit[g] - size[g]);
+                        if (add > 0) { size[g] += add; grown = true; }
+                    }
+                    if (!grown) break;
+                }
+            } else for (i = 0; i < n; i++) if (!flex[i] && isFinite(limit[i])) size[i] = limit[i];
+            // flexible tracks share what is left
+            var anyFlex = false;
+            for (i = 0; i < n; i++) if (flex[i]) anyFlex = true;
+            if (anyFlex && avail !== null) {
+                var inflexible = {};
+                for (var round = 0; round < n + 1; round++) {
+                    var left = avail - gaps;
+                    flexSum = 0;
+                    for (i = 0; i < n; i++) { if (flex[i] && !inflexible[i]) flexSum += flex[i]; else left -= size[i]; }
+                    var fr = flexSum > 0 ? Math.max(0, left) / Math.max(flexSum, 1) : 0, again = false;
+                    for (i = 0; i < n; i++) if (flex[i] && !inflexible[i] && flex[i] * fr < base[i]) { inflexible[i] = true; again = true; }
+                    if (!again) { for (i = 0; i < n; i++) if (flex[i] && !inflexible[i]) size[i] = flex[i] * fr; break; }
+                }
+            } else if (!anyFlex && avail !== null && stretchAuto) {
+                // auto tracks take what is still free (justify-/align-content normal or stretch)
+                sum = 0;
+                var autos = [];
+                for (i = 0; i < n; i++) { sum += size[i]; if (tracks[i].max.k === 'auto') autos.push(i); }
+                var rest = avail - gaps - sum;
+                if (rest > 0.5 && autos.length) for (i = 0; i < autos.length; i++) size[autos[i]] += rest / autos.length;
+            }
+            return size;
+        };
+        var ALIGN = function (v) {
+            v = String(v || '').toLowerCase().replace(/^(safe|unsafe)\s+/, '');
+            if (/^(start|flex-start|self-start|left|baseline|first baseline|last baseline)$/.test(v)) return 'start';
+            if (/^(end|flex-end|self-end|right)$/.test(v)) return 'end';
+            if (v === 'center') return 'center';
+            return v === 'stretch' ? 'stretch' : 'normal';
+        };
+        // (normal stretches everything but pictures and other replaced elements, which keep their size)
+        var REPLACED = { IMG: 1, VIDEO: 1, CANVAS: 1, IFRAME: 1, EMBED: 1, OBJECT: 1, svg: 1, SVG: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, BUTTON: 1 };
+        var stretches = function (a, el) { return a === 'stretch' || (a === 'normal' && !REPLACED[el.tagName]); };
+        // offset and extra gap for justify-/align-content when the tracks leave room
+        var distribute = function (v, free, n) {
+            v = String(v || 'normal').toLowerCase().replace(/^(safe|unsafe)\s+/, '');
+            if (free <= 0 || n < 1) return [0, 0];
+            if (/^(end|flex-end|right)$/.test(v)) return [free, 0];
+            if (v === 'center') return [free / 2, 0];
+            if (v === 'space-between') return n > 1 ? [0, free / (n - 1)] : [0, 0];
+            if (v === 'space-around') return [free / (2 * n), free / n];
+            if (v === 'space-evenly') return [free / (n + 1), free / (n + 1)];
+            return [0, 0];
+        };
+        var offsets = function (sizes, gap, start, extra) {
+            var pos = [], x = start;
+            for (var i = 0; i < sizes.length; i++) { pos.push(x); x += sizes[i] + gap + extra; }
+            return pos;
+        };
+        var spanSize = function (sizes, pos, from, count, gap) {
+            var last = Math.min(sizes.length, from + count) - 1;
+            return last < from ? 0 : pos[last] + sizes[last] - pos[from];
+        };
+
+        // ---- one layout of every grid on the page
+        var layoutAll = function () {
+            gen++;
+            fontCache = null;
+            var recs = collect(), grids = [], byEl = [], i, j, g;
+            for (i = 0; i < recs.length; i++) {
+                var rec = recs[i], d = prop(rec, 'display', '').toLowerCase();
+                if (d !== 'grid' && d !== 'inline-grid') continue;
+                if (/column/i.test(prop(rec, 'grid-auto-flow', 'row'))) continue;
+                grids.push({ el: rec.el, rec: rec, inline: d === 'inline-grid' });
+            }
+            // read phase 0 (nothing written yet): the rendered containers, their items, nesting
+            var kept = [];
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                var cs = getComputedStyle(g.el);
+                if (cs.display === 'none' || !g.el.getClientRects().length) continue;
+                g.items = [];
+                for (var c = g.el.firstChild; c; c = c.nextSibling) {
+                    if (c.nodeType !== 1) continue;
+                    var ccs = getComputedStyle(c);
+                    if (ccs.display === 'none' || /^(SCRIPT|STYLE|TEMPLATE)$/.test(c.tagName)) continue;
+                    // (the page's own absolute or fixed children are not grid items; ours were items last time)
+                    if ((ccs.position === 'absolute' || ccs.position === 'fixed') && !c.__brGridSaved) continue;
+                    g.items.push({ el: c, rec: c.__brGD && c.__brGD.gen === gen ? c.__brGD : null });
+                }
+                g.static = cs.position === 'static';
+                g.w0 = g.el.clientWidth - num(cs.paddingLeft) - num(cs.paddingRight);
+                g.pad = { l: num(cs.paddingLeft), r: num(cs.paddingRight), t: num(cs.paddingTop), b: num(cs.paddingBottom) };
+                g.border = cs.boxSizing === 'border-box' ? { h: num(cs.borderLeftWidth) + num(cs.borderRightWidth), v: num(cs.borderTopWidth) + num(cs.borderBottomWidth) } : null;
+                g.el.__brGridNow = gen;
+                kept.push(g);
+            }
+            grids = kept;
+            // depth: grids inside the items of other grids
+            for (i = 0; i < grids.length; i++) {
+                g = grids[i];
+                g.depth = 0;
+                for (var a = g.el.parentNode; a && a.nodeType === 1; a = a.parentNode) if (a.__brGridNow === gen) g.depth++;
+            }
+            var maxDepth = 0;
+            for (i = 0; i < grids.length; i++) maxDepth = Math.max(maxDepth, grids[i].depth);
+            var level = function (dpt) { var out = []; for (var k = 0; k < grids.length; k++) if (grids[k].depth === dpt) out.push(grids[k]); return out; };
+            var L, lv, it;
+            // columns, top-down
+            for (L = 0; L <= maxDepth; L++) {
+                lv = level(L);
+                // write: the container turns the stand-in off; its items leave the flow, stretched to both edges
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    if (!g.el.__brGridBox) { g.el.className = trim(g.el.className + ' br-grid'); g.el.__brGridBox = true; }
+                    setStyle(g.el, 'height', null);
+                    // (an item of an outer grid is absolute already: a containing block as it is)
+                    if (g.static && g.el.style.getPropertyValue('position') !== 'absolute') setStyle(g.el, 'position', 'relative');
+                    for (j = 0; j < g.items.length; j++) {
+                        it = g.items[j].el;
+                        setStyle(it, 'position', 'absolute');
+                        setStyle(it, 'left', '0px'); setStyle(it, 'right', '0px'); setStyle(it, 'top', '0px'); setStyle(it, 'bottom', '0px');
+                        setStyle(it, 'width', null); setStyle(it, 'height', null);
+                    }
+                }
+                // read: the room, and which items take the stretch (auto sizes fill both edges)
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    var gcs = getComputedStyle(g.el);
+                    g.W = g.el.clientWidth - g.pad.l - g.pad.r;
+                    // (a container sized by its content lost it: it keeps the width it had)
+                    g.keepW = g.W < g.w0 - 1 ? g.w0 : null;
+                    if (g.keepW) g.W = g.keepW;
+                    var h0 = g.el.clientHeight - g.pad.t - g.pad.b;
+                    g.H = h0 > 0.5 ? h0 : null;
+                    // (an item stretched to both edges with an auto size fills the padding box as it is now)
+                    var pbw = g.el.clientWidth, pbh = g.el.clientHeight;
+                    for (j = 0; j < g.items.length; j++) {
+                        var item = g.items[j], ics = getComputedStyle(item.el);
+                        item.m = { l: num(ics.marginLeft), r: num(ics.marginRight), t: num(ics.marginTop), b: num(ics.marginBottom) };
+                        item.box = ics.boxSizing === 'border-box' ? { h: 0, v: 0 } :
+                            { h: num(ics.paddingLeft) + num(ics.paddingRight) + num(ics.borderLeftWidth) + num(ics.borderRightWidth),
+                              v: num(ics.paddingTop) + num(ics.paddingBottom) + num(ics.borderTopWidth) + num(ics.borderBottomWidth) };
+                        item.autoW = Math.abs(item.el.offsetWidth - Math.max(0, pbw - item.m.l - item.m.r)) < 1.5;
+                        item.autoH = Math.abs(item.el.offsetHeight - Math.max(0, pbh - item.m.t - item.m.b)) < 1.5;
+                        item.order = parseInt(prop(item.rec, 'order', '0'), 10) || 0;
+                    }
+                }
+                // write: natural widths (shrink to fit)
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    if (g.keepW) setStyle(g.el, 'width', (g.border ? g.keepW + g.pad.l + g.pad.r + g.border.h : g.keepW) + 'px');
+                    for (j = 0; j < g.items.length; j++) { setStyle(g.items[j].el, 'right', 'auto'); setStyle(g.items[j].el, 'bottom', 'auto'); }
+                }
+                // read: natural widths
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    // (fractional widths up: a track a fraction too narrow wraps its text)
+                    for (j = 0; j < g.items.length; j++) g.items[j].natW = Math.ceil(g.items[j].el.getBoundingClientRect().width - 0.01) + g.items[j].m.l + g.items[j].m.r;
+                }
+                // placement and columns
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    var r0 = g.rec, el = g.el;
+                    g.colGap = lengthPx(prop(r0, 'column-gap', '0').replace(/^normal$/i, '0'), el, g.W) || 0;
+                    g.rowGap = lengthPx(prop(r0, 'row-gap', '0').replace(/^normal$/i, '0'), el, g.H) || 0;
+                    var colList = parseList(prop(r0, 'grid-template-columns', 'none')), rowList = parseList(prop(r0, 'grid-template-rows', 'none'));
+                    var cx = expand(colList, hasAutoRepeat(colList) ? autoCount(colList, g.W, g.colGap, el) : 1);
+                    var rx = expand(rowList, hasAutoRepeat(rowList) ? autoCount(rowList, g.H, g.rowGap, el) : 1);
+                    var areas = parseAreas(prop(r0, 'grid-template-areas', 'none'));
+                    if (areas) {
+                        while (cx.tracks.length < areas.cols) { cx.tracks.push(parseTrack('auto')); cx.lines.push([]); }
+                        while (rx.tracks.length < areas.rows) { rx.tracks.push(parseTrack('auto')); rx.lines.push([]); }
+                        for (var an in areas.areas) if (areas.areas.hasOwnProperty(an)) {
+                            var ar = areas.areas[an];
+                            cx.lines[ar.c0].push(an + '-start'); cx.lines[ar.c1].push(an + '-end');
+                            rx.lines[ar.r0].push(an + '-start'); rx.lines[ar.r1].push(an + '-end');
+                        }
+                    }
+                    var list = g.items.slice(0);
+                    for (j = 0; j < list.length; j++) list[j].idx = j;
+                    list.sort(function (x, y) { return x.order - y.order || x.idx - y.idx; });
+                    for (j = 0; j < list.length; j++) {
+                        var ir = list[j].rec;
+                        var ca = placeAxis(parseLine(prop(ir, 'grid-column-start', 'auto')), parseLine(prop(ir, 'grid-column-end', 'auto')), cx.lines);
+                        var ra = placeAxis(parseLine(prop(ir, 'grid-row-start', 'auto')), parseLine(prop(ir, 'grid-row-end', 'auto')), rx.lines);
+                        list[j].c = ca.start; list[j].cs = ca.span; list[j].r = ra.start; list[j].rs = ra.span;
+                    }
+                    var dims = placeItems(list, cx.tracks.length, /dense/i.test(prop(r0, 'grid-auto-flow', 'row')));
+                    // implicit tracks
+                    var autoCols = parseList(prop(r0, 'grid-auto-columns', 'auto')), autoRows = parseList(prop(r0, 'grid-auto-rows', 'auto'));
+                    var ac = expand(autoCols, 1).tracks, arw = expand(autoRows, 1).tracks;
+                    if (!ac.length) ac = [parseTrack('auto')];
+                    if (!arw.length) arw = [parseTrack('auto')];
+                    var explicitCols = cx.tracks.length, explicitRows = rx.tracks.length;
+                    for (j = cx.tracks.length; j < dims.cols; j++) cx.tracks.push(ac[(j - explicitCols) % ac.length]);
+                    for (j = rx.tracks.length; j < dims.rows; j++) rx.tracks.push(arw[(j - explicitRows) % arw.length]);
+                    // auto-fit: repeated tracks without items collapse (their gaps too): they leave the list before sizing
+                    if (cx.fit.length) {
+                        var used = {}, keepIdx = [], newIdx = {};
+                        for (j = 0; j < list.length; j++) for (var uc = list[j].c; uc < list[j].c + list[j].cs; uc++) used[uc] = true;
+                        var fitSet = {};
+                        for (j = 0; j < cx.fit.length; j++) fitSet[cx.fit[j]] = true;
+                        for (j = 0; j < cx.tracks.length; j++) if (!fitSet[j] || used[j]) { newIdx[j] = keepIdx.length; keepIdx.push(j); }
+                        if (keepIdx.length < cx.tracks.length) {
+                            var kept = [];
+                            for (j = 0; j < keepIdx.length; j++) kept.push(cx.tracks[keepIdx[j]]);
+                            cx.tracks = kept;
+                            for (j = 0; j < list.length; j++) list[j].c = newIdx[list[j].c];
+                        }
+                        cx.fit = [];
+                    }
+                    g.cols = cx; g.rows = rx;
+                    var contrib = [];
+                    for (j = 0; j < list.length; j++) if (list[j].cs === 1) contrib[list[j].c] = Math.max(contrib[list[j].c] || 0, list[j].natW);
+                    var jc = prop(r0, 'justify-content', 'normal');
+                    var sizes = sizeTracks(cx.tracks, g.W, g.colGap, contrib, el, /^(normal|stretch)$/i.test(jc));
+                    var total = 0;
+                    for (j = 0; j < sizes.length; j++) total += sizes[j];
+                    total += Math.max(0, sizes.length - 1) * g.colGap;
+                    var dj = distribute(jc, g.W - total, sizes.length);
+                    g.colSizes = sizes;
+                    g.colPos = offsets(sizes, g.colGap, g.pad.l + dj[0], dj[1]);
+                    g.colGapX = g.colGap + dj[1];
+                    g.list = list;
+                    g.justifyItems = prop(r0, 'justify-items', 'normal');
+                    g.alignItems = prop(r0, 'align-items', 'normal');
+                    g.alignContent = prop(r0, 'align-content', 'normal');
+                }
+                // write: widths and left edges
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    for (j = 0; j < g.list.length; j++) {
+                        it = g.list[j];
+                        var areaW = spanSize(g.colSizes, g.colPos, it.c, it.cs, g.colGapX);
+                        var js = ALIGN(prop(it.rec, 'justify-self', 'auto') === 'auto' ? g.justifyItems : prop(it.rec, 'justify-self', 'auto'));
+                        var outerW = it.natW, x = g.colPos[it.c] !== undefined ? g.colPos[it.c] : g.pad.l;
+                        if (stretches(js, it.el) && it.autoW) {
+                            setStyle(it.el, 'width', Math.max(0, areaW - it.m.l - it.m.r - it.box.h) + 'px');
+                            outerW = areaW;
+                        } else if (js === 'center') x += (areaW - outerW) / 2;
+                        else if (js === 'end') x += areaW - outerW;
+                        setStyle(it.el, 'left', Math.round(x * 100) / 100 + 'px');
+                        it.areaW = areaW;
+                    }
+                }
+            }
+            // rows, bottom-up (an item holding a grid is measured after that grid has its height)
+            for (L = maxDepth; L >= 0; L--) {
+                lv = level(L);
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    for (j = 0; j < g.list.length; j++) g.list[j].natH = Math.ceil(g.list[j].el.getBoundingClientRect().height - 0.01) + g.list[j].m.t + g.list[j].m.b;
+                }
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    var rcontrib = [], k2;
+                    for (j = 0; j < g.list.length; j++) if (g.list[j].rs === 1) rcontrib[g.list[j].r] = Math.max(rcontrib[g.list[j].r] || 0, g.list[j].natH);
+                    var rsizes = sizeTracks(g.rows.tracks, g.H, g.rowGap, rcontrib, g.el, /^(normal|stretch)$/i.test(g.alignContent));
+                    // items over several rows: what does not fit goes to their auto rows
+                    for (j = 0; j < g.list.length; j++) {
+                        it = g.list[j];
+                        if (it.rs < 2) continue;
+                        var have = (it.rs - 1) * g.rowGap, autos = [];
+                        for (k2 = it.r; k2 < it.r + it.rs && k2 < rsizes.length; k2++) { have += rsizes[k2]; if (g.rows.tracks[k2].max.k !== 'len') autos.push(k2); }
+                        if (it.natH > have + 0.5) {
+                            if (!autos.length) autos.push(Math.min(rsizes.length, it.r + it.rs) - 1);
+                            for (k2 = 0; k2 < autos.length; k2++) rsizes[autos[k2]] += (it.natH - have) / autos.length;
+                        }
+                    }
+                    var rtotal = 0;
+                    for (j = 0; j < rsizes.length; j++) rtotal += rsizes[j];
+                    rtotal += Math.max(0, rsizes.length - 1) * g.rowGap;
+                    var dA = g.H !== null ? distribute(g.alignContent, g.H - rtotal, rsizes.length) : [0, 0];
+                    g.rowSizes = rsizes;
+                    g.rowPos = offsets(rsizes, g.rowGap, g.pad.t + dA[0], dA[1]);
+                    g.rowGapX = g.rowGap + dA[1];
+                    g.contentH = g.H !== null ? null : rtotal;
+                }
+                for (i = 0; i < lv.length; i++) {
+                    g = lv[i];
+                    for (j = 0; j < g.list.length; j++) {
+                        it = g.list[j];
+                        var areaH = spanSize(g.rowSizes, g.rowPos, it.r, it.rs, g.rowGapX);
+                        var as = ALIGN(prop(it.rec, 'align-self', 'auto') === 'auto' ? g.alignItems : prop(it.rec, 'align-self', 'auto'));
+                        var y = g.rowPos[it.r] !== undefined ? g.rowPos[it.r] : g.pad.t;
+                        if (stretches(as, it.el) && it.autoH) setStyle(it.el, 'height', Math.max(0, areaH - it.m.t - it.m.b - it.box.v) + 'px');
+                        else if (as === 'center') y += (areaH - it.natH) / 2;
+                        else if (as === 'end') y += areaH - it.natH;
+                        setStyle(it.el, 'top', Math.round(y * 100) / 100 + 'px');
+                    }
+                    if (g.contentH !== null) setStyle(g.el, 'height', Math.ceil(g.contentH + (g.border ? g.pad.t + g.pad.b + g.border.v : 0)) + 'px');
+                    stats.items += g.list.length;
+                }
+            }
+            stats.grids = grids.length;
+            // elements laid out before and not now (a media query, a removed rule) get their own styles back
+            var keep = [];
+            for (i = 0; i < touched.length; i++) {
+                if (touched[i].__brGridGen === gen) keep.push(touched[i]);
+                else restore(touched[i]);
+            }
+            touched = keep;
+        };
+        var running = false;
+        var apply = function () {
+            if (running || (!entries.length && !touched.length)) return;
+            running = true;
+            var t0 = Date.now();
+            try { layoutAll(); } catch (e) { if (window.console && console.error) console.error(e); }
+            running = false;
+            stats.passes++;
+            stats.ms = Date.now() - t0;
+        };
+        // a picture that loads in a grid item changes its height
+        document.addEventListener('load', function (e) {
+            var t = e.target;
+            if (!t || t.tagName !== 'IMG' || !touched.length) return;
+            for (var a = t.parentNode; a && a.nodeType === 1; a = a.parentNode) {
+                if (a.__brGridSaved) { if (!apply.timer) apply.timer = setTimeout(function () { apply.timer = null; apply(); }, 150); return; }
+            }
+        }, true);
+        window.__brGrid = {
+            setManifest: function (m) { entries = (m && m.gd) || []; },
+            apply: apply,
+            state: function () { return { entries: entries.length, grids: stats.grids, items: stats.items, passes: stats.passes, ms: stats.ms }; }
         };
     })();
     // ---- The CSS rewriter inside the page (cssfix.js, loaded on first use): values computed here and styles that
