@@ -413,6 +413,27 @@
             o.style = v;
             return v;
         },
+        // o.constructor of an element: the old engine answers the element interface's constructor from a table of the
+        // wrapper itself, whatever its prototype, so a custom element's class never showed (Lit reads
+        // this.constructor.elementStyles, Stencil elm.constructor.style); the class is the first own constructor up the
+        // prototype chain that is not the engine's
+        __br_ctor: function (o) {
+            if (o === null || o === undefined || typeof o !== 'object' || o.nodeType !== 1) return o.constructor;
+            for (var p = Object.getPrototypeOf(o); p; p = Object.getPrototypeOf(p)) {
+                if (!Object.prototype.hasOwnProperty.call(p, 'constructor')) continue;
+                var c = p.constructor;
+                if (typeof c === 'function' && c.prototype === p && !__br_isNative(c)) return c;
+                break;
+            }
+            return o.constructor;
+        },
+        // o.type = v: a button's type is read-only in the old engine (today it sets the attribute): a TypeError in
+        // strict code, and in sloppy code the button stayed a submit button
+        __br_setType: function (o, v) {
+            if (o && o.nodeType === 1 && /^button$/i.test(o.tagName)) { o.setAttribute('type', v); return v; }
+            o.type = v;
+            return v;
+        },
         // delete el.dataset[key]: the old engine throws in strict code when there is no such attribute (today: true)
         __br_dsdel: function (el, key) {
             try { return delete el.dataset[key]; } catch (e) { return true; }
@@ -661,7 +682,7 @@
         }
     };
     var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
-                         __br_super: ['__br_isNative', '__br_new'], __br_Proxy: ['__br_new'] };
+                         __br_super: ['__br_isNative', '__br_new'], __br_Proxy: ['__br_new'], __br_ctor: ['__br_isNative'] };
 
     // ------------------------------------------------------------------------------------------------ small utilities
     var hex4 = function (c) { return ('0000' + c.toString(16)).slice(-4); };
@@ -1165,6 +1186,22 @@
     };
     // yield/await inside a loop body: the body cannot become a function
     W.noWrap = function (s) { for (var x = s; x && !x.isFn; x = x.parent) if (x.node && isLoop(x.node)) x.node.$noWrap = true; };
+    // a read of x.constructor that the helper may answer: not an assignment target, delete operand, method call, `new`
+    // or tag callee, nor a link of an optional chain
+    var ctorRead = function (n, p) {
+        if (!p) return false;
+        if (p.type === 'AssignmentExpression' || p.type === 'AssignmentPattern' || p.type === 'ForInStatement' || p.type === 'ForOfStatement') { if (p.left === n) return false; }
+        else if (p.type === 'UpdateExpression' || p.type === 'ArrayPattern' || p.type === 'RestElement') return false;
+        else if (p.type === 'UnaryExpression' && p.operator === 'delete') return false;
+        else if ((p.type === 'CallExpression' || p.type === 'NewExpression') && p.callee === n) return false;
+        else if (p.type === 'TaggedTemplateExpression' && p.tag === n) return false;
+        else if (p.type === 'Property' && p.value === n && p.$p && p.$p.type === 'ObjectPattern') return false;
+        for (var a = p; a; a = a.$p) {
+            if (a.type === 'ChainExpression') return false;
+            if (a.type !== 'MemberExpression' && a.type !== 'CallExpression') break;
+        }
+        return true;
+    };
     W.v = function (n, p, s) {
         n.$p = p;
         this.visits++;
@@ -1317,8 +1354,9 @@
                 else if (this.pattern(n.left, n, s, null)) d = true;
                 if (this.v(n.right, n, s)) d = true;
                 // el.style = "..." (today it sets the style attribute; the old engine's style is read-only, a TypeError in
-                // strict code): through a helper
-                if (n.operator === '=' && n.left.type === 'MemberExpression' && !n.left.computed && n.left.property.name === 'style' && n.left.object.type !== 'Super') { n.$styleSet = true; d = true; }
+                // strict code) and button.type = "..." (read-only there too): through a helper
+                if (n.operator === '=' && n.left.type === 'MemberExpression' && !n.left.computed && n.left.object.type !== 'Super' &&
+                    (n.left.property.name === 'style' || n.left.property.name === 'type')) { n.$domSet = n.left.property.name; d = true; }
                 break;
             case 'ConditionalExpression':
                 if (this.v(n.test, n, s)) d = true;
@@ -1340,6 +1378,8 @@
                 if (n.computed) { if (this.v(n.property, n, s)) d = true; }
                 else { n.property.$p = n; if (n.property.type === 'PrivateIdentifier') d = true; }
                 if (n.optional) d = true;
+                // x.constructor read (a custom element's class, see __br_ctor)
+                if (!n.computed && n.property.name === 'constructor' && n.object.type !== 'Super' && ctorRead(n, p)) { n.$ctor = true; d = true; }
                 break;
             case 'ChainExpression': this.v(n.expression, n, s); d = true; break;
             case 'AwaitExpression': case 'YieldExpression':
@@ -1970,6 +2010,11 @@
     };
     P.member = function (n) {
         var code;
+        if (n.$ctor) {
+            code = this.h('__br_ctor') + '(' + this.E(n.object, P_ASSIGN) + ')';
+            this.prec = P_CALL;
+            return code;
+        }
         if (n.object.type === 'Super') code = this.ctxSuper() + this.tail(n);
         else {
             var obj = this.E(n.object, P_CALL);
@@ -1999,8 +2044,8 @@
     };
     P.assign = function (n) {
         var op = n.operator, left = n.left, code;
-        if (n.$styleSet) {
-            code = this.h('__br_setStyle') + '(' + this.E(left.object, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')';
+        if (n.$domSet) {
+            code = this.h(n.$domSet === 'type' ? '__br_setType' : '__br_setStyle') + '(' + this.E(left.object, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')';
             this.prec = P_CALL;
             return code;
         }

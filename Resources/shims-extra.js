@@ -924,12 +924,22 @@
             root.host = host;
             root.mode = (init && init.mode) || 'open';
             root.delegatesFocus = !!(init && init.delegatesFocus);
-            // (constructed sheets adopted here get <style> copies inside the root, see the constructable stylesheets)
+            // (constructed sheets adopted here get <style> copies inside the root, see the constructable stylesheets; so
+            // do the sheets the host's tag claimed, see __brHostSheets)
             var rootSheets = [];
+            var allSheets = function () {
+                var extra = window.__brHostSheets ? window.__brHostSheets.forTag(host.tagName.toLowerCase()) : [];
+                return extra.length ? rootSheets.concat(extra) : rootSheets;
+            };
+            root.__brRestyle = function () { if (window.__brAdoptInto) window.__brAdoptInto(root, allSheets()); };
             try {
                 Object.defineProperty(root, 'adoptedStyleSheets', { configurable: true, get: function () { return rootSheets; },
-                    set: function (v) { rootSheets = v ? Array.prototype.slice.call(v) : []; if (window.__brAdoptInto) window.__brAdoptInto(root, rootSheets); } });
+                    set: function (v) { rootSheets = v ? Array.prototype.slice.call(v) : []; root.__brRestyle(); } });
             } catch (e0) { root.adoptedStyleSheets = []; }
+            // the first children the root gets claim the component sheets a library put in the document just before
+            var nativeInsert = root.insertBefore, nativeAppend = root.appendChild;
+            root.insertBefore = function (node, ref) { if (window.__brHostSheets) window.__brHostSheets.claim(host); return nativeInsert.call(this, node, ref === undefined ? null : ref); };
+            root.appendChild = function (node) { if (window.__brHostSheets) window.__brHostSheets.claim(host); return nativeAppend.call(this, node); };
             root.getElementById = function (id) { return root.querySelector('[id="' + String(id).replace(/"/g, '\\"') + '"]'); };
             root.elementFromPoint = function (x, y) { return document.elementFromPoint(x, y); };
             root.elementsFromPoint = function (x, y) { var el = document.elementFromPoint(x, y); return el ? [el] : []; };
@@ -937,6 +947,7 @@
             try { Object.defineProperty(root, 'activeElement', { get: function () { return document.activeElement; } }); } catch (e) {}
             host.appendChild(root);
             try { Object.defineProperty(host, 'shadowRoot', { value: root, configurable: true, writable: true }); } catch (e2) { host.shadowRoot = root; }
+            if (window.__brHostSheets && window.__brHostSheets.forTag(host.tagName.toLowerCase()).length) root.__brRestyle();
             return root;
         };
         addStyle('[data-shadow-root]{display:inherit}');
@@ -7311,12 +7322,37 @@
         for (var k in Base) if (Base.hasOwnProperty(k)) Constructed[k] = Base[k];
         Constructed.__brConstructable = true;
         window.CSSStyleSheet = Constructed;
+        // Sheets with :host rules that the DOCUMENT adopts: a library that did not take the emulated shadow root for one
+        // (Stencil wants nodeType 11 and falls back to the document) meant them for the component it renders next. They
+        // stay off in the document (their other rules would reach the whole page); the next emulated root that gets
+        // children claims them for its host's tag, and every root of that tag gets <style> copies.
+        var pendingHost = [], tagSheets = {};
+        var isHostSheet = function (s) { return !!(s && s.__brRules && /:host\b/.test(s.__brRules.join('\n'))); };
+        window.__brHostSheets = {
+            forTag: function (tag) { return tagSheets[tag] || []; },
+            claim: function (host) {
+                if (!pendingHost.length || !host || !host.tagName) return;
+                var tag = host.tagName.toLowerCase(), list = pendingHost;
+                pendingHost = [];
+                for (var i = 0; i < list.length; i++) list[i].__brClaimed = tag;
+                tagSheets[tag] = (tagSheets[tag] || []).concat(list);
+                var hosts = document.getElementsByTagName(tag);
+                for (var h = 0; h < hosts.length; h++) if (hosts[h].shadowRoot && hosts[h].shadowRoot.__brRestyle) hosts[h].shadowRoot.__brRestyle();
+            }
+        };
         // adoption: our sheets are switched on in the document, the others stay as they are
         var adopted = [];
         var adopt = function (list) {
             var i, s;
             for (i = 0; i < adopted.length; i++) { s = adopted[i]; if (list.indexOf(s) < 0 && s && s.__brStyle) s.disabled = true; }
-            for (i = 0; i < list.length; i++) { s = list[i]; if (s && s.__brStyle) s.disabled = !!s.__brOff; }
+            for (i = 0; i < list.length; i++) {
+                s = list[i];
+                if (!s || !s.__brStyle) continue;
+                if (isHostSheet(s)) {
+                    s.disabled = true;
+                    if (!s.__brClaimed && pendingHost.indexOf(s) < 0) pendingHost.push(s);
+                } else s.disabled = !!s.__brOff;
+            }
             adopted = list.slice();
             live.length = 0;
             Array.prototype.push.apply(live, adopted);
@@ -7344,7 +7380,8 @@
                 var style = document.createElement('style');
                 style.setAttribute('data-br-adopted', '');
                 style.textContent = sheet.__brRules.join('\n');
-                root.insertBefore(style, root.firstChild);
+                // (the engine's insertBefore: the root's own one claims pending component sheets)
+                Node.prototype.insertBefore.call(root, style, root.firstChild);
                 copies.push({ root: root, sheet: sheet, style: style });
             }
         };

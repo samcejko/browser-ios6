@@ -780,6 +780,30 @@
             return clone(value);
         };
     })();
+    // Object.assign onto an element (a helper that makes a node from a tag and properties): what the old engine keeps
+    // read-only goes through the attribute (a button's type; today that property sets it), and void elements ignore
+    // innerText (today they take it, here it throws DOM Exception 7). Other failures stay failures.
+    if (Object.assign && !Object.assign.__brDom) (function () {
+        var nativeAssign = Object.assign, hasOwn = Object.prototype.hasOwnProperty;
+        var put = function (el, k, v) {
+            try { el[k] = v; } catch (e) {
+                if (k === 'type' && /^button$/i.test(el.tagName)) el.setAttribute('type', v);
+                else if (k !== 'innerText') throw e;
+            }
+        };
+        Object.assign = function assign(target) {
+            try { return nativeAssign.apply(Object, arguments); } catch (e) {
+                if (target === null || typeof target !== 'object' || target.nodeType !== 1) throw e;
+                for (var i = 1; i < arguments.length; i++) {
+                    var s = arguments[i];
+                    if (s === null || s === undefined) continue;
+                    for (var k in s) if (hasOwn.call(s, k)) put(target, k, s[k]);
+                }
+                return target;
+            }
+        };
+        Object.assign.__brDom = true;
+    })();
     if (!window.reportError) window.reportError = function (e) { if (con.error) con.error(e); };
     if (!window.ResizeObserver) window.ResizeObserver = function () {}; // provided by the polyfill before this file normally
     if (!window.IdleDeadline) window.IdleDeadline = function () {};
