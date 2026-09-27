@@ -141,6 +141,15 @@ static NSString * const BRCacheRewriteTagKey = @"BRRewriteTag";   // the rewrite
 // a stored document, stylesheet or script was rewritten by the rewriters of another version: not used (a fixed
 // transpiler would otherwise not reach a script cached for a year)
 static NSString *BRHeader(NSDictionary *headers, NSString *name);
+// NSURLCache on one queue: stores from many request threads at once crashed inside CFNetwork (a NULL dereference in
+// the cache's store, idnes.cz); reads wait for the stores before them
+static dispatch_queue_t BRCacheQueue(void)
+{
+    static dispatch_queue_t q;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("com.samcejko.browser.cache", DISPATCH_QUEUE_SERIAL); });
+    return q;
+}
 // A text body stored as it came (too big to rewrite, rewriting switched off) is tagged with what made it so: it goes
 // stale when the rewriters or those limits change, like a rewritten one.
 static NSString *BRRawCacheTag(void)
@@ -482,13 +491,16 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 
     // 1. Cache
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
-        NSCachedURLResponse *cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
-        if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data])) {
-            // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later are gone
-            // from the transpiler's cache: loaded again)
-            [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
-            cached = nil;
-        }
+        __block NSCachedURLResponse *cached = nil;
+        dispatch_sync(BRCacheQueue(), ^{
+            cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
+            if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data])) {
+                // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later are
+                // gone from the transpiler's cache: loaded again)
+                [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
+                cached = nil;
+            }
+        });
         if (cached && [cached.response isKindOfClass:[NSHTTPURLResponse class]] && cached.userInfo[BRCacheStoredAtKey]) {
             if (BRCachedResponseIsFresh(cached) || policy == NSURLRequestReturnCacheDataElseLoad || policy == NSURLRequestReturnCacheDataDontLoad) {
                 [self serveCachedResponse:cached];
@@ -979,8 +991,10 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
                             BRCacheRewriteTagKey: rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
+    // (the body is not changed after this: the request lets go of it)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
-    [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];
+    NSURLRequest *request = self.request;
+    dispatch_async(BRCacheQueue(), ^{ [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:request]; });
 }
 
 - (void)serveWebPDataURL
