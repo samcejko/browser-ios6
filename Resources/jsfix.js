@@ -1025,6 +1025,9 @@
         this.bigintShim = false;  // the same for BigInt (and bigint literals call __br_BigInt)
         this.redos = [];          // functions lowered while parsing that must be analysed again (renamed names)
         this.visits = 0;          // nodes walked (the size of the tree a unit held, for stats)
+        this.skippedNodes = [];   // functions the parser skipped (islands), met since the last resolve
+        this.skippedStmts = [];   // statements it skipped
+        this.renamedParams = [];  // parameter bindings renamed (skipped code may use them)
     };
     var W = Walker.prototype;
     W.inArrow = function () { var f = this.fns[this.fns.length - 1]; return !!(f && f.$arrow); };
@@ -1151,6 +1154,7 @@
         this.names['$' + nn] = 1;
         b.newName = nn;
         for (var j = 0; j < b.ids.length; j++) markDirty(b.ids[j]);
+        this.renamedParams.push(b);
         return true;
     };
     W.cls = function (n, p, s) {
@@ -1238,6 +1242,7 @@
                 break;
             }
             case 'EmptyStatement': case 'DebuggerStatement': break;
+            case 'BrRawStatement': n.$scope = s; this.skippedStmts.push(n); break;   // (see islands, W.skippedRefs)
             case 'IfStatement':
                 if (this.v(n.test, n, s)) d = true;
                 if (this.v(n.consequent, n, s)) d = true;
@@ -1516,6 +1521,7 @@
     // references and declarations: those are resolved in the next round.
     W.resolve = function () {
         var ri = 0, li = 0, i, j, b;
+        if (this.skippedNodes.length || this.skippedStmts.length) this.skippedRefs();
         for (;;) {
             ri = this.resolveRefs(ri);
             li = this.decideRenames(li);
@@ -1551,10 +1557,10 @@
                 b.refs.push(id);
                 id.$b = b;
                 // (a binding renamed in an earlier round)
-                if (b.newName) { if (id.$raw) this.redo(id.$raw); else markDirty(id); }
+                if (b.newName) { if (id.$rawStmt) throw new Unsupported('island-rename'); if (id.$raw) this.redo(id.$raw); else markDirty(id); }
                 // (an imported name prints as a member of its dependency's namespace; a function lowered while
                 // parsing before that import took it for a global: analysed again)
-                if (b.kind === 'import') { if (id.$raw) this.redo(id.$raw); else markDirty(id); }
+                if (b.kind === 'import') { if (id.$rawStmt) throw new Unsupported('island-rename'); if (id.$raw) this.redo(id.$raw); else markDirty(id); }
             }
             else if (id.name === 'Proxy' && this.proxyShim && !id.$typeof) { id.$proxy = true; markDirty(id); }
             else if (id.name === 'BigInt' && this.bigintShim && !id.$typeof) { id.$bigint = true; markDirty(id); }
@@ -1581,7 +1587,10 @@
             this.names['$' + nn] = 1;
             b.newName = nn;
             for (j = 0; j < b.ids.length; j++) markDirty(b.ids[j]);
-            for (j = 0; j < b.refs.length; j++) { if (b.refs[j].$raw) this.redo(b.refs[j].$raw); else markDirty(b.refs[j]); }
+            for (j = 0; j < b.refs.length; j++) {
+                if (b.refs[j].$rawStmt) throw new Unsupported('island-rename');   // (see W.skippedRefs)
+                if (b.refs[j].$raw) this.redo(b.refs[j].$raw); else markDirty(b.refs[j]);
+            }
         }
         return this.lexicals.length;
     };
@@ -1623,17 +1632,65 @@
         var raw = n.$raw, rs = new Scope('function', s, n, s.strict), free = raw.free;
         raw.node = n;
         raw.scope = s;
+        // (a function the parser skipped: the names it takes are looked for once every declaration is known)
+        if (raw.skipped) { raw.rs = rs; this.skippedNodes.push(n); return false; }
         for (var j = 0; j < free.length; j++) this.ref({ type: 'Identifier', name: free[j].name, $raw: raw, $w: free[j].w, $impCheck: free[j].imp, start: n.start, end: n.end }, rs, false);
         if (raw.text === null) return false;
         n.$d = true;
         return true;
     };
+    // A function whose body the parser skipped (the engine takes it as it is, see islands): it keeps its text
+    W.skipped = function (n, strict) {
+        n.$raw = { text: null, free: [], thisAlias: null, argsAlias: null, strict: strict, node: null, scope: null, fresh: null, redo: false, skipped: true, rs: null };
+        n.params = [];
+        n.body = null;
+        n.$scope = null;
+    };
+    // The names the code the parser skipped takes from the code around it, as references: only names a rename or a loop
+    // can concern (block-scoped declarations, renamed parameters) wherever its text has them but after a dot. That is
+    // more than it really uses: a rename then has a skipped function parsed and analysed after all (see W.redo), and a
+    // skipped statement lowered as a whole (it has no function of its own to parse again). Every name this lowering
+    // adds has a $ in it, and those of the skipped text are taken beforehand (see lower).
+    W.skippedRefs = function () {
+        var all = this.skippedNodes.concat(this.skippedStmts), names = [], seen = {}, i, b, x;
+        this.skippedNodes = [];
+        this.skippedStmts = [];
+        // (a let at the top of a function is neither renamed nor made per iteration: only the others count, and only
+        // for code inside their functions, which alone can meet them or make their names free there)
+        var add = function (b) {
+            b.scope.fn.$islandNames = true;
+            if (!hasOwn.call(seen, '$' + b.name)) { seen['$' + b.name] = 1; names.push(b.name.replace(/\$/g, '\\$')); }
+        };
+        for (i = 0; i < this.lexicals.length; i++) {
+            b = this.lexicals[i];
+            if (b.scope !== b.scope.fn || (b.scope.kind === 'program' && hasOwn.call(DANGEROUS_GLOBALS, b.name))) add(b);
+        }
+        for (i = 0; i < this.renamedParams.length; i++) add(this.renamedParams[i]);
+        if (!names.length) return;
+        var re = new RegExp('(^|[^\\w$.])(' + names.join('|') + ')(?![\\w$])', 'g'), m;
+        for (i = 0; i < all.length; i++) {
+            var n = all[i], raw = n.$raw, near = false;
+            for (x = raw ? raw.scope : n.$scope; x && !near; x = x.parent) if (x.$islandNames) near = true;
+            if (!near) continue;
+            var text = this.src.slice(n.start, n.end), found = {}, count = 0;
+            re.lastIndex = 0;
+            while (count < names.length && (m = re.exec(text)) !== null) {
+                if (hasOwn.call(found, '$' + m[2])) continue;
+                found['$' + m[2]] = 1;
+                count++;
+                var id = { type: 'Identifier', name: m[2], $w: true, start: n.start, end: n.end };
+                // (a statement's names are its function's own: no closure)
+                if (raw) { id.$raw = raw; this.ref(id, raw.rs, false); } else { id.$rawStmt = n; this.ref(id, n.$scope, false); }
+            }
+        }
+    };
     // A function the parser just completed, lowered on its own: analysed below a stand-in for the scopes around it
     // (not parsed completely yet), printed, and emptied. It keeps its text (null: unchanged), the free names with
     // whether it writes them, and the placeholders an arrow used for the outer this/arguments (P.rawFunc).
     W.early = function (n, strict, printer) {
-        var saved = [this.refs, this.lexicals, this.loops, this.fns, this.imports, this.redos];
-        this.refs = []; this.lexicals = []; this.loops = []; this.fns = []; this.imports = []; this.redos = [];
+        var saved = [this.refs, this.lexicals, this.loops, this.fns, this.imports, this.redos, this.skippedNodes, this.renamedParams, this.skippedStmts];
+        this.refs = []; this.lexicals = []; this.loops = []; this.fns = []; this.imports = []; this.redos = []; this.skippedNodes = []; this.renamedParams = [];
+        this.skippedStmts = [];
         // (in a module the stand-in holds the imports parsed so far: they print as namespace members)
         var root = this.earlyRoot || new Scope('program', null, null, strict), i, id, e, v0 = this.visits;
         var raw = { text: null, free: [], thisAlias: null, argsAlias: null, strict: strict, node: null, scope: null, fresh: null, redo: false };
@@ -1663,6 +1720,7 @@
             }
         } finally {
             this.refs = saved[0]; this.lexicals = saved[1]; this.loops = saved[2]; this.fns = saved[3]; this.imports = saved[4]; this.redos = saved[5];
+            this.skippedNodes = saved[6]; this.renamedParams = saved[7]; this.skippedStmts = saved[8];
             // (the shared stand-in must not keep the unit's identifiers alive)
             if (this.earlyRoot) for (var k in root.decls) if (hasOwn.call(root.decls, k)) root.decls[k].refs = [];
         }
@@ -3333,13 +3391,48 @@
     // ------------------------------------------------------------------------------------------------ entry points
     // onFunction(node, strict, inClass): every `function` and arrow as soon as the parser completed it (the parser's
     // strictness is the surrounding code's again by then)
-    var parse = function (src, module, onFunction, onImport) {
+    // isl: where the parser skips (see islands): function bodies and runs of statements the engine takes as they are
+    // are not parsed (isl.last: the start of the last one skipped)
+    var parse = function (src, module, onFunction, onImport, isl) {
         var acorn = root.acorn;
         if (!acorn || !acorn.parse) throw new Unsupported('acorn missing');
         var options = { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                         allowReserved: true, locations: false };
         if (!onFunction) return acorn.parse(src, options);
         var p = new acorn.Parser(options, src), classes = 0;
+        if (isl) {
+            var tt = acorn.tokTypes;
+            // (the tokenizer goes on at the closing brace or semicolon: reading it leaves the context as parsing would)
+            var jump = function (parser, end, type) {
+                parser.pos = end - 1;
+                parser.next();
+                if (parser.type !== type || parser.start !== end - 1) throw new Unsupported('island-skip');
+                parser.next();
+            };
+            p.__brParseFunctionBody = p.parseFunctionBody;
+            p.parseFunctionBody = function (node, isArrowFunction, isMethod, forInit) {
+                var end = !isArrowFunction && !isMethod && this.type === tt.braceL && hasOwn.call(isl.fn, this.start) ? isl.fn[this.start] : 0;
+                if (!end) return this.__brParseFunctionBody(node, isArrowFunction, isMethod, forInit);
+                var body = this.startNode();
+                body.body = [];
+                isl.last = this.start;
+                jump(this, end, tt.braceR);
+                node.body = this.finishNode(body, 'BlockStatement');
+                node.expression = false;
+                node.$skipped = true;
+                this.exitScope();
+            };
+            // (a statement whose first token changed the tokenizer's context is parsed: see islandStatements)
+            p.__brParseStatement = p.parseStatement;
+            p.parseStatement = function (context, topLevel, exports) {
+                var end = hasOwn.call(isl.stmt, this.start) ? isl.stmt[this.start] : 0, type = this.type;
+                if (!end || type === tt.parenL || type === tt.braceL || type === tt.backQuote || type === tt._function || type === tt._class) return this.__brParseStatement(context, topLevel, exports);
+                var node = this.startNode();
+                isl.last = this.start;
+                jump(this, end, tt.semi);
+                return this.finishNode(node, 'BrRawStatement');
+            };
+        }
         p.__brParseFunction = p.parseFunction;
         p.__brParseArrow = p.parseArrowExpression;
         p.__brParseClass = p.parseClass;
@@ -3424,13 +3517,20 @@
         while (lo < hi) { var mid = (lo + hi) >> 1; if (list[mid] < start) lo = mid + 1; else hi = mid; }
         return lo < list.length && list[lo] < end;
     };
-    var lower = function (src, opts, early) {
+    var lower = function (src, opts, early, isl) {
         var module = !!opts.module;
         var w = new Walker(src);
         w.proxyShim = opts.proxy !== undefined ? !!opts.proxy : needsProxy(src);
         w.bigintShim = opts.bigint !== undefined ? !!opts.bigint : typeof root.BigInt !== 'function';
         if (module) w.mod = { deps: [], depIndex: {}, exports: [], stars: [] };
         var printer = new Printer(src, w, opts), onFunction = null, onImport = null, units = 0, checked = 0;
+        if (early === false) isl = null;
+        if (isl) {
+            isl.last = -1;
+            // every name this adds has a $ in it (x$1, _this$ab12): the skipped functions' names with one are taken
+            var dollars = src.match(/[\w$]*\$[\w$]*/g) || [];
+            for (var di = 0; di < dollars.length; di++) w.names['$' + dollars[di]] = 1;
+        }
         // (the app's engines have __brAvailableMB: a lowering that would exhaust the iPad gives up, the script stays
         // as it is and the app survives)
         var roomCheck = function () {
@@ -3446,7 +3546,10 @@
             }
             onFunction = function (n, strict, inClass) {
                 if ((++checked & 15) === 0) roomCheck();
+                if (n.$skipped) { w.skipped(n, strict); return; }
                 if (n.end - n.start < early) return;
+                // (one around code the parser skipped is analysed with the code around it: see W.skippedRefs)
+                if (isl && isl.last >= n.start) return;
                 if (n.type === 'FunctionDeclaration' && !n.id) return;   // (export default function () {}: moduleCode names it)
                 // (positions of every super/new.target and #, found once: a binary search per function instead of a
                 // copy of its text)
@@ -3459,7 +3562,7 @@
         }
         // (stats.phases: parse with the early units / walk / resolve / print, ms of the last run)
         var t0 = new Date().getTime();
-        var ast = parse(src, module, onFunction, onImport);
+        var ast = parse(src, module, onFunction, onImport, isl);
         roomCheck();
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body)), v0 = w.visits, t1 = new Date().getTime();
         w.stmts(ast.body, ast, ps, false);
@@ -3482,13 +3585,22 @@
     // the ES5 text for src; null when nothing needs lowering. Throws Unsupported for what it cannot do.
     // opts.module: src is an ES module; the result is its __brModules.define(opts.url, ...) registration
     // opts.early: false, or the size from which functions are lowered while parsing (default: EARLY_FN for big scripts)
-    var transpile = function (src, opts) {
+    // skip: see islands (positions in src as it comes, which must not change here then)
+    var transpile = function (src, opts, skip) {
         opts = opts || {};
-        if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
+        if (!skip && (opts.proxy !== undefined ? opts.proxy : needsProxy(src))) src = retargetProxyGuards(src);
         var early = opts.early !== undefined ? opts.early : src.length >= EARLY_SCRIPT ? EARLY_FN : false;
         // (a script with its own Proxy/BigInt needs every scope)
         if (early !== false && (STANDIN_OWN.test(src) || !root.acorn || !root.acorn.Parser)) early = false;
         if (early === false) return lower(src, opts, false);
+        if (skip) {
+            try { return lower(src, opts, early, skip); } catch (ei) {
+                // (the scanner went wrong somewhere, or what went wrong has nothing to do with islands: as usual)
+                if (ei instanceof Unsupported && ei.what === 'memory') throw ei;
+                stats.islandFallbacks++;
+                stats.note = 'islands failed (' + ((ei && (ei.message || ei.what)) || String(ei)).slice(0, 80) + '), lowered as a whole';
+            }
+        }
         try { return lower(src, opts, early); } catch (e) {
             // a function lowered early uses a name the code around it renames afterwards (or needs more of the
             // context than a stand-in gives): the whole tree at once
@@ -3502,6 +3614,290 @@
     var engineParses = function (src) {
         var F = root.Function.__brNative || root.Function;
         try { F(src); return true; } catch (e) { return false; }
+    };
+    // ---- Islands. An "ES5" bundle the engine refuses for a few pieces of newer syntax (a library its build did not
+    // lower: seznam.cz's 4.4 MB client-bundle.es5.min.js carries Redux 5) is lowered only where it needs it: a function
+    // the engine takes as it is keeps its text and is not even parsed. (acorn over that whole bundle took 52 s and
+    // 130 MB on the iPad, and the bundle differs a little from one request to the next: the cache did not help.)
+    var ISLAND_SCRIPT = 192 * 1024;
+    var SCAN_REGEX_AFTER = { 'return': 1, 'typeof': 1, 'instanceof': 1, 'in': 1, 'of': 1, 'new': 1, 'delete': 1, 'void': 1, 'throw': 1,
+                             'case': 1, 'do': 1, 'else': 1, 'yield': 1, 'await': 1 };
+    var SCAN_BODY = 1000000;   // (a stack entry above this: the body of function <entry - SCAN_BODY>)
+    // the lexer's classes of ASCII characters: 0 other punctuation, 1 space, 2 word (or number), 3 /, 4 quote, 5 `,
+    // 6 opening bracket, 7 closing bracket, 8 ;, 9 ., 10 + or -; KW_FIRST: first letters of the words it looks at
+    var SCAN_CLASS = [], SCAN_KW_FIRST = [];
+    (function () {
+        var c;
+        for (c = 0; c < 128; c++) { SCAN_CLASS[c] = c <= 32 ? 1 : (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ? 2 : 0; SCAN_KW_FIRST[c] = 0; }
+        SCAN_CLASS[36] = SCAN_CLASS[95] = SCAN_CLASS[92] = 2;
+        SCAN_CLASS[47] = 3; SCAN_CLASS[34] = SCAN_CLASS[39] = 4; SCAN_CLASS[96] = 5;
+        SCAN_CLASS[40] = SCAN_CLASS[91] = SCAN_CLASS[123] = 6; SCAN_CLASS[41] = SCAN_CLASS[93] = SCAN_CLASS[125] = 7;
+        SCAN_CLASS[59] = 8; SCAN_CLASS[46] = 9; SCAN_CLASS[43] = SCAN_CLASS[45] = 10;
+        var first = 'frtionvdceya';
+        for (c = 0; c < first.length; c++) SCAN_KW_FIRST[first.charCodeAt(c)] = 1;
+    })();
+    // every `function` of src as [keyword, its body's {, after the body's }, the function around it or -1, and the
+    // positions of the semicolons ending the statements of its body], in the order they start (fns.semis: those of the
+    // program), from a small lexer (strings, templates, comments, regular expressions, brackets); null when it gets
+    // lost. (A function whose body it did not find keeps -1: it is parsed as usual.)
+    var scanFunctions = function (src) {
+        var n = src.length, i = 0, c, k, fns = [], stack = [], cur = -1, pending = -1, pendingDepth = 0, regex = true, dot = false, semis = [];
+        while (i < n) {
+            c = src.charCodeAt(i);
+            k = c < 128 ? SCAN_CLASS[c] : c === 0xa0 || c === 0xfeff || c === 0x2028 || c === 0x2029 ? 1 : 2;
+            if (k === 2) {   // a word or a number
+                var s = i;
+                for (i++; i < n; i++) {
+                    c = src.charCodeAt(i);
+                    if (c < 128 ? SCAN_CLASS[c] !== 2 : c === 0xa0 || c === 0xfeff || c === 0x2028 || c === 0x2029) break;
+                }
+                // (after a dot it is a property name)
+                var word = !dot && i - s >= 2 && i - s <= 10 && SCAN_KW_FIRST[src.charCodeAt(s)] === 1 ? src.substr(s, i - s) : '';
+                if (word === 'function') {
+                    var w = i;
+                    while (w < n && src.charCodeAt(w) <= 32) w++;
+                    if (src.charCodeAt(w) !== 58) { pending = fns.length; pendingDepth = stack.length; fns.push([s, -1, -1, cur]); }   // (not {function: 1})
+                }
+                regex = word !== '' && SCAN_REGEX_AFTER[word] === 1;
+                dot = false;
+                continue;
+            }
+            if (k === 0) { regex = true; dot = false; i++; continue; }
+            switch (k) {
+                case 1: i++; continue;
+                case 3: {   // /
+                    var c2 = src.charCodeAt(i + 1);
+                    if (c2 === 47) { for (i += 2; i < n; i++) { c = src.charCodeAt(i); if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) break; } continue; }
+                    if (c2 === 42) { var ce = src.indexOf('*/', i + 2); if (ce < 0) return null; i = ce + 2; continue; }
+                    dot = false;
+                    if (!regex) { i++; regex = true; continue; }   // (a division)
+                    var inClass = false;
+                    for (i++; i < n; i++) {
+                        c = src.charCodeAt(i);
+                        if (c === 92) { i++; continue; }
+                        if (c === 10 || c === 13) return null;
+                        if (inClass) { if (c === 93) inClass = false; }
+                        else if (c === 91) inClass = true;
+                        else if (c === 47) break;
+                    }
+                    if (i >= n) return null;
+                    for (i++; i < n; i++) { c = src.charCodeAt(i); if (!((c >= 97 && c <= 122) || (c >= 65 && c <= 90))) break; }
+                    regex = false;
+                    continue;
+                }
+                case 4: {   // " ' (to the next quote not escaped: an even number of backslashes before it)
+                    for (var qa = i + 1;;) {
+                        var qe = src.indexOf(c === 34 ? '"' : "'", qa);
+                        if (qe < 0) return null;
+                        var bs = qe - 1;
+                        while (src.charCodeAt(bs) === 92) bs--;
+                        if ((qe - 1 - bs) % 2 === 0) { i = qe + 1; break; }
+                        qa = qe + 1;
+                    }
+                    regex = false; dot = false;
+                    continue;
+                }
+                case 7:
+                    if (c === 125 && stack.length && stack[stack.length - 1] === -1) { stack.pop(); break; }   // the } that ends a ${: the template goes on
+                    if (!stack.length) return null;
+                    var top = stack.pop();
+                    if (top >= SCAN_BODY) {
+                        if (c !== 125) return null;
+                        fns[top - SCAN_BODY][2] = i + 1;
+                        cur = fns[top - SCAN_BODY][3];
+                    } else if (top !== (c === 41 ? 40 : c === 93 ? 91 : 123)) return null;
+                    i++;
+                    // (after a block a regular expression may start; an object literal before a division would be odd)
+                    regex = c === 125; dot = false;
+                    continue;
+                case 6:   // ( [ {
+                    if (c === 123 && pending >= 0 && stack.length === pendingDepth) {   // the body of the function met last
+                        fns[pending][1] = i;
+                        stack.push(SCAN_BODY + pending);
+                        cur = pending;
+                        pending = -1;
+                    } else stack.push(c);
+                    i++; regex = true; dot = false;
+                    continue;
+                case 8:   // the semicolons that end statements of a function body or of the program
+                    if (!stack.length) semis.push(i);
+                    else if (stack[stack.length - 1] >= SCAN_BODY) { var sf = fns[stack[stack.length - 1] - SCAN_BODY]; (sf[4] || (sf[4] = [])).push(i); }
+                    i++; regex = true; dot = false;
+                    continue;
+                case 9: dot = src.charCodeAt(i + 1) !== 46; regex = true; i++; continue;   // (... is no member access)
+                case 10:   // (a++ / 2 divides: ++ and -- leave it as it was)
+                    if (src.charCodeAt(i + 1) === c) { i += 2; dot = false; continue; }
+                    regex = true; dot = false; i++;
+                    continue;
+            }
+            // ` (or a template going on after a ${...})
+            for (i++; i < n; i++) {
+                var t = src.charCodeAt(i);
+                if (t === 92) { i++; continue; }
+                if (t === 96 || (t === 36 && src.charCodeAt(i + 1) === 123)) break;
+            }
+            if (i >= n) return null;
+            if (src.charCodeAt(i) === 96) { i++; regex = false; }
+            else { stack.push(-1); i += 2; regex = true; }
+            dot = false;
+        }
+        if (stack.length) return null;
+        fns.semis = semis;
+        return fns;
+    };
+    // whether the engine takes code as it is, read as strict code (what the old engine takes only in sloppy code is
+    // lowered as usual); tests put an ES5 parser in root.__brES5Parses
+    var engineTakes = function (code) {
+        if (typeof root.__brES5Parses === 'function') return !!root.__brES5Parses(code);
+        var F = root.Function.__brNative || root.Function;
+        try { F(code); return true; } catch (e) { return false; }
+    };
+    // Pieces of code in few engine calls (ISLAND_BATCH characters each: nearly all pass): a batch refused is halved
+    // until each piece is known. A function goes in as an expression, statements as the body of a function of their
+    // own, so that pieces cannot combine. A piece is the text of src between its segs ([from, to, from, to...]: with a }
+    // between two, an emptied function), made only for the call (a level's pieces are most of the script).
+    var ISLAND_BATCH = 64 * 1024;
+    var islandPiece = function (segs, stmts, extra) {
+        var size = 0;
+        for (var i = 0; i < segs.length; i += 2) size += segs[i + 1] - segs[i];
+        var p = { segs: segs, stmts: stmts, size: size };
+        for (var k in extra) if (hasOwn.call(extra, k)) p[k] = extra[k];
+        return p;
+    };
+    var checkPieces = function (src, pieces, ok, refused) {
+        var bisect = function (from, to) {
+            stats.islandChecks++;
+            var code = '"use strict";';
+            for (var i = from; i < to; i++) {
+                var p = pieces[i], s = p.segs;
+                code += p.stmts ? '(function(){' : '(';
+                for (var j = 0; j < s.length; j += 2) code += (j ? '}' : '') + src.slice(s[j], s[j + 1]);
+                code += p.stmts ? '\n});' : '\n);';
+            }
+            if (engineTakes(code)) { for (i = from; i < to; i++) ok.push(pieces[i]); return; }
+            if (to - from === 1) { refused.push(pieces[from]); return; }
+            var mid = (from + to) >> 1;
+            bisect(from, mid);
+            bisect(mid, to);
+        };
+        for (var i = 0, j; i < pieces.length; i = j) {
+            var size = 0;
+            for (j = i; j < pieces.length && (j === i || size + pieces[j].size <= ISLAND_BATCH); j++) size += pieces[j].size;
+            bisect(i, j);
+        }
+    };
+    var ISLAND_PIECE = 24;
+    // Where the parser may skip in src, when that is most of it: {fn: {body start: body end} of functions the engine
+    // takes as they are, stmt: {start: end} of runs of statements it takes (in a function it refuses, or the program),
+    // last: where the parser last skipped (see lower)}; null otherwise.
+    // From the outside in: a function the engine takes is kept whole, one it refuses is looked into (its functions and
+    // then its statements between semicolons, with the functions kept emptied). The old engine takes const for a var:
+    // a piece with a const is refused.
+    var islandSkips = function (src) {
+        var t0 = new Date().getTime(), arrows = 0, re = /=>/g;
+        // (today's code has arrows all over: lowered as a whole, or by the lazy chunks)
+        while (re.exec(src) !== null) if (++arrows > src.length / 2048) { stats.note = 'islands: too many arrows'; return null; }
+        var fns = scanFunctions(src), tScan = new Date().getTime() - t0;
+        if (!fns) { stats.note = 'islands: the scan got lost'; return null; }
+        var consts = positions(src, /(^|[^\w$.])const(?![\w$])/g);
+        var kids = [], roots = [], state = [], i, j, k, f;   // (state: 1 kept, 2 refused)
+        for (i = 0; i < fns.length; i++) {
+            if (fns[i][3] < 0) roots.push(i);
+            else (kids[fns[i][3]] || (kids[fns[i][3]] = [])).push(i);
+        }
+        var fnSkip = {}, stmtSkip = {}, spans = [], level = roots, owners = [-1], ok, refused;
+        stats.islandChecks = 0;
+        while (level.length || owners.length) {
+            // the functions of this level
+            var pieces = [], next = [];
+            for (i = 0; i < level.length; i++) {
+                f = fns[k = level[i]];
+                if (f[1] < 0 || f[2] - f[0] < ISLAND_PIECE) continue;
+                // (one holding most of the script is refused like the script itself, usually: its parts are looked at)
+                if (f[2] - f[0] >= src.length / 2 || occursIn(consts, f[0], f[2])) { state[k] = 2; continue; }
+                pieces.push(islandPiece([f[0], f[2]], false, { k: k }));
+            }
+            ok = []; refused = [];
+            checkPieces(src, pieces, ok, refused);
+            for (i = 0; i < ok.length; i++) { f = fns[ok[i].k]; state[ok[i].k] = 1; fnSkip[f[1]] = f[2]; spans.push([f[1], f[2]]); }
+            for (i = 0; i < refused.length; i++) state[refused[i].k] = 2;
+            // the statements of the functions refused a level up (their functions are known now)
+            pieces = [];
+            for (i = 0; i < owners.length; i++) islandStatements(src, fns, owners[i], owners[i] < 0 ? roots : kids[owners[i]] || [], state, consts, pieces);
+            ok = []; refused = [];
+            checkPieces(src, pieces, ok, refused);
+            for (i = 0; i < ok.length; i++) { stmtSkip[ok[i].key] = ok[i].end; spans.push([ok[i].key, ok[i].end]); }
+            // down a level: into the functions refused here
+            owners = [];
+            for (i = 0; i < level.length; i++) {
+                if (state[k = level[i]] !== 2) continue;
+                owners.push(k);
+                var list = kids[k];
+                if (list) for (j = 0; j < list.length; j++) next.push(list[j]);
+            }
+            level = next;
+        }
+        // (what the parser will not see: the spans without the ones inside others)
+        spans.sort(function (a, b) { return a[0] - b[0]; });
+        var bytes = 0, reach = -1;
+        for (i = 0; i < spans.length; i++) {
+            if (spans[i][1] <= reach) continue;
+            bytes += spans[i][1] - Math.max(spans[i][0], reach);
+            reach = spans[i][1];
+        }
+        stats.note = 'islands: ' + ((bytes / src.length * 100) | 0) + ' % of ' + (src.length >> 10) + ' KB skipped (' + fns.length + ' functions, ' + stats.islandChecks +
+                     ' checks, ' + (new Date().getTime() - t0) + ' ms, scan ' + tScan + ' ms)';
+        return bytes >= src.length / 2 ? { fn: fnSkip, stmt: stmtSkip, last: -1 } : null;
+    };
+    // pieces for the statements of function owner (-1: the program) between the semicolons ending them: runs of
+    // statements the parser can skip. Not the first (directives), not one before an else (not the whole statement then),
+    // not one the parser's tokenizer reads differently when it skips its first token (a (, {, `, function or class
+    // there), not one with a function refused; its functions kept go in empty. Nothing in a generator or async function:
+    // its body becomes a state machine.
+    var islandStatements = function (src, fns, owner, children, state, consts, pieces) {
+        var f = owner < 0 ? null : fns[owner], semis = f ? f[4] : fns.semis;
+        if (!semis || !semis.length) return;
+        var bodyStart = f ? f[1] + 1 : 0, c = 0, start = bodyStart, i, k;
+        if (f) {
+            k = f[0] + 8;
+            while (k < src.length && src.charCodeAt(k) <= 32) k++;
+            if (src.charCodeAt(k) === 42 || /async\s*$/.test(src.slice(Math.max(0, f[0] - 12), f[0]))) return;
+        }
+        for (i = 0; i < semis.length; start = semis[i] + 1, i++) {
+            var end = semis[i] + 1;
+            if (start === bodyStart || end - start < ISLAND_PIECE) continue;
+            // (the first token: past spaces, comments and function declarations, which are functions of their own:
+            // minified code puts the next statement right after one, with no semicolon between)
+            var t = start, ch;
+            for (;;) {
+                while (t < end && src.charCodeAt(t) <= 32) t++;
+                if (src.charCodeAt(t) === 47 && src.charCodeAt(t + 1) === 42) { var ce = src.indexOf('*/', t + 2); if (ce < 0 || ce >= end) break; t = ce + 2; continue; }
+                if (src.charCodeAt(t) === 47 && src.charCodeAt(t + 1) === 47) { while (t < end && src.charCodeAt(t) !== 10) t++; continue; }
+                if (src.charCodeAt(t) === 102 && /^function(?![\w$])/.test(src.substr(t, 9))) {
+                    while (c < children.length && fns[children[c]][0] < t) c++;
+                    if (c < children.length && fns[children[c]][0] === t && fns[children[c]][2] > 0 && fns[children[c]][2] < end) { t = fns[children[c]][2]; start = t; continue; }
+                }
+                break;
+            }
+            ch = src.charCodeAt(t);
+            if (t >= end - 1 || end - start < ISLAND_PIECE || ch === 40 || ch === 123 || ch === 96 || ch === 42 || /^(?:function|class)(?![\w$])/.test(src.substr(t, 9))) continue;
+            var after = end;
+            while (after < src.length && src.charCodeAt(after) <= 32) after++;
+            if (/^else(?![\w$])/.test(src.substr(after, 5))) continue;
+            if (occursIn(consts, start - 1, end)) continue;   // (a position there is the character before the word)
+            // its functions: kept ones emptied, a refused one rules it out
+            while (c < children.length && fns[children[c]][0] < start) c++;
+            var segs = [start], bad = false;
+            for (var e = c; e < children.length && fns[children[e]][0] < end; e++) {
+                var g = fns[children[e]];
+                if (state[children[e]] === 2) { bad = true; break; }
+                if (state[children[e]] !== 1) continue;
+                segs.push(g[1] + 1, g[2]);
+            }
+            if (bad) continue;
+            segs.push(end);
+            pieces.push(islandPiece(segs, true, { key: t, end: end }));
+        }
     };
     // ---- Lazy modules. A webpack chunk `(self.x=self.x||[]).push([[ids],{id:factory,...}])` registers factories that
     // run only when some module requires them, and a chunk often carries big ones a page never uses (Vimeo's front
@@ -3626,13 +4022,52 @@
         return directive ? directive[0] + '\n' + LAZY_RUNTIME + body.slice(directive[0].length) : LAZY_RUNTIME + body;
     };
     var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0, redos: 0, maxUnit: 0, outer: 0, flat: 0,
-                  checks: 0, phases: '', lazy: null };
+                  checks: 0, phases: '', lazy: null, note: '', islandFallbacks: 0, islandChecks: 0 };
+    // Islands for run(): {src: the text with the stand-ins in (they go in by text, the skipped functions keep theirs),
+    // skip: see islandSkips (null: none), standins: their helpers}
+    var islandPrep = function (src, opts, planned) {
+        if (planned && planned.prep) { stats.note = planned.note; return planned.prep; }
+        var prep = { src: src, skip: null, standins: [] };
+        if (opts.module || opts.islands === false || src.length < ISLAND_SCRIPT || !root.acorn || !root.acorn.Parser || STANDIN_OWN.test(src)) return prep;
+        var isrc = src, standins = [];
+        if (needsProxy(isrc)) {
+            isrc = isrc.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2');
+            standins.push('__br_Proxy');
+        }
+        if (needsBigInt(isrc)) { isrc = isrc.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); standins.push('__br_BigInt'); }
+        var skip = islandSkips(isrc);
+        return skip ? { src: isrc, skip: skip, standins: standins } : prep;
+    };
+    // For the app, before it makes room for a lowering: what run() will do with the script — 'es5' (nothing), 'stand-in'
+    // (a few names replaced), 'islands' (pieces of it, see islands: little memory) or 'full' (all of it). What it found
+    // out is kept for run() of the same text.
+    var memo = null;
+    var plan = function (src, optsJSON) {
+        var opts = null;
+        try { opts = optsJSON ? JSON.parse(optsJSON) : {}; } catch (e) { opts = {}; }
+        memo = null;
+        if (opts.module) return 'full';
+        if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
+        var parses = !opts.force && engineParses(src);
+        if (parses) {
+            var evals = src.length < 300 * 1024 && DIRECT_EVAL.test(src);
+            if (!needsProxy(src) && !needsBigInt(src) && !evals) return 'es5';
+            memo = { src: src, parses: true, prep: null, note: '' };
+            return evals ? 'full' : 'stand-in';
+        }
+        stats.note = '';
+        memo = { src: src, parses: false, prep: null, note: '' };
+        memo.prep = islandPrep(src, opts, null);
+        memo.note = stats.note;
+        return memo.prep.skip ? 'islands' : 'full';
+    };
     // for the app: '' when the engine takes the script as it is (or it cannot be lowered), else the ES5 text;
     // JSFix.last() tells which ("es5", "lowered", or why it failed)
     var run = function (src, optsJSON) {
         var opts = null;
         try { opts = optsJSON ? JSON.parse(optsJSON) : {}; } catch (e) { opts = {}; }
         stats.runs++;
+        stats.note = '';
         if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
         if (opts.module) {
             // a module always becomes a registration; when it cannot, the loader is told why
@@ -3648,7 +4083,10 @@
             stats.last = 'module';
             return mout;
         }
-        var tc = new Date().getTime(), parsesAsIs = !opts.force && engineParses(src), evals = false;
+        // (what plan() found out about this text)
+        var planned = memo && memo.src === src ? memo : null;
+        memo = null;
+        var tc = new Date().getTime(), parsesAsIs = !opts.force && (planned ? planned.parses : engineParses(src)), evals = false;
         stats.checks = new Date().getTime() - tc;
         if (parsesAsIs) {
             var np = needsProxy(src), nb = needsBigInt(src);
@@ -3669,10 +4107,13 @@
                 return text + '\n;' + helperText(used);
             }
         }
+        // a big script the engine refuses for a few pieces only: just those are lowered (see islands)
+        var prep = parsesAsIs ? null : islandPrep(src, opts, planned), skip = prep ? prep.skip : null, standins = prep ? prep.standins : [];
+        if (skip) src = prep.src;
         // a webpack chunk with big factories: those are lowered when the page first calls them (the app keeps their
         // text: JSFix.lazy() tells where they are); anything unexpected and the whole script is lowered as usual
         stats.lazy = null;
-        if (opts.lazy && !opts.module && !parsesAsIs && src.length >= LAZY_SCRIPT) {
+        if (!skip && opts.lazy && !opts.module && !parsesAsIs && src.length >= LAZY_SCRIPT) {
             var parts = null;
             try { parts = lazyParts(src); } catch (el) { parts = null; }
             if (parts) {
@@ -3691,11 +4132,12 @@
             }
         }
         var t0 = new Date().getTime(), out = null;
-        try { out = transpile(src, opts); } catch (e2) {
+        try { out = transpile(src, opts, skip); } catch (e2) {
             stats.failed++;
             stats.last = 'failed: ' + ((e2 && (e2.message || e2.what)) || String(e2));
             return '';
         }
+        if (out !== null && standins.length) out += '\n;' + helperText(standins);
         stats.ms += new Date().getTime() - t0;
         if (out === null && parsesAsIs) { stats.skipped++; stats.last = 'es5'; return ''; }
         if (out === null) { stats.failed++; stats.last = 'failed: nothing to lower'; return ''; }
@@ -3725,7 +4167,9 @@
         for (var k in RUNTIME) if (RUNTIME.hasOwnProperty(k)) names.push(k);
         return helperText(names);
     };
-    root.JSFix = { transpile: transpile, run: run, stats: stats, last: function () { return stats.last; }, version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex,
+    // (note: how the last run went where it did something unusual, for the app's log: islands)
+    root.JSFix = { transpile: transpile, run: run, plan: plan, stats: stats, last: function () { return stats.last; }, note: function () { return stats.note; },
+                   version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex, scanFunctions: scanFunctions, islandSkips: islandSkips,
                    lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts, helperSource: helperSource,
                    lazyScan: function (src) { var p = null; try { p = lazyParts(src); } catch (e) { p = null; } return p ? JSON.stringify(p) : ''; } };
 })(this);

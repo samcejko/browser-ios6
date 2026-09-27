@@ -17,6 +17,14 @@ static const long BRRewriterIdleReleaseAboveMB = 170;
 // page kept growing next to it, mapy.com's 4.4 MB bundle 94 MB: past 1.5 MB a script costs less per MB, see
 // BRScriptRoomMB; rewriting takes less)
 static const long BRRoomFloorMB = 55, BRRoomPerMBScript = 45, BRRoomPerMBDocument = 25;
+// A big script is looked at first (JSFix.plan: the engine's parse of it and, when that fails, the search for the few
+// pieces that need lowering; seznam.cz's 4.4 MB "ES5" bundle then took 7 s instead of 52 s): that and a lowering in
+// pieces take less room than a whole one.
+static const NSUInteger BRPlanMinBytes = 192 * 1024;
+static long BRScriptPlanMB(long bytes)
+{
+    return 15 + (long)((long long)bytes * 18 / (1024 * 1024));
+}
 static long BRScriptRoomMB(long bytes)
 {
     long small = (long)((long long)bytes * BRRoomPerMBScript / (1024 * 1024)), big = 30 + (long)((long long)bytes * 25 / (1024 * 1024));
@@ -436,6 +444,32 @@ static NSArray *BRManifestKinds(void)
     long work = MAX(0L, (long)data.length - lazyBytes);
     long need = BRRoomFloorMB + BRScriptRoomMB(work);
     BOOL lazyPart = [url.host isEqualToString:@"ios6-browser.invalid"];
+    NSString *optsJSON = @"{}";
+    NSMutableDictionary *o = [NSMutableDictionary dictionary];
+    if (url.absoluteString.length) o[@"url"] = url.absoluteString;
+    if (module) o[@"module"] = @YES;
+    if (lazyScan.length) o[@"lazy"] = base;
+    NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
+    if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
+    // a big script: what its lowering takes first, when there is room to find out (JSFix.plan: nothing for one the
+    // engine takes as it is, little for one lowered in pieces, see jsfix.js islands)
+    NSString *plan = nil;
+    if (!module && !lazyPart && data.length >= BRPlanMinBytes && [BRMemory availableMB] >= BRRoomFloorMB + BRScriptPlanMB((long)data.length) && [self ensureJSFixIn:engine]) {
+        if (!text) { NSString *used = nil; text = BRDecode(data, charset.length ? charset : nil, &used); }
+        if (text) plan = [engine callFunction:@"JSFix.plan" arguments:@[text, optsJSON]];
+        if ([plan isEqualToString:@"es5"]) {
+            // (remembered like a lowering that found nothing; the engine's parse of it left garbage)
+            [_transpiled setObject:[NSData data] forKey:key cost:64];
+            if (!private) {
+                [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+                [[NSData data] writeToFile:path atomically:YES];
+            }
+            [engine collectGarbage];
+            [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
+            return nil;
+        }
+        if ([plan isEqualToString:@"islands"] || [plan isEqualToString:@"stand-in"]) need = BRRoomFloorMB + BRScriptPlanMB(work);
+    }
     NSDate *noRoom = nil;
     @synchronized (self) { noRoom = _noRoom[key]; }
     // (a script left as it is breaks the page: better slower, since the page's new requests wait meanwhile anyway; a
@@ -443,7 +477,7 @@ static NSArray *BRManifestKinds(void)
     NSTimeInterval patience = (noRoom && -[noRoom timeIntervalSinceNow] < 120) ? 0 : lazyPart ? 10 : 60;
     BOOL fits = patience > 0 ? [BRMemory waitForAvailableMB:need timeout:patience reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
                              : [BRMemory availableMB] >= need;
-    if (!fits && [BRMemory availableMB] < BRRoomFloorMB + BRScriptRoomMB(work) / 2) {
+    if (!fits && [BRMemory availableMB] < BRRoomFloorMB + (need - BRRoomFloorMB) / 2) {
         BRLog(@"jsfix %@: left unlowered, not enough memory", name);
         @synchronized (self) {
             if (!_noRoom) _noRoom = [NSMutableDictionary dictionary];
@@ -462,13 +496,6 @@ static NSArray *BRManifestKinds(void)
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     long mb0 = (long)BRResidentMemoryMB();
     [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(work >> 10)] forKey:@"js"];
-    NSString *optsJSON = @"{}";
-    NSMutableDictionary *o = [NSMutableDictionary dictionary];
-    if (url.absoluteString.length) o[@"url"] = url.absoluteString;
-    if (module) o[@"module"] = @YES;
-    if (lazyScan.length) o[@"lazy"] = base;
-    NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
-    if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
     // the factories kept for later go next to the lowered chunk, where the page's stubs ask for them
     NSUInteger kept = 0;
@@ -490,7 +517,11 @@ static NSArray *BRManifestKinds(void)
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
         BRLog(@"jsfix module %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
               [why hasPrefix:@"failed"] ? [@" " stringByAppendingString:why] : @"");
-    } else if (out) BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1);
+    } else if (out) {
+        NSString *note = [engine callFunction:@"JSFix.note" arguments:@[]];
+        BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
+              note.length ? [NSString stringWithFormat:@" (%@)", note] : @"");
+    }
     else {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
         if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@), %ld -> %ld MB", name, ms, why ?: @"?", mb0, mb1);

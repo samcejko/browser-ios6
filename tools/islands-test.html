@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>islands test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+pre { background: #f4f4f4; padding: 6px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="gen-unicode.js"></script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<h1>jsfix islands</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<script>
+// Big "ES5" scripts with pieces of newer syntax (islands, see jsfix.js): lowered only there, the rest skipped. Every
+// case runs as written (the desktop engine knows the syntax) and as lowered; `out` must match, the lowered text must be
+// ES5 (with no function declarations in blocks of strict code, which the old engine rejects), and the islands must
+// have been used (or, where a case expects it, given up for the usual lowering).
+var ES5_PARSE = function (code) {
+  var ast = acorn.parse(code, { ecmaVersion: 5, allowReturnOutsideFunction: true });
+  var bad = null;
+  var walk = function (n, strict, inBlock) {
+    if (!n || typeof n.type !== 'string' || bad) return;
+    if (n.type === 'FunctionDeclaration' && inBlock && strict) { bad = 'block function ' + (n.id && n.id.name); return; }
+    var fnStrict = strict;
+    if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression') && n.body.body.length && n.body.body[0].type === 'ExpressionStatement' && n.body.body[0].expression.value === 'use strict') fnStrict = true;
+    for (var k in n) {
+      var v = n[k];
+      if (!v || typeof v !== 'object') continue;
+      var child = function (c) {
+        if (!c || typeof c.type !== 'string') return;
+        var isFn = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression';
+        if (isFn && c === n.body) { c.body.forEach(function (s) { walk(s, fnStrict, false); }); return; }
+        walk(c, isFn ? fnStrict : strict, isFn ? false : (n.type === 'BlockStatement' || n.type === 'SwitchCase' ? true : (n.type === 'Program' ? false : inBlock)));
+      };
+      if (Array.isArray(v)) v.forEach(child); else child(v);
+    }
+  };
+  var progStrict = ast.body.length && ast.body[0].type === 'ExpressionStatement' && ast.body[0].expression.value === 'use strict';
+  walk(ast, progStrict, false);
+  if (bad) throw new Error(bad);
+  return ast;
+};
+// the old engine as the islands see it: ES5, strict
+window.__brES5Parses = function (code) { try { ES5_PARSE(code); return true; } catch (e) { return false; } };
+
+// filler: ES5 functions and statements (kept as they are)
+var pad = function (tag, fns, stmts) {
+  var s = '';
+  for (var i = 0; i < stmts; i++) {
+    s += 'var __v_' + tag + i + ' = { n: ' + i + ', s: "text ' + tag + ' ' + i + ' / not a regex /", re: /[{(\\/"\']+/g, ' +
+         'f: function (x) { var o = { get g() { return x; }, "function": 1, return: 2 }; return o.g + ' + i + ' / 2; } };\n';
+  }
+  for (var j = 0; j < fns; j++) {
+    s += 'function __f_' + tag + j + '(a, b) { var s = 0; for (var k = 0; k < a; k++) { if (k % 3) continue; s += k * b; } ' +
+         'switch (a) { case 1: s++; break; default: s--; } return s + "|' + tag + '|" + ' + j + ' + (a / 2 / 1); }\n';
+  }
+  return s;
+};
+var wrap = function (body, programLevel) {
+  if (programLevel) return 'var out = [];\n' + pad('a', 300, 300) + body + '\n' + pad('b', 300, 300);
+  return 'var out = [];\n!function () {\n' + pad('a', 300, 300) + body + '\n' + pad('b', 300, 300) + '}();';
+};
+var LONG = '"' + new Array(81).join('.') + '"';
+
+// [name, code, {program: true (not in a function), fallback: true (the islands give up: a rename reaches skipped code)}]
+var CASES = [
+  ['block let shadowing a name a skipped function uses',
+   "var t = 'outer'; var resA = [];\nif (true) { let t = 'inner'; resA.push(t); }\n" +
+   "resA.push((function () { var pad = " + LONG + "; return t; })());\nout.push(resA);"],
+  ['block let shadowing a name a skipped statement uses',
+   "var q = 'outerQ'; var resB = [];\nif (true) { let q = 'innerQ'; resB.push(q); }\n" +
+   "var holderB = { value: q, list: [1, 2, 3], note: " + LONG + " };\nresB.push(holderB.value);\nout.push(resB);"],
+  ['loop let captured by a skipped function',
+   "var fsC = [];\nfor (let i = 0; i < 3; i++) { fsC.push(function () { var pad = " + LONG + "; return i; }); }\n" +
+   "out.push(fsC.map(function (f) { return f(); }));"],
+  ['arrow this beside skipped statements',
+   "var objD = { v: 42, m: function () { var self = this; var f = () => this.v;\n" +
+   "var g = function () { var pad = " + LONG + "; return self.v; };\nvar padStmt = { a: 1, b: 2, c: " + LONG + " };\nreturn [f(), g(), padStmt.a]; } };\nout.push(objD.m());"],
+  ['class, template, spread, default parameters',
+   "class PointE { constructor(x = 1, y = 2) { this.x = x; this.y = y; }\n" +
+   "sum() { return [this.x, this.y].reduce(function (a, b) { var pad = " + LONG + "; return a + b; }, 0); } }\n" +
+   "var pE = new PointE(3);\nout.push(`${pE.x}-${pE.y}-${pE.sum()}`, Math.max(...[1, 5, 3]));"],
+  ['a parameter named like its function, used by skipped statements',
+   "var kF = function e(e) { const z = e + 1;\nvar bigF = { first: e, second: e * 2, pad: " + LONG + " };\nreturn bigF.first + bigF.second + z; };\nout.push(kF(5));",
+   { fallback: true }],
+  ['a program let named like a window property, used by skipped statements',
+   "let name = 'progName';\nvar holderG = { n: name, pad: " + LONG + " };\nout.push(holderG.n);",
+   { program: true, fallback: true }],
+  ['the tokenizer: regular expressions, divisions, templates',
+   "var reH = /[\"'{}()\\/]+/g, divH = 10 / 2 / 5, strH = \"a/b'c\", tplH = `x${ { a: 1 }.a + `y${ 2 }` }z`;\n" +
+   "var incH = 1; var d2 = incH++ / 1;\nvar reH2 = /[{(\\/]\\}/.source + \"}{\" + " + LONG + ";\nout.push(reH.test(\"'{\"), divH, strH, tplH, d2, reH2.length);"],
+  ['if and else around a semicolon',
+   "var resI = [];\nif (resI.length === 0) resI.push(" + LONG + "); else resI.push('else');\nlet li = resI.length;\nout.push(resI, li);"],
+  ['do while',
+   "var nJ = 0; do nJ++; while (nJ < 3);\nconst cJ = nJ;\nout.push(cJ);"],
+  ['function declarations hoisted over skipped statements',
+   "out.push(hoistedK());\nvar padK = { a: " + LONG + " };\nfunction hoistedK() { return 'hoisted'; }\nlet lk = padK.a.length;\nout.push(lk);"],
+  ['labels in skipped statements',
+   "var sL = 0; outerL: for (var iL = 0; iL < 5; iL++) { for (var jL = 0; jL < 5; jL++) { if (jL === 2) continue outerL; sL += jL; } }\nconst cL = sL;\nout.push(cL);"],
+  ['arguments of an arrow beside skipped statements',
+   "function fN() { var arrow = () => arguments[0];\nvar padN = { t: " + LONG + " };\nreturn arrow() + padN.t.length; }\nout.push(fN(7));"],
+  ['keywords as property names',
+   "var oO = { get g() { return 5; }, function: 1, return: 2, 'class': 3, pad: " + LONG + " };\nconst cO = [oO.g, oO.function, oO.return, oO.class];\nout.push(cO);"],
+  ['a regular expression after a parenthesis',
+   "var xP = 1; if (xP) /a/.test('a') && out.push('re-after-paren'); var padP = { p: " + LONG + " };\nconst cP = padP.p.length;\nout.push(cP);"],
+  ['a function with const alone',
+   "function fR() { const c = 3; var padR = { a: " + LONG + " }; return c + padR.a.length; }\nout.push(fR());"],
+  ['closures over a block let in a skipped statement',
+   "var fsS = [];\nfor (let k = 0; k < 2; k++) { var holderS = { get: function () { var pad = " + LONG + "; return k; } }; fsS.push(holderS.get); }\n" +
+   "out.push(fsS.map(function (f) { return f(); }));"],
+  ['a block let used by a skipped statement of an inner function',
+   "var resT = [];\nif (true) { let w = 'blockW'; (function () { var inner = { w: w, pad: " + LONG + " }; resT.push(inner.w); })(); }\nvar w = 'outerW';\nresT.push(w);\nout.push(resT);"],
+  ['const in a skipped-looking statement',
+   "var arrU = [1, 2];\nconst sumU = arrU.reduce(function (a, b) { var pad = " + LONG + "; return a + b; }, 0);\nout.push(sumU);"],
+  ['a renamed block let used by a skipped function inside its block',
+   "var resW = [], t3 = 'outer3';\nif (true) { let t3 = 'inner3'; var g3 = function () { var pad = " + LONG + "; return t3; }; resW.push(g3()); }\nresW.push(t3);\nout.push(resW);"],
+  ['a skipped function inside a let block, its own names',
+   "var resX = [];\nif (true) { let t4 = 'inner4'; var g4 = function (t4) { var pad = " + LONG + "; return t4 + '!'; }; resX.push(g4('arg'), t4); }\nout.push(resX);"],
+  ['async-free generator lowered, skipped siblings',
+   "function* genV() { yield 1; var padV = { p: " + LONG + " }; yield padV.p.length; }\nvar itV = genV(); out.push(itV.next().value, itV.next().value);"]
+];
+
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail, code) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail.replace(/</g, '&lt;') : '');
+  if (!ok && code) { var pre = document.createElement('pre'); pre.textContent = code; div.appendChild(pre); }
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+CASES.forEach(function (c) {
+  var name = c[0], opts = c[2] || {}, src = wrap(c[1], opts.program), expected, actual, lowered;
+  try { expected = JSON.stringify(new Function(src + '\nreturn out;')()); } catch (e) { show(name, false, 'original threw: ' + e.message); return; }
+  var fallbacks = JSFix.stats.islandFallbacks;
+  try { lowered = JSFix.run(src, '{"force":true}'); } catch (e) { show(name, false, 'run threw: ' + (e.message || e.what)); return; }
+  var note = JSFix.note(), fellBack = JSFix.stats.islandFallbacks > fallbacks, used = /^islands(: \d+ %| failed)/.test(note);
+  if (!lowered) { show(name, false, 'not lowered: ' + JSFix.last() + ' / ' + note); return; }
+  try { ES5_PARSE(lowered); } catch (e) { show(name, false, 'not ES5: ' + e.message, lowered.slice(0, 3000)); return; }
+  try { actual = JSON.stringify(new Function(lowered + '\nreturn out;')()); } catch (e) { show(name, false, 'lowered threw: ' + e.message, lowered.slice(0, 3000)); return; }
+  var mode = !used ? 'islands not used (' + note + ')' : fellBack !== !!opts.fallback ? (fellBack ? 'fell back: ' + note : 'expected a fallback') : '';
+  var detail = (actual !== expected ? 'expected ' + expected + ' got ' + actual + ' ' : '') + mode;
+  show(name, !detail, detail || note, lowered.length > 3000 ? lowered.slice(0, 1500) + '\n...\n' + lowered.slice(-1500) : lowered);
+});
+document.getElementById('summary').textContent = pass + ' / ' + total;
+document.title = 'islands ' + pass + '/' + total;
+window.__islandResults = results;
+</script>
+</body>
+</html>
