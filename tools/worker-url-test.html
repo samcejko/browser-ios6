@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>worker url test</title>
+<!-- A worker started from a URL gets the worker polyfills (console, performance.now, TextEncoder): the Worker shim marks
+     the URL (__brwork=1) and the network layer puts them in front of the script. Open through the /dev/ route with
+     worker-url-test-w.js next to it; the result is the title. -->
+</head>
+<body>
+<pre id="out">waiting</pre>
+<script>
+var w = new Worker('worker-url-test-w.js#params=abc');
+w.onmessage = function (e) { document.title = 'worker ' + e.data; document.getElementById('out').textContent = e.data; };
+w.onerror = function (e) { document.title = 'worker ERROR ' + (e.message || e); };
+setTimeout(function () { if (document.title === 'worker url test') document.title = 'worker no answer'; }, 8000);
+</script>
+</body>
+</html>

@@ -18,13 +18,23 @@ static BOOL BRIsModuleRequest(NSURL *url)
 {
     return url.query.length && [url.query rangeOfString:BRModuleMarker].location != NSNotFound;
 }
+// The Worker shim (shims-extra.js) asks for the script of a worker started from a URL with this marker: the script
+// then starts with the worker polyfills (the old engine's workers have no console, TextEncoder, ...).
+static NSString * const BRWorkerMarker = @"__brwork=1";
+static BOOL BRIsWorkerRequest(NSURL *url)
+{
+    return url.query.length && [url.query rangeOfString:BRWorkerMarker].location != NSNotFound;
+}
+// (the server never sees either marker)
 static NSURL *BRURLWithoutModuleMarker(NSURL *url)
 {
-    if (!BRIsModuleRequest(url)) return url;
+    if (!BRIsModuleRequest(url) && !BRIsWorkerRequest(url)) return url;
     NSString *s = url.absoluteString;
-    s = [s stringByReplacingOccurrencesOfString:@"&__brmod=1" withString:@""];
-    s = [s stringByReplacingOccurrencesOfString:@"?__brmod=1&" withString:@"?"];
-    s = [s stringByReplacingOccurrencesOfString:@"?__brmod=1" withString:@""];
+    for (NSString *marker in @[BRModuleMarker, BRWorkerMarker]) {
+        s = [s stringByReplacingOccurrencesOfString:[@"&" stringByAppendingString:marker] withString:@""];
+        s = [s stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"?%@&", marker] withString:@"?"];
+        s = [s stringByReplacingOccurrencesOfString:[@"?" stringByAppendingString:marker] withString:@""];
+    }
     return [NSURL URLWithString:s] ?: url;
 }
 
@@ -806,6 +816,12 @@ static BOOL BRIsWebPDataURL(NSURL *url)
                                                  (unsigned long)(buffered.length >> 10), BRHeader(fields, @"Content-Type") ?: @"?");
     [[BRCSSRewriter shared] rewriteData:buffered kind:kind charset:charset pageURL:page sourceURL:BRURLWithoutModuleMarker(url) mainFrame:mainFrame completion:^(NSData *out, NSString *outCharset, BOOL keep) {
         if (self.stopped) return;
+        // a worker's script starts with the worker polyfills (see BRWorkerMarker)
+        if ([kind isEqualToString:@"js"] && BRIsWorkerRequest(url)) {
+            NSMutableData *withPolyfills = [[@"try{importScripts(\"https://ios6-browser.invalid/worker-polyfills.js\");}catch(e){}\n" dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+            if (out) [withPolyfills appendData:out];
+            out = withPolyfills;
+        }
         NSMutableDictionary *f = [fields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSString *ctype = BRHeader(f, @"Content-Type") ?: ([kind isEqualToString:@"css"] ? @"text/css" : [kind isEqualToString:@"js"] ? @"text/javascript" : @"text/html");
         NSRange semi = [ctype rangeOfString:@";"];

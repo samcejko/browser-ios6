@@ -6,6 +6,21 @@
  */
 (function (self) {
     'use strict';
+    // the old engine's workers have no console (vercel.com's turbopack worker stopped at its first console.log)
+    if (!self.console) {
+        var quiet = function () {};
+        var con = {};
+        var names = ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'dirxml', 'table', 'group', 'groupCollapsed', 'groupEnd',
+                     'time', 'timeEnd', 'timeLog', 'count', 'countReset', 'assert', 'clear', 'profile', 'profileEnd', 'timeStamp'];
+        for (var n = 0; n < names.length; n++) con[names[n]] = quiet;
+        try { self.console = con; } catch (e0) {}
+    }
+    if (!self.performance) { try { self.performance = {}; } catch (e1) {} }
+    if (self.performance && !self.performance.now) {
+        var origin = Date.now();
+        self.performance.now = function () { return Date.now() - origin; };
+        self.performance.timeOrigin = origin;
+    }
     if (!self.TextEncoder) {
         var utf8 = function (str) {
             var out = [], i, c, c2;

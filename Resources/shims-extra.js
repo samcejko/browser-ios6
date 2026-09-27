@@ -8028,6 +8028,11 @@
             if (/^blob:/i.test(u)) {
                 var src = texts.hasOwnProperty(u) ? texts[u] : read(u), fixed = src ? prepare(src) : null;
                 if (fixed !== null) { try { u = (window.URL || window.webkitURL).createObjectURL(new NativeBlob([fixed], { type: 'text/javascript' })); } catch (e) {} }
+            } else if (!/^data:/i.test(u) && u.indexOf('__brwork=1') < 0) {
+                // a script from a URL: the network layer puts the worker polyfills in front of it when it sees the marker
+                // (before the fragment, which some pass parameters in: turbopack's workers)
+                var hash = u.indexOf('#'), base = hash < 0 ? u : u.slice(0, hash);
+                u = base + (base.indexOf('?') < 0 ? '?' : '&') + '__brwork=1' + (hash < 0 ? '' : u.slice(hash));
             }
             return arguments.length > 1 ? new NativeWorker(u, opts) : new NativeWorker(u);
         };

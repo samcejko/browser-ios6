@@ -2935,7 +2935,19 @@ var CSSFix = (function () {
                     if ((lv === 'flex' || lv === 'inline-flex') && columnFlex && !wrap) rememberColumnFlex(ctx, lv === 'inline-flex');
                     if (lv === 'flex') push(out, 'display', (wrap || columnFlex) ? 'block' : '-webkit-box', imp);
                     else if (lv === 'inline-flex') push(out, 'display', (wrap || columnFlex) ? 'inline-block' : '-webkit-inline-box', imp);
-                    else if (lv === 'grid' || lv === 'flow-root' || lv === 'contents') push(out, 'display', 'block', imp);
+                    else if (lv === 'contents') {
+                        // an element without a box of its own, whose children take part in the parent's layout: here it
+                        // takes the parent's kind of box (in a flex row it lays its children out in a row: vercel.com
+                        // wraps each menu entry in one, and the menu stood in a column) and no margins, padding or border
+                        push(out, 'display', 'inherit', imp);
+                        push(out, '-webkit-box-orient', 'inherit', imp);
+                        push(out, '-webkit-box-direction', 'inherit', imp);
+                        push(out, '-webkit-box-align', 'inherit', imp);
+                        push(out, 'margin', '0', imp);
+                        push(out, 'padding', '0', imp);
+                        push(out, 'border-width', '0', imp);
+                    }
+                    else if (lv === 'grid' || lv === 'flow-root') push(out, 'display', 'block', imp);
                     else if (lv === 'inline-grid') push(out, 'display', 'inline-block', imp);
                     else push(out, 'display', v, imp);
                     continue;
@@ -4690,7 +4702,8 @@ var CSSFix = (function () {
         // 3. inline style attributes
         html = html.replace(/(\sstyle\s*=\s*)("([^"]*)"|'([^']*)')/gi, function (all, prefix, quoted, dq, sq) {
             var css = dq !== undefined ? dq : sq;
-            if (!css || (css.indexOf('(') < 0 && css.indexOf('var') < 0 && css.indexOf('flex') < 0 && css.indexOf('transform') < 0 && css.indexOf('inset') < 0 && css.indexOf('#') < 0 && !VP_UNIT_RE.test(css))) return all;
+            if (!css || (css.indexOf('(') < 0 && css.indexOf('var') < 0 && css.indexOf('flex') < 0 && css.indexOf('transform') < 0 && css.indexOf('inset') < 0 && css.indexOf('#') < 0 &&
+                         css.indexOf('contents') < 0 && css.indexOf('gap') < 0 && !VP_UNIT_RE.test(css))) return all;
             var fixed = fixInlineStyle(css.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'), ctx);
             fixed = fixed.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
             return prefix + '"' + fixed + '"';
