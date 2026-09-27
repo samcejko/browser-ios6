@@ -224,6 +224,12 @@ cases.push(['html viewport units without a viewport meta tag', '<html><head><sty
 cases.push(['page reset does not hide the value', ':root{--a:initial}.b{background:var(--a)}:root{--a:#fff}',
   '.b{background:#fff}\n/*br-manifest:{"has":[],"cq":[],"cv":[{"h":"o7dqit","s":[":root"],"sp":[100],"d":[["--a","initial",0]]},{"h":"q201d4","s":[".b"],"sp":[100],"u":[["background","var(--a)",0,"#fff"]]},{"h":"fyaubi","s":[":root"],"sp":[100],"d":[["--a","#fff",0]]}]}*/',
   null, '{"--a":"initial"}']);
+// a gap in a rule of its own (utility classes, class="flex gap-4") is marked for the shim, which gives the items
+// margins once it sees the box; next to display:flex the rule makes the margins itself, a known grid has its own form
+cases.push(['gap utility rules marked', '.gap-4{gap:1rem}.gx{column-gap:12px}.gy{row-gap:.5em}.g0{gap:0}.gp{gap:5%}.f{display:flex;gap:4px}.gr{display:grid;gap:3px}',
+  '.gap-4{gap:1rem;counter-reset:br-rgap-rem 100 br-cgap-rem 100}\n.gx{-webkit-column-gap:12px;column-gap:12px;counter-reset:br-cgap-px 1200}\n.gy{row-gap:.5em;counter-reset:br-rgap-em 50}\n.g0{gap:0}\n.gp{gap:5%}\n.f{display:-webkit-box;gap:4px}\n.f > * + *{margin-left:4px}\n.gr{display:block;gap:3px}']);
+cases.push(['html inline flex gap marked', '<html><head></head><body><div style="display:flex;gap:8px">x</div></body></html>',
+  '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><div style="display:-webkit-box;gap:8px;counter-reset:br-rgap-px 800 br-cgap-px 800">x</div></body></html>']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
 // the "mk" manifest entries (selectors of rules with markers) only where a case looks at them

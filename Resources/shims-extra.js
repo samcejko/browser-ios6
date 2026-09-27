@@ -2491,6 +2491,56 @@
     };
     onReady(unboxControls);
     onSettled(unboxControls);
+    // Gaps of flex containers set by a rule of their own (utility classes: class="flex gap-4"; see gapMark in
+    // cssfix.js): the marker carries the length ("br-cgap-rem 100": 1rem between columns). In a row box the items after
+    // the first get the column gap as a left margin on top of their own; a column box, or the plain block a flex column
+    // is here, gives the row gap as a top margin. (Floats and inline blocks are the grid and wrapping forms, which have
+    // margins of their own.) All styles are read before any margin changes.
+    var gapLength = function (unit, n, el) {
+        if (unit === 'px') return n;
+        var from = unit === 'rem' ? document.documentElement : el;
+        return n * (parseFloat(getComputedStyle(from).fontSize) || 16);
+    };
+    onMarkers(function (marked) {
+        var todo = [], i, t;
+        for (i = 0; i < marked.length; i++) {
+            var cr = marked[i].cr;
+            if (cr.indexOf('gap-') < 0) continue;
+            var el = marked[i].el, cs = getComputedStyle(el), re = /br-([rc])gap-(px|rem|em) (\d+)/g, m, gaps = { r: 0, c: 0 };
+            while ((m = re.exec(cr)) !== null) gaps[m[1]] = gapLength(m[2], +m[3] / 100, el);
+            var box = cs.display === '-webkit-box' || cs.display === '-webkit-inline-box';
+            if (!box && cs.display !== 'block') continue;
+            var row = box && cs.webkitBoxOrient !== 'vertical' && cs.webkitBoxOrient !== 'block-axis';
+            var rev = box && cs.webkitBoxDirection === 'reverse';
+            var prop = row ? (rev ? 'marginRight' : 'marginLeft') : (rev ? 'marginBottom' : 'marginTop');
+            var gap = row ? gaps.c : gaps.r, first = true, kids = [];
+            for (var c = el.firstChild; c; c = c.nextSibling) {
+                if (c.nodeType !== 1) continue;
+                var ccs = getComputedStyle(c);
+                if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
+                if (!box && (ccs.cssFloat !== 'none' || /^inline/.test(ccs.display))) { kids = null; break; }
+                kids.push(c, ccs, first ? 0 : gap);
+                first = false;
+            }
+            if (!kids) continue;
+            for (var k = 0; k < kids.length; k += 3) {
+                var kid = kids[k], want = kids[k + 2], g = kid.__brGap;
+                if (g && kid.style[g.prop] !== g.set) g = kid.__brGap = null;   // (the page set the margin itself since)
+                if (g ? g.prop === prop && g.gap === want : !want) continue;
+                var own = parseFloat(kids[k + 1][prop]) || 0;
+                if (g && g.prop === prop) own -= g.gap;
+                todo.push({ el: kid, g: g, prop: prop, want: want, own: own });
+            }
+        }
+        for (i = 0; i < todo.length; i++) {
+            t = todo[i];
+            if (t.g) { t.el.style[t.g.prop] = t.g.inline; t.el.__brGap = null; }
+            if (!t.want) continue;
+            var inline = t.el.style[t.prop];
+            t.el.style[t.prop] = (t.own + t.want) + 'px';
+            t.el.__brGap = { prop: t.prop, set: t.el.style[t.prop], inline: inline, gap: t.want };
+        }
+    });
     // A box that scrolls (overflow-y auto/scroll: marked br-scroll by cssfix) but grew to its content inside a box that
     // clips it: in a flex column it would have shrunk to the room left (a dialog's text scrolls and its buttons stay in
     // view), but flex columns are plain blocks here (YouTube's consent dialog had its buttons below the screen). It

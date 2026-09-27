@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gap test</title>
+<!-- Flex gaps set by rules of their own (utility classes): the rewriter marks them (cssfix.js gapMark) and the page
+     shim gives the items margins (shims-extra.js, onMarkers). Open through the /dev/ route; the result is the title. -->
+<style>
+html { font-size: 10px; }
+body { font: 14px Helvetica, sans-serif; margin: 10px; }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.gap-4 { gap: 16px; }
+.gap-2 { gap: 8px; }
+.gap-rem { gap: 1rem; }
+.gap-x-3 { column-gap: 12px; }
+.fx { display: flex; gap: 12px; }
+.it { display: block; width: 40px; height: 20px; background: #8cf; }
+.m4 { margin-left: 4px; }
+.box { margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<div class="box flex gap-4" id="c1"><span class="it">A</span><span class="it">B</span><span class="it">C</span></div>
+<div class="box flex flex-col gap-2" id="c2"><span class="it">A</span><span class="it">B</span><span class="it">C</span></div>
+<div class="box flex gap-4" id="c3"><span class="it m4">A</span><span class="it m4">B</span></div>
+<div class="box flex gap-rem" id="c4"><span class="it">A</span><span class="it">B</span></div>
+<div class="box fx" id="c5"><span class="it">A</span><span class="it">B</span></div>
+<div class="box" id="c6" style="display:flex;gap:6px"><span class="it">A</span><span class="it">B</span></div>
+<div class="box flex gap-x-3" id="c7"><span class="it">A</span><span class="it">B</span></div>
+<div class="box flex gap-4" id="c8"><span class="it">A</span></div>
+<pre id="out"></pre>
+<script>
+function gaps(id, vertical) {
+  var c = document.getElementById(id), kids = [], out = [];
+  for (var k = c.firstChild; k; k = k.nextSibling) if (k.nodeType === 1) kids.push(k.getBoundingClientRect());
+  for (var i = 1; i < kids.length; i++) out.push(Math.round(vertical ? kids[i].top - kids[i - 1].bottom : kids[i].left - kids[i - 1].right));
+  return out.join(',');
+}
+var expect = { c1: ['16,16', false], c2: ['8,8', true], c3: ['20', false], c4: ['10', false], c5: ['12', false], c6: ['6', false], c7: ['12', false], c8: ['16,16', false] };
+setTimeout(function () {
+  // a child that arrives later gets its gap at the next scan
+  var s = document.createElement('span'); s.className = 'it'; s.textContent = 'B';
+  var s2 = s.cloneNode(true);
+  document.getElementById('c8').appendChild(s); document.getElementById('c8').appendChild(s2);
+}, 800);
+setTimeout(function () {
+  var pass = 0, total = 0, lines = [];
+  for (var id in expect) {
+    total++;
+    var got = gaps(id, expect[id][1]), ok = got === expect[id][0];
+    if (ok) pass++;
+    lines.push((ok ? 'OK   ' : 'FAIL ') + id + ' got ' + got + ' want ' + expect[id][0]);
+  }
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'gap ' + pass + '/' + total + ' | ' + lines.filter(function (l) { return l.indexOf('FAIL') === 0; }).join(' ; ');
+}, 4000);
+</script>
+</body>
+</html>

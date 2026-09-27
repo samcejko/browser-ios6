@@ -2027,6 +2027,8 @@ var CSSFix = (function () {
 
     var NON_NEGATIVE = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, padding: 1, 'padding-top': 1,
         'padding-right': 1, 'padding-bottom': 1, 'padding-left': 1, 'inline-size': 1, 'block-size': 1, 'border-width': 1, 'font-size': 1, 'line-height': 1 };
+    // the gaps of flex and grid containers (see gapMark in fixDeclarations)
+    var GAP_NAMES = { gap: 1, 'row-gap': 1, 'column-gap': 1, 'grid-gap': 1, 'grid-row-gap': 1, 'grid-column-gap': 1 };
 
     // ---- transitions of properties the old engine does not know crash its animation code (WebCore null
     // dereference on some pages, found on astro.build): such names become one it knows and never animates
@@ -2749,7 +2751,7 @@ var CSSFix = (function () {
         decls = expandFirstValid(decls);
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
-        var autoLeft = false, autoRight = false, hasDisplay = false;
+        var autoLeft = false, autoRight = false, hasDisplay = false, dispVal = '', gapRow = null, gapCol = null;
         // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
         // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
@@ -2757,7 +2759,7 @@ var CSSFix = (function () {
         var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
-            if (d.p === 'display') hasDisplay = true;
+            if (d.p === 'display') { hasDisplay = true; dispVal = String(d.v).toLowerCase(); }
             if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') { if (!local) local = {}; local[d.p] = d.v; }
             else if ((d.p === 'flex-wrap' || d.p === 'flex-flow') && /wrap/i.test(d.v) && !/nowrap/i.test(d.v)) wrap = true;
             else if (d.p === 'object-fit') objectFit = d.v.toLowerCase();
@@ -2838,6 +2840,12 @@ var CSSFix = (function () {
                 if (v === null) continue;
             }
             var lv = v.toLowerCase();
+            if (!keyframe && GAP_NAMES[p]) {
+                var gparts = splitWS(trim(lv));
+                if (p === 'gap' || p === 'grid-gap') { gapRow = gparts[0]; gapCol = gparts.length > 1 ? gparts[1] : gparts[0]; }
+                else if (p === 'row-gap' || p === 'grid-row-gap') gapRow = gparts[0];
+                else gapCol = gparts[0];
+            }
             // A percentage height is marked with its percentage for the shim: on this engine a child with a percentage
             // height of a stretched item of a flex row (a 2009 box here) grows with every layout, three times each
             // time (The Guardian's page reached 86 million px); the shim gives it the item's height in pixels.
@@ -3527,6 +3535,20 @@ var CSSFix = (function () {
                 for (var th = 0; th < hitProps.length; th++) if (ctx.pageTrans[hitProps[th]]) { takeover = true; break; }
             }
             if (takeover) push(out, '-webkit-transition-property', TAKEOVER_MARK, true);
+        }
+        // A gap in a rule of its own (utility classes: class="flex gap-4"; next to display:flex or grid the container
+        // rule turns it into margins, see transformRules): marked for the shim, the length times 100 per unit
+        // ("br-cgap-rem 100": a column gap of 1rem), which gives the items margins once it sees what the box is.
+        // (a style attribute has no rule for the margins; a later rule of a known grid has its own form)
+        var gapKey = ctx.curSels ? ctx.curSels.join(',') : null;
+        var gapGrid = gapKey && ((ctx.gridSels && ctx.gridSels[gapKey] > 0) || (ctx.gridFlow && ctx.gridFlow[gapKey]));
+        if (!keyframe && (gapRow || gapCol) && (ctx.inlineStyle || !/flex|grid/.test(dispVal)) && !gapGrid) {
+            var gapMark = function (kind, gv) {
+                var gm = gv && /^(\d*\.?\d+)(px|rem|em)$/.exec(gv);
+                if (gm && parseFloat(gm[1]) > 0) markers.push('br-' + kind + 'gap-' + gm[2] + ' ' + Math.round(parseFloat(gm[1]) * 100));
+            };
+            gapMark('r', gapRow);
+            gapMark('c', gapCol);
         }
         if (markers.length || markerKeyword) {
             // a counter-reset of the rule itself keeps its counters next to the markers
