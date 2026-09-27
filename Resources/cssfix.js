@@ -2712,6 +2712,16 @@ var CSSFix = (function () {
         'border-block-color': ['border-top-color', 'border-bottom-color'], 'border-block-style': ['border-top-style', 'border-bottom-style'],
         'inset-inline': ['left', 'right'], 'inset-block': ['top', 'bottom'], 'scroll-margin-inline': ['scroll-margin-left', 'scroll-margin-right'] };
 
+    // the flex-shrink factor a flex / flex-shrink declaration sets ("flex: none" and "0 0 auto" are 0, the default is 1)
+    function flexShrinkOf(p, lv) {
+        if (p === 'flex-shrink') { var n = parseFloat(lv); return isNaN(n) ? null : n; }
+        if (lv === 'none') return 0;
+        if (lv === 'auto' || lv === 'initial') return 1;
+        var toks = splitWS(lv), nums = [];
+        for (var i = 0; i < toks.length; i++) if (/^-?[\d.]+$/.test(toks[i])) nums.push(parseFloat(toks[i]));
+        return nums.length > 1 ? nums[1] : 1;
+    }
+
     function parseFlexShorthand(v) {   // returns {grow, basis}
         var lv = v.toLowerCase();
         if (lv === 'none') return { grow: '0', basis: null };
@@ -2751,7 +2761,7 @@ var CSSFix = (function () {
         decls = expandFirstValid(decls);
         var wrap = false, hasTransform = false, translate = null, rotate = null, scale = null, lastImp = false;
         var objectFit = null, objectPosition = null, ofiDone = false, columnFlex = false;
-        var autoLeft = false, autoRight = false, hasDisplay = false, dispVal = '', gapRow = null, gapCol = null;
+        var autoLeft = false, autoRight = false, hasDisplay = false, dispVal = '', gapRow = null, gapCol = null, shrink = null;
         // markers the page shim reads back from the computed counter-reset: aspect ratios, containers, scroll snap,
         // smooth scrolling, balanced text (one counter-reset per rule, emitted after the declarations)
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
@@ -2840,6 +2850,7 @@ var CSSFix = (function () {
                 if (v === null) continue;
             }
             var lv = v.toLowerCase();
+            if (!keyframe && (p === 'flex' || p === 'flex-shrink') && !isGlobalKeyword(trim(lv))) shrink = flexShrinkOf(p, trim(lv));
             if (!keyframe && GAP_NAMES[p]) {
                 var gparts = splitWS(trim(lv));
                 if (p === 'gap' || p === 'grid-gap') { gapRow = gparts[0]; gapCol = gparts.length > 1 ? gparts[1] : gparts[0]; }
@@ -3561,6 +3572,11 @@ var CSSFix = (function () {
             };
             gapMark('r', gapRow);
             gapMark('c', gapCol);
+        }
+        // Items that must not shrink (flex-shrink: 0, flex: none): their selectors go to the manifest ("mk" entries with
+        // ns), for the shim that shrinks the other items of a row too wide for its room (the 2009 box does not shrink)
+        if (!keyframe && shrink === 0 && gapKey) {
+            manifestAdd('mk', { h: manifestHash('mk|ns|' + gapKey), s: gapKey, ns: 1 });
         }
         if (markers.length || markerKeyword) {
             // a counter-reset of the rule itself keeps its counters next to the markers

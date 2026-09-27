@@ -235,6 +235,10 @@ cases.push(['display contents', '.c{display:contents}',
   '.c{display:inherit;-webkit-box-orient:inherit;-webkit-box-direction:inherit;-webkit-box-align:inherit;margin:0;padding:0;border-width:0}']);
 cases.push(['html inline display contents', '<html><head></head><body><nav style="display:flex"><div style="display:contents"><a>x</a></div></nav></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><nav style="display:-webkit-box"><div style="display:inherit;-webkit-box-orient:inherit;-webkit-box-direction:inherit;-webkit-box-align:inherit;margin:0;padding:0;border-width:0"><a>x</a></div></nav></body></html>']);
+// items that must not shrink go to the manifest ("mk" entries with ns) for the shim that shrinks the others
+cases.push(['no-shrink items in the manifest', '.a{flex-shrink:0}.b{flex:none}.c{flex:0 0 200px}.d{flex:1}.e{flex-shrink:1}.f{flex:1 0 auto}',
+  '.a{flex-shrink:0}\n.b{-webkit-box-flex:0;width:auto;flex:none}\n.c{-webkit-box-flex:0;width:200px;flex:0 0 200px}\n.d{-webkit-box-flex:1;flex:1}\n.e{flex-shrink:1}\n.f{-webkit-box-flex:1;width:auto;flex:1 0 auto}\n' +
+  '/*br-manifest:{"has":[],"cq":[],"mk":[{"h":"1j20pe9","s":".a","ns":1},{"h":"1j20pea","s":".b","ns":1},{"h":"1j20peb","s":".c","ns":1},{"h":"1j20pee","s":".f","ns":1}]}*/']);
 var outEl = document.getElementById('out'), pass = 0, fail = 0;
 function norm(s){ return s.replace(/\s*\n\s*/g, '\n'); }
 // the "mk" manifest entries (selectors of rules with markers) only where a case looks at them

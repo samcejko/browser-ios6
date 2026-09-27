@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shrink test</title>
+<!-- Flex items shrink when their row has too little room (flex-shrink: 1 is the default): the 2009 boxes of the old
+     engine keep them at their preferred widths, the page shim shrinks them (shims-extra.js shrinkRows) once the page is
+     wider than the window. Open through the /dev/ route; the result is the title. -->
+<style>
+body { font: 14px Helvetica, sans-serif; margin: 0; }
+.row { display: flex; margin-bottom: 12px; background: #eee; }
+.logo { width: 300px; flex-shrink: 0; height: 20px; background: #f88; }
+.full { width: 100%; background: #8cf; }
+.fixed { flex: none; width: 250px; background: #fc8; }
+.long { background: #cf8; }
+.word { background: #c8f; }
+.d-flex { display: flex; }
+.flex-wrap { flex-wrap: wrap; }
+.col { width: 45%; height: 30px; background: #9d9; }
+.scroller { overflow-x: auto; width: 400px; }
+.pill { white-space: nowrap; padding: 0 10px; background: #fdd; }
+</style>
+</head>
+<body>
+<div class="row" id="r1"><div class="logo"></div><div class="full" id="i1">full width item</div></div>
+<div class="row" id="r2"><div class="long" id="i2a"></div><div class="long" id="i2b"></div></div>
+<div class="row" id="r3"><div class="fixed" id="i3a">fixed</div><div class="long" id="i3b"></div></div>
+<div class="row" id="r4"><div class="logo"></div><div class="full row" id="i4"><div class="long" id="i4a"></div><div class="long" id="i4b"></div></div></div>
+<div class="row" id="r5"><div class="fixed" id="i5a">fixed</div><div class="word" id="i5b">Supercalifragilisticexpialidociousandsomemorelettersthatcannotbreak</div></div>
+<div class="d-flex flex-wrap" id="r6"><div class="col" id="i6a">1</div><div class="col" id="i6b">2</div><div class="col" id="i6c">3</div></div>
+<div class="scroller"><div class="d-flex" id="r7"><span class="pill" id="i7a">a pill with a long label that stays one line</span><span class="pill">another pill with a long label</span><span class="pill">and a third pill that is also long</span></div></div>
+<pre id="out"></pre>
+<script>
+var text = '';
+for (var t = 0; t < 60; t++) text += 'word' + t + ' ';
+var longs = document.querySelectorAll('.long');
+for (var l = 0; l < longs.length; l++) longs[l].textContent = text;
+// (row 5: the fixed item leaves 100 px, less than the long word needs)
+var W = document.getElementById('r1').clientWidth;
+document.getElementById('i5a').style.width = (W - 100) + 'px';
+function w(id) { return document.getElementById(id).offsetWidth; }
+setTimeout(function () {
+  var W = document.getElementById('r1').clientWidth, wordMin = 0;
+  var checks = [
+    ['r1 full item takes the rest', w('i1'), W - 300],
+    ['r2 two long items share', w('i2a'), Math.round(W / 2)],
+    ['r2 second', w('i2b'), Math.round(W / 2)],
+    ['r3 next to flex:none', w('i3b'), W - 250],
+    ['r4 nested row', w('i4'), W - 300],
+    ['r4 nested items share', w('i4a'), Math.round((W - 300) / 2)]
+  ];
+  var pass = 0, lines = [];
+  for (var i = 0; i < checks.length; i++) {
+    var ok = Math.abs(checks[i][1] - checks[i][2]) <= 3;
+    if (ok) pass++;
+    lines.push((ok ? 'OK   ' : 'FAIL ') + checks[i][0] + ': ' + checks[i][1] + ' want ' + checks[i][2]);
+  }
+  // row 5: the long word keeps its width (it cannot shrink below it)
+  var e5 = document.getElementById('i5b'), ok5 = e5.scrollWidth <= e5.clientWidth + 1 && w('i5b') > 150;
+  if (ok5) pass++;
+  lines.push((ok5 ? 'OK   ' : 'FAIL ') + 'r5 word keeps its width: ' + w('i5b'));
+  // row 6: flex and flex-wrap in classes of their own: the third column goes to the next line
+  var t6a = document.getElementById('i6a').getBoundingClientRect().top, t6c = document.getElementById('i6c').getBoundingClientRect().top, ok6 = t6c > t6a + 10;
+  if (ok6) pass++;
+  lines.push((ok6 ? 'OK   ' : 'FAIL ') + 'r6 wraps: third column ' + Math.round(t6c - t6a) + ' px lower');
+  // row 7: pills in a box that scrolls sideways keep their widths
+  var ok7 = document.getElementById('i7a').scrollWidth <= document.getElementById('i7a').clientWidth + 1 && w('i7a') > 250;
+  if (ok7) pass++;
+  lines.push((ok7 ? 'OK   ' : 'FAIL ') + 'r7 pill in a scroller keeps its width: ' + w('i7a'));
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'shrink ' + pass + '/' + (checks.length + 3) + ' | ' + lines.filter(function (x) { return x.indexOf('FAIL') === 0; }).join(' ; ');
+}, 4000);
+</script>
+</body>
+</html>

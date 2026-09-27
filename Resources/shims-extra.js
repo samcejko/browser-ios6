@@ -2491,6 +2491,138 @@
     };
     onReady(unboxControls);
     onSettled(unboxControls);
+    // Items of a flex row shrink when the row has too little room (flex-shrink: 1 is the default); the 2009 boxes here
+    // keep every item at its preferred width, and a row with a full-width item next to a logo was wider than the
+    // screen (seznam.cz: 1904 px of 1024). When the page is wider than the window, a row whose items reach past its
+    // own width gets its shrinkable items capped (max-width) at their share of the room, shared out by their widths
+    // as flex-shrink does: not items with flex-shrink: 0 (the rewriter lists their selectors, see noteMarkerRules),
+    // flexible ones (the old box shrinks those itself), pictures or form controls. An item whose content cannot
+    // become that narrow keeps its narrowest width (min-width: auto).
+    var SHRINK_NOT = { IMG: 1, VIDEO: 1, CANVAS: 1, IFRAME: 1, EMBED: 1, OBJECT: 1, svg: 1, SVG: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, BUTTON: 1 };
+    var shrunk = [], shrinkTimer = null, shrinkCost = 0, shrinkEnd = 0, shrinkStamp = 1, shrinkFutile = -1, noShrinkPlan = null, noShrinkLen = -1;
+    var noShrink = function (el) {
+        var list = window.__brNoShrink;
+        if (!list || !list.length || !el.webkitMatchesSelector) return false;
+        if (noShrinkLen !== list.length) {
+            // (in chunks, and one by one where a chunk has a selector the engine refuses)
+            noShrinkPlan = [];
+            for (var i = 0; i < list.length; i += 30) {
+                var chunk = list.slice(i, i + 30).join(',');
+                try { el.webkitMatchesSelector(chunk); noShrinkPlan.push(chunk); }
+                catch (e) { for (var k = i; k < i + 30 && k < list.length; k++) { try { el.webkitMatchesSelector(list[k]); noShrinkPlan.push(list[k]); } catch (e2) {} } }
+            }
+            noShrinkLen = list.length;
+        }
+        for (var p = 0; p < noShrinkPlan.length; p++) { try { if (el.webkitMatchesSelector(noShrinkPlan[p])) return true; } catch (e3) {} }
+        return false;
+    };
+    var unshrink = function () {
+        for (var i = 0; i < shrunk.length; i++) { shrunk[i].style.maxWidth = shrunk[i].__brShrink || ''; shrunk[i].__brShrink = undefined; }
+        shrunk = [];
+        shrinkFutile = -1;
+    };
+    var shrinkRows = function () {
+        var t0 = Date.now(), root = document.documentElement, body = document.body, changed = false;
+        try {
+            for (var round = 0; body && round < 3; round++) {
+                var wide = root.scrollWidth;
+                if (wide <= root.clientWidth + 1 || wide === shrinkFutile) break;
+                // (reads only) the parents with a child reaching past their right edge, outermost first
+                var all = body.getElementsByTagName('*'), rows = [], stamp = ++shrinkStamp, i;
+                for (i = 0; i < all.length && i < 8000; i++) {
+                    var el = all[i], p = el.parentNode;
+                    if (!p || p.nodeType !== 1 || p.__brShrinkRow === stamp) continue;
+                    var r = el.getBoundingClientRect();
+                    if (!r.width || r.right <= 0) continue;
+                    if (p.__brShrinkStamp !== stamp) { p.__brShrinkStamp = stamp; p.__brShrinkRight = p.getBoundingClientRect().right; }
+                    if (r.right > p.__brShrinkRight + 1) { p.__brShrinkRow = stamp; rows.push(p); }
+                }
+                var applied = [], wraps = [];
+                // (a row in a box that scrolls sideways does not widen the page: it scrolls, like strips of news)
+                var inScroller = function (el) {
+                    for (var s = el; s && s.nodeType === 1 && s !== body; s = s.parentNode) {
+                        var ox = getComputedStyle(s).overflowX;
+                        if (ox === 'auto' || ox === 'scroll' || ox === 'overlay') return true;
+                    }
+                    return false;
+                };
+                for (var k = 0; k < rows.length; k++) {
+                    var row = rows[k], cs = getComputedStyle(row);
+                    if ((cs.display !== '-webkit-box' && cs.display !== '-webkit-inline-box') || cs.webkitBoxOrient === 'vertical' || cs.webkitBoxOrient === 'block-axis') continue;
+                    if (inScroller(row)) continue;
+                    if (cs.webkitBoxLines === 'multiple') { wraps.push(row, cs.display, cs.webkitBoxPack); continue; }
+                    var avail = row.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+                    var items = [], total = 0, scaled = 0;
+                    for (var c = row.firstChild; c; c = c.nextSibling) {
+                        if (c.nodeType !== 1) continue;
+                        var ccs = getComputedStyle(c);
+                        if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
+                        var w = c.offsetWidth;
+                        total += w + (parseFloat(ccs.marginLeft) || 0) + (parseFloat(ccs.marginRight) || 0);
+                        var can = !SHRINK_NOT[c.tagName] && !(parseFloat(ccs.webkitBoxFlex) > 0) && c.__brShrink === undefined && !noShrink(c);
+                        items.push(c, w, can);
+                        if (can) scaled += w;
+                    }
+                    var over = total - avail;
+                    if (over <= 1 || scaled <= 0) continue;
+                    for (var n = 0; n < items.length; n += 3) {
+                        if (!items[n + 2]) continue;
+                        var it = items[n];
+                        it.__brShrink = it.style.maxWidth;
+                        it.style.maxWidth = Math.max(0, Math.floor(items[n + 1] - over * items[n + 1] / scaled)) + 'px';
+                        shrunk.push(it);
+                        applied.push(it);
+                    }
+                }
+                // A row that wraps (flex-wrap: the rewriter marks it -webkit-box-lines: multiple) through a class of its own,
+                // not the rule that makes it flex: the 2009 box does not wrap, so it becomes a block of inline boxes, as
+                // the rewriter makes a row that says both in one rule (seznam.cz's third column stood 900 px past the
+                // screen). Its items keep their kind of box (a flex item that is a row stays one, inline).
+                var wrapped = 0;
+                for (var q = 0; q < wraps.length; q += 3) {
+                    var wr = wraps[q];
+                    if (wr.__brWrap) continue;
+                    wr.__brWrap = true;
+                    var wkids = [];
+                    for (var wc = wr.firstChild; wc; wc = wc.nextSibling) {
+                        if (wc.nodeType !== 1) continue;
+                        var wcs = getComputedStyle(wc);
+                        if (wcs.position !== 'absolute' && wcs.position !== 'fixed') wkids.push(wc, wcs.display);
+                    }
+                    wr.style.display = wraps[q + 1] === '-webkit-inline-box' ? 'inline-block' : 'block';
+                    for (var kw = 0; kw < wkids.length; kw += 2) {
+                        var kd = wkids[kw + 1];
+                        if (kd === 'none' || /^inline|^-webkit-inline|table-cell/.test(kd)) continue;
+                        wkids[kw].style.display = kd === '-webkit-box' ? '-webkit-inline-box' : kd === 'table' ? 'inline-table' : 'inline-block';
+                        wkids[kw].style.verticalAlign = 'top';
+                    }
+                    wrapped++;
+                }
+                for (i = 0; i < applied.length; i++) {
+                    var a = applied[i];
+                    if (a.scrollWidth > a.clientWidth + 1) a.style.maxWidth = (a.scrollWidth + a.offsetWidth - a.clientWidth) + 'px';
+                }
+                if (!applied.length && !wrapped) { shrinkFutile = wide; break; }   // (nothing here narrows it: not looked at again while it stays so)
+                changed = true;
+            }
+        } catch (e) {}
+        shrinkCost = Date.now() - t0;
+        shrinkEnd = Date.now();
+        return changed;
+    };
+    // (the scan reads every element: a page it ran long on waits five times its cost)
+    var scheduleShrink = function () {
+        if (shrinkTimer) return;
+        shrinkTimer = setTimeout(function () { shrinkTimer = null; shrinkRows(); }, Math.max(200, shrinkEnd + shrinkCost * 5 - Date.now()));
+    };
+    onReady(scheduleShrink);
+    onSettled(scheduleShrink);
+    window.addEventListener('load', scheduleShrink, false);
+    var reshrink = function () { unshrink(); scheduleShrink(); };
+    window.__brReshrink = function () { if (shrunk.length) reshrink(); };
+    window.addEventListener('orientationchange', reshrink, false);
+    window.addEventListener('resize', function () { if (shrunk.length) reshrink(); else scheduleShrink(); }, false);
+    window.__brShrinkRows = shrinkRows;   // (tests)
     // Gaps of flex containers set by a rule of their own (utility classes: class="flex gap-4"; see gapMark in
     // cssfix.js): the marker carries the length ("br-cgap-rem 100": 1rem between columns). In a row box the items after
     // the first get the column gap as a left margin on top of their own; a column box, or the plain block a flex column
@@ -3072,9 +3204,14 @@
         // (only when the network layer sends them: a manifest without the kind, a test's, means every element is scanned)
         var mkKnown = false;
         var noteMarkerRules = function (m) {
+            var list = [], ns = [], mk = m.mk || [];
+            // (entries with ns: items that must not shrink, for the shrinking of rows too wide for their room)
+            for (var i = 0; i < mk.length; i++) if (mk[i] && mk[i].s) (mk[i].ns ? ns : list).push(mk[i].s);
+            // (rows shrunk before the list came are shrunk again)
+            var nsChanged = !window.__brNoShrink || window.__brNoShrink.length !== ns.length;
+            window.__brNoShrink = ns;
+            if (nsChanged && window.__brReshrink) window.__brReshrink();
             if (!mkKnown) { window.__brMarkerRules = null; return; }
-            var list = [], mk = m.mk || [];
-            for (var i = 0; i < mk.length; i++) if (mk[i] && mk[i].s) list.push(mk[i].s);
             window.__brMarkerRules = { list: list, key: list.length + '|' + (list.length ? list[list.length - 1] : '') };
         };
         // the root custom properties and the scoped ones, for the rewriter the page runs itself

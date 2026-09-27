@@ -1016,9 +1016,11 @@ static BOOL BRIsWebPDataURL(NSURL *url)
             body = [NSData dataWithContentsOfFile:file];
             type = types[ext];
             cacheControl = @"no-store";
-            if (body && [ext isEqualToString:@"html"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
+            // (scripts too, as the network layer takes them: lowered, a worker's with the worker polyfills)
+            BOOL devHTML = [ext isEqualToString:@"html"] && [BRSettings cssFixEnabled], devJS = [ext isEqualToString:@"js"] && [BRSettings transpileEnabled];
+            if (body && (devHTML || devJS) && [BRCSSRewriter shared].available) {
                 self.done = YES;
-                self.rewriteKind = @"html";
+                self.rewriteKind = devHTML ? @"html" : @"js";
                 self.rewriteBuffer = [body mutableCopy];
                 self.rewriteCharset = @"utf-8";
                 self.pendingStatus = 200;
