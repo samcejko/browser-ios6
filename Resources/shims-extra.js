@@ -3209,17 +3209,23 @@
         var apply = function () {
             applyTimer = null;
             if (!manifest) return;
-            var t0 = Date.now();
+            var t0 = Date.now(), t = [];
             try { applyStructural(); } catch (e7) {}
+            t.push(Date.now());
             try { applyHas(); } catch (e) {}
+            t.push(Date.now());
             // the marker scan calls applyContainers and collects the inline deferred-value markers
             try { if (manifest.cq.length || (window.__brDeferred && window.__brDeferred.needsMarkers())) applyAspectRatios(); } catch (e2) {}
+            t.push(Date.now());
             try { if (window.__brVars) window.__brVars.apply(); } catch (e5) {}
+            t.push(Date.now());
             try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e3) {}
+            t.push(Date.now());
             try { if (window.__brGrid) window.__brGrid.apply(); } catch (e8) {}
             applyEnd = Date.now();
             applyCost = applyEnd - t0;
-            if (window.__brNoteSlow) window.__brNoteSlow('style pass', applyCost, '');
+            if (window.__brNoteSlow) window.__brNoteSlow('style pass', applyCost, 'structural ' + (t[0] - t0) + ', :has ' + (t[1] - t[0]) + ', markers ' + (t[2] - t[1]) +
+                                                                                 ', vars ' + (t[3] - t[2]) + ', deferred ' + (t[4] - t[3]) + ', grid ' + (applyEnd - t[4]));
         };
         // A pass costs what the page's size makes it cost (blesk.cz: 2.5 s, and the page changes all the time, so the
         // passes ran back to back and the page itself hardly got to run): the next one waits five times as long as
@@ -7445,6 +7451,125 @@
         window.HTMLMediaElement.prototype.canPlayType.__brSure = true;
     }
 
+    // ---- IntersectionObserver (the polyfill in the bundle): one watcher for all observers of the page instead of a
+    // MutationObserver and scroll and resize listeners per observer; checks that wait for their own cost; the styles and
+    // boxes of the elements around the targets read once per check. (seznam.cz: every check read the computed style of
+    // every ancestor of every target, per observer: 4-6 s a check, again after each change of the page.)
+    (function () {
+        var IO = window.IntersectionObserver, IOp = IO && IO.prototype;
+        if (!IOp || !IOp._checkForIntersections || !IOp._monitorIntersections || !IOp._computeTargetAndRootIntersection || !IOp._unmonitorAllIntersections) return;
+        var check = IOp._checkForIntersections, compute = IOp._computeTargetAndRootIntersection;
+        var monitor = IOp._monitorIntersections, unmonitor = IOp._unmonitorIntersections, unmonitorAll = IOp._unmonitorAllIntersections;
+        var observers = [], timer = null, lastEnd = 0, lastCost = 0, round = null, gen = 0, listening = false;
+        // (per check: an element's display and overflow, and its box)
+        var styleOf = function (el) {
+            var s = round && el.__brIoStyle;
+            if (s && s.gen === round.gen) return s;
+            var cs = getComputedStyle(el);
+            s = { gen: round ? round.gen : -1, display: cs ? cs.display : '', overflow: cs ? cs.overflow : '' };
+            if (round) try { el.__brIoStyle = s; } catch (e) {}
+            return s;
+        };
+        var rectOf = function (el) {
+            var c = round && el.__brIoRect;
+            if (c && c.gen === round.gen) return c.rect;
+            var r = null;
+            try { r = el.getBoundingClientRect(); } catch (e) {}
+            r = r ? { top: r.top, right: r.right, bottom: r.bottom, left: r.left, width: r.right - r.left, height: r.bottom - r.top } : { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 };
+            if (round) try { el.__brIoRect = { gen: round.gen, rect: r }; } catch (e2) {}
+            return r;
+        };
+        var intersect = function (a, b) {
+            var top = Math.max(a.top, b.top), bottom = Math.min(a.bottom, b.bottom), left = Math.max(a.left, b.left), right = Math.min(a.right, b.right);
+            return right - left >= 0 && bottom - top >= 0 ? { top: top, bottom: bottom, left: left, right: right, width: right - left, height: bottom - top } : null;
+        };
+        var parentOf = function (node) {
+            var p = node.parentNode;
+            if (p && p.assignedSlot) p = p.assignedSlot.parentNode;
+            return p && p.nodeType === 11 && p.host ? p.host : p;
+        };
+        IOp._checkForIntersections = function () {
+            var outer = !round;
+            if (outer) round = { gen: ++gen };
+            try { return check.apply(this, arguments); } finally { if (outer) round = null; }
+        };
+        // (the polyfill's walk up from the target, for targets of this document)
+        IOp._computeTargetAndRootIntersection = function (target, targetRect, rootRect) {
+            if (target.ownerDocument !== document) return compute.apply(this, arguments);
+            if (styleOf(target).display === 'none') return;
+            var rect = targetRect, html = document.documentElement, body = document.body;
+            for (var parent = parentOf(target); parent; parent = parentOf(parent)) {
+                var st = parent.nodeType === 1 ? styleOf(parent) : null;
+                if (st && st.display === 'none') return null;
+                if (parent === this.root || parent.nodeType === 9) {
+                    if (parent !== this.root && parent !== document) return compute.apply(this, arguments);
+                    return intersect(rootRect, rect);
+                }
+                if (st && parent !== body && parent !== html && st.overflow !== 'visible') {
+                    rect = intersect(rectOf(parent), rect);
+                    if (!rect) return rect;
+                }
+            }
+            return rect;
+        };
+        var runAll = function () {
+            timer = null;
+            var t0 = Date.now(), list = observers.slice(), debug = !!window.__brNoteSlow, inPage = 0, targets = 0;
+            round = { gen: ++gen };
+            try {
+                for (var i = 0; i < list.length; i++) {
+                    var o = list[i], cb = o._callback;
+                    targets += o._observationTargets.length;
+                    // (debugging: how much of it the page's own callbacks take)
+                    if (debug) o._callback = function () { var s = Date.now(); try { return cb.apply(this, arguments); } finally { inPage += Date.now() - s; } };
+                    try { check.call(o); } catch (e) {} finally { if (debug) o._callback = cb; }
+                }
+            } finally { round = null; }
+            lastEnd = Date.now();
+            lastCost = lastEnd - t0;
+            if (debug) window.__brNoteSlow('intersection check', lastCost, list.length + ' observers, ' + targets + ' targets, ' + inPage + ' ms in their callbacks');
+        };
+        var schedule = function () {
+            if (timer || !observers.length) return;
+            timer = setTimeout(runAll, Math.max(IOp.THROTTLE_TIMEOUT || 100, lastEnd + lastCost * 3 - Date.now()));
+        };
+        // (the classes and attributes the page shims set themselves change nothing an observer looks at)
+        var OWN = /(?:^|\s)br-[\w-]+/g;
+        var ownChange = function (r) {
+            if (r.type !== 'attributes') return false;
+            if (/^data-br-/.test(r.attributeName || '')) return true;
+            if (r.attributeName !== 'class') return false;
+            var now = r.target.getAttribute && r.target.getAttribute('class');
+            return String(r.oldValue || '').replace(OWN, '').replace(/\s+/g, ' ').trim() === String(now || '').replace(OWN, '').replace(/\s+/g, ' ').trim();
+        };
+        var listen = function () {
+            if (listening) return;
+            listening = true;
+            window.addEventListener('resize', schedule, true);
+            document.addEventListener('scroll', schedule, true);
+            var MO = window.MutationObserver || window.WebKitMutationObserver;
+            if (MO) new MO(function (records) {
+                for (var i = 0; i < records.length; i++) if (!ownChange(records[i])) { schedule(); return; }
+            }).observe(document, { attributes: true, attributeOldValue: true, childList: true, characterData: true, subtree: true });
+        };
+        var drop = function (o) { var i = observers.indexOf(o); if (i >= 0) observers.splice(i, 1); };
+        IOp._monitorIntersections = function (doc) {
+            // (another document, or an observer that polls: as the polyfill does it)
+            if (doc !== document || this.POLL_INTERVAL || this.USE_MUTATION_OBSERVER === false) return monitor.apply(this, arguments);
+            if (observers.indexOf(this) < 0) observers.push(this);
+            // (its own check, which observe() asks for right after this, is the shared one)
+            this._checkForIntersections = schedule;
+            listen();
+        };
+        IOp._unmonitorIntersections = function (doc) {
+            if (doc !== document) return unmonitor.apply(this, arguments);
+            var left = false;
+            for (var i = 0; i < this._observationTargets.length && !left; i++) left = this._observationTargets[i].element.ownerDocument === document;
+            if (!left) drop(this);
+        };
+        IOp._unmonitorAllIntersections = function () { drop(this); return unmonitorAll.apply(this, arguments); };
+    })();
+
     // ---- Everyday DOM differences that break modern scripts on the old engine
     // addEventListener(type, fn, {passive, once, capture, signal}): the old engine reads the options object as capture=true
     var patchEventTarget = function (obj) {
@@ -7491,9 +7616,19 @@
             TLp.remove = function () { for (var i = 0; i < arguments.length; i++) origRemoveClass.call(this, arguments[i]); };
         }
     }
-    // getBoundingClientRect().x / .y
+    // getBoundingClientRect().x / .y: getters on the rectangles' prototype (a wrapper made two objects per call, and
+    // pages call it by the thousand: seznam.cz's visibility checks), else a wrapper
     if (Ep && Ep.getBoundingClientRect) {
         var probeRect = document.documentElement.getBoundingClientRect();
+        var rectProto = probeRect && !('x' in probeRect) ? Object.getPrototypeOf(probeRect) : null;
+        if (rectProto && rectProto !== Object.prototype) {
+            try {
+                Object.defineProperty(rectProto, 'x', { get: function () { return this.left; }, configurable: true });
+                Object.defineProperty(rectProto, 'y', { get: function () { return this.top; }, configurable: true });
+                Object.defineProperty(rectProto, 'toJSON', { value: function () { return { x: this.left, y: this.top, left: this.left, top: this.top, right: this.right, bottom: this.bottom, width: this.width, height: this.height }; }, configurable: true, writable: true });
+            } catch (eRect) {}
+            probeRect = document.documentElement.getBoundingClientRect();
+        }
         if (probeRect && !('x' in probeRect)) {
             var origRect = Ep.getBoundingClientRect;
             Ep.getBoundingClientRect = function () {

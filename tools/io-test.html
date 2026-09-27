@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>io test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+.box { height: 100px; margin: 0; background: #cde; border-bottom: 1px solid #fff; }
+.scroller { height: 200px; overflow: auto; width: 300px; border: 1px solid #999; }
+.hidden { display: none; }
+</style>
+<script>
+// The IntersectionObserver polyfill of the bundle, with the page shims' shared watcher on top (see shims-extra.js):
+// the desktop's own observer is removed first, so that the polyfill installs itself.
+delete window.IntersectionObserver;
+delete window.IntersectionObserverEntry;
+</script>
+<script src="https://cdn.jsdelivr.net/npm/intersection-observer@0.12.2/intersection-observer.js"></script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>IntersectionObserver</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div class="scroller" id="s1"></div>
+<div class="hidden" id="h1"><div class="box" id="hb"></div></div>
+<div class="scroller" id="s2"></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var fill = function (id, n) {
+  var s = document.getElementById(id), boxes = [];
+  for (var i = 0; i < n; i++) { var b = document.createElement('div'); b.className = 'box'; b.textContent = id + ' ' + i; s.appendChild(b); boxes.push(b); }
+  return boxes;
+};
+var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+var state = function (map, boxes) { return boxes.map(function (b) { return map.get(b) ? 1 : 0; }).join(''); };
+var watch = function (boxes, options) {
+  var map = new Map(), calls = { n: 0 };
+  var io = new IntersectionObserver(function (entries) { calls.n++; entries.forEach(function (e) { map.set(e.target, e.isIntersecting); }); }, options);
+  boxes.forEach(function (b) { io.observe(b); });
+  return { io: io, map: map, calls: calls };
+};
+var shared = /observers/.test(String(IntersectionObserver.prototype._monitorIntersections));
+show('the shared watcher is in place', shared, shared ? '' : 'polyfill methods not replaced');
+var b1 = fill('s1', 12), b2 = fill('s2', 6);
+var w1 = watch(b1, null), w2 = watch(b2, { root: document.getElementById('s2') }), wh = watch([document.getElementById('hb')], null);
+var many = [];
+for (var m = 0; m < 30; m++) many.push(watch(b1.slice(0, 3), null));
+wait(600).then(function () {
+  show('viewport: the first boxes of a scroller', state(w1.map, b1) === '110000000000', state(w1.map, b1));
+  show('root element option', state(w2.map, b2) === '110000', state(w2.map, b2));
+  show('display: none around the target', wh.map.get(document.getElementById('hb')) === false, String(wh.map.get(document.getElementById('hb'))));
+  show('30 observers of the same boxes', many.every(function (w) { return state(w.map, b1.slice(0, 3)) === '110'; }), many.map(function (w) { return state(w.map, b1.slice(0, 3)); }).slice(0, 3).join(','));
+  document.getElementById('s1').scrollTop = 550;
+  document.getElementById('s2').scrollTop = 300;
+  return wait(600);
+}).then(function () {
+  show('after scrolling the scroller', state(w1.map, b1) === '000001110000', state(w1.map, b1));
+  show('after scrolling the root', state(w2.map, b2) === '001110', state(w2.map, b2));
+  // a class change of the page's own (not br-) makes the check run: the hidden box shows up
+  document.getElementById('h1').className = '';
+  return wait(600);
+}).then(function () {
+  show('a class change shows a hidden target', wh.map.get(document.getElementById('hb')) === true, String(wh.map.get(document.getElementById('hb'))));
+  var before = w1.calls.n;
+  // the shims' own classes change nothing: no callback without a change
+  for (var i = 0; i < b1.length; i++) b1[i].classList.add('br-test-mark');
+  return wait(400).then(function () { show('own br- classes do not call back', w1.calls.n === before, before + ' -> ' + w1.calls.n); });
+}).then(function () {
+  w1.io.unobserve(b1[5]);
+  w1.io.disconnect();
+  var n = w1.calls.n;
+  document.getElementById('s1').scrollTop = 0;
+  return wait(500).then(function () { show('disconnect stops the callbacks', w1.calls.n === n, n + ' -> ' + w1.calls.n); });
+}).then(function () {
+  document.getElementById('summary').textContent = pass + ' / ' + total;
+  document.title = 'io ' + pass + '/' + total;
+  window.__ioResults = results;
+});
+</script>
+</body>
+</html>
