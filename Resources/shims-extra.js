@@ -938,8 +938,9 @@
             } catch (e0) { root.adoptedStyleSheets = []; }
             // the first children the root gets claim the component sheets a library put in the document just before
             var nativeInsert = root.insertBefore, nativeAppend = root.appendChild;
-            root.insertBefore = function (node, ref) { if (window.__brHostSheets) window.__brHostSheets.claim(host); return nativeInsert.call(this, node, ref === undefined ? null : ref); };
-            root.appendChild = function (node) { if (window.__brHostSheets) window.__brHostSheets.claim(host); return nativeAppend.call(this, node); };
+            var claim = function () { var hs = window.__brHostSheets; if (hs) { hs.claim(host); hs.sync(root, host); } };
+            root.insertBefore = function (node, ref) { claim(); return nativeInsert.call(this, node, ref === undefined ? null : ref); };
+            root.appendChild = function (node) { claim(); return nativeAppend.call(this, node); };
             root.getElementById = function (id) { return root.querySelector('[id="' + String(id).replace(/"/g, '\\"') + '"]'); };
             root.elementFromPoint = function (x, y) { return document.elementFromPoint(x, y); };
             root.elementsFromPoint = function (x, y) { var el = document.elementFromPoint(x, y); return el ? [el] : []; };
@@ -947,7 +948,7 @@
             try { Object.defineProperty(root, 'activeElement', { get: function () { return document.activeElement; } }); } catch (e) {}
             host.appendChild(root);
             try { Object.defineProperty(host, 'shadowRoot', { value: root, configurable: true, writable: true }); } catch (e2) { host.shadowRoot = root; }
-            if (window.__brHostSheets && window.__brHostSheets.forTag(host.tagName.toLowerCase()).length) root.__brRestyle();
+            if (window.__brHostSheets) window.__brHostSheets.sync(root, host);
             return root;
         };
         addStyle('[data-shadow-root]{display:inherit}');
@@ -977,6 +978,7 @@
         var isAttr = el.getAttribute && el.getAttribute('is');
         var ctor = registry[name] || (isAttr && registry[isAttr.toLowerCase()]);
         if (!ctor) return;
+        if (connecting && el.shadowRoot && window.__brHostSheets) window.__brHostSheets.sync(el.shadowRoot, el);
         if (el.__brUpgraded) {
             if (connecting && el.connectedCallback) try { el.connectedCallback(); } catch (e0) {}
             return;
@@ -7315,6 +7317,9 @@
             sheet.__brStyle = style;
             sheet.__brOff = !!(options && options.disabled);
             sheet.__brRules = [];
+            // (its constructor property is the engine's own, whatever we set: lowered code asks __br_ctor, which reads
+            // this; Stencil copies the rules of a sheet whose constructor is not window.CSSStyleSheet, rewritten ones)
+            sheet.__brCtor = Constructed;
             for (var m in methods) if (methods.hasOwnProperty(m)) sheet[m] = methods[m];
             return sheet;
         };
@@ -7326,7 +7331,7 @@
         // (Stencil wants nodeType 11 and falls back to the document) meant them for the component it renders next. They
         // stay off in the document (their other rules would reach the whole page); the next emulated root that gets
         // children claims them for its host's tag, and every root of that tag gets <style> copies.
-        var pendingHost = [], tagSheets = {};
+        var pendingHost = [], tagSheets = {}, versions = {};
         var isHostSheet = function (s) { return !!(s && s.__brRules && /:host\b/.test(s.__brRules.join('\n'))); };
         window.__brHostSheets = {
             forTag: function (tag) { return tagSheets[tag] || []; },
@@ -7336,8 +7341,17 @@
                 pendingHost = [];
                 for (var i = 0; i < list.length; i++) list[i].__brClaimed = tag;
                 tagSheets[tag] = (tagSheets[tag] || []).concat(list);
+                versions[tag] = (versions[tag] || 0) + 1;
                 var hosts = document.getElementsByTagName(tag);
-                for (var h = 0; h < hosts.length; h++) if (hosts[h].shadowRoot && hosts[h].shadowRoot.__brRestyle) hosts[h].shadowRoot.__brRestyle();
+                for (var h = 0; h < hosts.length; h++) if (hosts[h].shadowRoot) this.sync(hosts[h].shadowRoot, hosts[h]);
+            },
+            // a root that missed a claim (made before it, and out of the document then) catches up when it gets
+            // children or its host is connected
+            sync: function (root, host) {
+                var v = host && host.tagName ? versions[host.tagName.toLowerCase()] : 0;
+                if (!v || !root || root.__brTagVer === v || !root.__brRestyle) return;
+                root.__brTagVer = v;
+                root.__brRestyle();
             }
         };
         // adoption: our sheets are switched on in the document, the others stay as they are

@@ -418,6 +418,8 @@
         // this.constructor.elementStyles, Stencil elm.constructor.style); the class is the first own constructor up the
         // prototype chain that is not the engine's
         __br_ctor: function (o) {
+            // (an object the shims made for a class of theirs says so: a constructed CSSStyleSheet)
+            if (o !== null && typeof o === 'object' && o.__brCtor) return o.__brCtor;
             if (o === null || o === undefined || typeof o !== 'object' || o.nodeType !== 1) return o.constructor;
             for (var p = Object.getPrototypeOf(o); p; p = Object.getPrototypeOf(p)) {
                 if (!Object.prototype.hasOwnProperty.call(p, 'constructor')) continue;
