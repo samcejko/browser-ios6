@@ -661,7 +661,9 @@ static NSArray *BRManifestKinds(void)
         NSData *d = path ? [NSData dataWithContentsOfFile:path] : nil;
         unsigned long crc = crc32(0L, Z_NULL, 0);
         if (d.length) crc = crc32(crc, (const Bytef *)d.bytes, (uInt)d.length);
-        tag = [NSString stringWithFormat:@"%08lx-%@", crc, BRTranspileTag()];
+        // (the last part: how stored text is tagged; 2 = bodies kept as they came carry a tag of their own, see
+        // BRURLProtocol BRRawCacheTag, which drops the untagged ones stored before)
+        tag = [NSString stringWithFormat:@"%08lx-%@-2", crc, BRTranspileTag()];
     });
     return tag;
 }

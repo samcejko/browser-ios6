@@ -141,13 +141,22 @@ static NSString * const BRCacheRewriteTagKey = @"BRRewriteTag";   // the rewrite
 // a stored document, stylesheet or script was rewritten by the rewriters of another version: not used (a fixed
 // transpiler would otherwise not reach a script cached for a year)
 static NSString *BRHeader(NSDictionary *headers, NSString *name);
+// A text body stored as it came (too big to rewrite, rewriting switched off) is tagged with what made it so: it goes
+// stale when the rewriters or those limits change, like a rewritten one.
+static NSString *BRRawCacheTag(void)
+{
+    return [NSString stringWithFormat:@"%@/raw-%d%d-%lu-%lu", [BRCSSRewriter rewriteTag], [BRSettings cssFixEnabled], [BRSettings transpileEnabled],
+            (unsigned long)BRMaxRewriteBody, (unsigned long)BRMaxScriptRewriteBody];
+}
 static BOOL BRCachedRewriteIsStale(NSCachedURLResponse *c)
 {
     if (![c.response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
     NSString *type = [BRHeader([(NSHTTPURLResponse *)c.response allHeaderFields], @"Content-Type") lowercaseString] ?: @"";
     BOOL rewritable = [type hasPrefix:@"text/html"] || [type hasPrefix:@"text/css"] || [type hasPrefix:@"application/xhtml"] ||
                       [type rangeOfString:@"javascript"].location != NSNotFound || [type rangeOfString:@"ecmascript"].location != NSNotFound;
-    return rewritable && ![c.userInfo[BRCacheRewriteTagKey] isEqual:[BRCSSRewriter rewriteTag]];
+    if (!rewritable) return NO;
+    id tag = c.userInfo[BRCacheRewriteTagKey];
+    return ![tag isEqual:[BRCSSRewriter rewriteTag]] && ![tag isEqual:BRRawCacheTag()];
 }
 static const NSUInteger BRMaxCacheableBody = 16 * 1024 * 1024;   // (big bundles and front pages are what is worth keeping)
 
@@ -892,7 +901,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         [self finishRewrite];
         return;
     }
-    if (self.cacheBody && self.response) [self storeResponse:self.response data:self.cacheBody maxAge:self.cacheMaxAge];
+    if (self.cacheBody && self.response) [self storeResponse:self.response data:self.cacheBody maxAge:self.cacheMaxAge rewritten:NO];
     self.cacheBody = nil;
     [self performOnClientThread:^{
         [self.client URLProtocolDidFinishLoading:self];
@@ -928,10 +937,15 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 
 - (void)storeResponse:(NSHTTPURLResponse *)response data:(NSData *)data maxAge:(NSTimeInterval)maxAge
 {
+    [self storeResponse:response data:data maxAge:maxAge rewritten:YES];
+}
+
+- (void)storeResponse:(NSHTTPURLResponse *)response data:(NSData *)data maxAge:(NSTimeInterval)maxAge rewritten:(BOOL)rewritten
+{
     if (!response || !data) return;
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
-                            BRCacheRewriteTagKey: [BRCSSRewriter rewriteTag] };
+                            BRCacheRewriteTagKey: rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:self.request];
 }
