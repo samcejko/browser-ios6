@@ -188,6 +188,13 @@
         BRLog(@"Memory report: %@", report);
         return YES;
     }
+    if ([target isEqualToString:@"requests"]) {
+        // browser:requests: what the page still waits for (a page whose load never ends), also to tmp/eval.txt
+        NSString *report = [BRURLProtocol activeRequestsReport];
+        [report writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"eval.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"Requests: %@", report);
+        return YES;
+    }
     if ([target isEqualToString:@"pdf"]) {
         [self.browserViewController savePageAsPDF];
         return YES;

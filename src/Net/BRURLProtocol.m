@@ -338,13 +338,39 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, strong) NSData *sentBody;
 @property (nonatomic) BOOL thirdParty;          // cookies are neither sent nor stored
 @property (nonatomic) BOOL authAttempted;       // the user was asked once for this request
+// (for the list of requests in flight: browser:requests)
+@property (nonatomic) NSTimeInterval startedAt;
+@property (nonatomic) unsigned long long receivedBytes;
 @end
+
+// the requests WebKit has started and not stopped yet
+static NSHashTable *g_activeProtocols;
 
 @implementation BRURLProtocol
 
 + (void)registerProtocol
 {
     [NSURLProtocol registerClass:self];
+}
+
++ (NSString *)activeRequestsReport
+{
+    NSArray *list = nil;
+    @synchronized ([BRURLProtocol class]) { list = g_activeProtocols.allObjects; }
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    list = [list sortedArrayUsingComparator:^NSComparisonResult(BRURLProtocol *a, BRURLProtocol *b) {
+        return a.startedAt < b.startedAt ? NSOrderedAscending : a.startedAt > b.startedAt ? NSOrderedDescending : NSOrderedSame;
+    }];
+    NSMutableString *out = [NSMutableString stringWithFormat:@"%lu requests in flight", (unsigned long)list.count];
+    for (BRURLProtocol *p in list) {
+        // (only flags and pointer tests: the request's objects belong to other threads)
+        NSString *state = p.done ? @"done" : p.rewriteBuffer != nil ? @"buffering for the rewriter" : p.rewriteKind != nil ? @"rewriting"
+                        : p.response != nil ? @"receiving" : p.httpRequest != nil ? @"waiting for the server" : @"not sent";
+        NSString *u = p.request.URL.absoluteString ?: @"?";
+        [out appendFormat:@"\n%5ld s  %@  %llu KB  %@ %@", (long)(now - p.startedAt), state, p.receivedBytes >> 10, p.request.HTTPMethod ?: @"GET",
+                          u.length > 200 ? [u substringToIndex:200] : u];
+    }
+    return out;
 }
 
 + (void)setAuthenticationHandler:(BRAuthenticationHandler)handler
@@ -407,6 +433,11 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 
 - (void)startLoading
 {
+    self.startedAt = [NSDate timeIntervalSinceReferenceDate];
+    @synchronized ([BRURLProtocol class]) {
+        if (!g_activeProtocols) g_activeProtocols = [NSHashTable weakObjectsHashTable];
+        [g_activeProtocols addObject:self];
+    }
     self.clientThread = [NSThread currentThread];
     NSString *mode = [[NSRunLoop currentRunLoop] currentMode];
     NSMutableArray *modes = [NSMutableArray arrayWithObject:NSDefaultRunLoopMode];
@@ -576,6 +607,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 
 - (void)stopLoading
 {
+    @synchronized ([BRURLProtocol class]) { [g_activeProtocols removeObject:self]; }
     self.stopped = YES;
     [self.httpRequest cancel];
     self.httpRequest = nil;
@@ -870,6 +902,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 - (void)handleData:(NSData *)chunk
 {
     if (self.stopped || self.done) return;
+    self.receivedBytes += chunk.length;
     if (self.rewriteBuffer) {
         [self.rewriteBuffer appendData:chunk];
         if (self.rewriteBuffer.length > BRRewriteLimit(self.rewriteKind)) [self abandonRewrite];

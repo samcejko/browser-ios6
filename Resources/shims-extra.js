@@ -5925,6 +5925,31 @@
             });
         };
     }
+    // new ImageData(w, h) / new ImageData(data, w[, h]): the old engine's ImageData cannot be constructed; a context
+    // makes one (with a copy of the given pixels, not the same buffer)
+    (function () {
+        var Native = window.ImageData, ctx = null, works = false;
+        if (!Native) return;
+        try { works = new Native(1, 1).width === 1; } catch (e) {}
+        if (works) return;
+        var make = function ImageData(a, b, c) {
+            if (!ctx) { var cv = document.createElement('canvas'); cv.width = cv.height = 1; ctx = cv.getContext('2d'); }
+            var img;
+            if (typeof a === 'number') {
+                if (!(a > 0) || !(b > 0)) throw domException('IndexSizeError', 'The source width and height must be positive');
+                img = ctx.createImageData(a, b);
+            } else {
+                var w = b, h = c !== undefined ? c : a && a.length / 4 / w;
+                if (!a || !(w > 0) || !(h > 0) || a.length !== w * h * 4) throw domException('IndexSizeError', 'The input data length is not equal to (4 * width * height)');
+                img = ctx.createImageData(w, h);
+                var d = img.data;
+                if (d.set) d.set(a); else for (var i = 0; i < a.length; i++) d[i] = a[i];
+            }
+            return img;
+        };
+        make.prototype = Native.prototype;
+        window.ImageData = make;
+    })();
 
     // ---- IndexedDB: the WebSQL-backed shim (150 KB) is fetched on first use only
     if (!window.indexedDB && window.openDatabase) {

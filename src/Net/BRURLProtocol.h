@@ -18,6 +18,7 @@ typedef void (^BRAuthenticationHandler)(NSString *host, NSString *realm, void (^
 + (void)registerProtocol;
 + (void)setAuthenticationHandler:(BRAuthenticationHandler)handler;
 + (void)forgetCredentials;                    // session credentials (Basic auth) are dropped
++ (NSString *)activeRequestsReport;           // requests WebKit started and has not stopped: age, state, URL
 
 // What the last main document told us (for the lock icon and download detection)
 + (NSURL *)lastMainDocumentURL;

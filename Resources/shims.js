@@ -711,7 +711,75 @@
         } catch (e5) {}
     }
 
-    if (!window.structuredClone) window.structuredClone = function (v) { return v === undefined ? v : JSON.parse(JSON.stringify(v)); };
+    // structuredClone: the structured clone algorithm for data (shared and cyclic references, Date, RegExp, Map, Set,
+    // boxed primitives, ArrayBuffer and views, Error; Blob/File/ImageData shared; undefined kept, class instances
+    // become plain objects); functions, symbols and DOM nodes throw DataCloneError. (A JSON round trip turned dates
+    // into strings and Maps into {}.)
+    if (!window.structuredClone) (function () {
+        var hasOwn = Object.prototype.hasOwnProperty, toStr = Object.prototype.toString;
+        var VIEWS = { Int8Array: 1, Uint8Array: 1, Uint8ClampedArray: 1, Int16Array: 1, Uint16Array: 1, Int32Array: 1, Uint32Array: 1, Float32Array: 1, Float64Array: 1, BigInt64Array: 1, BigUint64Array: 1 };
+        var SHARED = { Blob: 1, File: 1, FileList: 1, ImageData: 1, ImageBitmap: 1, CryptoKey: 1 };
+        var cloneError = function (what) {
+            var e;
+            try { e = new window.DOMException(what + ' could not be cloned.', 'DataCloneError'); } catch (x) { e = null; }
+            if (!e || e.name !== 'DataCloneError') { e = new Error(what + ' could not be cloned.'); e.name = 'DataCloneError'; e.code = 25; }
+            return e;
+        };
+        var tagOf = function (v) {
+            if (typeof window.Map === 'function' && v instanceof window.Map) return 'Map';
+            if (typeof window.Set === 'function' && v instanceof window.Set) return 'Set';
+            return toStr.call(v).slice(8, -1);
+        };
+        window.structuredClone = function structuredClone(value) {
+            if (arguments.length === 0) throw new TypeError("Failed to execute 'structuredClone' on 'Window': 1 argument required, but only 0 present.");
+            var memo = typeof window.Map === 'function' ? new window.Map() : null, keys = [], vals = [];
+            var remember = function (o, c) { if (memo) memo.set(o, c); else { keys.push(o); vals.push(c); } return c; };
+            var clone = function (v) {
+                var t = typeof v;
+                if (v === null || (t !== 'object' && t !== 'function')) {
+                    if (t === 'symbol') throw cloneError('Symbol()');
+                    return v;
+                }
+                if (t === 'function') throw cloneError(String(v).slice(0, 80));
+                var known = memo ? memo.get(v) : (function () { for (var i = 0; i < keys.length; i++) if (keys[i] === v) return vals[i]; })();
+                if (known !== undefined) return known;
+                var tag = tagOf(v), c, i;
+                if (tag === 'Symbol') throw cloneError('Symbol()');   // (a polyfilled one is an object)
+                if (SHARED[tag]) return v;
+                if (VIEWS[tag]) return remember(v, new v.constructor(clone(v.buffer), v.byteOffset, v.length));
+                switch (tag) {
+                    case 'Date': return remember(v, new Date(v.getTime()));
+                    case 'RegExp':
+                        return remember(v, new RegExp(v.source, typeof v.flags === 'string' ? v.flags : (v.global ? 'g' : '') + (v.ignoreCase ? 'i' : '') + (v.multiline ? 'm' : '')));
+                    case 'Boolean': case 'Number': case 'String': return remember(v, Object(v.valueOf()));
+                    case 'ArrayBuffer': return remember(v, v.slice(0));
+                    case 'DataView': return remember(v, new DataView(clone(v.buffer), v.byteOffset, v.byteLength));
+                    case 'Map':
+                        c = remember(v, new window.Map());
+                        v.forEach(function (val, key) { c.set(clone(key), clone(val)); });
+                        return c;
+                    case 'Set':
+                        c = remember(v, new window.Set());
+                        v.forEach(function (val) { c.add(clone(val)); });
+                        return c;
+                    case 'Error': case 'EvalError': case 'RangeError': case 'ReferenceError': case 'SyntaxError': case 'TypeError': case 'URIError':
+                        var E = window[v.name] && /Error$/.test(v.name) ? window[v.name] : Error;
+                        c = remember(v, new E(v.message));
+                        if (v.stack) try { c.stack = String(v.stack); } catch (es) {}
+                        return c;
+                    case 'Array':
+                        c = remember(v, new Array(v.length));
+                        for (i = 0; i < v.length; i++) if (i in v) c[i] = clone(v[i]);
+                        return c;
+                }
+                if (v.nodeType || v === window || v.window === v || tag === 'Promise' || tag === 'WeakMap' || tag === 'WeakSet') throw cloneError(tag || 'The object');
+                c = remember(v, {});
+                for (var k in v) if (hasOwn.call(v, k)) c[k] = clone(v[k]);
+                return c;
+            };
+            return clone(value);
+        };
+    })();
     if (!window.reportError) window.reportError = function (e) { if (con.error) con.error(e); };
     if (!window.ResizeObserver) window.ResizeObserver = function () {}; // provided by the polyfill before this file normally
     if (!window.IdleDeadline) window.IdleDeadline = function () {};
