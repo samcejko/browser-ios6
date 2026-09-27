@@ -413,6 +413,12 @@
             o.style = v;
             return v;
         },
+        // typeof x: a polyfilled symbol is an object in the old engine, and "symbol" today (Lit's noChange, a symbol, was
+        // taken for a value to show: "Symbol(lit-noChange)_w.io24za40d" all over reddit)
+        __br_typeof: function (o) {
+            var t = typeof o;
+            return t === 'object' && o !== null && typeof Symbol === 'function' && o.constructor === Symbol && o !== Symbol.prototype ? 'symbol' : t;
+        },
         // o.constructor of an element: the old engine answers the element interface's constructor from a table of the
         // wrapper itself, whatever its prototype, so a custom element's class never showed (Lit reads
         // this.constructor.elementStyles, Stencil elm.constructor.style); the class is the first own constructor up the
@@ -1188,6 +1194,15 @@
     };
     // yield/await inside a loop body: the body cannot become a function
     W.noWrap = function (s) { for (var x = s; x && !x.isFn; x = x.parent) if (x.node && isLoop(x.node)) x.node.$noWrap = true; };
+    // a typeof whose answer a polyfilled symbol changes: compared with "symbol" or "object", or used as a value
+    var typeofSymbolish = function (n, p) {
+        if (/^(Literal|TemplateLiteral|ObjectExpression|ArrayExpression|FunctionExpression|ArrowFunctionExpression|ClassExpression|ThisExpression)$/.test(n.argument.type)) return false;
+        if (p && p.type === 'BinaryExpression' && /^[!=]==?$/.test(p.operator)) {
+            var other = p.left === n ? p.right : p.left;
+            if (other.type === 'Literal' && typeof other.value === 'string') return other.value === 'symbol' || other.value === 'object';
+        }
+        return true;
+    };
     // a read of x.constructor that the helper may answer: not an assignment target, delete operand, method call, `new`
     // or tag callee, nor a link of an optional chain
     var ctorRead = function (n, p) {
@@ -1332,6 +1347,8 @@
             case 'UnaryExpression': case 'UpdateExpression':
                 if (n.operator === 'typeof' && n.argument.type === 'Identifier') n.argument.$typeof = true;   // (typeof Proxy stays the engine's)
                 d = this.v(n.argument, n, s);
+                // typeof of a polyfilled symbol (see __br_typeof), unless compared with a type it cannot change
+                if (n.operator === 'typeof' && typeofSymbolish(n, p)) { n.$typeofSym = true; d = true; }
                 // delete el.dataset.x throws in the old engine's strict code when there is no data-x (Next.js does it
                 // at start): a helper deletes it
                 if (n.operator === 'delete' && n.argument.type === 'MemberExpression' && n.argument.object.type === 'MemberExpression' &&
@@ -1968,6 +1985,19 @@
             var dsCode = this.h('__br_dsdel') + '(' + this.E(target.object.object, P_ASSIGN) + ',' + key + ')';
             this.prec = P_CALL;
             return dsCode;
+        }
+        if (op === 'typeof' && n.$typeofSym) {
+            var tcode;
+            // (a bare name may be undeclared: typeof alone answers "undefined" for it without throwing)
+            if (n.argument.type === 'Identifier') {
+                var id = this.E(n.argument, P_UNARY);
+                tcode = '(typeof ' + id + '==="undefined"?"undefined":' + this.h('__br_typeof') + '(' + id + '))';
+                this.prec = P_PRIMARY;
+            } else {
+                tcode = this.h('__br_typeof') + '(' + this.E(n.argument, P_ASSIGN) + ')';
+                this.prec = P_CALL;
+            }
+            return tcode;
         }
         var arg = this.E(n.argument, P_UNARY), code;
         if (/^[a-z]/.test(op)) code = op + ' ' + arg;
@@ -3219,7 +3249,9 @@
                 this.gMark(after);
                 return result;
             }
-            case 'UnaryExpression': return finish(n.operator + (/^[a-z]/.test(n.operator) ? ' ' : '') + this.gx(n.argument, false));
+            case 'UnaryExpression':
+                if (n.operator === 'typeof' && n.$typeofSym) return finish(this.h('__br_typeof') + '(' + this.gx(n.argument, false) + ')');
+                return finish(n.operator + (/^[a-z]/.test(n.operator) ? ' ' : '') + this.gx(n.argument, false));
             case 'BinaryExpression': {
                 var l = viaTemp(null, n.left), r = viaTemp(null, n.right);
                 if (n.$in) return finish(this.h('__br_in') + '(' + l + ',' + r + ')');
