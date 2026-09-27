@@ -2373,7 +2373,10 @@
     var outerWidth = function (c) {
         var cs = getComputedStyle(c);
         if (cs.display === 'none' || cs.position === 'absolute' || cs.position === 'fixed') return 0;
-        return c.offsetWidth + (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
+        // (an inline element that is an item of a box row reports offsetWidth 0 in the old engine: The Guardian's
+        // header links got no room, and the row ran 278 px past the page)
+        var w = c.offsetWidth || c.getBoundingClientRect().width;
+        return w + (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
     };
     onMarkers(function (marked) {
         var keep = [], i, el;
@@ -2570,7 +2573,7 @@
                         if (c.nodeType !== 1) continue;
                         var ccs = getComputedStyle(c);
                         if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
-                        var w = c.offsetWidth;
+                        var w = c.offsetWidth || c.getBoundingClientRect().width;   // (an inline item reports 0, see outerWidth)
                         total += w + (parseFloat(ccs.marginLeft) || 0) + (parseFloat(ccs.marginRight) || 0);
                         var can = !SHRINK_NOT[c.tagName] && !(parseFloat(ccs.webkitBoxFlex) > 0) && c.__brShrink === undefined && !noShrink(c);
                         items.push(c, w, can);
