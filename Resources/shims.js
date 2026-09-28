@@ -770,6 +770,9 @@
         // <template> polyfill: expose .content as a document fragment of the children and hide the element
         var style = document.createElement('style');
         style.__brOwn = true;
+        // (data-precedence: React 19 skips such styles in <head> when it hydrates; it took this one for the page's
+        // first <style> and threw the page away over its text - vercel.com)
+        style.setAttribute('data-precedence', 'br');
         style.textContent = 'template{display:none!important}';
         (document.head || document.documentElement).appendChild(style);
         var proto = Object.getPrototypeOf(document.createElement('template'));

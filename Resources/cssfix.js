@@ -4882,7 +4882,7 @@ var CSSFix = (function () {
 
     function injectCookieBannerCSS(html) {
         if (!/<html|<head|<body/i.test(html)) return html;
-        var tag = '<style id="br-cookie-banners">' + COOKIE_BANNER_CSS + '</style>';
+        var tag = '<style id="br-cookie-banners" data-precedence="br">' + COOKIE_BANNER_CSS + '</style>';   // (React 19 skips it, see ownStyleElement in shims-extra.js)
         var m = /<\/head\s*>/i.exec(html);
         if (m) return html.slice(0, m.index) + tag + html.slice(m.index);
         m = /<body\b[^>]*>/i.exec(html);
@@ -4900,8 +4900,14 @@ var CSSFix = (function () {
     function showScripts(html, store) {
         return store.length ? html.replace(SCRIPT_MARK_RE, function (all, i) { return store[+i]; }) : html;
     }
+    // Server-rendered React compares the text of the <style> elements it renders with its own: one rewritten block and
+    // the whole page is thrown away and rendered again (vercel.com). There the block keeps the text as sent and the
+    // rewritten CSS goes in the attribute data-br-css, which the page shim moves into a style element nested inside
+    // (through the CSSOM: no text of its own) while switching the element's own sheet off.
+    var REACT_SSR = /<!--\$-->|<!--\/\$-->|<!-- -->|self\.__next_f|__NEXT_DATA__|data-reactroot/;
+    var attrEscape = function (s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
     function fixHTML(html, ctx, opts) {
-        var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, scripts = [];
+        var styleRe = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, scripts = [], hydrates = REACT_SSR.test(html);
         html = hideScripts(html, scripts);
         // the layout width of the page (viewport units), also for its stylesheets rewritten after it
         if (opts && opts.mainFrame) {
@@ -4928,8 +4934,11 @@ var CSSFix = (function () {
         // 2. rewrite the blocks
         html = html.replace(styleRe, function (all, open, body, close) {
             if (!trim(body)) return all;
+            var fixed = fixCSS(body, ctx);
+            // (an empty data-br-css: nothing to change, but done)
+            if (hydrates) return open.replace(/\s*\/?>$/, '') + ' data-br-css="' + (fixed === body ? '' : attrEscape(fixed)) + '">' + body + close;
             // the marker tells the page shim this block is done (it rewrites the <style> text scripts add)
-            return open + '/*br*/' + fixCSS(body, ctx) + close;
+            return open + '/*br*/' + fixed + close;
         });
         // 3. inline style attributes
         html = html.replace(/(\sstyle\s*=\s*)("([^"]*)"|'([^']*)')/gi, function (all, prefix, quoted, dq, sq) {

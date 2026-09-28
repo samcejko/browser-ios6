@@ -84,9 +84,16 @@
             });
         } catch (e) {}
     }
-    function addStyle(css) {
+    // a <style> of the shims: data-precedence makes React 19 skip it in <head> when it hydrates (it took the shims'
+    // styles for the page's own and threw the page away over their text: vercel.com)
+    function ownStyleElement() {
         var s = document.createElement('style');
         s.__brOwn = true;   // already in a form the engine takes (see the runtime style rewriting)
+        s.setAttribute('data-precedence', 'br');
+        return s;
+    }
+    function addStyle(css) {
+        var s = ownStyleElement();
         s.textContent = css;
         (document.head || document.documentElement).appendChild(s);
     }
@@ -1936,8 +1943,7 @@
                 if (!window.speechSynthesis) return false;
                 api.stop();
                 if (!raStyle) {
-                    raStyle = document.createElement('style');
-                    raStyle.__brOwn = true;
+                    raStyle = ownStyleElement();
                     raStyle.textContent = '.br-ra-block{background-color:rgba(255,214,0,.28)!important;box-shadow:0 0 0 4px rgba(255,214,0,.28)!important}';
                     (document.head || document.documentElement).appendChild(raStyle);
                 }
@@ -3203,8 +3209,7 @@
         markStats.query = markStats.check = markStats.checks = 0;
         if (!plan) return;
         if (!bfRule) {
-            bfRule = document.createElement('style');
-            bfRule.__brOwn = true;
+            bfRule = ownStyleElement();
             // (not over the engine's own hiding of elements with the hidden attribute)
             bfRule.textContent = '[data-br-bf=b]:not([hidden]){display:block}';
             var head = document.head || document.documentElement;
@@ -3394,8 +3399,7 @@
             if (!anyCol) return;
         }
         if (!asRule) {
-            asRule = document.createElement('style');
-            asRule.__brOwn = true;
+            asRule = ownStyleElement();
             asRule.textContent = '[data-br-asp=v],[data-br-asp=h]{-webkit-box-align:start!important}' +
                 '[data-br-asp=b]{display:-webkit-box!important;-webkit-box-orient:vertical!important;-webkit-box-align:start!important}' +
                 '[data-br-as=c]{margin-left:auto!important;margin-right:auto!important}[data-br-as=e]{margin-left:auto!important}[data-br-as=s]{margin-right:auto!important}' +
@@ -3510,8 +3514,7 @@
         }
         if (!todo.length) return;
         if (!zRule) {
-            zRule = document.createElement('style');
-            zRule.__brOwn = true;
+            zRule = ownStyleElement();
             zRule.textContent = '[data-br-z]{position:relative}';
             var head = document.head || document.documentElement;
             head.insertBefore(zRule, head.firstChild);
@@ -7861,9 +7864,8 @@
             if (text === pseudoText) return;
             pseudoText = text;
             if (!pseudoStyle) {
-                pseudoStyle = document.createElement('style');
+                pseudoStyle = ownStyleElement();
                 pseudoStyle.id = 'br-cv-pseudo';
-                pseudoStyle.__brOwn = true;
             }
             pseudoStyle.textContent = text;
             if (!pseudoStyle.parentNode) (document.body || document.documentElement).appendChild(pseudoStyle);
@@ -9963,6 +9965,7 @@
         // the old engine also requires the index argument; modern code omits it (append)
         window.CSSStyleSheet.prototype.__brWrapped = true;
         var origInsert = window.CSSStyleSheet.prototype.insertRule;
+        window.__brNativeInsertRule = origInsert;   // (rules already rewritten by the app)
         window.CSSStyleSheet.prototype.insertRule = function (rule, index) {
             if (index === undefined) index = this.cssRules ? this.cssRules.length : 0;
             var text = String(rule), fixed = null;
@@ -9979,9 +9982,33 @@
     // rewritten here, node by node (libraries append text nodes to one style element as they go)
     (function () {
         if (!window.MutationObserver) return;
-        // rewritten by the app: its first text node starts with the marker (the parser splits long text into several)
+        // server-rendered React pages (see REACT_SSR in cssfix.js): the text stays as sent, the app's rewritten CSS in
+        // data-br-css goes rule by rule into a style element nested inside (no text of its own, so the element's
+        // textContent is still what React rendered; its sheet sits where the element is in the cascade) and the
+        // element's own sheet is switched off
+        var shadowCSS = function (el) {
+            var css = el.getAttribute('data-br-css');
+            if (css === null) return false;
+            el.removeAttribute('data-br-css');
+            el.__brNative = true;
+            if (!css) return true;
+            var inner = document.createElement('style'), rules = runtimeCSS.splitRules(css), ins = window.__brNativeInsertRule || CSSStyleSheet.prototype.insertRule;
+            inner.__brOwn = true;
+            if (el.media) inner.setAttribute('media', el.media);
+            el.appendChild(inner);
+            var sheet = inner.sheet;
+            for (var i = 0; sheet && i < rules.length; i++) { try { ins.call(sheet, rules[i], sheet.cssRules.length); } catch (e) {} }
+            try { if (el.sheet) el.sheet.disabled = true; } catch (e2) {}
+            el.__brShadow = inner;
+            return true;
+        };
+        // rewritten by the app: its first text node starts with the marker (the parser splits long text into several),
+        // or it came with data-br-css. A script that later gives it new text takes the nested sheet out with the old
+        // children: that text is rewritten here like any other.
         var nativeStyle = function (el) {
+            if (el.__brShadow && el.__brShadow.parentNode !== el) { el.__brShadow = null; el.__brNative = false; return false; }
             if (el.__brNative) return true;
+            if (shadowCSS(el)) return true;
             var f = el.firstChild;
             if (f && f.nodeType === 3 && /^\s*\/\*br\*\//.test(f.data)) { el.__brNative = true; return true; }
             return false;
@@ -10032,6 +10059,13 @@
             }
         });
         try { styleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}
+        // (blocks the observer has not seen: parsed before it existed)
+        var shadowScan = function () {
+            var list = document.querySelectorAll ? document.querySelectorAll('style[data-br-css]') : [];
+            for (var i = 0; i < list.length; i++) nativeStyle(list[i]);
+        };
+        shadowScan();
+        document.addEventListener('DOMContentLoaded', shadowScan, false);
     })();
     // ---- constructable stylesheets: new CSSStyleSheet(), replace() / replaceSync(), document.adoptedStyleSheets (and
     // the emulated shadow roots' adoptedStyleSheets, see attachShadow). The old engine cannot construct a sheet
@@ -10079,9 +10113,8 @@
         };
         // (the old engine makes no sheet at all for a <style media="not all">: a sheet stays disabled until adopted)
         var Constructed = function CSSStyleSheet(options) {
-            var style = document.createElement('style'), media = options && options.media;
+            var style = ownStyleElement(), media = options && options.media;   // (its rules are rewritten one by one by insertRule)
             media = media ? String(media.mediaText !== undefined ? media.mediaText : media) : '';
-            style.__brOwn = true;   // (its rules are rewritten one by one by insertRule)
             if (media) style.setAttribute('media', media);
             style.setAttribute('data-br-sheet', '');
             (document.head || document.documentElement).appendChild(style);

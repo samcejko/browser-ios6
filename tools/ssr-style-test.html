@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ssr style test</title>
+<script>
+window.__errors = [];
+window.onerror = function (msg, src, line, col) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line + ':' + col); };
+</script>
+<script src="../Resources/cssfix.js"></script>
+</head>
+<body>
+<script>
+// Server-rendered React compares the text of the <style> elements it renders (vercel.com: a rewritten block threw the
+// page away). On such pages the rewriter keeps the text as sent and puts its CSS in data-br-css; the shim moves that
+// into a style element nested inside and switches the element's own sheet off. The page goes through the real
+// rewriter; the desktop browser then applies what the shim puts in (-webkit-box shows the rewritten CSS is in use).
+var ORIGINAL = '\n.ssr-row { display: flex; gap: 10px; }\n@keyframes ssr-grow { from { transform: scaleX(1); } to { transform: scaleX(1.5); } }\n.ssr-anim { animation: ssr-grow 1s; }\n';
+var page = '<div id="__next"><style>' + ORIGINAL + '</style><div class="ssr-row" id="row"><span>a</span><!-- --><span>b</span></div><div class="ssr-anim" id="anim"></div></div>';
+var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
+window.__rewritten = result.out;
+document.write(result.out.replace(/<\/?(html|head|body)>/g, ''));
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+<pre id="out">…</pre>
+<script>
+setTimeout(function () {
+  var checks = [];
+  var check = function (name, ok, detail) { checks.push((ok ? 'OK   ' : 'FAIL ') + name + (ok ? '' : '  ' + detail)); };
+  var outer = document.querySelector('#__next > style');
+  check('the rewriter kept the text and added data-br-css', /<style data-br-css="[^"]+">/.test(window.__rewritten) && window.__rewritten.indexOf(ORIGINAL) > 0, window.__rewritten.slice(0, 300));
+  check('textContent is what the server sent', outer && outer.textContent === ORIGINAL, outer && JSON.stringify(outer.textContent));
+  check('attribute taken off', outer && !outer.hasAttribute('data-br-css'), outer && outer.outerHTML.slice(0, 120));
+  var inner = outer && outer.getElementsByTagName('style')[0];
+  check('nested sheet with the rewritten rules', !!(inner && inner.sheet && inner.sheet.cssRules.length >= 2), inner ? inner.sheet.cssRules.length : 'none');
+  check('own sheet switched off', !!(outer && outer.sheet && outer.sheet.disabled), outer && outer.sheet && outer.sheet.disabled);
+  var d = getComputedStyle(document.getElementById('row')).display;
+  check('rewritten CSS applies', d === '-webkit-box', d);
+  var an = getComputedStyle(document.getElementById('anim'));
+  check('keyframes animation name', (an.webkitAnimationName || an.animationName) === 'ssr-grow', an.webkitAnimationName + ' ' + an.animationName);
+  // a script giving the block new text afterwards: the nested sheet goes with the old children, the new text is
+  // rewritten like any script's
+  outer.textContent = '.ssr-row { display: flex; color: rgb(0, 0, 255); }';
+  setTimeout(function () {
+    var cs = getComputedStyle(document.getElementById('row'));
+    check('new text later: rewritten as usual', cs.color === 'rgb(0, 0, 255)' && cs.display === '-webkit-box' && !outer.getElementsByTagName('style').length, cs.color + ' ' + cs.display + ' ' + outer.innerHTML.slice(0, 120));
+    checks.push('errors: ' + (window.__errors.join(' | ') || 'none'));
+    document.getElementById('out').textContent = checks.join('\n');
+    var fails = checks.filter(function (c) { return c.indexOf('FAIL') === 0; }).length;
+    document.title = 'ssr-style ' + (checks.length - 1 - fails) + '/' + (checks.length - 1);
+  }, 1200);
+}, 600);
+</script>
+</body>
+</html>
