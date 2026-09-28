@@ -12,11 +12,13 @@
         var TAG = window.Symbol && window.Symbol.toStringTag, native = Object.prototype.toString;
         if (!TAG || native.__brTag) return;
         try { if (window.Map && native.call(new window.Map()) === '[object Map]') return; } catch (e0) {}
+        // (core-js's symbol is an object: as a key it went through its toString on every call, most of the time taken;
+        // no try either, a function with one makes a scope object per call here, and a throwing getter throws today too)
+        var KEY = typeof TAG === 'symbol' ? TAG : String(TAG);
         var toString = function toString() {
             var s = native.call(this);
             if (s !== '[object Object]') return s;
-            var t;
-            try { t = this[TAG]; } catch (e) { return s; }
+            var t = this[KEY];
             return typeof t === 'string' ? '[object ' + t + ']' : s;
         };
         toString.__brTag = true;
@@ -344,15 +346,45 @@
     // Object.defineProperty(fn, 'name' | 'length', ...): a function's name and length are fixed in the old engine
     // (today they are configurable, and bundlers rename functions and set their arity that way). Refused, they stay
     // as they are instead of the page's script failing ("Attempting to change value of a readonly property").
+    // A string key that cannot be one of core-js's symbols (their keys read "Symbol(...)") on anything but
+    // Object.prototype (core-js keeps a copy of what is defined there) goes to the engine's own defineProperty and
+    // getOwnPropertyDescriptor, without core-js's checks in front (see page-prelude.js); Object.keys likewise (core-js's
+    // symbols are never enumerable).
     (function () {
-        var nativeDP = Object.defineProperty, nativeDPs = Object.defineProperties;
+        var nativeDP = Object.defineProperty, nativeDPs = Object.defineProperties, N = window.__brNative || {};
+        var engineDP = N.defineProperty !== nativeDP ? N.defineProperty : null, OP = Object.prototype;
         var probe = function f(a) {}, fixed = false;
         try { nativeDP(probe, 'length', { value: 2, configurable: true }); } catch (e) { fixed = true; }
-        if (!fixed) return;
-        Object.defineProperty = function (o, k, d) {
-            if ((k === 'name' || k === 'length') && typeof o === 'function') { try { return nativeDP(o, k, d); } catch (e) { return o; } }
+        // (the checks written out, and the try in a function of its own: a call more costs a few microseconds here, and
+        // a function with a try makes a scope object on every call)
+        var fixedName = function (o, k, d) { try { return nativeDP(o, k, d); } catch (e) { return o; } };
+        if (fixed || engineDP) Object.defineProperty = function (o, k, d) {
+            if (typeof k === 'string') {
+                if (fixed && (k === 'name' || k === 'length') && typeof o === 'function') return fixedName(o, k, d);
+                if (engineDP && k.charCodeAt(0) !== 83 && o !== OP) return engineDP(o, k, d);
+            }
             return nativeDP(o, k, d);
         };
+        var nativeGOPD = Object.getOwnPropertyDescriptor, engineGOPD = N.getOwnPropertyDescriptor !== nativeGOPD ? N.getOwnPropertyDescriptor : null;
+        if (engineGOPD) Object.getOwnPropertyDescriptor = function getOwnPropertyDescriptor(o, k) {
+            if (typeof k === 'string' && k.charCodeAt(0) !== 83 && o !== OP && o !== null && (typeof o === 'object' || typeof o === 'function')) return engineGOPD(o, k);
+            return nativeGOPD(o, k);
+        };
+        var engineKeys = N.keys;
+        if (engineKeys && Object.keys !== engineKeys) Object.keys = function keys(o) {
+            if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
+            return engineKeys(Object(o));
+        };
+        // (Babel's object spread asks every object for its symbols: an object without a property named "Symbol(...",
+        // as core-js names them, has none, which core-js found out calling two functions per property)
+        var nativeGOPS = Object.getOwnPropertySymbols, engineNames = N.getOwnPropertyNames;
+        if (nativeGOPS && engineNames && engineNames !== Object.getOwnPropertyNames) Object.getOwnPropertySymbols = function getOwnPropertySymbols(o) {
+            if (o === OP || o === null || o === undefined) return nativeGOPS(o);
+            var names = engineNames(Object(o));
+            for (var i = 0; i < names.length; i++) if (names[i].charCodeAt(0) === 83) return nativeGOPS(o);
+            return [];
+        };
+        if (!fixed) return;
         var own = Object.prototype.hasOwnProperty;
         Object.defineProperties = function (o, props) {
             if (typeof o !== 'function' || !props || !(own.call(props, 'name') || own.call(props, 'length'))) return nativeDPs(o, props);
@@ -937,20 +969,44 @@
         };
         // (keys assigned to the target of the transpiler's Proxy stand-in reach its proxies: Pinia builds a store as
         // reactive({...}) and then assigns its actions and state to toRaw(store), store.getCartProduct was undefined)
+        // (the tries in functions of their own, called when needed: a function with a try makes a scope object on every
+        // call here)
+        var resyncAll = function (px) { for (var i = 0; i < px.length; i++) { try { px[i].__br_resync(); } catch (e) {} } };
         var resync = function (target) {
             var px = target && target.__br_px;
-            if (px) for (var i = 0; i < px.length; i++) { try { px[i].__br_resync(); } catch (e) {} }
+            if (px) resyncAll(px);
         };
-        Object.assign = function assign(target) {
-            try { var out = nativeAssign.apply(Object, arguments); resync(target); return out; } catch (e) {
-                if (target === null || typeof target !== 'object' || target.nodeType !== 1) throw e;
-                for (var i = 1; i < arguments.length; i++) {
-                    var s = arguments[i];
+        // (a source whose own properties are all enumerable has no core-js symbol, which are never enumerable: its keys
+        // are copied here, core-js's assign checked every key of it for one)
+        var N = window.__brNative || {}, engineKeys = N.keys, engineNames = N.getOwnPropertyNames;
+        var copy = function (target, args) {
+            if (!engineKeys || !engineNames || target === null || target === undefined) return nativeAssign.apply(Object, args);
+            var to = Object(target);
+            for (var i = 1; i < args.length; i++) {
+                var s = args[i];
+                if (s === null || s === undefined) continue;
+                var from = Object(s), keys = engineKeys(from);
+                if (engineNames(from).length !== keys.length) { nativeAssign(to, from); continue; }
+                for (var k = 0; k < keys.length; k++) to[keys[k]] = from[keys[k]];
+            }
+            return to;
+        };
+        var toElement = function (target, args) {
+            try { var out = copy(target, args); resync(target); return out; } catch (e) {
+                for (var i = 1; i < args.length; i++) {
+                    var s = args[i];
                     if (s === null || s === undefined) continue;
                     for (var k in s) if (hasOwn.call(s, k)) put(target, k, s[k]);
                 }
                 return target;
             }
+        };
+        var El = window.Element;
+        Object.assign = function assign(target) {
+            if (El && target instanceof El) return toElement(target, arguments);
+            var out = copy(target, arguments);
+            resync(target);
+            return out;
         };
         Object.assign.__brDom = true;
     })();

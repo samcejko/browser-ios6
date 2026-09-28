@@ -11747,11 +11747,24 @@
             try { d = gopd(o, k); } catch (e) { d = null; }
             return !!d && d.configurable === false;
         };
-        Object.defineProperty = function defineProperty(o, k, d) {
+        var guarded = function (o, k, d) {
             try { return dp(o, k, d); } catch (e) {
                 if (e instanceof TypeError && host(o) && fixed(o, k)) return o;
                 throw e;
             }
+        };
+        // (anything but those objects, documents and objects of other frames goes on without the try: a function with
+        // one makes a scope object per call here, and bundles define properties by the ten thousand)
+        // (and a key that cannot be one of core-js's symbols goes to the engine's own right away, as in shims.js: a call less)
+        var nav = window.navigator, loc = window.location, scr = window.screen, hist = window.history, Doc = window.Document;
+        var engineDP = (window.__brNative || {}).defineProperty, OP = Object.prototype;
+        Object.defineProperty = function defineProperty(o, k, d) {
+            if (typeof o !== 'object' || o === null || (o !== window && o !== document && o !== nav && o !== loc && o !== scr && o !== hist &&
+                o instanceof Object && !(Doc && o instanceof Doc))) {
+                if (engineDP && typeof k === 'string' && k.charCodeAt(0) !== 83 && o !== OP && !(typeof o === 'function' && (k === 'name' || k === 'length'))) return engineDP(o, k, d);
+                return dp(o, k, d);
+            }
+            return guarded(o, k, d);
         };
         if (dps) Object.defineProperties = function defineProperties(o, props) {
             try { return dps(o, props); } catch (e) {

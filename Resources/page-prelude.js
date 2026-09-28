@@ -2,6 +2,15 @@
 // collection, so that a page holding them stays in memory after it was left - its window, every object of its scripts,
 // its document (27 000 objects of ours on example.com, 200 000 more on each visit of novinky.cz) - until iOS closed the
 // app after a few pages.
+// The engine's own Object functions, taken before core-js puts its Symbol checks in front of them: shims.js goes
+// straight to them where a key cannot be one of core-js's symbols (the checks made defineProperty ten times and
+// Object.assign seventeen times slower here, and bundles call them by the ten thousand).
+(function () {
+    try {
+        Object.defineProperty(window, '__brNative', { value: { defineProperty: Object.defineProperty, getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
+            keys: Object.keys, getOwnPropertyNames: Object.getOwnPropertyNames }, writable: true, configurable: true });
+    } catch (e) {}
+})();
 (function () {
     var releases = [], gone = false;
     var release = function (e) {

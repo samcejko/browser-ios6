@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>objfast test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<!-- As on the old engine: no Symbol of the engine's own, so core-js puts its polyfilled symbols (objects whose keys read
+     "Symbol(...)_...") and its checks in front of Object.defineProperty & co.; page-prelude.js keeps the engine's
+     functions, and shims.js goes straight to them for keys that cannot be symbols. -->
+<script>delete window.Symbol;</script>
+<script src="../Resources/page-prelude.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js"></script>
+<script src="../Resources/shims.js"></script>
+</head>
+<body>
+<h1>Object fast paths with core-js symbols</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<script>
+var S = Symbol('s'), T = Symbol('t');
+var CASES = [
+  ['polyfilled symbols', function () { return [typeof S, String(S).indexOf('Symbol(s)') === 0, !!window.__brNative, Object.defineProperty !== window.__brNative.defineProperty]; }, ['object', true, true, true]],
+  ['assign plain', function () { return JSON.stringify(Object.assign({ z: 0 }, { a: 1, b: 2 }, null, { c: 3 })); }, '{"z":0,"a":1,"b":2,"c":3}'],
+  ['assign copies an enumerable symbol', function () { var o = { a: 1 }; o[S] = 'sym'; var r = Object.assign({}, o); return [r.a, r[S], Object.keys(r).join()]; }, [1, 'sym', 'a']],
+  ['assign skips a non-enumerable symbol', function () { var o = {}; Object.defineProperty(o, T, { value: 1, enumerable: false }); o.x = 2; var r = Object.assign({}, o); return [r[T], r.x]; }, [undefined, 2]],
+  ['assign from a string', function () { return JSON.stringify(Object.assign({}, 'ab')); }, '{"0":"a","1":"b"}'],
+  ['assign calls setters and getters', function () { var log = []; var t = { set v(x) { log.push('set ' + x); } }; var s = { get v() { log.push('get'); return 5; } }; Object.assign(t, s); return log.join(); }, 'get,set 5'],
+  ['assign onto null throws', function () { try { Object.assign(null, {}); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
+  ['defineProperty string key', function () { var o = {}; Object.defineProperty(o, 'x', { value: 1, enumerable: true }); return [o.x, Object.keys(o).join()]; }, [1, 'x']],
+  ['defineProperty symbol key', function () { var o = {}; Object.defineProperty(o, S, { value: 2, enumerable: true }); return [o[S], Object.keys(o).length, Object.getOwnPropertySymbols(o).length, Object.getOwnPropertyDescriptor(o, S).enumerable, o.propertyIsEnumerable(S)]; }, [2, 0, 1, true, true]],
+  ['defineProperty key starting with S', function () { var o = {}; Object.defineProperty(o, 'Size', { value: 3, enumerable: true }); return [o.Size, Object.keys(o).join()]; }, [3, 'Size']],
+  ['defineProperty on a non-object throws TypeError', function () { try { Object.defineProperty(1, 'x', { value: 1 }); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
+  ['defineProperty on Object.prototype', function () { Object.defineProperty(Object.prototype, '__objfastTest', { value: 7, configurable: true }); var r = ({}).__objfastTest; delete Object.prototype.__objfastTest; return r; }, 7],
+  ['getOwnPropertyDescriptor', function () { var o = { a: 1 }; o[S] = 2; var d1 = Object.getOwnPropertyDescriptor(o, 'a'), d2 = Object.getOwnPropertyDescriptor(o, S); return [d1.value, d1.enumerable, d2.value, d2.enumerable, Object.getOwnPropertyDescriptor(o, 'nope')]; }, [1, true, 2, true, undefined]],
+  ['getOwnPropertyDescriptor of a string', function () { var d = Object.getOwnPropertyDescriptor('ab', 'length'); return d && d.value; }, 2],
+  ['keys', function () { var o = { a: 1, b: 2 }; o[S] = 3; return [Object.keys(o).join(), Object.keys('xy').join()]; }, ['a,b', '0,1']],
+  ['keys of null throws', function () { try { Object.keys(null); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
+  ['getOwnPropertySymbols', function () { var o = { a: 1, Sx: 2 }; var p = { b: 1 }; p[S] = 1; var g = Object.getOwnPropertySymbols; return [g(o).length, g(p).length, g(p)[0] === S, g('ab').length, Array.isArray(g(Object.prototype))]; }, [0, 1, true, 0, true]],
+  ['object spread as Babel does it', function () {
+    var ownKeys = function (object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; };
+    var src = { a: 1, b: 2 }; src[S] = 3; Object.defineProperty(src, T, { value: 4, enumerable: false });
+    var target = {}; ownKeys(Object(src), true).forEach(function (k) { Object.defineProperty(target, k, { value: src[k], enumerable: true, configurable: true, writable: true }); });
+    return [target.a, target.b, target[S], target[T], Object.keys(target).join()];
+  }, [1, 2, 3, undefined, 'a,b']],
+  ['toStringTag', function () { var o = {}; o[Symbol.toStringTag] = 'Custom'; return Object.prototype.toString.call(o); }, '[object Custom]'],
+  ['function name stays when fixed', function () { var f = function g() {}; Object.defineProperty(f, 'name', { value: 'h', configurable: true }); return typeof f.name; }, 'string']
+];
+var pass = 0, out = document.getElementById('out');
+for (var i = 0; i < CASES.length; i++) {
+  var got, ok;
+  try { got = CASES[i][1](); } catch (e) { got = 'THREW ' + e; }
+  ok = JSON.stringify(got) === JSON.stringify(CASES[i][2]);
+  if (ok) pass++;
+  var d = document.createElement('div');
+  d.className = ok ? 'pass' : 'fail';
+  d.textContent = (ok ? 'PASS ' : 'FAIL ') + CASES[i][0] + (ok ? '' : ': got ' + JSON.stringify(got) + ', want ' + JSON.stringify(CASES[i][2]));
+  out.appendChild(d);
+}
+document.getElementById('summary').textContent = pass + '/' + CASES.length;
+document.title = 'objfast ' + pass + '/' + CASES.length;
+</script>
+</body>
+</html>
