@@ -8827,7 +8827,10 @@
         };
         addStyle('main{display:block}picture{display:inline}' +
                  'progress,meter{display:inline-block;width:10em;height:1em;vertical-align:-0.2em;background-color:#e6e6e6;border:1px solid #bbb;border-radius:3px;overflow:hidden;-webkit-box-sizing:border-box;box-sizing:border-box;background-repeat:no-repeat}' +
-                 'datalist{display:none}time,data{display:inline}menu{display:block;list-style:none;margin:0;padding:0}');
+                 'datalist{display:none}time,data{display:inline}menu{display:block;list-style:none;margin:0;padding:0}' +
+                 // (the engine's own textarea overflow is auto, which crashed WebCore inside a horizontal -webkit-box when
+                 // its scrollbars came or went; see the overflow case in cssfix.js)
+                 'textarea{overflow:scroll}');
         defineElementClass('main', null, null);
         defineElementClass('time', 'HTMLTimeElement', function (p) { attrProp(p, 'dateTime', 'datetime'); });
         defineElementClass('data', 'HTMLDataElement', function (p) { attrProp(p, 'value'); });
