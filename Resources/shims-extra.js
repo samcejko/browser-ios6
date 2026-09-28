@@ -2215,6 +2215,36 @@
         if (el.offsetHeight > 2) { p.__brPctFix = p.offsetWidth; pctFixed.push(p); }
         else p.style.height = '';   // (not that: left as it was)
     };
+    // A video with height: 100% (or auto) in a box without a height of its own: current browsers give it the height of
+    // its proportions (the video's, or the poster's before the metadata), the old engine its default 150 px
+    // (edition.cnn.com's players were 992 x 150 strips with a small poster in the middle). It gets that height in pixels
+    // (again when its width changes); a height the page gives in pixels stays.
+    var fixVideoHeight = function (el) {
+        if (el.tagName !== 'VIDEO') return;
+        var w = el.offsetWidth;
+        if (el.__brVidRatio) {
+            var want = Math.round(w / el.__brVidRatio);
+            if (w > 0 && el.style.height === el.__brVidSet && Math.abs(el.offsetHeight - want) > 1) { el.style.height = want + 'px'; el.__brVidSet = el.style.height; }
+            return;
+        }
+        if (w < 40 || w === 300 || el.offsetHeight !== 150 || el.style.height || el.__brVidWait) return;
+        var rules = window.getMatchedCSSRules ? window.getMatchedCSSRules(el) : null;
+        for (var i = 0; rules && i < rules.length; i++) if (/px$/.test(rules[i].style.getPropertyValue('height') || '')) return;
+        var apply = function (rw, rh) {
+            if (!(rw > 0 && rh > 0) || el.__brVidRatio || el.style.height) return;
+            el.__brVidRatio = rw / rh;
+            el.style.height = Math.round(el.offsetWidth / el.__brVidRatio) + 'px';
+            el.__brVidSet = el.style.height;
+        };
+        if (el.videoWidth && el.videoHeight) { apply(el.videoWidth, el.videoHeight); return; }
+        el.__brVidWait = true;
+        el.addEventListener('loadedmetadata', function () { apply(el.videoWidth, el.videoHeight); }, false);
+        if (el.poster) {
+            var im = new Image();
+            im.onload = function () { apply(im.naturalWidth || im.width, im.naturalHeight || im.height); };
+            im.src = el.poster;
+        }
+    };
     // A loaded picture with height and no width (height: 100% and width: auto in a 2009 box: YouTube's round channel
     // pictures were 1 px wide) gets the width its own proportions give.
     var fixThinPicture = function (el) {
@@ -2327,7 +2357,7 @@
             tm.push(Date.now());
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
-                if (PCT_TAGS[el.tagName]) { var tq = Date.now(); fixPercentHeight(el); fixThinPicture(el); media += Date.now() - tq; }
+                if (PCT_TAGS[el.tagName]) { var tq = Date.now(); fixPercentHeight(el); fixThinPicture(el); fixVideoHeight(el); media += Date.now() - tq; }
                 else if (el.tagName === 'svg') { var tv = Date.now(); fixSvgHeight(el); media += Date.now() - tv; }
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
@@ -7647,6 +7677,52 @@
         window.HTMLMediaElement.prototype.canPlayType.__brSure = true;
     }
 
+    // ---- Empty ad boxes: a blocked ad leaves its box (edition.cnn.com: a 276 px black band at the top of the page).
+    // A box with one of the usual ad names (Google's slots, AdSense, Seznam's zones, ad-slot / advert words) that shows
+    // no text but an "advertisement" label and no picture, video or frame is taken out, as ad blockers do; only while
+    // the app blocks the page's ads (asked once), a few times after the page loaded.
+    (function () {
+        var SLOTS = '[id^="div-gpt-ad"],[id^="google_ads"],ins.adsbygoogle,[data-ad-slot],[data-google-query-id],[id^="ssp-zone"],[class*="ssp-zone"],' +
+                    '[class*="ad-slot"],[class*="adslot"],[class*="AdSlot"],[class*="ad-container"],[class*="adContainer"],[class*="ad-wrapper"],' +
+                    '[class*="adWrapper"],[class*="ad-banner"],[class*="adBanner"],[id*="ad-slot"],[id*="adslot"],[class*="advert"],[id*="advert"]';
+        var LABEL = /^(advertisement|advertising|ads?|reklama|inzerce|anzeige|publicit[ée]|sponsored|sponzorov[aá]no|\s)*$/i;
+        var blocked = null, runs = 0;
+        var shows = function (el) {
+            var text = el.innerText || '';
+            if (!LABEL.test(text.replace(/\s+/g, ' '))) return true;
+            var media = el.querySelectorAll('img,video,iframe,canvas,embed,object,svg');
+            for (var i = 0; i < media.length; i++) { var r = media[i].getBoundingClientRect(); if (r.width > 4 && r.height > 4) return true; }
+            return false;
+        };
+        var collapse = function () {
+            if (blocked !== true) return;
+            var list;
+            try { list = document.querySelectorAll(SLOTS); } catch (e) { return; }
+            for (var i = 0; i < list.length; i++) {
+                var el = list[i];
+                if (el.__brAdGone || el === document.body || el === document.documentElement || el.offsetHeight < 20 || shows(el)) continue;
+                el.__brAdGone = true;
+                el.style.setProperty('display', 'none', 'important');
+            }
+        };
+        var later = function () {
+            if (runs++ > 6) return;
+            collapse();
+            setTimeout(later, 2500 * runs);
+        };
+        window.addEventListener('load', function () {
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', window.__brStateURL || 'https://ios6-browser.invalid/state', true);   // (tests give their own)
+                x.onreadystatechange = function () {
+                    if (x.readyState !== 4) return;
+                    try { blocked = (x.status === 200 || (x.status === 0 && !!x.responseText)) && !!JSON.parse(x.responseText).adblock; } catch (e) { blocked = false; }
+                    if (blocked) setTimeout(later, 1500);
+                };
+                x.send(null);
+            } catch (e2) {}
+        }, false);
+    })();
     // ---- IntersectionObserver (the polyfill in the bundle): one watcher for all observers of the page instead of a
     // MutationObserver and scroll and resize listeners per observer; checks that wait for their own cost; the styles and
     // boxes of the elements around the targets read once per check. (seznam.cz: every check read the computed style of

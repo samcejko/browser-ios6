@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>adslot test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script>
+// Empty boxes of blocked ads (see shims-extra.js "Empty ad boxes"): the app's /state answer comes from a data: URL
+window.__brStateURL = 'data:application/json,{"adblock":true}';
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>Empty ad boxes</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div id="a1" class="ad-slot-header" style="height:276px;background:#0c0c0c"><div class="ad-slot"></div></div>
+<div id="div-gpt-ad-123" style="height:250px"><span>Reklama</span></div>
+<div id="a3" class="advertiser-info" style="height:100px">Real text about the advertiser programme</div>
+<div id="a4" class="ad-container" style="height:90px"><img alt="" style="width:100px;height:50px;background:#abc" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></div>
+<div id="a5" class="ad-wrapper" style="height:10px"></div>
+<div id="a6" class="content"><div class="adsbygoogle-holder" style="height:60px"><ins class="adsbygoogle" style="display:block;height:60px"></ins></div></div>
+<div id="a7" class="ad-banner" style="height:120px"><p>Advertisement</p><p>Scroll down to continue with the article</p></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok });
+};
+var gone = function (id) { var el = document.getElementById(id); return getComputedStyle(el).display === 'none'; };
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    show('an empty slot with an empty ad inside goes', gone('a1'));
+    show('a Google slot with only a label goes', gone('div-gpt-ad-123'));
+    show('a box with real text stays', !gone('a3'));
+    show('a box with a picture stays', !gone('a4'));
+    show('a tiny box stays', !gone('a5'));
+    var ins = document.querySelector('ins.adsbygoogle');
+    show('an empty AdSense slot goes', getComputedStyle(ins).display === 'none');
+    show('a slot with more than a label stays', !gone('a7'));
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'adslot ' + pass + '/' + total;
+    window.__adResults = results;
+  }, 2500);
+}, false);
+</script>
+</body>
+</html>

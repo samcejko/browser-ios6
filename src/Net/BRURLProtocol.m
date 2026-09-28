@@ -1049,8 +1049,11 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         cacheControl = @"no-store";
     } else if ([path isEqualToString:@"/state"]) {
         // what the page shim cannot see itself: whether the page is drawn with accelerated compositing (without it iOS 6
-        // scrolls boxes with one finger only in the shim's own way)
-        body = [[NSString stringWithFormat:@"{\"compositing\":%@}", [BRMemory compositing] ? @"true" : @"false"] dataUsingEncoding:NSUTF8StringEncoding];
+        // scrolls boxes with one finger only in the shim's own way), whether its ads are blocked (their empty boxes go)
+        NSString *pageHost = self.request.mainDocumentURL.host;
+        BOOL ads = [BRSettings adBlockEnabled] && ![BRSettings adBlockDisabledForHost:pageHost];
+        body = [[NSString stringWithFormat:@"{\"compositing\":%@,\"adblock\":%@}", [BRMemory compositing] ? @"true" : @"false", ads ? @"true" : @"false"]
+                dataUsingEncoding:NSUTF8StringEncoding];
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/speech/"]) {
