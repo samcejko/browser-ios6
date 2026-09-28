@@ -2230,20 +2230,22 @@
         if (w < 40 || w === 300 || el.offsetHeight !== 150 || el.style.height || el.__brVidWait) return;
         var rules = window.getMatchedCSSRules ? window.getMatchedCSSRules(el) : null;
         for (var i = 0; rules && i < rules.length; i++) if (/px$/.test(rules[i].style.getPropertyValue('height') || '')) return;
-        var apply = function (rw, rh) {
-            if (!(rw > 0 && rh > 0) || el.__brVidRatio || el.style.height) return;
+        // (final: the video's own proportions replace a poster's or the default ones)
+        var apply = function (rw, rh, final) {
+            if (!(rw > 0 && rh > 0) || (el.__brVidFinal && !final) || (el.style.height && el.style.height !== el.__brVidSet)) return;
             el.__brVidRatio = rw / rh;
+            el.__brVidFinal = !!final;
             el.style.height = Math.round(el.offsetWidth / el.__brVidRatio) + 'px';
             el.__brVidSet = el.style.height;
         };
-        if (el.videoWidth && el.videoHeight) { apply(el.videoWidth, el.videoHeight); return; }
+        if (el.videoWidth && el.videoHeight) { apply(el.videoWidth, el.videoHeight, true); return; }
         el.__brVidWait = true;
-        el.addEventListener('loadedmetadata', function () { apply(el.videoWidth, el.videoHeight); }, false);
+        el.addEventListener('loadedmetadata', function () { apply(el.videoWidth, el.videoHeight, true); }, false);
         if (el.poster) {
             var im = new Image();
-            im.onload = function () { apply(im.naturalWidth || im.width, im.naturalHeight || im.height); };
+            im.onload = function () { apply(im.naturalWidth || im.width, im.naturalHeight || im.height, false); };
             im.src = el.poster;
-        }
+        } else apply(2, 1, false);   // (the default 300 x 150 proportions, as current browsers use them)
     };
     // A loaded picture with height and no width (height: 100% and width: auto in a 2009 box: YouTube's round channel
     // pictures were 1 px wide) gets the width its own proportions give.
