@@ -301,13 +301,68 @@
             };
             try { Object.defineProperty(proxy, '__br_sweep', { value: sweep }); } catch (e1) {}
             keys();
+            // Vue's component proxy (target: the instance's ctx, { _: instance }): its keys come from setupState, data,
+            // props, methods, computed... and most exist only after it is made. The options name them now; data and
+            // setupState are watched as the instance gets them (this.setup() in mounted() was undefined: kosik.cz)
+            var inst = target._;
+            if (inst && typeof inst === 'object' && inst.ctx === target && 'setupState' in inst && 'vnode' in inst) {
+                var addKeys = function (o, own) {
+                    if (!o || (typeof o !== 'object' && typeof o !== 'function')) return;
+                    var ks = own ? Object.getOwnPropertyNames(o) : [], k2;
+                    if (!own) for (k2 in o) ks.push(k2);
+                    for (var q = 0; q < ks.length; q++) if (typeof ks[q] === 'string' && !/^__(br|v)_/.test(ks[q]) && done['$' + ks[q]] === undefined) define(ks[q]);
+                };
+                var fromOptions = function (opt, depth) {
+                    if (!opt || typeof opt !== 'object' || depth > 4) return;
+                    addKeys(opt.methods, false); addKeys(opt.computed, false); addKeys(opt.props, false);
+                    if (opt.inject) { if (Object.prototype.toString.call(opt.inject) === '[object Array]') { for (var q = 0; q < opt.inject.length; q++) if (done['$' + opt.inject[q]] === undefined) define(String(opt.inject[q])); } else addKeys(opt.inject, false); }
+                    if (opt.mixins) for (var mx = 0; mx < opt.mixins.length; mx++) fromOptions(opt.mixins[mx], depth + 1);
+                    if (opt['extends']) fromOptions(opt['extends'], depth + 1);
+                };
+                fromOptions(inst.type, 0);
+                if (inst.propsOptions) addKeys(inst.propsOptions[0], true);
+                addKeys(inst.props, true);
+                if (inst.appContext) { addKeys(inst.appContext.config && inst.appContext.config.globalProperties, true); if (inst.appContext.mixins) for (var am = 0; am < inst.appContext.mixins.length; am++) fromOptions(inst.appContext.mixins[am], 1); }
+                var pub = ['$', '$el', '$data', '$props', '$attrs', '$slots', '$refs', '$parent', '$root', '$host', '$emit', '$options', '$forceUpdate', '$nextTick', '$watch'];
+                for (var pk = 0; pk < pub.length; pk++) if (done['$' + pub[pk]] === undefined) define(pub[pk]);
+                // (one watcher per field, for all the instance's proxies: proxy and withProxy)
+                var hooks = inst.__br_keyHooks;
+                if (!hooks) {
+                    hooks = [];
+                    try { Object.defineProperty(inst, '__br_keyHooks', { value: hooks }); } catch (e5) { inst.__br_keyHooks = hooks; }
+                    var watchField = function (name) {
+                        var val = inst[name];
+                        try { Object.defineProperty(inst, name, { get: function () { return val; }, set: function (v) { val = v; for (var h = 0; h < hooks.length; h++) hooks[h](v); }, enumerable: true, configurable: true }); } catch (e6) {}
+                    };
+                    watchField('setupState');
+                    watchField('data');
+                    watchField('props');
+                }
+                hooks.push(function (v) { addKeys(v, true); });
+                addKeys(inst.setupState, true);
+                addKeys(inst.data, true);
+                addKeys(inst.props, true);
+            }
             var flags = ['__v_skip', '__v_isReactive', '__v_isReadonly', '__v_isShallow', '__v_raw'];
             for (var f = 0; f < flags.length; f++) if (done['$' + flags[f]] === undefined) special(flags[f], false);
             // Immer's state (a registered symbol; the polyfilled ones are keys of their own)
             if (typeof Symbol === 'function' && Symbol['for']) { try { special(Symbol['for']('immer-state'), true); } catch (e3) {} }
-            // a factory proxy (framer-motion's motion.div / m.span, created by its get trap on first use): a function
-            // target with a get trap answers for the element and SVG tag names too
-            if (typeof target === 'function' && handler.get) {
+            // a Map / Set target (Vue's reactive collections have only a get trap that returns instrumented methods):
+            // the methods go through the trap too, else they ran on this object and core-js refused ("Incompatible
+            // receiver, Map required")
+            var coll = false;
+            try { coll = (typeof Map === 'function' && target instanceof Map) || (typeof Set === 'function' && target instanceof Set) ||
+                         (typeof WeakMap === 'function' && target instanceof WeakMap) || (typeof WeakSet === 'function' && target instanceof WeakSet); } catch (e4) {}
+            if (coll && handler.get) {
+                var cm = ['get', 'set', 'has', 'add', 'delete', 'clear', 'forEach', 'size', 'keys', 'values', 'entries', '@@iterator'];
+                for (var ci = 0; ci < cm.length; ci++) if (done['$' + cm[ci]] === undefined) define(cm[ci]);
+                if (typeof Symbol === 'function' && Symbol.iterator && typeof Symbol.iterator !== 'string') { try { special(Symbol.iterator, false); } catch (e6) {} }
+                else if (typeof Symbol === 'function' && typeof Symbol.iterator === 'string' && done['$' + Symbol.iterator] === undefined) define(Symbol.iterator);
+            }
+            // a factory proxy (framer-motion's motion.div, motion-v's motion.create): tag names for a function target
+            // with a get trap, or an object target whose handler only has get (Vue reactive, Immer: more traps)
+            if (handler.get && !coll && (typeof target === 'function' ||
+                (!isArr && !handler.set && !handler.has && !handler.ownKeys && !handler.deleteProperty && !handler.defineProperty))) {
                 var tags = ('a abbr address area article aside audio b bdi bdo blockquote body br button canvas caption cite code col colgroup data ' +
                     'datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr ' +
                     'html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p ' +
@@ -2347,6 +2402,13 @@
     };
 
     // ---- functions
+    // the function's length: the parameters before the first default or rest one (destructured ones count). Lowered
+    // parameters are read from arguments, so the rest up to there get placeholder names: Vue gives setup() its
+    // context only when setup.length > 1, and setup(props, { emit }) had come out with length 1 (kosik.cz)
+    var arityOf = function (n) {
+        for (var i = 0; i < n.params.length; i++) if (n.params[i].type === 'AssignmentPattern' || n.params[i].type === 'RestElement') return i;
+        return n.params.length;
+    };
     P.param = function (p, i) {
         var arg = 'arguments[' + i + ']', val;
         if (p.type === 'RestElement') { val = 'Array.prototype.slice.call(arguments,' + i + ')'; p = p.argument; }
@@ -2398,6 +2460,7 @@
         var params = [], pre = '', simple = n.params.length;
         for (i = 0; i < n.params.length; i++) if (n.params[i].type !== 'Identifier') { simple = i; break; }
         for (i = 0; i < simple; i++) params.push(this.bname(n.params[i]));
+        for (i = simple; i < arityOf(n); i++) params.push(this.fresh('_p'));
         for (i = simple; i < n.params.length; i++) pre += this.param(n.params[i], i);
         if (kind === 'ctor' && ctx.fieldNodes) pre += this.fieldStmts(ctx.fieldNodes);
         var dirs = '', body;
@@ -2961,6 +3024,7 @@
         var params = [], pre = '', simple = n.params.length;
         for (i = 0; i < n.params.length; i++) if (n.params[i].type !== 'Identifier') { simple = i; break; }
         for (i = 0; i < simple; i++) params.push(this.bname(n.params[i]));
+        for (i = simple; i < arityOf(n); i++) params.push(this.fresh('_p'));
         for (i = simple; i < n.params.length; i++) pre += this.param(n.params[i], i);
         var dirs = '', stmts;
         if (n.expression) stmts = [{ type: 'ReturnStatement', argument: n.body, $d: true }];

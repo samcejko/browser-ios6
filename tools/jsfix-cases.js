@@ -22,7 +22,9 @@ var JSFIX_CASES = [
   ['nested destructuring with defaults', 'var { p: { q = 1, r: [s, t = 9] = [] } = {} } = { p: { r: [2] } }; return [q, s, t];'],
   ['destructuring assignment', 'var a = 1, b = 2; [a, b] = [b, a]; var o = {}; ({ x: o.x, y: o["y"] = 3 } = { x: 1 }); return [a, b, o.x, o.y];'],
   ['destructuring from Map entries', 'var m = new Map([["k", 1], ["l", 2]]); var out = []; for (const [k, v] of m) out.push(k + v); return out;'],
-  ['default and rest params', 'function f(a, b = a + 1, { c } = { c: 3 }, ...r) { return [a, b, c, r, f.length]; } return f(1).concat(f(1, 5, { c: 0 }, 7, 8));'],
+  // the length counts destructured parameters up to the first default or rest one (Vue's setup(props, { emit }))
+  ['length with destructured parameters', 'function f(a, { b }) {} var g = (a, [b], c = 1, d) => 0; async function h(a, { b }) {} class K { m(a, { b }, ...r) {} } function* gen({ x }, y) {} return [f.length, g.length, h.length, K.prototype.m.length, gen.length, (function (a = 1, { b }) {}).length];'],
+  ['default and rest params','function f(a, b = a + 1, { c } = { c: 3 }, ...r) { return [a, b, c, r, f.length]; } return f(1).concat(f(1, 5, { c: 0 }, 7, 8));'],
   ['arrow params with patterns', 'var f = ({ a, b: [c] }, ...d) => a + c + d.length; return f({ a: 1, b: [2] }, 0, 0);'],
   ['spread calls', 'function f() { return [].slice.call(arguments).join(); } var o = { n: 2, m(...x) { return this.n + x.length; } }; var arr = [1, 2]; return [f(...arr, 3), o.m(...arr), Math.max(...[3, 9, 1]), new Date(...[2020, 0, 2]).getDate()];'],
   ['spread arrays and strings', 'var a = [1, 2], s = new Set([3, 3, 4]); return [...a, 0, ...s, ..."ab"];'],

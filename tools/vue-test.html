@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>vue test</title>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<pre id="out">running</pre>
+<script>
+// Vue 3 as the device gets it: transpiled with the Proxy stand-in (the desktop Proxy is removed first). An Options API
+// component whose keys (data, methods, computed) exist only after the component proxy is made: mounted() calls a
+// method, the template reads data and a computed value.
+var src = (function () {
+  var x = new XMLHttpRequest();
+  x.open('GET', 'https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js', false);
+  x.send(null);
+  return x.status === 200 ? x.responseText : '';
+})();
+var out = JSFix.transpile(src, { proxy: true });
+var usesStandIn = /__br_Proxy/.test(out);
+window.Proxy = undefined;
+(0, eval)(out);
+var errors = [];
+var app = Vue.createApp({
+  data: function () { return { count: 1, items: ['a', 'b'], tags: new Map([['x', 1]]) }; },
+  computed: { label: function () { return 'n' + this.count; } },
+  methods: {
+    setup: function (x) { this.from = x; this.count = 2; },
+    add: function () { this.items.push('c' + this.items.length); this.tags.set('y', 2); }
+  },
+  mounted: function () { this.setup(this.$el ? 'el' : 'none'); },
+  template: '<div><span id="c">{{ count }}</span> <span id="l">{{ label }}</span><span id="m">{{ tags.size }}</span><ul id="list"><li v-for="it in items">{{ it }}</li></ul><button id="add" @click="add">add</button></div>'
+});
+app.config.errorHandler = function (e) { errors.push(String(e)); };
+try { app.mount('#app'); } catch (e) { errors.push('mount: ' + e); }
+var text = function (id) { var el = document.getElementById(id); return el ? el.textContent.replace(/\s+/g, ' ').trim() : null; };
+setTimeout(function () {
+  var r = { standIn: usesStandIn, mounted: [text('c'), text('l'), document.querySelectorAll('#list li').length] };
+  if (document.getElementById('add')) document.getElementById('add').click();
+  setTimeout(function () {
+    r.after = [document.querySelectorAll('#list li').length, text('list'), text('m')];
+    r.errors = errors;
+    var expected = { standIn: true, mounted: ['2', 'n2', 2], after: [3, 'abc2', '2'], errors: [] };
+    var fails = [];
+    for (var k in expected) if (JSON.stringify(r[k]) !== JSON.stringify(expected[k])) fails.push(k + ': expected ' + JSON.stringify(expected[k]) + ' got ' + JSON.stringify(r[k]));
+    document.getElementById('out').textContent = fails.length ? 'FAIL\n' + fails.join('\n') : 'PASS';
+    document.title = fails.length ? 'vue FAIL ' + fails.length : 'vue PASS';
+  }, 150);
+}, 300);
+</script>
+</body>
+</html>
