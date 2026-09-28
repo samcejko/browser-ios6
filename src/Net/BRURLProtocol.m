@@ -13,9 +13,13 @@ static const NSUInteger BRMaxRewriteBody = 4 * 1024 * 1024;
 // (scripts: a site's whole application can be one file, mapy.com's is 4.5 MB; the rewriter waits for memory first)
 static const NSUInteger BRMaxScriptRewriteBody = 8 * 1024 * 1024;
 static const NSUInteger BRMaxFontRewriteBody = 8 * 1024 * 1024, BRMaxImageRewriteBody = 6 * 1024 * 1024;
+// (documents too: edition.cnn.com's front page is 4.1 MB of HTML, most of it data; left as it came it had no polyfills,
+// no rewritten styles and none of its scripts ran)
+static const NSUInteger BRMaxDocumentRewriteBody = 8 * 1024 * 1024;
 static NSUInteger BRRewriteLimit(NSString *kind)
 {
     if ([kind hasPrefix:@"js"]) return BRMaxScriptRewriteBody;
+    if ([kind isEqualToString:@"html"]) return BRMaxDocumentRewriteBody;
     if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"]) return BRMaxFontRewriteBody;
     if ([kind isEqualToString:@"webp"]) return BRMaxImageRewriteBody;
     return BRMaxRewriteBody;
@@ -154,8 +158,8 @@ static dispatch_queue_t BRCacheQueue(void)
 // stale when the rewriters or those limits change, like a rewritten one.
 static NSString *BRRawCacheTag(void)
 {
-    return [NSString stringWithFormat:@"%@/raw-%d%d-%lu-%lu", [BRCSSRewriter rewriteTag], [BRSettings cssFixEnabled], [BRSettings transpileEnabled],
-            (unsigned long)BRMaxRewriteBody, (unsigned long)BRMaxScriptRewriteBody];
+    return [NSString stringWithFormat:@"%@/raw-%d%d-%lu-%lu-%lu", [BRCSSRewriter rewriteTag], [BRSettings cssFixEnabled], [BRSettings transpileEnabled],
+            (unsigned long)BRMaxRewriteBody, (unsigned long)BRMaxScriptRewriteBody, (unsigned long)BRMaxDocumentRewriteBody];
 }
 static BOOL BRCachedRewriteIsStale(NSCachedURLResponse *c)
 {
@@ -757,7 +761,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         else if (!ctype.length && [accept hasPrefix:@"text/css"]) kind = @"css";
         (void)path;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
-        if (declared > (long long)BRMaxRewriteBody) kind = nil;
+        if (kind && declared > (long long)BRRewriteLimit(kind)) kind = nil;
     }
     // ES modules requested by the page's module loader (marker ?__brmod=1): registrations for the loader
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && BRIsModuleRequest(url) && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
