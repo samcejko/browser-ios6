@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>icons test</title>
+<!-- icon fonts that draw each icon as the ligature of its name (see cssfix.js "Icon fonts" and BRFontConverter) -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined">
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+.row span { margin-right: 12px; }
+</style>
+</head>
+<body>
+<h1>Ligature icon fonts</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div class="row"><span id="i1" class="material-icons">home</span><span id="i2" class="material-icons">search</span><span id="i3" class="material-icons">arrow_forward</span></div>
+<div class="row"><span id="s1" class="material-symbols-outlined">home</span><span id="s2" class="material-symbols-outlined">settings</span><span id="s3" class="material-symbols-outlined">shopping_cart</span></div>
+<p id="text">office affine fifty flight</p>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var width = function (id) { return Math.round(document.getElementById(id).getBoundingClientRect().width); };
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    // an icon is one glyph as wide as the font size (24 px); its name written out is several times wider
+    var ids = ['i1', 'i2', 'i3', 's1', 's2', 's3'];
+    for (var i = 0; i < ids.length; i++) {
+      var w = width(ids[i]);
+      show(document.getElementById(ids[i]).className + ' ' + document.getElementById(ids[i]).textContent, w >= 20 && w <= 28, w + ' px');
+    }
+    var cs = getComputedStyle(document.getElementById('text'));
+    show('body text keeps the fast path', (cs.webkitFontVariantLigatures || 'normal') === 'normal', cs.webkitFontVariantLigatures + ' / ' + cs.textRendering);
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'icons ' + pass + '/' + total;
+    window.__iconResults = results;
+  }, 4000);
+}, false);
+</script>
+</body>
+</html>

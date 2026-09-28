@@ -162,8 +162,8 @@ static NSString *BRRawCacheTag(void)
             (unsigned long)BRMaxRewriteBody, (unsigned long)BRMaxScriptRewriteBody, (unsigned long)BRMaxDocumentRewriteBody];
 }
 // Fonts are kept as the converter made them (unpacked, variation tables and heavy layout tables dropped), tagged with
-// its version: they go stale when it changes. (2: ligature icon fonts keep their layout tables.)
-static NSString *const BRFontCacheTag = @"font-2";
+// its version: they go stale when it changes. (3: ligature icon fonts keep their layout tables, text fonts do not.)
+static NSString *const BRFontCacheTag = @"font-3";
 static BOOL BRIsFontType(NSString *type)
 {
     return [type hasPrefix:@"font/"] || [type rangeOfString:@"font-"].location != NSNotFound || [type rangeOfString:@"opentype"].location != NSNotFound;

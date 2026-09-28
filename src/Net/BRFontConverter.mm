@@ -46,8 +46,9 @@ static const size_t BRHeavyLayoutTables = 24 * 1024;
 
 // Icon fonts that draw each icon as the ligature of its name (Material Icons: 61 KB of ligatures, Material Symbols:
 // 125 KB; "home" becomes the house) keep the table whatever its size: without it the icons are just their names. Such
-// a font has many ligatures of four or more letters, a text font a handful (ffi, ffl). Counts them in the GSUB
-// ligature lookups (also behind extension lookups), up to `enough`.
+// a font has hundreds of ligatures of four or more letters and nothing to position (no GPOS to speak of); a text font
+// has kerning, and a few dozen long ligatures at most (Inter has arrows and the like: its text vanished when its
+// tables were kept). Counts them in the GSUB ligature lookups (also behind extension lookups), up to `enough`.
 static size_t BRLongLigatures(const uint8_t *p, size_t len, size_t enough)
 {
     if (len < 10) return 0;
@@ -86,7 +87,7 @@ static size_t BRLongLigatures(const uint8_t *p, size_t len, size_t enough)
     return count;
 }
 
-static const size_t BRIconLigatures = 16;
+static const size_t BRIconLigatures = 64, BRIconMaxGPOS = 1024;
 
 static bool BRStripVariationTables(const std::string &in, std::string &out, int *dropped, bool *droppedLayout)
 {
@@ -102,7 +103,7 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
     bool hasFvar = false, hasCFF2 = false;
     size_t layoutBytes = 0;
     const uint8_t *gsub = NULL;
-    size_t gsubLength = 0;
+    size_t gsubLength = 0, gposLength = 0;
     for (uint16_t i = 0; i < numTables; i++) {
         const uint8_t *r = p + 12 + (size_t)i * 16;
         Rec rec;
@@ -115,11 +116,13 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
         if (memcmp(rec.tag, "GSUB", 4) == 0 || memcmp(rec.tag, "GPOS", 4) == 0) layoutBytes += rec.length;
         if ((size_t)rec.offset + rec.length > len) return false;
         if (memcmp(rec.tag, "GSUB", 4) == 0) { gsub = p + rec.offset; gsubLength = rec.length; }
+        if (memcmp(rec.tag, "GPOS", 4) == 0) gposLength = rec.length;
         all.push_back(rec);
     }
     bool heavy = layoutBytes > BRHeavyLayoutTables;
-    bool dropLayout = heavy && !(gsub && BRLongLigatures(gsub, gsubLength, BRIconLigatures) >= BRIconLigatures);
-    if (heavy && !dropLayout) BRLog(@"Ligature icon font: its %lu KB of OpenType layout kept", (unsigned long)(layoutBytes >> 10));
+    size_t longLigatures = heavy && gsub && gposLength <= BRIconMaxGPOS ? BRLongLigatures(gsub, gsubLength, 100000) : 0;
+    bool dropLayout = heavy && longLigatures < BRIconLigatures;
+    if (heavy && !dropLayout) BRLog(@"Ligature icon font (%lu ligatures of 4+ letters): its %lu KB of OpenType layout kept", (unsigned long)longLigatures, (unsigned long)(layoutBytes >> 10));
     if (hasCFF2) return false;
     if (!hasFvar && !dropLayout) return false;
     std::vector<Rec> keep;
