@@ -4,6 +4,25 @@
     'use strict';
     var Ep = window.Element && window.Element.prototype;
 
+    // Object.prototype.toString as in ES2015: an object's Symbol.toStringTag names it. core-js's Map, Set, Promise...
+    // came out "[object Object]", and libraries tell types that way: Vue made a reactive Map with the handlers of a
+    // plain object, so its methods ran on the proxy ("Incompatible receiver, Map required": kosik.cz), lodash's
+    // clones and comparisons took them for plain objects too.
+    (function () {
+        var TAG = window.Symbol && window.Symbol.toStringTag, native = Object.prototype.toString;
+        if (!TAG || native.__brTag) return;
+        try { if (window.Map && native.call(new window.Map()) === '[object Map]') return; } catch (e0) {}
+        var toString = function toString() {
+            var s = native.call(this);
+            if (s !== '[object Object]') return s;
+            var t;
+            try { t = this[TAG]; } catch (e) { return s; }
+            return typeof t === 'string' ? '[object ' + t + ']' : s;
+        };
+        toString.__brTag = true;
+        try { Object.defineProperty(Object.prototype, 'toString', { value: toString, writable: true, configurable: true, enumerable: false }); } catch (e1) {}
+    })();
+
     // requestAnimationFrame (only the webkit prefixed one exists)
     if (!window.requestAnimationFrame) {
         window.requestAnimationFrame = window.webkitRequestAnimationFrame || function (cb) { return window.setTimeout(function () { cb(Date.now()); }, 16); };
@@ -477,7 +496,12 @@
         var SEP = { cs: [NB, ','], sk: [NB, ','], pl: [NB, ','], de: ['.', ','], fr: [' ', ','], it: ['.', ','], es: ['.', ','], ru: [NB, ','], hu: [NB, ','], nl: ['.', ','], pt: ['.', ','], sv: [NB, ','], da: ['.', ','], fi: [NB, ','], nb: [NB, ','], tr: ['.', ','], uk: [NB, ','], en: [',', '.'] };
         var CURRENCY = { CZK: ['Kč', 1], EUR: ['€', 1], USD: ['$', 0], GBP: ['£', 0], PLN: ['zł', 1], HUF: ['Ft', 1], CHF: ['CHF', 0], JPY: ['¥', 0], SEK: ['kr', 1], NOK: ['kr', 1], DKK: ['kr', 1], RUB: ['₽', 1], UAH: ['₴', 1], CNY: ['CN¥', 0], INR: ['₹', 0], BRL: ['R$', 0], CAD: ['CA$', 0], AUD: ['A$', 0] };
         var COMPACT = { cs: ['tis.', 'mil.', 'mld.', 'bil.'], sk: ['tis.', 'mil.', 'mld.', 'bil.'], pl: ['tys.', 'mln', 'mld', 'bln'], de: ['Tsd.', 'Mio.', 'Mrd.', 'Bio.'], en: ['K', 'M', 'B', 'T'] };
-        var NumberFormat = function NumberFormat(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; };
+        // (NumberFormat, DateTimeFormat and Collator can be called without new: Intl.NumberFormat(lang).format(x) had
+        // no this, kosik.cz)
+        var NumberFormat = function NumberFormat(locale, opts) {
+            if (!(this instanceof NumberFormat)) return new NumberFormat(locale, opts);
+            this.locale = canon(locale); this.opts = opts || {};
+        };
         NumberFormat.prototype.formatToParts = function (n) {
             var o = this.opts, lg = lang(this.locale), sep = SEP[lg] || SEP.en, v = Number(n), parts = [];
             if (isNaN(v)) return [{ type: 'nan', value: 'NaN' }];
@@ -539,7 +563,10 @@
             if (lg === 'en' && region && region !== 'US') return { months: d.months, monthsShort: d.monthsShort, days: d.days, daysShort: d.daysShort, numeric: 'dd/mm/y', dayMonth: 'dd/mm', long: 'd MMMM y', medium: 'd MMM y', h24: true, dayFirst: true, dateTimeSep: ', ', dayPeriods: d.dayPeriods };
             return d;
         };
-        var DateTimeFormat = function DateTimeFormat(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; this.data = localeData(this.locale); };
+        var DateTimeFormat = function DateTimeFormat(locale, opts) {
+            if (!(this instanceof DateTimeFormat)) return new DateTimeFormat(locale, opts);
+            this.locale = canon(locale); this.opts = opts || {}; this.data = localeData(this.locale);
+        };
         var fields = function (d, utc) {
             return utc ? { y: d.getUTCFullYear(), mo: d.getUTCMonth(), d: d.getUTCDate(), wd: d.getUTCDay(), h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(), ms: d.getUTCMilliseconds() }
                        : { y: d.getFullYear(), mo: d.getMonth(), d: d.getDate(), wd: d.getDay(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds() };
@@ -662,7 +689,10 @@
         ListFormat.prototype.resolvedOptions = function () { return { locale: this.locale, type: this.opts.type || 'conjunction', style: this.opts.style || 'long' }; };
         ListFormat.supportedLocalesOf = supportedOf;
         Intl.ListFormat = ListFormat;
-        var Collator = function Collator(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; var self = this; this.compare = function (a, b) { return self.compareStrings(a, b); }; };
+        var Collator = function Collator(locale, opts) {
+            if (!(this instanceof Collator)) return new Collator(locale, opts);
+            this.locale = canon(locale); this.opts = opts || {}; var self = this; this.compare = function (a, b) { return self.compareStrings(a, b); };
+        };
         Collator.prototype.compareStrings = function (a, b) {
             a = String(a); b = String(b);
             var o = this.opts;
@@ -893,8 +923,14 @@
                 else if (k !== 'innerText') throw e;
             }
         };
+        // (keys assigned to the target of the transpiler's Proxy stand-in reach its proxies: Pinia builds a store as
+        // reactive({...}) and then assigns its actions and state to toRaw(store), store.getCartProduct was undefined)
+        var resync = function (target) {
+            var px = target && target.__br_px;
+            if (px) for (var i = 0; i < px.length; i++) { try { px[i].__br_resync(); } catch (e) {} }
+        };
         Object.assign = function assign(target) {
-            try { return nativeAssign.apply(Object, arguments); } catch (e) {
+            try { var out = nativeAssign.apply(Object, arguments); resync(target); return out; } catch (e) {
                 if (target === null || typeof target !== 'object' || target.nodeType !== 1) throw e;
                 for (var i = 1; i < arguments.length; i++) {
                     var s = arguments[i];

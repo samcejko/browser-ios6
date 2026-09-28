@@ -5,6 +5,7 @@
 <title>vue test</title>
 <script src="https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js"></script>
 <script src="../Resources/jsfix.js"></script>
+<script src="../Resources/shims.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -42,8 +43,12 @@ setTimeout(function () {
   if (document.getElementById('add')) document.getElementById('add').click();
   setTimeout(function () {
     r.after = [document.querySelectorAll('#list li').length, text('list'), text('m')];
+    // Pinia: the store is reactive({...}) first, then its actions and state are assigned to toRaw(store)
+    var store = Vue.reactive({ $id: 'cart' });
+    Object.assign(Vue.toRaw(store), { getCartProduct: function (id) { return 'p' + id; }, total: 3 });
+    r.pinia = [typeof store.getCartProduct, store.getCartProduct ? store.getCartProduct(5) : null, store.total];
     r.errors = errors;
-    var expected = { standIn: true, mounted: ['2', 'n2', 2], after: [3, 'abc2', '2'], errors: [] };
+    var expected = { standIn: true, mounted: ['2', 'n2', 2], after: [3, 'abc2', '2'], pinia: ['function', 'p5', 3], errors: [] };
     var fails = [];
     for (var k in expected) if (JSON.stringify(r[k]) !== JSON.stringify(expected[k])) fails.push(k + ': expected ' + JSON.stringify(expected[k]) + ' got ' + JSON.stringify(r[k]));
     document.getElementById('out').textContent = fails.length ? 'FAIL\n' + fails.join('\n') : 'PASS';

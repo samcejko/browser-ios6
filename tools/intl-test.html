@@ -19,7 +19,7 @@ pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; }
 // Server-rendered pages (React and the like) compare their text with what the page's scripts make of the same data:
 // one character of difference (a space for a no-break space) and the page is thrown away and built again (rohlik.cz).
 // EXPECTED holds a current browser's results; in such a browser the test prints its own (the dump) to put there.
-var EXPECTED = {"czk 29.9":"29,90<U+a0>Kč","czk 1234.5":"1<U+a0>234,50<U+a0>Kč","czk 0 decimals":"1<U+a0>990<U+a0>Kč","eur cs":"12,50<U+a0>€","number cs":"1<U+a0>234<U+a0>567,891","number cs 2 digits":"1<U+a0>234,50","percent cs":"25<U+a0>%","kg cs":"1,5 kg","usd en":"$1,234.50","number en":"1,234,567.891","compact en":"12K","date cs long":"pondělí 28. září","date cs numeric":"28. 9. 2026","time cs":"14:05","date cs medium":"28. 9. 2026","date en medium":"Sep 28, 2026","datetime en":"Sep 28, 2026, 2:05 PM","toLocaleDateString cs":"28. 9. 2026","toLocaleString number cs":"1<U+a0>234,5","relative cs yesterday":"včera","relative cs 3 hours":"před 3 hodinami","plural cs":"one,few,other,many","list cs":"a, b a<U+a0>c"};
+var EXPECTED = {"czk 29.9":"29,90<U+a0>Kč","czk 1234.5":"1<U+a0>234,50<U+a0>Kč","czk 0 decimals":"1<U+a0>990<U+a0>Kč","eur cs":"12,50<U+a0>€","number cs":"1<U+a0>234<U+a0>567,891","number cs 2 digits":"1<U+a0>234,50","percent cs":"25<U+a0>%","kg cs":"1,5 kg","usd en":"$1,234.50","number en":"1,234,567.891","compact en":"12K","date cs long":"pondělí 28. září","date cs numeric":"28. 9. 2026","time cs":"14:05","date cs medium":"28. 9. 2026","date en medium":"Sep 28, 2026","datetime en":"Sep 28, 2026, 2:05 PM","toLocaleDateString cs":"28. 9. 2026","toLocaleString number cs":"1<U+a0>234,5","relative cs yesterday":"včera","relative cs 3 hours":"před 3 hodinami","plural cs":"one,few,other,many","list cs":"a, b a<U+a0>c","number cs without new":"1<U+a0>234,5","date cs without new":"28. 9. 2026"};
 var d = new Date(Date.UTC(2026, 8, 28, 14, 5, 9));
 var cases = function () {
   var r = {}, I = window.Intl;
@@ -47,6 +47,9 @@ var cases = function () {
   t('relative cs 3 hours', function () { return new I.RelativeTimeFormat('cs').format(-3, 'hour'); });
   t('plural cs', function () { var p = new I.PluralRules('cs'); return [1, 2, 5, 1.5].map(function (n) { return p.select(n); }).join(','); });
   t('list cs', function () { return new I.ListFormat('cs', { type: 'conjunction' }).format(['a', 'b', 'c']); });
+  // (these three constructors also work as plain functions)
+  t('number cs without new', function () { return I.NumberFormat('cs-CZ').format(1234.5); });
+  t('date cs without new', function () { return I.DateTimeFormat('cs-CZ', { timeZone: 'UTC' }).format(d); });
   return r;
 };
 var show = function (name, ok, detail) {

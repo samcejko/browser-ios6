@@ -197,7 +197,7 @@
                 throw new TypeError('Cannot create proxy with a non-object as target or handler');
             }
             var proxy, done = {}, getters = {}, isArr = Object.prototype.toString.call(target) === '[object Array]', slack = 0;
-            var INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1 }, INDEX = /^(?:0|[1-9]\d*)$/;
+            var INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1, __br_resync: 1 }, INDEX = /^(?:0|[1-9]\d*)$/;
             // (the receiver of a set is the target: Reflect.set(target, key, v, proxy) would find our accessor on the
             // proxy and refuse)
             var read = function (key) { return handler.get ? handler.get(target, key, proxy) : target[key]; };
@@ -232,7 +232,7 @@
             } else proxy = Object.create(proto === undefined ? Object.prototype : proto);
             // (again when the key's enumerability changed: an array index past the end that got a value)
             var define = function (key, len) {
-                if (typeof key !== 'string') return;
+                if (typeof key !== 'string' || key.slice(0, 5) === '__br_') return;
                 var en = enumerable(key, len), was = done['$' + key];
                 if (was === en) return;
                 done['$' + key] = en;
@@ -301,6 +301,16 @@
             };
             try { Object.defineProperty(proxy, '__br_sweep', { value: sweep }); } catch (e1) {}
             keys();
+            // (keys a script adds to the target itself later: Object.assign to it asks its proxies to look again, see
+            // shims.js - Pinia assigns a store's actions to toRaw(store))
+            if (typeof target === 'object' && !isArr) {
+                try {
+                    Object.defineProperty(proxy, '__br_resync', { value: keys });
+                    var px = target.__br_px;
+                    if (!px) { px = []; Object.defineProperty(target, '__br_px', { value: px, configurable: true }); }
+                    if (px.length < 8) px.push(proxy);
+                } catch (e7) {}
+            }
             // Vue's component proxy (target: the instance's ctx, { _: instance }): its keys come from setupState, data,
             // props, methods, computed... and most exist only after it is made. The options name them now; data and
             // setupState are watched as the instance gets them (this.setup() in mounted() was undefined: kosik.cz)
