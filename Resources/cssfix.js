@@ -4321,6 +4321,20 @@ var CSSFix = (function () {
     }
 
     // What a flex container rule asks for that the 2009 box model cannot do by itself: wrapping and gaps.
+    // the align-self a rule gives (place-self: its first value), or null
+    function alignSelfOf(decls, ctx) {
+        var out = null;
+        for (var i = 0; i < decls.length; i++) {
+            if (decls[i].p !== 'align-self' && decls[i].p !== 'place-self') continue;
+            var v = resolveVars(decls[i].v, null, ctx);
+            if (v === null) continue;
+            var lv = trim(v).toLowerCase().replace(/^(safe|unsafe)\s+/, '');
+            if (decls[i].p === 'place-self') lv = alignKeyword(lv);
+            if (/^(auto|normal|stretch|center|start|end|flex-start|flex-end|self-start|self-end|left|right|baseline|first baseline|last baseline|anchor-center)$/.test(lv)) out = lv;
+        }
+        return out;
+    }
+
     // does this declaration of a flex container centre, end or spread the items of a column (what blocks cannot do)?
     function alignsColumnItems(p, lv) {
         if (p === 'align-items' || p === 'place-items') return !/^(stretch|normal|inherit|initial|unset|revert)\b/.test(lv);
@@ -4495,6 +4509,16 @@ var CSSFix = (function () {
                     if (rowWrap) { fi.flex = true; fi.wrap = true; fi.column = false; }
                     // (the flex containers, whose children the shim marks as items: fx 2 for a column that stays a block)
                     if (fi.flex && !fi.wrap && g_manifest !== false) manifestAdd('mk', { h: manifestHash('mk|fx|' + sels.join(',')), s: sels.join(','), fx: fi.column && !fi.aligned ? 2 : 1 });
+                    // (align-self: the old boxes align all their children alike; the shim aligns the items that differ, with
+                    // the rule's specificity and media queries to find the winner, see alignFlexItems in shims-extra.js)
+                    var asv = alignSelfOf(r.decls, ctx);
+                    if (asv && g_manifest !== false) {
+                        var asMedia = ctx.mediaStack && ctx.mediaStack.length ? ctx.mediaStack.slice(0) : null, asSp = [];
+                        for (var ak = 0; ak < sels.length; ak++) asSp.push(specificity(sels[ak]));
+                        var asEntry = { h: manifestHash('mk|as|' + sels.join(',') + '|' + asv + '|' + (asMedia ? asMedia.join('&') : '')), s: sels.join(','), sl: sels, sp: asSp, as: asv };
+                        if (asMedia) asEntry.m = asMedia;
+                        manifestAdd('mk', asEntry);
+                    }
                     if (fi.flex) {
                         var childSel = [], gapSel = [], gs;
                         for (gs = 0; gs < sels.length; gs++) { childSel.push(sels[gs] + ' > *'); gapSel.push(sels[gs] + ' > * + *'); }

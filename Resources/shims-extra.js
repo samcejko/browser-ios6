@@ -2753,7 +2753,147 @@
             }
         }
     };
-    onMarkers(function () { markFlexItems(); });
+    // align-self of flex items (cssfix sends the rules that set it, with their specificity and media queries, see
+    // alignSelfOf): the old boxes align all their children alike (-webkit-box-align of the box). A box with items
+    // aligned otherwise aligns at the start (data-br-asp); in a column the items get auto margins (centre, end) or the
+    // full width (the stretched ones, data-br-as); in a row the heights are measured: stretched items get the row's
+    // height as their min-height, centred and end ones a margin-top. What was set is taken back before the next time
+    // (only when the widths, heights or values changed), so the page's own styles stay what they were.
+    var asBoxes = [], asRule = null;
+    var AS_CODE = function (v) {
+        v = String(v || '').toLowerCase();
+        if (v === 'center' || v === 'anchor-center') return 'c';
+        if (/^(end|flex-end|self-end|right|last baseline)$/.test(v)) return 'e';
+        if (/^(start|flex-start|self-start|left|baseline|first baseline)$/.test(v)) return 's';
+        return v === 'stretch' ? 'x' : '';   // ('' auto, normal: the box's own)
+    };
+    var BOX_CODE = { stretch: 'x', start: 's', center: 'c', end: 'e', baseline: 's' };
+    var asMediaOk = function (list, cache) {
+        var key = list.join('&');
+        if (cache[key] === undefined) {
+            cache[key] = true;
+            for (var i = 0; i < list.length; i++) { try { if (!window.matchMedia(list[i]).matches) { cache[key] = false; break; } } catch (e) { cache[key] = false; break; } }
+        }
+        return cache[key];
+    };
+    var asSet = function (el, prop, value) {
+        var saved = el.__brAsSet || (el.__brAsSet = {});
+        if (!saved.hasOwnProperty(prop)) saved[prop] = el.style.getPropertyValue(prop);
+        el.style.setProperty(prop, value);
+    };
+    var asUndo = function (box) {
+        box.removeAttribute('data-br-asp');
+        for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
+            var saved = c.__brAsSet;
+            if (!saved) continue;
+            c.removeAttribute('data-br-as');
+            for (var p in saved) if (saved.hasOwnProperty(p)) { if (saved[p]) c.style.setProperty(p, saved[p]); else c.style.removeProperty(p); }
+            if (!c.getAttribute('style')) c.removeAttribute('style');
+            c.__brAsSet = null;
+        }
+        box.__brAsSig = null;
+    };
+    var num0 = function (v) { return parseFloat(v) || 0; };
+    // (the state a box was aligned in: its width and height and every item's height and value)
+    var asSignature = function (box, kids) {
+        var s = [box.clientWidth, box.clientHeight];
+        for (var i = 0; i < kids.length; i++) s.push(kids[i].code, kids[i].el.offsetHeight);
+        return s.join(',');
+    };
+    var alignBox = function (box, kids) {
+        var cs = getComputedStyle(box), P = BOX_CODE[cs.webkitBoxAlign] || 'x', i, k, kcs;
+        var vertical = box.__brFx === 2 || cs.webkitBoxOrient === 'vertical' || cs.webkitBoxOrient === 'block-axis';
+        var any = false;
+        for (i = 0; i < kids.length; i++) { kids[i].eff = kids[i].code || P; if (kids[i].eff !== P) any = true; }
+        if (!any) return false;
+        if (vertical) {
+            // (read: the stretched items, as wide as the box; write: the box at the start, items placed by margins)
+            var cw = box.clientWidth - num0(cs.paddingLeft) - num0(cs.paddingRight);
+            for (i = 0; i < kids.length; i++) {
+                k = kids[i]; kcs = getComputedStyle(k.el);
+                k.m = num0(kcs.marginLeft) + num0(kcs.marginRight);
+                k.full = Math.abs(k.el.offsetWidth + k.m - cw) < 1.5;
+            }
+            box.setAttribute('data-br-asp', box.__brFx === 2 ? 'b' : 'v');
+            for (i = 0; i < kids.length; i++) {
+                k = kids[i];
+                if (k.eff === 'x' && (P !== 'x' || k.full)) {
+                    k.el.setAttribute('data-br-as', 'w');
+                    asSet(k.el, 'width', k.m ? '-webkit-calc(100% - ' + k.m + 'px)' : '100%');
+                } else if (k.eff === 'c' || k.eff === 'e') {
+                    k.el.setAttribute('data-br-as', k.eff);
+                    if (!k.el.__brAsSet) k.el.__brAsSet = {};
+                }
+            }
+        } else {
+            // (read: the stretched items and the heights at the start; write: min-heights and top margins)
+            var ch0 = box.clientHeight - num0(cs.paddingTop) - num0(cs.paddingBottom);
+            for (i = 0; i < kids.length; i++) {
+                k = kids[i]; kcs = getComputedStyle(k.el);
+                k.mt = num0(kcs.marginTop); k.mb = num0(kcs.marginBottom);
+                k.full = Math.abs(k.el.offsetHeight + k.mt + k.mb - ch0) < 1.5;
+            }
+            box.setAttribute('data-br-asp', 'h');
+            var H = box.clientHeight - num0(cs.paddingTop) - num0(cs.paddingBottom);
+            for (i = 0; i < kids.length; i++) kids[i].h = kids[i].el.offsetHeight;
+            for (i = 0; i < kids.length; i++) {
+                k = kids[i];
+                if (k.eff === 'x' && (P !== 'x' || k.full)) asSet(k.el, 'min-height', Math.max(0, H - k.mt - k.mb) + 'px');
+                else if (k.eff === 'c') asSet(k.el, 'margin-top', Math.round((k.mt + (H - k.h - k.mt - k.mb) / 2) * 10) / 10 + 'px');
+                else if (k.eff === 'e') asSet(k.el, 'margin-top', Math.max(k.mt, H - k.h - k.mb) + 'px');
+            }
+        }
+        return true;
+    };
+    var alignFlexItems = function () {
+        var rules = window.__brAlignSelfRules;
+        if (!rules || !rules.length) { for (var u = 0; u < asBoxes.length; u++) asUndo(asBoxes[u]); asBoxes = []; return; }
+        if (!asRule) {
+            asRule = document.createElement('style');
+            asRule.__brOwn = true;
+            asRule.textContent = '[data-br-asp=v],[data-br-asp=h]{-webkit-box-align:start!important}' +
+                '[data-br-asp=b]{display:-webkit-box!important;-webkit-box-orient:vertical!important;-webkit-box-align:start!important}' +
+                '[data-br-as=c]{margin-left:auto!important;margin-right:auto!important}[data-br-as=e]{margin-left:auto!important}' +
+                '[data-br-as=w]{-webkit-box-sizing:border-box}';
+            var head = document.head || document.documentElement;
+            head.insertBefore(asRule, head.firstChild);
+        }
+        // the winning align-self of every element some rule gives one (specificity, then the later rule)
+        var media = {}, gen = (alignFlexItems.gen = (alignFlexItems.gen || 0) + 1), boxes = [], i, j, k;
+        for (i = 0; i < rules.length; i++) {
+            var e = rules[i];
+            if (e.m && !asMediaOk(e.m, media)) continue;
+            for (k = 0; k < e.sl.length; k++) {
+                var els;
+                try { els = document.querySelectorAll(e.sl[k]); } catch (x) { continue; }
+                for (j = 0; j < els.length; j++) {
+                    var el = els[j], p = el.parentNode, sp = e.sp[k] || 0;
+                    if (!p || !p.__brFx) continue;   // (items of the flex containers markFlexItems found)
+                    if (el.__brAsGen !== gen) { el.__brAsGen = gen; el.__brAsSp = -1; }
+                    if (sp >= el.__brAsSp) { el.__brAsSp = sp; el.__brAsCode = AS_CODE(e.as); }
+                    if (p.__brAsGen !== gen) { p.__brAsGen = gen; boxes.push(p); }
+                }
+            }
+        }
+        // boxes aligned before and no longer: taken back
+        for (i = 0; i < asBoxes.length; i++) if (asBoxes[i].__brAsGen !== gen) asUndo(asBoxes[i]);
+        var aligned = [];
+        for (i = 0; i < boxes.length; i++) {
+            var box = boxes[i], kids = [];
+            for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
+                if (BF_SKIP[c.tagName]) continue;
+                var ccs = getComputedStyle(c);
+                if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
+                kids.push({ el: c, code: c.__brAsGen === gen ? c.__brAsCode : '' });
+            }
+            // (unchanged since last time: left as it is)
+            if (box.__brAsSig && box.__brAsSig === asSignature(box, kids)) { aligned.push(box); continue; }
+            asUndo(box);
+            if (alignBox(box, kids)) { box.__brAsSig = asSignature(box, kids); aligned.push(box); }
+        }
+        asBoxes = aligned;
+    };
+    onMarkers(function () { markFlexItems(); alignFlexItems(); });
     var zRule = null, zWidth = 0;
     var positionsInside = function (el) {
         var stack = [], seen = 0, c, n, pos;
@@ -3734,14 +3874,17 @@
         // (only when the network layer sends them: a manifest without the kind, a test's, means every element is scanned)
         var mkKnown = false;
         var noteMarkerRules = function (m) {
-            var list = [], ns = [], mk = m.mk || [], fxBox = [], fxCol = [];
+            var list = [], ns = [], mk = m.mk || [], fxBox = [], fxCol = [], as = [];
             // (entries with ns: items that must not shrink, for the shrinking of rows too wide for their room; with fx:
-            // flex containers, 2 for a column that stays a block, whose children are marked as items, see markFlexItems)
+            // flex containers, 2 for a column that stays a block, whose children are marked as items, see markFlexItems;
+            // with as: rules that set align-self, see alignFlexItems)
             for (var i = 0; i < mk.length; i++) {
                 if (!mk[i] || !mk[i].s) continue;
-                if (mk[i].fx) (mk[i].fx === 2 ? fxCol : fxBox).push(mk[i].s);
+                if (mk[i].as) { if (mk[i].sl) as.push(mk[i]); }
+                else if (mk[i].fx) (mk[i].fx === 2 ? fxCol : fxBox).push(mk[i].s);
                 else (mk[i].ns ? ns : list).push(mk[i].s);
             }
+            window.__brAlignSelfRules = as;
             window.__brFlexRules = { box: fxBox, col: fxCol, key: fxBox.length + '|' + fxCol.length + '|' + (fxBox.length ? fxBox[fxBox.length - 1] : '') };
             // (rows shrunk before the list came are shrunk again)
             var nsChanged = !window.__brNoShrink || window.__brNoShrink.length !== ns.length;
