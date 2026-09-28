@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flex align test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+.frame { width: 400px; margin: 6px 0; padding: 4px; background: #eee; }
+.frame > * { background: #9cf; }
+/* utility classes, one declaration each (the Tailwind way) */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.items-start { align-items: flex-start; }
+.self-center { align-self: center; }
+.self-start { align-self: flex-start; }
+.self-end { align-self: flex-end; }
+.self-stretch { align-self: stretch; }
+/* a column in one rule */
+.col-center { display: flex; flex-direction: column; align-items: center; }
+.col-plain { display: flex; flex-direction: column; }
+.row { height: 80px; }
+.tall { height: 80px; width: 40px; }
+</style>
+</head>
+<body>
+<h1>Alignment of flex items</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div class="frame flex flex-col items-center" id="c1"><span id="c1a">centred by the column</span><b id="c1b">bold</b></div>
+<div class="frame col-center" id="c2"><span id="c2a">centred by a one-rule column</span><p id="c2b" style="margin:0">para</p></div>
+<div class="frame flex flex-col" id="c3"><span id="c3a" class="self-center">self centre</span><span id="c3b" class="self-end">self end</span><span id="c3c" class="self-start">self start</span><span id="c3d">stretched</span></div>
+<div class="frame col-plain" id="c4"><h2 id="c4a" class="self-center" style="margin:0">one-rule column, self centre</h2><div id="c4b">stretched</div></div>
+<div class="frame flex row" id="r1"><div class="tall"></div><span id="r1a" class="self-center">mid</span><span id="r1b" class="self-end">end</span><span id="r1c" class="self-start">start</span><span id="r1d">stretch</span></div>
+<div class="frame flex row items-center" id="r2"><div class="tall"></div><span id="r2a" class="self-stretch">stretch</span><span id="r2b">centred</span></div>
+<div class="frame flex flex-col items-start" id="c5"><span id="c5a" class="self-center">centre in a start column</span><span id="c5b" class="self-stretch">stretch in a start column</span></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var R = function (id) { return document.getElementById(id).getBoundingClientRect(); };
+var inner = function (id) { var r = R(id); return { left: r.left + 4, right: r.right - 4, top: r.top + 4, bottom: r.bottom - 4 }; };   // (the frame's padding)
+var near = function (a, b) { return Math.abs(a - b) <= 2; };
+var hpos = function (child, frame, where) {
+  var c = R(child), f = inner(frame), narrow = c.width < f.right - f.left - 20;
+  var ok = where === 'center' ? narrow && near((c.left + c.right) / 2, (f.left + f.right) / 2) :
+           where === 'end' ? narrow && near(c.right, f.right) :
+           where === 'start' ? narrow && near(c.left, f.left) : near(c.left, f.left) && near(c.right, f.right);
+  return { ok: ok, d: Math.round(c.left - f.left) + '..' + Math.round(c.right - f.left) + ' of ' + Math.round(f.right - f.left) };
+};
+var vpos = function (child, frame, where) {
+  var c = R(child), f = inner(frame), short = c.height < f.bottom - f.top - 10;
+  var ok = where === 'center' ? short && near((c.top + c.bottom) / 2, (f.top + f.bottom) / 2) :
+           where === 'end' ? short && near(c.bottom, f.bottom) :
+           where === 'start' ? short && near(c.top, f.top) : near(c.top, f.top) && near(c.bottom, f.bottom);
+  return { ok: ok, d: Math.round(c.top - f.top) + '..' + Math.round(c.bottom - f.top) + ' of ' + Math.round(f.bottom - f.top) };
+};
+var check = function (name, r) { show(name, r.ok, r.d); };
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    check('column items-center: item centred', hpos('c1a', 'c1', 'center'));
+    check('one-rule column align-items center: item centred', hpos('c2a', 'c2', 'center'));
+    check('one-rule column align-items center: block item centred', hpos('c2b', 'c2', 'center'));
+    check('column: self-center', hpos('c3a', 'c3', 'center'));
+    check('column: self-end', hpos('c3b', 'c3', 'end'));
+    check('column: self-start', hpos('c3c', 'c3', 'start'));
+    check('column: others stretched', hpos('c3d', 'c3', 'stretch'));
+    check('one-rule column: self-center', hpos('c4a', 'c4', 'center'));
+    check('one-rule column: others stretched', hpos('c4b', 'c4', 'stretch'));
+    check('row: self-center', vpos('r1a', 'r1', 'center'));
+    check('row: self-end', vpos('r1b', 'r1', 'end'));
+    check('row: self-start', vpos('r1c', 'r1', 'start'));
+    check('row: others stretched', vpos('r1d', 'r1', 'stretch'));
+    check('centred row: self-stretch', vpos('r2a', 'r2', 'stretch'));
+    check('centred row: others centred', vpos('r2b', 'r2', 'center'));
+    check('start column: self-center', hpos('c5a', 'c5', 'center'));
+    check('start column: self-stretch', hpos('c5b', 'c5', 'stretch'));
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'flexalign ' + pass + '/' + total;
+    window.__flexAlignResults = results;
+  }, 1500);
+}, false);
+</script>
+</body>
+</html>

@@ -2864,6 +2864,7 @@ var CSSFix = (function () {
         var pctHeightMarked = false;
         var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
         var ligaAsked = false, iconLike = false, ownFamily = null, zIndexed = false, positioned = false;
+        var colBox = false;   // (a column that aligns or spreads its items stays a box, see columnFlex)
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') { hasDisplay = true; dispVal = String(d.v).toLowerCase(); }
@@ -2894,6 +2895,7 @@ var CSSFix = (function () {
             else if ((d.p === 'font-style' && mvl === 'normal') || (d.p === 'line-height' && mvl === '1') || (d.p === 'white-space' && mvl === 'nowrap')) iconLike = true;
             if (d.p === 'z-index') { if (/^-?\d+$/.test(mvl)) zIndexed = true; }
             else if (d.p === 'position') { if (mvl !== 'static') positioned = true; }
+            if (alignsColumnItems(d.p, mvl)) colBox = true;
         }
         // A flex item stacks by its z-index without being positioned; the old engine's boxes (the 2009 model) ignore it
         // there (a hero's backdrop covered its heading): marked "br-zi 1", the shim positions such items (see fixFlexZ)
@@ -3056,9 +3058,11 @@ var CSSFix = (function () {
                     if (lv.indexOf(' ') > 0 || lv === 'flow') { lv = normalizeDisplay(lv); v = lv; }
                     // a column flex container stays a block (see columnFlex); its classes are remembered so that a later
                     // rule turning the same class into a row ("navbar-expand-lg .navbar-nav") makes it a box again
-                    if ((lv === 'flex' || lv === 'inline-flex') && columnFlex && !wrap) rememberColumnFlex(ctx, lv === 'inline-flex');
-                    if (lv === 'flex') push(out, 'display', (wrap || columnFlex) ? 'block' : '-webkit-box', imp);
-                    else if (lv === 'inline-flex') push(out, 'display', (wrap || columnFlex) ? 'inline-block' : '-webkit-inline-box', imp);
+                    // (a column that centres, ends or spreads its items stays a box: blocks stack but cannot align them)
+                    var colBlock = columnFlex && !colBox;
+                    if ((lv === 'flex' || lv === 'inline-flex') && colBlock && !wrap) rememberColumnFlex(ctx, lv === 'inline-flex');
+                    if (lv === 'flex') push(out, 'display', (wrap || colBlock) ? 'block' : '-webkit-box', imp);
+                    else if (lv === 'inline-flex') push(out, 'display', (wrap || colBlock) ? 'inline-block' : '-webkit-inline-box', imp);
                     else if (lv === 'contents') {
                         // an element without a box of its own, whose children take part in the parent's layout: here it
                         // takes the parent's kind of box (in a flex row it lays its children out in a row: vercel.com
@@ -4317,12 +4321,41 @@ var CSSFix = (function () {
     }
 
     // What a flex container rule asks for that the 2009 box model cannot do by itself: wrapping and gaps.
+    // does this declaration of a flex container centre, end or spread the items of a column (what blocks cannot do)?
+    function alignsColumnItems(p, lv) {
+        if (p === 'align-items' || p === 'place-items') return !/^(stretch|normal|inherit|initial|unset|revert)\b/.test(lv);
+        if (p === 'justify-content') return !/^(flex-start|start|normal|stretch|left|inherit|initial|unset|revert)$/.test(lv);
+        return false;
+    }
+
+    // ---- Flex items are blocks: current engines make every child of a flex container a block-level box (an inline
+    // one becomes a block, an inline-block a block, an inline-flex a flex box). The old engine's boxes take a run of
+    // inline children as one item that lays them out as a line of text (spans in a column stood side by side, a row's
+    // space-between did not spread its links). The shim marks the children of flex containers (data-br-bf, see
+    // markFlexItems in shims-extra.js); every rule that sets a display gets a twin for marked elements with the display
+    // made block-level, right after it, so that among the twins the page's cascade decides as it did (a hidden item
+    // stays hidden). Elements whose display no rule sets get theirs from the shim's rules, ahead of the page's.
+    var BLOCKIFY = { inline: 'block', 'inline-block': 'block', 'run-in': 'block', 'inline-table': 'table', '-webkit-inline-box': '-webkit-box',
+        'inline-flex': '-webkit-box', 'inline-grid': 'block', 'inline-list-item': 'list-item', initial: 'block' };
+    var PSEUDO_ELEMENT = /::|:(before|after|first-line|first-letter)\b/i;
+    function blockifiedTwin(sels, decls) {
+        var disp = null;
+        for (var i = 0; i < decls.length; i++) if (decls[i].p === 'display') disp = decls[i];
+        if (!disp) return null;
+        var twin = [];
+        for (var k = 0; k < sels.length; k++) if (!PSEUDO_ELEMENT.test(sels[k])) twin.push(sels[k] + '[data-br-bf]');
+        if (!twin.length) return null;
+        var lv = trim(disp.v).toLowerCase();
+        return { t: 'q', sel: twin.join(','), decls: [{ p: 'display', v: BLOCKIFY.hasOwnProperty(lv) ? BLOCKIFY[lv] : disp.v, imp: disp.imp }] };
+    }
+
     function flexContainerInfo(decls, ctx) {
-        var info = { flex: false, wrap: false, column: false, rowGap: null, colGap: null, justify: null };
+        var info = { flex: false, wrap: false, column: false, aligned: false, rowGap: null, colGap: null, justify: null };
         for (var i = 0; i < decls.length; i++) {
             var p = decls[i].p, v = resolveVars(decls[i].v, null, ctx);
             if (v === null) continue;
             var lv = trim(v).toLowerCase();
+            if (alignsColumnItems(p, lv)) info.aligned = true;
             if (p === 'display' && /^(inline-)?flex$/.test(lv)) info.flex = true;
             else if ((p === 'flex-wrap' || p === 'flex-flow') && /wrap/.test(lv) && !/nowrap/.test(lv)) info.wrap = true;
             else if ((p === 'flex-direction' || p === 'flex-flow') && /column/.test(lv)) info.column = true;
@@ -4439,7 +4472,11 @@ var CSSFix = (function () {
                 ctx.curSels = prevSels;
                 ctx.condRules = prevCond;
                 if (!decls.length && !(condRules && condRules.length)) continue;
-                if (decls.length) out.push({ t: 'q', sel: sels.join(','), decls: decls });
+                if (decls.length) {
+                    out.push({ t: 'q', sel: sels.join(','), decls: decls });
+                    var twin = keyframe ? null : blockifiedTwin(sels, decls);   // (flex items are blocks, see BLOCKIFY)
+                    if (twin) out.push(twin);
+                }
                 if (condRules) for (var cj = 0; cj < condRules.length; cj++) if (condRules[cj]) out.push(condRules[cj]);
                 if (!keyframe) {
                     // margin-trim: the margins of the first / last child at the container's edges become zero
@@ -4456,6 +4493,8 @@ var CSSFix = (function () {
                     }
                     var fi = flexContainerInfo(r.decls, ctx);
                     if (rowWrap) { fi.flex = true; fi.wrap = true; fi.column = false; }
+                    // (the flex containers, whose children the shim marks as items: fx 2 for a column that stays a block)
+                    if (fi.flex && !fi.wrap && g_manifest !== false) manifestAdd('mk', { h: manifestHash('mk|fx|' + sels.join(',')), s: sels.join(','), fx: fi.column && !fi.aligned ? 2 : 1 });
                     if (fi.flex) {
                         var childSel = [], gapSel = [], gs;
                         for (gs = 0; gs < sels.length; gs++) { childSel.push(sels[gs] + ' > *'); gapSel.push(sels[gs] + ' > * + *'); }

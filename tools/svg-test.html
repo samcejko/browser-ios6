@@ -11,6 +11,8 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 .wfull { width: 100%; }
 .row { display: flex; align-items: center; }
 .fit { width: fit-content; }
+.col { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.w112 { width: 112px; } .hauto { height: auto; }
 </style>
 <script src="../Resources/shims.js"></script>
 <script src="../Resources/shims-extra.js"></script>
@@ -39,6 +41,9 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 <!-- both given: kept; a text beside: the width cannot be told, left as it is -->
 <div class="box" style="height:300px"><svg id="s14" viewBox="0 0 100 20" style="width:100%;height:100%"><rect width="100" height="20" fill="#08c"/></svg></div>
 <div class="box"><a href="#" id="a15"><svg id="s15" class="h20" viewBox="0 0 100 20"><rect width="100" height="20" fill="#08c"/></svg> Brand</a></div>
+<!-- 100% attributes under a width and height: auto from the page's rules, in a column (react.dev's logo): the proportions -->
+<div class="box col"><div><svg id="s16" class="w112 hauto" width="100%" height="100%" viewBox="-10.5 -9.45 21 18.9"><circle r="2" fill="#08c"/></svg><h2 style="margin:0">Logo</h2></div></div>
+<div class="box" style="height:300px"><svg id="s17" width="100%" height="100%" viewBox="0 0 100 20"><rect width="100" height="20" fill="#08c"/></svg></div>
 <script>
 var results = [], pass = 0, total = 0;
 var show = function (name, ok, detail) {
@@ -69,6 +74,8 @@ window.addEventListener('load', function () {
     s = size('s14'); show('100% both ways stays', near(s.w, 600) && near(s.h, 300), s.w + 'x' + s.h);
     s = size('s15'); show('a text beside: the width left alone', !document.getElementById('s15').style.width, s.w + 'x' + s.h);
     show('the probe leaves no style attribute behind', !document.getElementById('a15').hasAttribute('style'));
+    s = size('s16'); show('100% attributes under height: auto in a column', near(s.w, 112) && near(s.h, 101), s.w + 'x' + s.h);
+    s = size('s17'); show('100% attributes in a box with a height stay', near(s.w, 600) && near(s.h, 300), s.w + 'x' + s.h);
     document.getElementById('summary').textContent = pass + ' / ' + total;
     document.title = 'svg ' + pass + '/' + total;
     window.__svgResults = results;

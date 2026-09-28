@@ -2406,10 +2406,24 @@
         if (!hadStyle && !p.style.length) p.removeAttribute('style');
         return { w: textBeside ? true : r.width > 1, h: r.height >= 0.5 };
     };
+    // Is the box around a drawing with a percentage height as high as its content? Then current browsers take the
+    // percentage for auto, the old engine a share of the screen (or of a box that grows with it): the box shrinks by
+    // (most of) the drawing's height when the drawing is made 0 px high for a moment.
+    var pctOfContent = function (el, p, h) {
+        var had = el.hasAttribute('style'), before = p.offsetHeight;
+        el.style.setProperty('height', '0px', 'important');
+        var after = p.offsetHeight;
+        el.style.removeProperty('height');
+        if (!had && !el.style.length) el.removeAttribute('style');
+        return before - after > h / 2;
+    };
     var fixSvgSize = function (el) {
         if (el.__brSvgFixed) return;
         var wOwn = el.getAttribute('width') !== null || !!el.style.width, hOwn = el.getAttribute('height') !== null || !!el.style.height;
-        if (wOwn && hOwn) return;
+        // (height="100%" in a box of no definite height is the viewBox proportions in current browsers, and so is a
+        // height: auto of the page's rules over it: react.dev's logo, width 112 px, was 42 000 px high here)
+        var hPct = /%\s*$/.test(el.getAttribute('height') || '') && !el.style.height;
+        if (wOwn && hOwn && !hPct) return;
         var p = el.parentNode;
         if (!p || p.nodeType !== 1 || p.namespaceURI === SVG_NS || p === document.body || p === document.documentElement) return;
         var vb = (el.getAttribute('viewBox') || '').split(/[\s,]+/), vw = parseFloat(vb[2]), vh = parseFloat(vb[3]);
@@ -2419,8 +2433,11 @@
         var seen = Math.round(r.width) + 'x' + Math.round(r.height), setH = 0, setW = 0;
         if (el.__brSvgSeen === seen) return;
         el.__brSvgSeen = seen;
-        if (!hOwn && r.width >= 1 && r.height > Math.max(2000, r.width / ratio * 10)) setH = r.width / ratio;   // (absurd: never meant)
+        var pctFree = hPct && el.getAttribute('preserveAspectRatio') !== 'none';
+        if ((!hOwn || pctFree) && r.width >= 1 && r.height > Math.max(2000, r.width / ratio * 10)) setH = r.width / ratio;   // (absurd: never meant)
+        else if (pctFree && r.width >= 2 && pctOfContent(el, p, r.height)) setH = r.width / ratio;
         else {
+            if (wOwn && hOwn) return;
             var pos = getComputedStyle(el).position;
             if (pos === 'absolute' || pos === 'fixed') return;
             var given = svgGiven(el, p);
@@ -2636,6 +2653,107 @@
     // position: relative from a rule ahead of the page's styles (any position of the page's own wins over it), unless
     // that would move something: offsets it sets, or absolutely positioned boxes inside it that it would become the
     // containing block of (a flex item is not one). Looked at again when the width changes (other media rules).
+    // Flex items are blocks (see BLOCKIFY in cssfix.js): the children of flex containers (found with the selectors of
+    // the page's flex rules from the manifest) get data-br-bf, valued with the block-level form of the display they
+    // have when marked (b block, t table, x box, l list-item) for the rules here, which stand ahead of the page's
+    // styles: wherever a rule of the page sets a display its twin decides. A display in the style attribute is changed
+    // there. Children hidden when looked at are looked at again; a container that is no longer flex lets go of its
+    // children. Line-clamped boxes (display: -webkit-box of the page's own) keep their inline children.
+    var bfRule = null, bfBoxes = [], fxPlan = null, fxKey = null;
+    var BF_OF = { inline: 'b', 'inline-block': 'b', 'run-in': 'b', compact: 'b', 'inline-table': 't', '-webkit-inline-box': 'x', 'inline-list-item': 'l' };
+    var BF_STYLE = { inline: 'block', 'inline-block': 'block', 'inline-table': 'table', '-webkit-inline-box': '-webkit-box' };
+    var BF_SKIP = { BR: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1, LINK: 1, META: 1 };
+    var flexPlan = function () {
+        var rules = window.__brFlexRules;
+        if (!rules) return null;
+        if (fxKey !== rules.key) {
+            var build = function (list) {
+                var plan = [], i, k;
+                for (i = 0; i < list.length; i += 50) {
+                    var chunk = list.slice(i, i + 50), joined = chunk.join(',');
+                    try { document.querySelector(joined); plan.push(joined); }
+                    catch (e) { for (k = 0; k < chunk.length; k++) { try { document.querySelector(chunk[k]); plan.push(chunk[k]); } catch (e2) {} } }
+                }
+                return plan;
+            };
+            fxPlan = { box: build(rules.box), col: build(rules.col) };
+            fxKey = rules.key;
+        }
+        return fxPlan;
+    };
+    var isFlexBox = function (box, column) {
+        if (!box.parentNode) return false;
+        var cs = getComputedStyle(box), d = cs.display;
+        if (cs.webkitLineClamp && cs.webkitLineClamp !== 'none') return false;
+        if (column) return d === 'block' && cs.webkitBoxOrient === 'vertical';
+        return d === '-webkit-box' || d === '-webkit-inline-box';
+    };
+    var markItems = function (box, width) {
+        var n = 0, hidden = false;
+        for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
+            n++;
+            if (BF_SKIP[c.tagName] || c.__brBfBox === box) continue;
+            if (c.__brContents) { markItems(c, width); c.__brBfBox = box; continue; }   // (display: contents: its children are the items)
+            var d = getComputedStyle(c).display;
+            if (d === 'none') { hidden = true; continue; }   // (looked at again when it shows: its own display is not known)
+            if (BF_STYLE[c.style.display]) { c.__brBfStyle = c.style.display; c.style.display = BF_STYLE[c.style.display]; }
+            // (one marked already, moved here from another box, keeps its value: its display now is the block-level one)
+            if (!c.hasAttribute('data-br-bf')) c.setAttribute('data-br-bf', BF_OF[d] || '');
+            c.__brBfBox = box;
+        }
+        box.__brFxN = n;
+        box.__brFxW = width;
+        box.__brFxHidden = hidden;
+    };
+    var unmarkItems = function (box) {
+        for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
+            if (c.__brBfBox !== box) continue;
+            if (c.__brContents) unmarkItems(c);
+            c.removeAttribute('data-br-bf');
+            if (c.__brBfStyle) { c.style.display = c.__brBfStyle; c.__brBfStyle = null; }
+            c.__brBfBox = null;
+        }
+        box.__brFxN = box.__brFxW = box.__brFx = undefined;
+    };
+    var markFlexItems = function () {
+        var plan = flexPlan();
+        if (!plan) return;
+        if (!bfRule) {
+            bfRule = document.createElement('style');
+            bfRule.__brOwn = true;
+            bfRule.textContent = '[data-br-bf=b]{display:block}[data-br-bf=t]{display:table}[data-br-bf=x]{display:-webkit-box}[data-br-bf=l]{display:list-item}';
+            var head = document.head || document.documentElement;
+            head.insertBefore(bfRule, head.firstChild);
+        }
+        var width = window.innerWidth, kept = [], i, k, list, box;
+        // (containers marked before: still flex boxes? a width change can change that through media rules)
+        for (i = 0; i < bfBoxes.length; i++) {
+            box = bfBoxes[i];
+            if (box.__brFxW === width && box.parentNode) { kept.push(box); continue; }
+            if (isFlexBox(box, box.__brFx === 2)) { markItems(box, width); kept.push(box); }
+            else unmarkItems(box);
+        }
+        bfBoxes = kept;
+        for (var kind = 1; kind <= 2; kind++) {
+            var sels = kind === 1 ? plan.box : plan.col;
+            for (k = 0; k < sels.length; k++) {
+                try { list = document.querySelectorAll(sels[k]); } catch (e) { continue; }
+                for (i = 0; i < list.length; i++) {
+                    box = list[i];
+                    if (box.__brFx) {
+                        // (known: only its new children, when it has some, and the hidden ones)
+                        if (box.__brFxN !== box.childElementCount || box.__brFxHidden) markItems(box, box.__brFxW);
+                        continue;
+                    }
+                    if (!isFlexBox(box, kind === 2)) continue;
+                    box.__brFx = kind;
+                    markItems(box, width);
+                    bfBoxes.push(box);
+                }
+            }
+        }
+    };
+    onMarkers(function () { markFlexItems(); });
     var zRule = null, zWidth = 0;
     var positionsInside = function (el) {
         var stack = [], seen = 0, c, n, pos;
@@ -3616,9 +3734,15 @@
         // (only when the network layer sends them: a manifest without the kind, a test's, means every element is scanned)
         var mkKnown = false;
         var noteMarkerRules = function (m) {
-            var list = [], ns = [], mk = m.mk || [];
-            // (entries with ns: items that must not shrink, for the shrinking of rows too wide for their room)
-            for (var i = 0; i < mk.length; i++) if (mk[i] && mk[i].s) (mk[i].ns ? ns : list).push(mk[i].s);
+            var list = [], ns = [], mk = m.mk || [], fxBox = [], fxCol = [];
+            // (entries with ns: items that must not shrink, for the shrinking of rows too wide for their room; with fx:
+            // flex containers, 2 for a column that stays a block, whose children are marked as items, see markFlexItems)
+            for (var i = 0; i < mk.length; i++) {
+                if (!mk[i] || !mk[i].s) continue;
+                if (mk[i].fx) (mk[i].fx === 2 ? fxCol : fxBox).push(mk[i].s);
+                else (mk[i].ns ? ns : list).push(mk[i].s);
+            }
+            window.__brFlexRules = { box: fxBox, col: fxCol, key: fxBox.length + '|' + fxCol.length + '|' + (fxBox.length ? fxBox[fxBox.length - 1] : '') };
             // (rows shrunk before the list came are shrunk again)
             var nsChanged = !window.__brNoShrink || window.__brNoShrink.length !== ns.length;
             window.__brNoShrink = ns;
