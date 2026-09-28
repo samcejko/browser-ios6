@@ -146,7 +146,10 @@ var cases = [
   ['comments strings', '.a{content:"/* not a comment */";/* real */color:red}', '.a{content:"/* not a comment */";color:red}'],
   ['env', '.a{padding-top:env(safe-area-inset-top,20px);padding-bottom:env(safe-area-inset-bottom)}', '.a{padding-top:20px;padding-bottom:0px}'],
   // widths shrink as a table; a width in a rule with its own display, min/max sizes and stretch are measured by the shim
-  ['sizing keywords', '.a{width:fit-content;height:max-content}.b{display:flex;width:min-content}.c{inline-size:min-content}', '.a{display:table;width:auto;width:-webkit-fit-content;height:auto}\n.b{display:-webkit-box;width:auto;width:min-content;counter-reset:br-dv-5d7tb1 1}\n.c{display:table;width:1px;width:-webkit-min-content}\n/*br-manifest:{"has":[],"cq":[],"dv":[{"h":"5d7tb1","p":"width","v":"min-content","s":[".b"],"sp":[100]}]}*/'],
+  // (the shrink-to-fit table goes to the top: any other rule's display wins over it)
+  ['sizing keywords', '.a{width:fit-content;height:max-content}.b{display:flex;width:min-content}.c{inline-size:min-content}', '.a{display:table;width:auto}\n.c{display:table;width:1px}\n.a{width:-webkit-fit-content;height:auto}\n.b{display:-webkit-box;width:auto;width:min-content;counter-reset:br-dv-5d7tb1 1}\n.c{width:-webkit-min-content}\n/*br-manifest:{"has":[],"cq":[],"dv":[{"h":"5d7tb1","p":"width","v":"min-content","s":[".b"],"sp":[100]}]}*/'],
+  ['sizing keywords of utility classes', '.hidden{display:none}.w-max{width:max-content}@media (min-width:40rem){.md\\:w-fit{width:fit-content}}',
+   '.w-max{display:table;width:auto}\n@media (min-width:40em){.md\\:w-fit{display:table;width:auto}}\n.hidden{display:none}\n.w-max{width:-webkit-max-content}\n@media (min-width:40em){.md\\:w-fit{width:-webkit-fit-content}}'],
   ['unset', '.a{color:unset;margin:unset}', '.a{color:inherit;margin:initial}'],
   ['individual transforms', '.a{translate:10px 20px;rotate:45deg}', '.a{-webkit-transform:translate(10px, 20px) rotate(45deg);transform:translate(10px, 20px) rotate(45deg)}'],
   // (the grid rules also go to the manifest, "gd", for the page shim's grid layout; the floats are its stand-in)

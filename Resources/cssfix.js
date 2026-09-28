@@ -3104,10 +3104,14 @@ var CSSFix = (function () {
                 }
                 case 'width': case 'inline-size':
                     // the engine has no intrinsic sizing keywords: a table shrinks to fit its content (and never
-                    // below the min-content width, which "width: 1px" then asks for)
+                    // below the min-content width, which "width: 1px" then asks for). In a stylesheet that goes into a
+                    // rule of its own at the top (see fixCSS): the display of any other rule wins over it, as utility
+                    // CSS needs (Tailwind's .w-max comes after .flex and .hidden: denik.cz's card strip became a
+                    // table with its cards stacked).
                     if (!hasDisplay && !keyframe && (lv === '-webkit-fit-content' || lv === '-webkit-max-content' || lv === '-webkit-min-content')) {
-                        push(out, 'display', 'table', imp);
-                        push(out, 'width', lv === '-webkit-min-content' ? '1px' : 'auto', imp);
+                        var fitDecls = [{ p: 'display', v: 'table', imp: false }, { p: 'width', v: lv === '-webkit-min-content' ? '1px' : 'auto', imp: imp }];
+                        if (ctx.headRules && ctx.curSels) ctx.tableFit = fitDecls;
+                        else { push(out, 'display', 'table', imp); push(out, 'width', fitDecls[1].v, imp); }
                     }
                     push(out, 'width', v, imp);
                     continue;
@@ -4304,9 +4308,18 @@ var CSSFix = (function () {
                 ctx.cvUses = ctx.rt && !keyframe ? [] : null;
                 ctx.vpDecls = keyframe || ctx.vpPass ? null : [];
                 ctx.rowWrapRule = false;
+                ctx.tableFit = null;
                 var decls = fixDeclarations(r.decls, ctx, keyframe);
                 var rowWrap = ctx.rowWrapRule;   // (a remembered column flex container turned into a wrapping row)
                 ctx.rowWrapRule = false;
+                if (ctx.tableFit) {
+                    // (the shrink-to-fit table at the top of the stylesheet, inside the same media queries)
+                    var head = { t: 'q', sel: sels.join(','), decls: ctx.tableFit }, hm = ctx.mediaStack || [], hmq = hm.length ? hm[0] : null;
+                    for (var hi = 1; hi < hm.length && hmq; hi++) hmq = joinMedia(hmq, hm[hi]);
+                    if (hm.length) head = hmq ? { t: 'at', name: 'media', prelude: hmq, rules: [head], decls: null, raw: null } : null;
+                    if (head) ctx.headRules.push(head);
+                    ctx.tableFit = null;
+                }
                 if (ctx.cvDefs && (ctx.cvDefs.length || ctx.cvUses.length)) registerVarRule(ctx, sels, ctx.cvDefs, ctx.cvUses);
                 ctx.cvDefs = prevDefs;
                 ctx.cvUses = prevUses;
@@ -4573,7 +4586,12 @@ var CSSFix = (function () {
         rules = flattenNesting(rules);
         collectVars(rules, ctx, false);
         prepareRuntimeVars(ctx);
-        return serializeRules(transformRules(rules, ctx, false));
+        // (rules for the top of the stylesheet: see the width case of fixDeclarations)
+        var prevHead = ctx.headRules;
+        ctx.headRules = [];
+        var body = transformRules(rules, ctx, false), head = ctx.headRules;
+        ctx.headRules = prevHead;
+        return serializeRules(head.length ? head.concat(body) : body);
     }
 
     function fixInlineStyle(text, ctx) {
