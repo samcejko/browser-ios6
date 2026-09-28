@@ -13,6 +13,9 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 .nav li { white-space: nowrap; padding: 0 10px; }
 .cta { margin-left: 16px; width: 100%; display: flex; flex-direction: row; justify-content: flex-end; align-items: center; }
 .cta a { white-space: nowrap; padding: 0 6px; background: #ccd; }
+/* entries whose link clips its text (apple.com's menu): they cannot get narrower than the text */
+.bar3 { width: 200px; display: flex; background: #eee; }
+.bar3 a { display: block; overflow: hidden; white-space: nowrap; padding: 0 4px; }
 /* two items that can both give up space */
 .bar2 { width: 500px; display: flex; background: #eee; }
 .half { width: 400px; background: #dde; }
@@ -25,6 +28,7 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 <div id="summary"></div>
 <div id="out"></div>
 <div class="bar" id="bar"><nav class="nav" id="nav"><ul><li>Platform</li><li>Solutions</li><li>Resources</li><li>Open Source</li><li>Enterprise</li><li>Pricing</li></ul></nav><div class="cta" id="cta"><a>Search</a><a>Sign in</a><a>Sign up</a></div></div>
+<div class="bar3" id="bar3"><div><a>Accessories</a></div><div><a>Entertainment</a></div><div><a>Support</a></div></div>
 <div class="bar2" id="bar2"><div class="half" id="h1">first half with some words</div><div class="half" id="h2">second half with some words</div></div>
 <script>
 var results = [], pass = 0, total = 0;
@@ -41,6 +45,9 @@ window.addEventListener('load', function () {
     var bar = box('bar'), nav = box('nav'), cta = box('cta');
     show('the menu keeps its width', nav.w > 300, nav.w + ' px');
     show('the buttons take what is left', cta.r <= bar.r + 1 && Math.abs(cta.l - (nav.r + 16)) <= 2, 'buttons ' + cta.l + '..' + cta.r + ', bar ' + bar.l + '..' + bar.r + ', menu to ' + nav.r);
+    var links = document.querySelectorAll('#bar3 a'), clipped = [];
+    for (var k = 0; k < links.length; k++) if (links[k].scrollWidth > links[k].clientWidth + 1) clipped.push(links[k].textContent + ' ' + links[k].clientWidth + '/' + links[k].scrollWidth);
+    show('entries that clip their text keep its width', !clipped.length, clipped.join(', '));
     var b2 = box('bar2'), a = box('h1'), b = box('h2');
     show('two items share the overflow', b.r <= b2.r + 1 && Math.abs(a.w - b.w) <= 2, a.w + ' + ' + b.w + ' in ' + b2.w);
     document.getElementById('summary').textContent = pass + ' / ' + total;

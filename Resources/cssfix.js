@@ -1655,7 +1655,9 @@ var CSSFix = (function () {
     // tailwind 4's -translate-x-1/2 is calc(calc(1/2 * 100%) * -1), which the old engine keeps as a calc it cannot
     // use inside translate(), and -50% is what it means.
     var MATH_CONSTANTS = { e: Math.E, pi: Math.PI, infinity: Infinity, nan: NaN };
-    function unitValue(num, unit) {
+    // (keepFont: em and rem stay what they are, for calc(): calc(1 * 1em) in a rule with font-size: 44px is 44 px, not
+    // the 16 px the default font size gives; min(), max() and clamp() compare them with pixels at 16 px each)
+    function unitValue(num, unit, keepFont) {
         var n = parseFloat(num);
         if (isNaN(n)) return null;
         switch (unit) {
@@ -1666,7 +1668,8 @@ var CSSFix = (function () {
             case 'vh': return { n: n * g_vpH / 100, u: 'px' };
             case 'vmin': return { n: n * Math.min(g_vpW, g_vpH) / 100, u: 'px' };
             case 'vmax': return { n: n * Math.max(g_vpW, g_vpH) / 100, u: 'px' };
-            case 'rem': case 'em': case 'ic': case 'ric': return { n: n * 16, u: 'px' };
+            case 'rem': case 'em': return keepFont ? { n: n, u: unit } : { n: n * 16, u: 'px' };
+            case 'ic': case 'ric': return { n: n * 16, u: 'px' };
             case 'lh': case 'rlh': return { n: n * 16 * 1.2, u: 'px' };
             case 'cap': case 'rcap': return { n: n * 16 * 0.7, u: 'px' };
             case 'rex': case 'rch': return { n: n * 8, u: 'px' };
@@ -1685,7 +1688,7 @@ var CSSFix = (function () {
         }
         return null;
     }
-    function evalExpr(expr) {
+    function evalExpr(expr, keepFont) {
         var s = trim(expr).toLowerCase(), pos = 0, failed = false;
         function peek() { return s.charAt(pos); }
         function skip() { while (pos < s.length && /\s/.test(s.charAt(pos))) pos++; }
@@ -1695,7 +1698,7 @@ var CSSFix = (function () {
             if (c === '(') { pos++; var v = sum(); skip(); if (peek() !== ')') { failed = true; return null; } pos++; return v; }
             if (c === '-' || c === '+') { pos++; var inner = atom(); if (!inner) return null; return { n: c === '-' ? -inner.n : inner.n, u: inner.u }; }
             var m = /^(\d*\.?\d+(?:e[-+]?\d+)?)([a-z%]*)/.exec(s.slice(pos));
-            if (m) { pos += m[0].length; var uv = unitValue(m[1], m[2]); if (!uv) failed = true; return uv; }
+            if (m) { pos += m[0].length; var uv = unitValue(m[1], m[2], keepFont); if (!uv) failed = true; return uv; }
             var id = /^[a-z][a-z0-9-]*/.exec(s.slice(pos));
             if (id && MATH_CONSTANTS.hasOwnProperty(id[0])) { pos += id[0].length; return { n: MATH_CONSTANTS[id[0]], u: '' }; }
             failed = true;
@@ -1828,7 +1831,7 @@ var CSSFix = (function () {
     function applyFunction(name, inner) {
         switch (name) {
             case 'calc': {
-                var calcEval = evalExpr(inner);
+                var calcEval = evalExpr(inner, g_mathDepth === 0);
                 if (calcEval) return fmtValue(calcEval);
                 // constants and evaluable pieces are substituted; the rest stays a calc() the old engine understands
                 var calcInner = inner.replace(/(^|[^\w.-])(e|pi)(?![\w.-])/gi, function (m, pre, id) { return pre + Math.round(MATH_CONSTANTS[id.toLowerCase()] * 100000) / 100000; });
@@ -1974,6 +1977,11 @@ var CSSFix = (function () {
         return null;
     }
 
+    // (how deep in math functions the one being rewritten is: a calc() inside min(), max() or clamp() gives pixels, so
+    // that they can be compared; one on its own keeps em and rem)
+    var MATH_FNS = { calc: 1, min: 1, max: 1, clamp: 1, round: 1, mod: 1, rem: 1, abs: 1, sign: 1, pow: 1, sqrt: 1, hypot: 1, sin: 1, cos: 1,
+        tan: 1, asin: 1, acos: 1, atan: 1, atan2: 1, exp: 1, log: 1 };
+    var g_mathDepth = 0;
     function transformFunctions(s) {
         if (s.indexOf('(') < 0 || !INTERESTING_FN.test(s)) return s;
         var out = [], i = 0, n = s.length, start = 0;
@@ -1988,7 +1996,9 @@ var CSSFix = (function () {
             var close = matchParen(s, i);
             var rawInner = s.slice(i + 1, close);
             if (name === 'url' || name === 'attr' || name === 'format' || name === 'local' || name === 'var') { i = close + 1; continue; }
-            var inner = transformFunctions(rawInner);
+            var math = MATH_FNS.hasOwnProperty(name), inner;
+            if (math) g_mathDepth++;
+            try { inner = transformFunctions(rawInner); } finally { if (math) g_mathDepth--; }
             var replaced = name ? applyFunction(name, inner) : null;
             if (replaced !== null && replaced !== undefined) {
                 out.push(s.slice(start, k), replaced);

@@ -2322,15 +2322,43 @@
     // does (marked br-contents, see cssfix.js): in a row that spreads its items (justify-content: space-between and the
     // like) the box takes the room left over, so that its children are spread over it with the others. (apple.com's menu
     // sits three levels of display: contents deep in a spread row: its entries were squeezed into 480 px of 950.)
+    // The outermost such box gets the width its children and the gaps between them take, the gap being the one all the
+    // items of the row get when they are spread as one list (space-between); the boxes inside it fill it.
+    var isContents = function (el) {
+        if (!el || el.nodeType !== 1) return false;
+        if (el.__brContents) return true;
+        var cr = getComputedStyle(el).counterReset || '';
+        return cr.indexOf('br-contents') >= 0 || (cr.indexOf('br-dinherit') >= 0 && isContents(el.parentNode));
+    };
+    var rowLeaves = function (box, out) {
+        for (var c = box.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType !== 1) continue;
+            var cs = getComputedStyle(c);
+            if (cs.display === 'none' || cs.position === 'absolute' || cs.position === 'fixed') continue;
+            if (isContents(c)) rowLeaves(c, out);
+            else out.push((c.offsetWidth || c.getBoundingClientRect().width) + (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0));
+        }
+        return out;
+    };
+    var setBoxFlex = function (el, want) {
+        if ((el.style.getPropertyValue('-webkit-box-flex') || '') === want) return;
+        if (want) el.style.setProperty('-webkit-box-flex', want); else el.style.removeProperty('-webkit-box-flex');
+    };
     var fixContents = function (el) {
         var p = el.parentNode;
         if (!p || p.nodeType !== 1) return;
         var pcs = getComputedStyle(p);
         var spread = /^-webkit-(inline-)?box$/.test(pcs.display) && pcs.webkitBoxOrient !== 'vertical' && pcs.webkitBoxOrient !== 'block-axis' && pcs.webkitBoxPack === 'justify';
-        var want = spread ? '1' : '';
-        if ((el.style.getPropertyValue('-webkit-box-flex') || '') !== want) {
-            if (want) el.style.setProperty('-webkit-box-flex', want); else el.style.removeProperty('-webkit-box-flex');
-        }
+        if (!spread) { setBoxFlex(el, ''); if (el.__brContentsW) { el.style.width = ''; el.__brContentsW = false; } return; }
+        if (isContents(p)) { setBoxFlex(el, '1'); return; }   // (inside the outermost one: fills it)
+        var all = rowLeaves(p, []), own = rowLeaves(el, []), sumAll = 0, sumOwn = 0, i;
+        for (i = 0; i < all.length; i++) sumAll += all[i];
+        for (i = 0; i < own.length; i++) sumOwn += own[i];
+        var room = p.clientWidth - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0);
+        var gap = all.length > 1 ? Math.max(0, (room - sumAll) / (all.length - 1)) : 0;
+        setBoxFlex(el, '');
+        el.style.width = Math.floor(sumOwn + Math.max(0, own.length - 1) * gap) + 'px';
+        el.__brContentsW = true;
     };
     // (a box that changed its width since, a rotation: measured again)
     var recheckPercentHeights = function () {
@@ -2657,6 +2685,13 @@
         for (var p = 0; p < noShrinkPlan.length; p++) { try { if (el.webkitMatchesSelector(noShrinkPlan[p])) return true; } catch (e3) {} }
         return false;
     };
+    // how much wider an item would have to be for its content: its own overflow, or that of a child that clips it (a
+    // link with overflow: hidden in a menu entry: the entry seemed to fit at any width and was squeezed to nothing)
+    var overflowOf = function (el) {
+        var over = el.scrollWidth - el.clientWidth;
+        for (var c = el.firstElementChild; c; c = c.nextElementSibling) over = Math.max(over, c.scrollWidth - c.clientWidth);
+        return over;
+    };
     var unshrink = function () {
         for (var i = 0; i < shrunk.length; i++) { shrunk[i].style.maxWidth = shrunk[i].__brShrink || ''; shrunk[i].__brShrink = undefined; }
         shrunk = [];
@@ -2725,8 +2760,8 @@
                         if (share <= 0) break;
                         for (j2 = 0; j2 < active.length; j2 += 2) active[j2].style.maxWidth = Math.max(0, Math.floor(active[j2 + 1] - over * active[j2 + 1] / share)) + 'px';
                         for (j2 = 0; j2 < active.length; j2 += 2) {
-                            var aw = active[j2];
-                            if (aw.scrollWidth > aw.clientWidth + 1) aw.style.maxWidth = (aw.scrollWidth + aw.offsetWidth - aw.clientWidth) + 'px';
+                            var aw = active[j2], ov = overflowOf(aw);
+                            if (ov > 1) aw.style.maxWidth = (aw.offsetWidth + ov) + 'px';
                             else next.push(aw, aw.offsetWidth);
                         }
                         var sum = 0;
@@ -2765,8 +2800,8 @@
                     wrapped++;
                 }
                 for (i = 0; i < applied.length; i++) {
-                    var a = applied[i];
-                    if (a.scrollWidth > a.clientWidth + 1) a.style.maxWidth = (a.scrollWidth + a.offsetWidth - a.clientWidth) + 'px';
+                    var a = applied[i], aov = overflowOf(a);
+                    if (aov > 1) a.style.maxWidth = (a.offsetWidth + aov) + 'px';
                 }
                 if (!applied.length && !wrapped) { shrinkFutile = wide; break; }   // (nothing here narrows it: not looked at again while it stays so)
                 changed = true;
@@ -3443,6 +3478,18 @@
             parts.push('vars:' + baseVars, 'sheets:' + (base.sheets ? base.sheets.length : 0));
             return '&since=' + parts.join(',');
         };
+        // (a script asking for a custom property before the manifest came: fetched now, synchronously, as the network
+        // layer answers at once; apple.com's menu read --r-globalnav-font-size when it started, got nothing, and drew its
+        // labels 0 px high)
+        window.__brManifestNow = function () {
+            if (base || window.__brManifestURL || !window.XMLHttpRequest) return;
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', manifestURL(), false);
+                x.send(null);
+                if (x.status === 200 && x.responseText) receive(x.responseText);
+            } catch (e) {}
+        };
         var load = function () {
             if (fetching || !window.XMLHttpRequest || fetches > 40) return;
             fetching = true;
@@ -3453,27 +3500,31 @@
                 x.onreadystatechange = function () {
                     if (x.readyState !== 4) return;
                     fetching = false;
-                    if (x.status !== 200 || !x.responseText || x.responseText === lastText) return;
-                    var got = null, i, k;
-                    try { got = JSON.parse(x.responseText); } catch (e) { got = null; }
-                    if (!got || got.same) return;
-                    lastText = x.responseText;
-                    if (got.mk && !window.__brManifestURL) mkKnown = true;
-                    // (a full answer: the first one, a test URL, or reset because the network layer forgot the page)
-                    if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
-                    for (i = 0; i < KINDS.length; i++) { k = KINDS[i]; if (got[k] && got[k].length) base[k] = base[k].concat(got[k]); }
-                    if (got.sheets) base.sheets = got.sheets;
-                    if (got.vars) { base.vars = got.vars; baseVars = 0; for (k in got.vars) if (got.vars.hasOwnProperty(k)) baseVars++; }
-                    manifest = { sheets: base.sheets, vars: base.vars };
-                    for (i = 0; i < KINDS.length; i++) manifest[KINDS[i]] = base[KINDS[i]].slice(0);
-                    if (manifest) { notePageVars(manifest); mergeExtra(manifest); noteMarkerRules(manifest); }
-                    try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
-                    try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}
-                    try { if (manifest && window.__brGrid) window.__brGrid.setManifest(manifest); } catch (e9) {}
-                    schedule();
+                    if (x.status !== 200 || !x.responseText) return;
+                    receive(x.responseText);
                 };
                 x.send(null);
             } catch (e) { fetching = false; }
+        };
+        var receive = function (text) {
+            if (text === lastText) return;
+            var got = null, i, k;
+            try { got = JSON.parse(text); } catch (e) { got = null; }
+            if (!got || got.same) return;
+            lastText = text;
+            if (got.mk && !window.__brManifestURL) mkKnown = true;
+            // (a full answer: the first one, a test URL, or reset because the network layer forgot the page)
+            if (!base || got.reset || window.__brManifestURL) base = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
+            for (i = 0; i < KINDS.length; i++) { k = KINDS[i]; if (got[k] && got[k].length) base[k] = base[k].concat(got[k]); }
+            if (got.sheets) base.sheets = got.sheets;
+            if (got.vars) { base.vars = got.vars; baseVars = 0; for (k in got.vars) if (got.vars.hasOwnProperty(k)) baseVars++; }
+            manifest = { sheets: base.sheets, vars: base.vars };
+            for (i = 0; i < KINDS.length; i++) manifest[KINDS[i]] = base[KINDS[i]].slice(0);
+            if (manifest) { notePageVars(manifest); mergeExtra(manifest); noteMarkerRules(manifest); }
+            try { if (manifest && window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e4) {}
+            try { if (manifest && window.__brVars) window.__brVars.setManifest(manifest); } catch (e6) {}
+            try { if (manifest && window.__brGrid) window.__brGrid.setManifest(manifest); } catch (e9) {}
+            schedule();
         };
         var scheduleLoad = function () { if (!fetchTimer) fetchTimer = setTimeout(function () { fetchTimer = null; load(); }, 300); };
         onReady(scheduleLoad);
@@ -6763,7 +6814,10 @@
             wrappedGCS.__brCV = true;
             try { window.getComputedStyle = wrappedGCS; } catch (e) {}
         }
+        var manifestAsked = false;
         var computedVar = function (el, name) {
+            // (asked before the page's manifest came: fetched now, see __brManifestNow)
+            if (!rules.length && !manifestAsked && window.__brManifestNow) { manifestAsked = true; window.__brManifestNow(); }
             if (!rules.length) return initialOf(name);
             if (el.__brCVm && el.__brCVm.g === gen && el.__brCVm.v.hasOwnProperty(name)) return el.__brCVm.v[name];
             return resolveVar(el, name, 0);
