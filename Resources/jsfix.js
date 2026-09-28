@@ -966,9 +966,11 @@
         }
         return out;
     };
-    // \u{...} in a string literal's source
+    // \u{...} in a string literal's source; an escaped backslash is passed over whole, so "\\u{E0020}" (a backslash
+    // and text: the source of a u pattern for new RegExp) stays text (it became a surrogate pair, and GSAP's SplitText
+    // emoji pattern [\u{E0020}-\u{E007E}] a class with its range out of order)
     var unicodeEscapes = function (raw) {
-        return raw.replace(/\\u\{([0-9a-fA-F]+)\}/g, function (m, h) { var cp = parseInt(h, 16); return cp > 0xFFFF ? surrogates(cp) : '\\u' + hex4(cp); })
+        return raw.replace(/\\\\|\\u\{([0-9a-fA-F]+)\}/g, function (m, h) { if (!h) return m; var cp = parseInt(h, 16); return cp > 0xFFFF ? surrogates(cp) : '\\u' + hex4(cp); })
                   .replace(LS_G, '\\u2028').replace(PS_G, '\\u2029');
     };
 

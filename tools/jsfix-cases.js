@@ -48,6 +48,8 @@ var JSFIX_CASES = [
   ['exponent', 'var x = 3; x **= 2; return [2 ** 10, x, (-2) ** 2, 2 ** -1];'],
   ['numeric literals', 'return [0b101, 0o17, 1_000_000, 0xFF_FF];'],
   ['strings with \\u{}', 'return ["\\u{1F600}".length, "\\u{41}"];'],
+  // an escaped backslash before u{...} is text: the source of a u pattern (GSAP SplitText's emoji pattern broke)
+  ['escaped backslash before \\u{} stays text', 'var src = "\\\\u{E0020}", re = new RegExp("[\\\\u{E0020}-\\\\u{E007E}]+|\\\\p{RI}", "u"); return [src.length, src, re.test("\\u{E0041}"), re.test("\\u{1F1E8}"), re.test("a"), "\\\\\\u{41}"];'],
   ['regex s and named groups', 'var m = /(?<year>\\d{4})-(?<mon>\\d\\d)/.exec("on 2024-05!"); return [/a.b/s.test("a\\nb"), m.groups.year, m.groups.mon, m[2]];'],
   ['unicode property escapes', 'return [/\\p{L}+/u.exec("  h\\u00e9llo w")[0], /\\p{Script=Arabic}/u.test("\\u0645\\u0631"), /\\p{sc=Arab}/u.test("abc"), /^\\p{Lu}/u.test("\\u00c1bc"), /[^\\p{L}]/u.test("abc"), /\\P{L}/u.test("1"), /[\\p{Emoji_Presentation}]/u.test("\\ud83d\\ude00"), /[\\u{1F600}-\\u{1F64F}]/u.test("\\ud83d\\ude42"), "a\\ud83d\\ude00b".match(/./gu).length, "e\\u0301".replace(/\\p{M}/gu, ""), /^[\\p{L}\\p{N}_-]+$/u.test("a\\u00e91_x")];'],
   ['for-of over strings, arguments, iterables', 'function f() { var r = []; for (const x of arguments) r.push(x); return r; } var s = ""; for (var ch of "ab") s += ch + "."; function* g() { yield 1; } return [f(1, 2), s];'.replace(' function* g() { yield 1; }', '')],
