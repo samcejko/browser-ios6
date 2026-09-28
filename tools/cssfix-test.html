@@ -260,6 +260,9 @@ cases.push(['display contents', '.c{display:contents}',
   '.c{display:inherit;-webkit-box-orient:inherit;-webkit-box-direction:inherit;-webkit-box-align:inherit;-webkit-box-pack:inherit;margin:0;padding:0;border-width:0;counter-reset:br-contents 1}']);
 cases.push(['html inline display contents', '<html><head></head><body><nav style="display:flex"><div style="display:contents"><a>x</a></div></nav></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><nav style="display:-webkit-box"><div style="display:inherit;-webkit-box-orient:inherit;-webkit-box-direction:inherit;-webkit-box-align:inherit;-webkit-box-pack:inherit;margin:0;padding:0;border-width:0;counter-reset:br-contents 1"><a>x</a></div></nav></body></html>']);
+// media with sound does not play by itself (muted videos do)
+cases.push(['html autoplay only when muted', '<html><head></head><body><video autoplay muted loop src="a.mp4"></video><video autoplay src="b.mp4"></video><audio autoplay="autoplay" src="c.mp3"></audio><div data-autoplay="x"></div></body></html>',
+  '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><video autoplay muted loop src="a.mp4"></video><video src="b.mp4"></video><audio src="c.mp3"></audio><div data-autoplay="x"></div></body></html>']);
 // a device-width page without an initial scale is laid out as wide as the screen in landscape too
 cases.push(['html device width without initial scale', '<html><head><meta name="viewport" content="width=device-width"></head><body></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script><meta name="viewport" content="width=device-width, initial-scale=1"></head><body></body></html>']);

@@ -287,6 +287,10 @@ static NSString *BRQueryEscape(NSString *s)
     self.webView.scalesPageToFit = YES;
     self.webView.dataDetectorTypes = UIDataDetectorTypeNone;
     self.webView.allowsInlineMediaPlayback = YES;             // <video playsinline> stays in the page like in modern browsers
+    // muted videos play by themselves, as in current browsers (loops that stand in for GIFs were black boxes with a play
+    // button); ones with sound wait for a tap: the document rewriter takes autoplay off them and the page shim holds
+    // play() without a recent tap (see "Autoplay" in shims-extra.js)
+    self.webView.mediaPlaybackRequiresUserAction = NO;
     self.webView.keyboardDisplayRequiresUserAction = YES;     // like Safari: pages that autofocus a search box must not cover half the screen with the keyboard
     self.webView.mediaPlaybackAllowsAirPlay = YES;
     self.refreshControl = [[UIRefreshControl alloc] init];

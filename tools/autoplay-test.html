@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>autoplay test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+video { width: 160px; height: 90px; background: #eee; margin-right: 8px; }
+</style>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>Autoplay as in current browsers</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<!-- a muted loop plays by itself; one with sound waits for a tap -->
+<video id="v1" autoplay muted loop playsinline src="https://developer.mozilla.org/shared-assets/videos/flower.mp4"></video>
+<video id="v2" autoplay loop playsinline src="https://developer.mozilla.org/shared-assets/videos/flower.mp4"></video>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+// play() of media with sound without a tap is refused; muted media plays
+var v3 = document.createElement('video'), v4 = document.createElement('video');
+v3.src = v4.src = 'https://developer.mozilla.org/shared-assets/videos/flower.mp4';
+v3.setAttribute('playsinline', ''); v4.setAttribute('playsinline', '');
+v4.muted = true;
+document.body.appendChild(v3); document.body.appendChild(v4);
+var p3 = null, p4 = null;
+setTimeout(function () {
+  try { v3.play().then(function () { p3 = 'resolved'; }, function (e) { p3 = 'rejected ' + (e && e.name); }); } catch (e) { p3 = 'threw ' + e; }
+  try { v4.play().then(function () { p4 = 'resolved'; }, function (e) { p4 = 'rejected ' + (e && e.name); }); } catch (e2) { p4 = 'threw ' + e2; }
+}, 500);
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    var v1 = document.getElementById('v1'), v2 = document.getElementById('v2');
+    show('a muted loop plays by itself', !v1.paused && v1.currentTime > 0, 'paused ' + v1.paused + ', time ' + v1.currentTime.toFixed(2));
+    show('one with sound waits for a tap', v2.paused, 'paused ' + v2.paused + ', autoplay attribute ' + v2.hasAttribute('autoplay'));
+    show('play() with sound and no tap is refused', v3.paused && /NotAllowedError/.test(p3 || ''), p3 + ', paused ' + v3.paused);
+    show('play() of muted media starts', !v4.paused && p4 === 'resolved', p4 + ', paused ' + v4.paused);
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'autoplay ' + pass + '/' + total;
+    window.__autoplayResults = results;
+  }, 8000);
+}, false);
+</script>
+</body>
+</html>

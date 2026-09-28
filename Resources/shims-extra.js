@@ -2162,12 +2162,31 @@
         // the browser does not let the media start (iOS plays only from a tap): the engine then leaves it paused, and
         // players show their play button again (YouTube's autoplay waited for playback forever, a black box without
         // a button, when the promise said it had started).
+        // Autoplay: the app lets media start without a tap (mediaPlaybackRequiresUserAction off) so that muted videos play
+        // by themselves, as in current browsers; media with sound waits for a tap (the activation of current browsers,
+        // 5 s here): its play() is refused with NotAllowedError, and one that starts anyway (autoplay set by a script,
+        // the rewriter takes it off the tags) is paused. The muted attribute is made the muted state first.
+        var lastTap = 0;
+        var tapped = function () { lastTap = Date.now(); };
+        document.addEventListener('touchend', tapped, true);
+        document.addEventListener('click', tapped, true);
+        document.addEventListener('keydown', tapped, true);
+        var mutedByAttr = function (m) { if (!m.__brMuted && m.hasAttribute && m.hasAttribute('muted')) { m.__brMuted = true; m.muted = true; } };
+        var soundWithoutTap = function (m) { return !m.muted && m.volume > 0 && Date.now() - lastTap > 5000; };
+        document.addEventListener('play', function (e) {
+            var m = e.target;
+            if (!m || !m.pause) return;
+            mutedByAttr(m);
+            if (soundWithoutTap(m)) m.pause();
+        }, true);
         var origPlay = MEp.play;
         if (origPlay) {
             try {
                 var probe = document.createElement('audio');
                 if (!(probe.play() && typeof probe.play().then === 'function')) {
                     MEp.play = function () {
+                        mutedByAttr(this);
+                        if (soundWithoutTap(this)) return P ? P.reject(domException('NotAllowedError', "play() failed because the user didn't interact with the document first.")) : undefined;
                         var r;
                         try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; }
                         if (r && r.then) return r;

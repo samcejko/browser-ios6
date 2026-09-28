@@ -4860,7 +4860,13 @@ var CSSFix = (function () {
             fixed = fixed.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
             return prefix + '"' + fixed + '"';
         });
-        // 4. scripts: inline ones transpiled, polyfill bundle injected first thing in <head>
+        // 4. media with sound does not play by itself, as in current browsers: the app lets media start without a tap
+        // (for muted videos, the loops that stand in for GIFs), so autoplay goes from the tags without muted
+        html = html.replace(/<(video|audio)\b([^>]*)>/gi, function (all, tag, attrs) {
+            if (!/\sautoplay\b/i.test(attrs) || /\smuted\b/i.test(attrs)) return all;
+            return '<' + tag + attrs.replace(/\sautoplay(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/i, '') + '>';
+        });
+        // 5. scripts: inline ones transpiled, polyfill bundle injected first thing in <head>
         html = showScripts(html, scripts);
         html = fixScripts(html, opts);
         if (opts && opts.polyfillURL) html = injectPolyfills(html, opts.polyfillURL);
