@@ -11383,6 +11383,14 @@
         };
         window.__brModules = api;
         window.__brImport = api['import'];
+        // (module scripts run here, so the feature pages look for says so: GOV.UK Frontend starts its components only
+        // where 'noModule' in HTMLScriptElement.prototype, "not supported in this browser" otherwise)
+        var HSp = window.HTMLScriptElement && window.HTMLScriptElement.prototype;
+        if (HSp && !('noModule' in HSp)) try {
+            Object.defineProperty(HSp, 'noModule', { configurable: true,
+                get: function () { return this.hasAttribute('nomodule'); },
+                set: function (v) { if (v) this.setAttribute('nomodule', ''); else this.removeAttribute('nomodule'); } });
+        } catch (eNM) {}
 
         // <script type="module"> elements that scripts insert (the engine ignores the type): a src is loaded like the
         // document's; a data: URL or inline text is defined here, plain code without import/export in a function
