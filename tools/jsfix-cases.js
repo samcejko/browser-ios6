@@ -26,6 +26,8 @@ var JSFIX_CASES = [
   ['arrow params with patterns', 'var f = ({ a, b: [c] }, ...d) => a + c + d.length; return f({ a: 1, b: [2] }, 0, 0);'],
   ['spread calls', 'function f() { return [].slice.call(arguments).join(); } var o = { n: 2, m(...x) { return this.n + x.length; } }; var arr = [1, 2]; return [f(...arr, 3), o.m(...arr), Math.max(...[3, 9, 1]), new Date(...[2020, 0, 2]).getDate()];'],
   ['spread arrays and strings', 'var a = [1, 2], s = new Set([3, 3, 4]); return [...a, 0, ...s, ..."ab"];'],
+  // holes read as undefined, as the array's iterator reads them ([...Array(8)].map(...) made no skeleton cards)
+  ['spread and rest of arrays with holes', 'var h = [1, , 3]; var [p, ...q] = [, 2, , 4]; return [[...Array(3)].map(() => 1), [...h].map(x => x === undefined), 1 in [...h], [0, ...Array(2)].length, q.map(x => x === undefined), p];'],
   ['classes', 'class A { constructor(x) { this.x = x; } get dbl() { return this.x * 2; } static make() { return new A(4); } m() { return "A" + this.x; } } var a = A.make(); return [a.x, a.dbl, a.m(), typeof A, Object.keys(a).join(), A.name];'],
   ['class inheritance and super', 'class A { constructor(x) { this.x = x; } m() { return "A" + this.x; } static s() { return "sA"; } } class B extends A { constructor() { super(5); this.y = 1; } m() { return "B" + super.m(); } static s() { return "sB" + super.s(); } } var b = new B(); return [b.m(), B.s(), b instanceof A, b.x + b.y, Object.getPrototypeOf(B) === A];'],
   ['class fields and arrows', 'class C { a = 1; b = () => this.a + 1; static s = 5; static t = this.s + 1; ["k" + 1] = 2; } var c = new C(); return [c.a, c.b(), C.s, C.t, c.k1, Object.keys(c).join()];'],

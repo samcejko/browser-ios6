@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>intl test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>Intl formats (the app's, see shims.js) against a current browser's</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<pre id="dump"></pre>
+<script>
+// Server-rendered pages (React and the like) compare their text with what the page's scripts make of the same data:
+// one character of difference (a space for a no-break space) and the page is thrown away and built again (rohlik.cz).
+// EXPECTED holds a current browser's results; in such a browser the test prints its own (the dump) to put there.
+var EXPECTED = {"czk 29.9":"29,90<U+a0>Kč","czk 1234.5":"1<U+a0>234,50<U+a0>Kč","czk 0 decimals":"1<U+a0>990<U+a0>Kč","eur cs":"12,50<U+a0>€","number cs":"1<U+a0>234<U+a0>567,891","number cs 2 digits":"1<U+a0>234,50","percent cs":"25<U+a0>%","kg cs":"1,5 kg","usd en":"$1,234.50","number en":"1,234,567.891","compact en":"12K","date cs long":"pondělí 28. září","date cs numeric":"28. 9. 2026","time cs":"14:05","date cs medium":"28. 9. 2026","date en medium":"Sep 28, 2026","datetime en":"Sep 28, 2026, 2:05 PM","toLocaleDateString cs":"28. 9. 2026","toLocaleString number cs":"1<U+a0>234,5","relative cs yesterday":"včera","relative cs 3 hours":"před 3 hodinami","plural cs":"one,few,other,many","list cs":"a, b a<U+a0>c"};
+var d = new Date(Date.UTC(2026, 8, 28, 14, 5, 9));
+var cases = function () {
+  var r = {}, I = window.Intl;
+  var t = function (name, fn) { try { r[name] = String(fn()).replace(/[   ]/g, function (c) { return '<U+' + c.charCodeAt(0).toString(16) + '>'; }); } catch (e) { r[name] = 'ERR ' + e.name; } };
+  t('czk 29.9', function () { return new I.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(29.9); });
+  t('czk 1234.5', function () { return new I.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(1234.5); });
+  t('czk 0 decimals', function () { return new I.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK', maximumFractionDigits: 0 }).format(1990); });
+  t('eur cs', function () { return new I.NumberFormat('cs-CZ', { style: 'currency', currency: 'EUR' }).format(12.5); });
+  t('number cs', function () { return new I.NumberFormat('cs-CZ').format(1234567.891); });
+  t('number cs 2 digits', function () { return new I.NumberFormat('cs-CZ', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(1234.5); });
+  t('percent cs', function () { return new I.NumberFormat('cs', { style: 'percent' }).format(0.25); });
+  t('kg cs', function () { return new I.NumberFormat('cs-CZ', { style: 'unit', unit: 'kilogram' }).format(1.5); });
+  t('usd en', function () { return new I.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(1234.5); });
+  t('number en', function () { return new I.NumberFormat('en-US').format(1234567.891); });
+  t('compact en', function () { return new I.NumberFormat('en', { notation: 'compact' }).format(12345); });
+  t('date cs long', function () { return new I.DateTimeFormat('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(d); });
+  t('date cs numeric', function () { return new I.DateTimeFormat('cs-CZ', { timeZone: 'UTC' }).format(d); });
+  t('time cs', function () { return new I.DateTimeFormat('cs-CZ', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(d); });
+  t('date cs medium', function () { return new I.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeZone: 'UTC' }).format(d); });
+  t('date en medium', function () { return new I.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(d); });
+  t('datetime en', function () { return new I.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(d); });
+  t('toLocaleDateString cs', function () { return d.toLocaleDateString('cs-CZ', { timeZone: 'UTC' }); });
+  t('toLocaleString number cs', function () { return (1234.5).toLocaleString('cs-CZ'); });
+  t('relative cs yesterday', function () { return new I.RelativeTimeFormat('cs', { numeric: 'auto' }).format(-1, 'day'); });
+  t('relative cs 3 hours', function () { return new I.RelativeTimeFormat('cs').format(-3, 'hour'); });
+  t('plural cs', function () { var p = new I.PluralRules('cs'); return [1, 2, 5, 1.5].map(function (n) { return p.select(n); }).join(','); });
+  t('list cs', function () { return new I.ListFormat('cs', { type: 'conjunction' }).format(['a', 'b', 'c']); });
+  return r;
+};
+var show = function (name, ok, detail) {
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail.replace(/</g, '&lt;') : '');
+  document.getElementById('out').appendChild(div);
+};
+window.addEventListener('load', function () {
+  var mine = cases(), pass = 0, total = 0, bad = [];
+  if (!EXPECTED) { document.getElementById('dump').textContent = JSON.stringify(mine); document.title = 'intl dump'; return; }
+  for (var k in EXPECTED) {
+    if (!EXPECTED.hasOwnProperty(k)) continue;
+    total++;
+    var ok = mine[k] === EXPECTED[k];
+    if (ok) pass++; else bad.push(k + ': ' + mine[k] + ' | want ' + EXPECTED[k]);
+    show(k, ok, ok ? mine[k] : 'got ' + mine[k] + ' want ' + EXPECTED[k]);
+  }
+  document.getElementById('summary').textContent = pass + ' / ' + total;
+  document.title = 'intl ' + pass + '/' + total;
+  window.__intlResults = { pass: pass, total: total, bad: bad };
+}, false);
+</script>
+</body>
+</html>

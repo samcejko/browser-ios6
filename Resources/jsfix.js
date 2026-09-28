@@ -31,10 +31,18 @@
             if (typeof x.length === 'number') return list;
             throw new TypeError(x + ' is not iterable');
         },
-        // [...x], f(...x): a fresh array from any iterable
+        // [...x], f(...x): a fresh array from any iterable. An array's holes come out as undefined, as its iterator
+        // reads them: [...Array(8)].map(f) makes 8 items (with slice's holes map made none - rohlik.cz's skeleton
+        // cards, and React threw the server's page away as not matching)
         __br_spread: function (x) {
-            if (Object.prototype.toString.call(x) === '[object Array]') return Array.prototype.slice.call(x);
-            var next = __br_iter(x), a = [], s;
+            var a, i, n, s, next;
+            if (Object.prototype.toString.call(x) === '[object Array]') {
+                a = Array.prototype.slice.call(x);
+                for (i = 0, n = a.length; i < n; i++) if (!(i in a)) a[i] = undefined;
+                return a;
+            }
+            next = __br_iter(x);
+            a = [];
             while (!(s = next()).done) a.push(s.value);
             return a;
         },
@@ -52,9 +60,10 @@
                 }
             };
         },
-        // array destructuring: arrays as they are, other iterables read up to n items (all when n < 0)
+        // array destructuring: arrays as they are (with a rest element, holes read as undefined as in a spread), other
+        // iterables read up to n items (all when n < 0)
         __br_arr: function (x, n) {
-            if (Object.prototype.toString.call(x) === '[object Array]') return x;
+            if (Object.prototype.toString.call(x) === '[object Array]') return n < 0 ? __br_spread(x) : x;
             var next = __br_iter(x), a = [], s;
             while ((n < 0 || a.length < n) && !(s = next()).done) a.push(s.value);
             return a;
@@ -689,7 +698,7 @@
             return rt;
         }
     };
-    var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
+    var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter', '__br_spread'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
                          __br_super: ['__br_isNative', '__br_new'], __br_Proxy: ['__br_new'], __br_ctor: ['__br_isNative'] };
 
     // ------------------------------------------------------------------------------------------------ small utilities

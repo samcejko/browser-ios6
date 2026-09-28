@@ -470,7 +470,11 @@
         var supportedOf = function (list) { var a = typeof list === 'string' ? [list] : (list || []), out = []; for (var i = 0; i < a.length; i++) if (typeof a[i] === 'string') out.push(a[i]); return out; };
         var pad2 = function (n) { return (n < 10 ? '0' : '') + n; };
         // ---- numbers
-        var SEP = { cs: [' ', ','], sk: [' ', ','], pl: [' ', ','], de: ['.', ','], fr: [' ', ','], it: ['.', ','], es: ['.', ','], ru: [' ', ','], hu: [' ', ','], nl: ['.', ','], pt: ['.', ','], sv: [' ', ','], da: ['.', ','], fi: [' ', ','], nb: [' ', ','], tr: ['.', ','], uk: [' ', ','], en: [',', '.'] };
+        // (the spaces are no-break ones, as current engines write them, U+202F narrow in French: a server-rendered
+        // page compares its text with the page scripts' own, and a plain space made React throw the whole page away
+        // and build it again, rohlik.cz)
+        var NB = ' ';
+        var SEP = { cs: [NB, ','], sk: [NB, ','], pl: [NB, ','], de: ['.', ','], fr: [' ', ','], it: ['.', ','], es: ['.', ','], ru: [NB, ','], hu: [NB, ','], nl: ['.', ','], pt: ['.', ','], sv: [NB, ','], da: ['.', ','], fi: [NB, ','], nb: [NB, ','], tr: ['.', ','], uk: [NB, ','], en: [',', '.'] };
         var CURRENCY = { CZK: ['Kč', 1], EUR: ['€', 1], USD: ['$', 0], GBP: ['£', 0], PLN: ['zł', 1], HUF: ['Ft', 1], CHF: ['CHF', 0], JPY: ['¥', 0], SEK: ['kr', 1], NOK: ['kr', 1], DKK: ['kr', 1], RUB: ['₽', 1], UAH: ['₴', 1], CNY: ['CN¥', 0], INR: ['₹', 0], BRL: ['R$', 0], CAD: ['CA$', 0], AUD: ['A$', 0] };
         var COMPACT = { cs: ['tis.', 'mil.', 'mld.', 'bil.'], sk: ['tis.', 'mil.', 'mld.', 'bil.'], pl: ['tys.', 'mln', 'mld', 'bln'], de: ['Tsd.', 'Mio.', 'Mrd.', 'Bio.'], en: ['K', 'M', 'B', 'T'] };
         var NumberFormat = function NumberFormat(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; };
@@ -483,10 +487,11 @@
             if (o.notation === 'compact') {
                 var names = COMPACT[lg] || COMPACT.en, abs = Math.abs(scaled), idx = -1;
                 if (abs >= 1e12) idx = 3; else if (abs >= 1e9) idx = 2; else if (abs >= 1e6) idx = 1; else if (abs >= 1e3) idx = 0;
-                if (idx >= 0) { scaled = scaled / Math.pow(1000, idx + 1); unitSuffix = (lg === 'en' ? '' : ' ') + names[idx]; }
+                if (idx >= 0) { scaled = scaled / Math.pow(1000, idx + 1); unitSuffix = (lg === 'en' ? '' : NB) + names[idx]; }
             }
             var minF = o.minimumFractionDigits, maxF = o.maximumFractionDigits;
-            if (maxF === undefined) maxF = style === 'currency' ? (currency === 'JPY' || currency === 'HUF' ? 0 : 2) : style === 'percent' ? 0 : o.notation === 'compact' ? (Math.abs(scaled) < 100 ? 1 : 0) : 3;
+            // (compact numbers keep two significant digits: 1.2K, 12K, 123K)
+            if (maxF === undefined) maxF = style === 'currency' ? (currency === 'JPY' || currency === 'HUF' ? 0 : 2) : style === 'percent' ? 0 : o.notation === 'compact' ? (Math.abs(scaled) < 10 ? 1 : 0) : 3;
             if (minF === undefined) minF = style === 'currency' ? maxF : 0;
             if (minF > maxF) maxF = minF;
             if (o.maximumSignificantDigits) { var sig = Number(scaled.toPrecision(Math.min(21, o.maximumSignificantDigits))); scaled = sig; maxF = Math.max(maxF, 20); minF = 0; }
@@ -504,13 +509,13 @@
             var cur = style === 'currency' && currency ? (o.currencyDisplay === 'code' ? currency : o.currencyDisplay === 'name' ? currency : (CURRENCY[currency] ? CURRENCY[currency][0] : currency)) : null;
             var curAfter = cur ? (lg === 'en' ? 0 : (CURRENCY[currency] && o.currencyDisplay !== 'code' ? CURRENCY[currency][1] : 1)) : 0;
             if (sign) parts.push({ type: sign === '-' ? 'minusSign' : 'plusSign', value: sign });
-            if (cur && !curAfter) parts.push({ type: 'currency', value: cur }, { type: 'literal', value: lg === 'en' ? '' : ' ' });
+            if (cur && !curAfter) parts.push({ type: 'currency', value: cur }, { type: 'literal', value: lg === 'en' ? '' : NB });
             for (var g = 0; g < groups.length; g++) { if (g) parts.push({ type: 'group', value: sep[0] }); parts.push({ type: 'integer', value: groups[g] }); }
             if (frac) parts.push({ type: 'decimal', value: sep[1] }, { type: 'fraction', value: frac });
             if (unitSuffix) parts.push({ type: 'compact', value: unitSuffix });
-            if (style === 'percent') parts.push({ type: 'literal', value: lg === 'en' ? '' : ' ' }, { type: 'percentSign', value: '%' });
+            if (style === 'percent') parts.push({ type: 'literal', value: lg === 'en' ? '' : NB }, { type: 'percentSign', value: '%' });
             if (style === 'unit' && o.unit) parts.push({ type: 'literal', value: ' ' }, { type: 'unit', value: UNIT_SHORT[o.unit] || o.unit });
-            if (cur && curAfter) parts.push({ type: 'literal', value: ' ' }, { type: 'currency', value: cur });
+            if (cur && curAfter) parts.push({ type: 'literal', value: NB }, { type: 'currency', value: cur });
             var out = [];
             for (var i = 0; i < parts.length; i++) if (parts[i].value !== '') out.push(parts[i]);
             return out;
@@ -578,7 +583,7 @@
                         else if (sepD !== '/' && seq[i][0] !== 'year' && data.dayFirst) lit(sepD.charAt(0));
                     }
                 }
-                if (wantTime) lit(o.dateStyle && o.timeStyle ? data.dateTimeSep : ' ');
+                if (wantTime) lit(data.dateTimeSep);   // ("Sep 28, 2026, 2:05 PM", "28. 9. 2026 14:05")
             }
             if (wantTime) {
                 var h12 = o.hour12 !== undefined ? o.hour12 : (o.hourCycle ? o.hourCycle === 'h12' || o.hourCycle === 'h11' : !data.h24);
@@ -644,7 +649,7 @@
         RelativeTimeFormat.supportedLocalesOf = supportedOf;
         Intl.RelativeTimeFormat = RelativeTimeFormat;
         // ---- lists, collation, display names, locales, segmenter
-        var LIST = { cs: [' a ', ' nebo '], sk: [' a ', ' alebo '], de: [' und ', ' oder '], pl: [' i ', ' lub '], fr: [' et ', ' ou '], es: [' y ', ' o '], en: [' and ', ' or '] };
+        var LIST = { cs: [' a ', ' nebo '], sk: [' a ', ' alebo '], de: [' und ', ' oder '], pl: [' i ', ' lub '], fr: [' et ', ' ou '], es: [' y ', ' o '], en: [' and ', ' or '] };
         var ListFormat = function ListFormat(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; };
         ListFormat.prototype.format = function (list) {
             var a = [], i; for (i = 0; i < list.length; i++) a.push(String(list[i]));
