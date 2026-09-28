@@ -2380,6 +2380,13 @@
     // with the other children of the box out of the way (a text beside the drawing leaves the width unknown).
     var SVG_NS = 'http://www.w3.org/2000/svg';
     var restoreStyle = function (node, prop, value, prio) { if (value) node.style.setProperty(prop, value, prio); else node.style.removeProperty(prop); };
+    // (the size the drawing is laid out at, not its bounding rectangle, which a rotation turns: sport.cz's chevrons are
+    // turned by 90 degrees, their growing height was taken for a width and set as one, 27 000 px)
+    var svgBox = function (el) {
+        var cs = getComputedStyle(el), w = parseFloat(cs.width), h = parseFloat(cs.height);
+        if (isNaN(w) || isNaN(h)) { var r = el.getBoundingClientRect(); return { width: r.width, height: r.height }; }
+        return { width: w, height: h };
+    };
     var svgGiven = function (el, p) {
         var others = [], textBeside = false, n, i;
         for (n = p.firstChild; n; n = n.nextSibling) {
@@ -2393,7 +2400,7 @@
             p.style.setProperty(probe[i][0], probe[i][1], 'important');
         }
         for (i = 0; i < others.length; i++) others[i][0].style.setProperty('display', 'none', 'important');
-        var r = el.getBoundingClientRect();
+        var r = svgBox(el);
         for (i = 0; i < others.length; i++) { restoreStyle(others[i][0], 'display', others[i][1], others[i][2]); if (!others[i][3] && !others[i][0].style.length) others[i][0].removeAttribute('style'); }
         for (i = 0; i < old.length; i++) restoreStyle(p, old[i][0], old[i][1], old[i][2]);
         if (!hadStyle && !p.style.length) p.removeAttribute('style');
@@ -2407,7 +2414,7 @@
         if (!p || p.nodeType !== 1 || p.namespaceURI === SVG_NS || p === document.body || p === document.documentElement) return;
         var vb = (el.getAttribute('viewBox') || '').split(/[\s,]+/), vw = parseFloat(vb[2]), vh = parseFloat(vb[3]);
         if (!(vw > 0 && vh > 0)) return;
-        var r = el.getBoundingClientRect(), ratio = vw / vh;
+        var r = svgBox(el), ratio = vw / vh;
         if ((r.width < 1 && r.height < 1) || Math.abs(r.width - r.height * ratio) <= 1) return;
         var seen = Math.round(r.width) + 'x' + Math.round(r.height), setH = 0, setW = 0;
         if (el.__brSvgSeen === seen) return;
@@ -2801,6 +2808,9 @@
     // how much wider an item would have to be for its content: its own overflow, or that of a child that clips it (a
     // link with overflow: hidden in a menu entry: the entry seemed to fit at any width and was squeezed to nothing)
     var overflowOf = function (el) {
+        // (an item that clips or scrolls its own content can get narrower than it: its min-width: auto is 0 - sport.cz's
+        // menu, overflow: hidden, frozen at its content's width stood 200 px past the screen)
+        if (getComputedStyle(el).overflowX !== 'visible') return 0;
         var over = el.scrollWidth - el.clientWidth;
         for (var c = el.firstElementChild; c; c = c.nextElementSibling) over = Math.max(over, c.scrollWidth - c.clientWidth);
         return over;
@@ -2838,8 +2848,10 @@
                 for (var k = 0; k < rows.length; k++) {
                     var row = rows[k], cs = getComputedStyle(row);
                     if ((cs.display !== '-webkit-box' && cs.display !== '-webkit-inline-box') || cs.webkitBoxOrient === 'vertical' || cs.webkitBoxOrient === 'block-axis') continue;
-                    if (inScroller(row)) continue;
+                    // (a row that wraps wraps in a box that scrolls sideways too: sport.cz's menu wraps its entries into a
+                    // strip that shows the first line; unwrapped they widened the page to 26 000 px)
                     if (cs.webkitBoxLines === 'multiple') { wraps.push(row, cs.display, cs.webkitBoxPack); continue; }
+                    var scroller = inScroller(row);
                     var avail = row.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
                     var items = [], total = 0, scaled = 0;
                     for (var c = row.firstChild; c; c = c.nextSibling) {
@@ -2854,6 +2866,9 @@
                     }
                     var over = total - avail;
                     if (over <= 1 || scaled <= 0) continue;
+                    // (in a box that scrolls sideways only a row that nearly fits: strips of news several screens long are
+                    // meant to scroll; sport.cz's menu, a fifth too wide, is meant to shrink)
+                    if (scroller && over > avail / 2) continue;
                     // The overflow is shared in proportion to the widths; an item whose content cannot get that narrow
                     // keeps its narrowest width (min-width: auto) and what it did not give up is shared among the others
                     // again, as flexbox freezes such items (github.com: its menu could not shrink, so the buttons beside

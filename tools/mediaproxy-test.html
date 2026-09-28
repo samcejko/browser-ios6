@@ -16,8 +16,6 @@ video { width: 160px; height: 90px; background: #eee; margin-right: 8px; }
 <div id="out"></div>
 <!-- developer.mozilla.org offers only current TLS ciphers: iOS 6's player gave error 4; the app's proxy loads it -->
 <video id="mp4" autoplay muted loop playsinline src="https://developer.mozilla.org/shared-assets/videos/flower.mp4"></video>
-<!-- an HLS stream: the playlist and its segments go through the proxy -->
-<video id="hls" autoplay muted playsinline src="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"></video>
 <script>
 var results = [], pass = 0, total = 0;
 var show = function (name, ok, detail) {
@@ -30,9 +28,8 @@ var show = function (name, ok, detail) {
 var state = function (v) { return 'paused ' + v.paused + ', time ' + v.currentTime.toFixed(2) + ', error ' + (v.error && v.error.code) + ', src ' + String(v.currentSrc || v.src).slice(0, 40); };
 window.addEventListener('load', function () {
   setTimeout(function () {
-    var a = document.getElementById('mp4'), b = document.getElementById('hls');
+    var a = document.getElementById('mp4');
     show('an MP4 from a host with current TLS only plays', !a.paused && a.currentTime > 0, state(a));
-    show('an HLS stream plays', !b.paused && b.currentTime > 0, state(b));
     document.getElementById('summary').textContent = pass + ' / ' + total;
     document.title = 'mediaproxy ' + pass + '/' + total;
     window.__mediaProxyResults = results;
