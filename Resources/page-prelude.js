@@ -85,6 +85,32 @@
         });
     })();
 
+    // queueMicrotask, before core-js: its Promise then runs its callbacks through it. On iOS core-js does not use a
+    // MutationObserver (an iOS 9 bug) and there is no Promise here, so every callback of a promise waited for a message
+    // posted to the window: 0.2 ms a step, as a task of its own (the page could lay out and paint between the steps
+    // of one chain), and the page's own message listeners got all those messages. The engine delivers mutation
+    // records at the end of each script, as microtasks run; the observer is one of the stand-ins above, let go with
+    // the page.
+    (function () {
+        var MO = window.MutationObserver;
+        if (window.queueMicrotask || !MO || !MO.__brBoxed || !document.createTextNode) return;
+        var queue = [], toggle = false, node = document.createTextNode('');
+        var flush = function () {
+            var q = queue;
+            queue = [];
+            for (var i = 0; i < q.length; i++) {
+                try { q[i](); } catch (e) { setTimeout(function () { throw e; }, 0); }
+            }
+        };
+        new MO(flush).observe(node, { characterData: true });
+        window.queueMicrotask = function queueMicrotask(callback) {
+            if (typeof callback !== 'function') throw new TypeError("Failed to execute 'queueMicrotask' on 'Window': The callback provided as parameter 1 is not a function.");
+            if (gone) { setTimeout(callback, 0); return; }
+            if (!queue.length) node.data = (toggle = !toggle) ? '1' : '0';
+            queue.push(callback);
+        };
+    })();
+
     // matchMedia listeners are such roots too (until the document is destroyed - never, while they keep it): they are
     // removed when the page goes away.
     (function () {

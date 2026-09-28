@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>microtask test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<h1>Microtasks: queueMicrotask and promise callbacks</h1>
+<pre id="out">running</pre>
+<script>
+// On the iPad core-js's Promise runs its callbacks through the queueMicrotask of page-prelude.js (a MutationObserver
+// on a text node): they must run before timers and events, in order, all of them in one go, and one that throws must
+// not stop the others. Chrome passes natively.
+(function () {
+  var res = [], pending = 0;
+  var check = function (name, ok, got) { res.push((ok ? 'OK   ' : 'FAIL ') + name + (ok ? '' : ' -> ' + got)); };
+  var finish = function () {
+    if (--pending > 0) return;
+    var pass = 0;
+    for (var i = 0; i < res.length; i++) if (res[i].indexOf('OK') === 0) pass++;
+    document.getElementById('out').textContent = res.join('\n');
+    document.title = 'microtask ' + pass + '/' + res.length;
+  };
+  // order: sync code, then microtasks (FIFO, nested ones in the same go), then the timer
+  pending++;
+  var log = [];
+  setTimeout(function () {
+    log.push('timeout');
+    check('microtasks before the timer, in order, nested ones too', log.join(',') === 'sync,m1,p1,m2,p2,nested,timeout', log.join(','));
+    finish();
+  }, 0);
+  queueMicrotask(function () { log.push('m1'); });
+  Promise.resolve().then(function () { log.push('p1'); }).then(function () { log.push('p2'); });
+  queueMicrotask(function () { log.push('m2'); queueMicrotask(function () { log.push('nested'); }); });
+  log.push('sync');
+  // one that throws does not stop the rest
+  pending++;
+  var after = false, onerr = window.onerror;
+  window.onerror = function () { return true; };
+  queueMicrotask(function () { throw new Error('microtask test'); });
+  queueMicrotask(function () { after = true; });
+  setTimeout(function () { window.onerror = onerr; check('a throwing microtask does not stop the next', after, after); finish(); }, 20);
+  // a message posted meanwhile comes after all promise steps
+  pending++;
+  var steps = 0, got = null;
+  window.addEventListener('message', function onMsg(e) {
+    if (e.data !== 'microtask-test') return;
+    window.removeEventListener('message', onMsg);
+    got = steps;
+    check('a chain of 50 promise steps finishes before a message', got === 50, got);
+    finish();
+  });
+  window.postMessage('microtask-test', '*');
+  var p = Promise.resolve();
+  for (var i = 0; i < 50; i++) p = p.then(function () { steps++; });
+  // speed: 1000 chained steps
+  pending++;
+  var t0 = Date.now();
+  var chain = function (k) {
+    if (!k) { var ms = Date.now() - t0; check('1000 chained promise steps in ' + ms + ' ms', ms < 1000, ms); finish(); return; }
+    Promise.resolve(k).then(function () { chain(k - 1); });
+  };
+  setTimeout(function () { t0 = Date.now(); chain(1000); }, 50);
+})();
+</script>
+</body>
+</html>
