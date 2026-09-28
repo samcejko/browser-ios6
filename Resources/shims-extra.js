@@ -2320,13 +2320,15 @@
         return out;
     };
     var applyAspectRatios = function () {
+        var t0 = Date.now(), tm = [], media = 0;
         try {
             recheckPercentHeights();
             var all = markerCandidates() || document.getElementsByTagName('*'), found = [], containers = [], marked = [];
+            tm.push(Date.now());
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
-                if (PCT_TAGS[el.tagName]) { fixPercentHeight(el); fixThinPicture(el); }
-                else if (el.tagName === 'svg') fixSvgHeight(el);
+                if (PCT_TAGS[el.tagName]) { var tq = Date.now(); fixPercentHeight(el); fixThinPicture(el); media += Date.now() - tq; }
+                else if (el.tagName === 'svg') { var tv = Date.now(); fixSvgHeight(el); media += Date.now() - tv; }
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 marked.push({ el: el, cr: cr });
@@ -2354,9 +2356,18 @@
             }
             aspectElements = found;
             containerElements = containers;
+            tm.push(Date.now());
             if (window.__brApplyContainerQueries) window.__brApplyContainerQueries(containers);
-            for (var mh = 0; mh < markerHooks.length; mh++) try { markerHooks[mh](marked); } catch (e2) {}
+            tm.push(Date.now());
+            for (var mh = 0; mh < markerHooks.length; mh++) { try { markerHooks[mh](marked); } catch (e2) {} tm.push(Date.now()); }
         } catch (e) {}
+        // (debugging: candidates, the scan (media fixes in it), container queries, each marker hook)
+        if (window.__brNoteSlow && tm.length > 2) {
+            var parts = [];
+            for (var tp = 1; tp < tm.length; tp++) parts.push(tm[tp] - tm[tp - 1]);
+            window.__brNoteSlow('marker scan', Date.now() - t0, 'candidates ' + (tm[0] - t0) + ' of ' + (all ? all.length : 0) + ', scan ' + parts[0] + ' (media ' + media + '), marked ' +
+                                (marked ? marked.length : 0) + ', containers ' + parts[1] + ', hooks ' + parts.slice(2).join(' '));
+        }
     };
     // (the scan reads the style of every element: on a big page that changes all the time it waits five times its cost)
     var aspectCost = 0, aspectEnd = 0;
@@ -3103,15 +3114,16 @@
                 for (k = 0; k < before.length; k++) if (before[k].__brScOn !== scStamp + ':' + e.h) setStateClass(before[k], cls, false);
             }
         };
-        // ---- @container: size conditions evaluated against the marked container elements
-        var lengthPx = function (tok, el) {
+        // ---- @container: size conditions evaluated against the marked container elements (size: the container's, with
+        // its em and the rem read with it)
+        var lengthPx = function (tok, el, size) {
             var m = /^(-?[\d.]+)([a-z%]*)$/i.exec(tok);
             if (!m) return null;
             var n = parseFloat(m[1]), u = m[2].toLowerCase();
             switch (u) {
                 case '': case 'px': return n;
-                case 'em': return n * (parseFloat(getComputedStyle(el).fontSize) || 16);
-                case 'rem': return n * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+                case 'em': return n * (size && size.em || parseFloat(getComputedStyle(el).fontSize) || 16);
+                case 'rem': return n * (size && size.rem || parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
                 case 'vw': return n * window.innerWidth / 100;
                 case 'vh': return n * window.innerHeight / 100;
                 case 'vmin': return n * Math.min(window.innerWidth, window.innerHeight) / 100;
@@ -3147,7 +3159,7 @@
                 var fv = featureValue(base, el, size);
                 if (fv === undefined) return false;
                 if (base === 'orientation') return fv === val;
-                var target = base === 'aspect-ratio' ? ratioValue(val) : lengthPx(val, el);
+                var target = base === 'aspect-ratio' ? ratioValue(val) : lengthPx(val, el, size);
                 if (target === null || isNaN(target)) return false;
                 return minmax ? (minmax[1] === 'min' ? fv >= target : fv <= target) : fv === target;
             }
@@ -3158,7 +3170,7 @@
             var feature = leftIsFeature ? m[1].toLowerCase() : m[3].toLowerCase();
             var fval = featureValue(feature, el, size);
             if (fval === undefined) return false;
-            var conv = function (tok) { return feature === 'aspect-ratio' ? ratioValue(tok) : feature === 'orientation' ? tok.toLowerCase() : lengthPx(tok, el); };
+            var conv = function (tok) { return feature === 'aspect-ratio' ? ratioValue(tok) : feature === 'orientation' ? tok.toLowerCase() : lengthPx(tok, el, size); };
             if (leftIsFeature) return compare(fval, m[2], conv(m[3])) && (!m[4] || compare(fval, m[4], conv(m[5])));
             // "400px < width <= 800px": the first comparison is written from the value's side
             var flip = { '<': '>', '<=': '>=', '>': '<', '>=': '<=', '=': '=' };
@@ -3184,23 +3196,38 @@
             for (var k = 1; k < terms.length; k++) { var v = evalCond(terms[k], el, size); result = ops[k - 1] === 'or' ? (result || v) : (result && v); }
             return result;
         };
-        var containerSize = function (el) {
+        var containerSize = function (el, remPx) {
             var cs = getComputedStyle(el);
             var w = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
             var h = el.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
-            return { w: w > 0 ? w : 0, h: h > 0 ? h : 0 };
+            return { w: w > 0 ? w : 0, h: h > 0 ? h : 0, em: parseFloat(cs.fontSize) || 16, rem: remPx || 0 };
         };
+        // Per nesting level of the containers: every size read first (one layout), then the classes set; a container
+        // inside another one of the list comes a level later (its size may follow the outer one's classes). One size
+        // read after another's class change was a layout each: tailwindcss.com 4 s a scan.
+        var cqStamp = 0;
         var applyContainers = function (containers) {
             if (!manifest || !manifest.cq || !manifest.cq.length || !containers) return;
-            for (var i = 0; i < containers.length; i++) {
-                var c = containers[i], size = null;
-                for (var k = 0; k < manifest.cq.length; k++) {
-                    var q = manifest.cq[k];
-                    if (q.name && c.names.indexOf(q.name) < 0) { setStateClass(c.el, 'br-cq-' + q.h, false); continue; }
-                    if (!size) size = containerSize(c.el);
-                    var on = false;
-                    try { on = evalCond(q.cond, c.el, size); } catch (e) { on = false; }
-                    setStateClass(c.el, 'br-cq-' + q.h, on);
+            var stamp = ++cqStamp, levels = [], i, k, d, c;
+            for (i = 0; i < containers.length; i++) containers[i].el.__brCqStamp = stamp;
+            for (i = 0; i < containers.length; i++) {
+                for (d = 0, c = containers[i].el.parentNode; c && c.nodeType === 1; c = c.parentNode) if (c.__brCqStamp === stamp) d++;
+                (levels[d] || (levels[d] = [])).push(containers[i]);
+            }
+            var remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+            for (d = 0; d < levels.length; d++) {
+                var level = levels[d];
+                if (!level) continue;
+                for (i = 0; i < level.length; i++) level[i].size = containerSize(level[i].el, remPx);
+                for (i = 0; i < level.length; i++) {
+                    c = level[i];
+                    for (k = 0; k < manifest.cq.length; k++) {
+                        var q = manifest.cq[k];
+                        if (q.name && c.names.indexOf(q.name) < 0) { setStateClass(c.el, 'br-cq-' + q.h, false); continue; }
+                        var on = false;
+                        try { on = evalCond(q.cond, c.el, c.size); } catch (e) { on = false; }
+                        setStateClass(c.el, 'br-cq-' + q.h, on);
+                    }
                 }
             }
         };
