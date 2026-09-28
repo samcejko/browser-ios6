@@ -6471,6 +6471,16 @@
             if (v === null) { if (saved[p] && saved[p][0]) el.style.setProperty(p, saved[p][0], saved[p][1]); else el.style.removeProperty(p); }
             else el.style.setProperty(p, v, 'important');
         };
+        // (a width of the page's own: in the style attribute before the layout wrote there, or from a rule)
+        var ownWidth = function (el) {
+            var saved = el.__brGridSaved, inl = saved && saved.width ? saved.width[0] : el.style.width;
+            if (inl && inl !== 'auto') return true;
+            if (!window.getMatchedCSSRules) return false;
+            var mr = null;
+            try { mr = window.getMatchedCSSRules(el, ''); } catch (e) { mr = null; }
+            for (var q = mr ? mr.length - 1 : -1; q >= 0; q--) { var w = mr[q].style && mr[q].style.width; if (w) return w !== 'auto'; }
+            return false;
+        };
         var restore = function (el) {
             var saved = el.__brGridSaved;
             if (!saved) return;
@@ -6685,6 +6695,10 @@
                     g.items.push({ el: c, rec: c.__brGD && c.__brGD.gen === gen ? c.__brGD : null });
                 }
                 g.static = cs.position === 'static';
+                // (a floated or inline grid without a width of its own is as wide as its tracks: sized from the items'
+                // natural widths every pass, see below; with the items out of the flow it collapsed, and a badge of
+                // bbc.com kept a 2 px width and a 0 px text track from a pass made before its text was there)
+                g.shrink = (cs.cssFloat !== 'none' || cs.display === 'inline-block') && !ownWidth(g.el);
                 g.w0 = g.el.clientWidth - num(cs.paddingLeft) - num(cs.paddingRight);
                 g.pad = { l: num(cs.paddingLeft), r: num(cs.paddingRight), t: num(cs.paddingTop), b: num(cs.paddingBottom) };
                 g.border = cs.boxSizing === 'border-box' ? { h: num(cs.borderLeftWidth) + num(cs.borderRightWidth), v: num(cs.borderTopWidth) + num(cs.borderBottomWidth) } : null;
@@ -6729,7 +6743,7 @@
                 var gcs = getComputedStyle(g.el);
                 g.W = g.el.clientWidth - g.pad.l - g.pad.r;
                 // (a container sized by its content lost it: it keeps the width it had)
-                g.keepW = g.W < g.w0 - 1 ? g.w0 : null;
+                g.keepW = !g.shrink && g.W < g.w0 - 1 ? g.w0 : null;
                 if (g.keepW) g.W = g.keepW;
                 var h0 = g.el.clientHeight - g.pad.t - g.pad.b;
                 g.H = h0 > 0.5 ? h0 : null;
@@ -6769,6 +6783,7 @@
                 var tcols = parseList(prop(g.rec, 'grid-template-columns', 'none'));
                 var implicitCols = !tcols.length && (g.colPlaced || !/^none$/i.test(prop(g.rec, 'grid-template-areas', 'none')));
                 if (intrinsicList(tcols) || (implicitCols && intrinsicList(parseList(prop(g.rec, 'grid-auto-columns', 'auto'))))) g.needNat = true;
+                if (g.shrink) g.needNat = true;
             }
             // (a container that is an item of an outer grid is stretched to that grid's height right now: with an auto
             // height of its own it is not definite)
@@ -6782,14 +6797,17 @@
             for (i = 0; i < grids.length; i++) {
                 g = grids[i];
                 if (g.keepW) setStyle(g.el, 'width', (g.border ? g.keepW + g.pad.l + g.pad.r + g.border.h : g.keepW) + 'px');
+                // (room for the items' natural widths while they are measured: a collapsed box would wrap their text)
+                if (g.shrink) setStyle(g.el, 'width', '5000px');
                 if (!g.needNat) continue;
                 anyNat = true;
                 for (j = 0; j < g.items.length; j++) { setStyle(g.items[j].el, 'right', 'auto'); setStyle(g.items[j].el, 'bottom', 'auto'); }
             }
             for (i = 0; i < grids.length; i++) {
                 g = grids[i];
-                // (fractional widths up: a track a fraction too narrow wraps its text)
-                for (j = 0; j < g.items.length; j++) g.items[j].natW = g.needNat ? Math.ceil(g.items[j].el.getBoundingClientRect().width - 0.01) + g.items[j].m.l + g.items[j].m.r : 0;
+                // (fractional widths up, to the engine's 1/64 px: a track a fraction too narrow wraps its text; whole
+                // pixels added up across the tracks of a content-sized grid)
+                for (j = 0; j < g.items.length; j++) g.items[j].natW = g.needNat ? Math.ceil(g.items[j].el.getBoundingClientRect().width * 64 - 0.01) / 64 + g.items[j].m.l + g.items[j].m.r : 0;
             }
             stats.nat = anyNat;
             // placement and columns, outer grids first
@@ -6857,10 +6875,12 @@
                 var contrib = [];
                 for (j = 0; j < list.length; j++) if (list[j].cs === 1) contrib[list[j].c] = Math.max(contrib[list[j].c] || 0, list[j].natW);
                 var jc = prop(r0, 'justify-content', 'normal');
-                var sizes = sizeTracks(cx.tracks, g.W, g.colGap, contrib, el, /^(normal|stretch)$/i.test(jc));
+                // (a shrinking grid: the tracks take their content's widths, and the grid is as wide as they are)
+                var sizes = sizeTracks(cx.tracks, g.shrink ? null : g.W, g.colGap, contrib, el, !g.shrink && /^(normal|stretch)$/i.test(jc));
                 var total = 0;
                 for (j = 0; j < sizes.length; j++) total += sizes[j];
                 total += Math.max(0, sizes.length - 1) * g.colGap;
+                if (g.shrink) g.W = total;
                 var dj = distribute(jc, g.W - total, sizes.length);
                 g.colSizes = sizes;
                 g.colPos = offsets(sizes, g.colGap, g.pad.l + dj[0], dj[1]);
@@ -6894,9 +6914,10 @@
             // write: widths and left edges
             for (i = 0; i < grids.length; i++) {
                 g = grids[i];
+                if (g.shrink) setStyle(g.el, 'width', Math.ceil(g.border ? g.W + g.pad.l + g.pad.r + g.border.h : g.W) + 'px');
                 for (j = 0; j < g.list.length; j++) {
                     it = g.list[j];
-                    if (it.setW !== null) setStyle(it.el, 'width', it.setW + 'px');
+                    if (it.setW !== null) setStyle(it.el, 'width', Math.round(it.setW * 64) / 64 + 'px');
                     setStyle(it.el, 'left', it.x + 'px');
                     if (!g.needNat) { setStyle(it.el, 'right', 'auto'); setStyle(it.el, 'bottom', 'auto'); }
                 }
