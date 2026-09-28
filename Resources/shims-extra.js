@@ -2435,7 +2435,8 @@
         el.__brSvgSeen = seen;
         var pctFree = hPct && el.getAttribute('preserveAspectRatio') !== 'none';
         if ((!hOwn || pctFree) && r.width >= 1 && r.height > Math.max(2000, r.width / ratio * 10)) setH = r.width / ratio;   // (absurd: never meant)
-        else if (pctFree && r.width >= 2 && pctOfContent(el, p, r.height)) setH = r.width / ratio;
+        // (tried only on drawings far taller than their proportions: the trial lays the page out, seznam.cz has hundreds)
+        else if (pctFree && r.width >= 2 && r.height > Math.max(60, r.width / ratio * 1.5) && pctOfContent(el, p, r.height)) setH = r.width / ratio;
         else {
             if (wOwn && hOwn) return;
             var pos = getComputedStyle(el).position;
@@ -2688,22 +2689,30 @@
         if (column) return d === 'block' && cs.webkitBoxOrient === 'vertical';
         return d === '-webkit-box' || d === '-webkit-inline-box';
     };
-    var markItems = function (box, width) {
+    // (reads only: the children to mark go to `writes`; reading and writing in turn made the engine work out the
+    // page's styles again for every child, 30 s on novinky.cz)
+    var collectItems = function (box, width, writes) {
         var n = 0, hidden = false;
         for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
             n++;
             if (BF_SKIP[c.tagName] || c.__brBfBox === box) continue;
-            if (c.__brContents) { markItems(c, width); c.__brBfBox = box; continue; }   // (display: contents: its children are the items)
+            if (c.__brContents) { collectItems(c, width, writes); c.__brBfBox = box; continue; }   // (display: contents: its children are the items)
             var d = getComputedStyle(c).display;
             if (d === 'none') { hidden = true; continue; }   // (looked at again when it shows: its own display is not known)
-            if (BF_STYLE[c.style.display]) { c.__brBfStyle = c.style.display; c.style.display = BF_STYLE[c.style.display]; }
-            // (one marked already, moved here from another box, keeps its value: its display now is the block-level one)
-            if (!c.hasAttribute('data-br-bf')) c.setAttribute('data-br-bf', BF_OF[d] || '');
+            writes.push(c, BF_OF[d] || '');
             c.__brBfBox = box;
         }
         box.__brFxN = n;
         box.__brFxW = width;
         box.__brFxHidden = hidden;
+    };
+    var writeItems = function (writes) {
+        for (var i = 0; i < writes.length; i += 2) {
+            var c = writes[i], st = c.style.display;
+            if (BF_STYLE[st]) { c.__brBfStyle = st; c.style.display = BF_STYLE[st]; }
+            // (one marked already, moved here from another box, keeps its value: its display now is the block-level one)
+            if (!c.hasAttribute('data-br-bf')) c.setAttribute('data-br-bf', writes[i + 1]);
+        }
     };
     var unmarkItems = function (box) {
         for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
@@ -2725,33 +2734,37 @@
             var head = document.head || document.documentElement;
             head.insertBefore(bfRule, head.firstChild);
         }
-        var width = window.innerWidth, kept = [], i, k, list, box;
+        var width = window.innerWidth, kept = [], gone = [], writes = [], i, k, list, box;
         // (containers marked before: still flex boxes? a width change can change that through media rules)
         for (i = 0; i < bfBoxes.length; i++) {
             box = bfBoxes[i];
             if (box.__brFxW === width && box.parentNode) { kept.push(box); continue; }
-            if (isFlexBox(box, box.__brFx === 2)) { markItems(box, width); kept.push(box); }
-            else unmarkItems(box);
+            if (isFlexBox(box, box.__brFx === 2)) { collectItems(box, width, writes); kept.push(box); }
+            else { gone.push(box); box.__brFx = -1; }
         }
-        bfBoxes = kept;
         for (var kind = 1; kind <= 2; kind++) {
             var sels = kind === 1 ? plan.box : plan.col;
             for (k = 0; k < sels.length; k++) {
                 try { list = document.querySelectorAll(sels[k]); } catch (e) { continue; }
                 for (i = 0; i < list.length; i++) {
                     box = list[i];
+                    if (box.__brFx === -1) continue;   // (no longer flex: let go of below)
                     if (box.__brFx) {
                         // (known: only its new children, when it has some, and the hidden ones)
-                        if (box.__brFxN !== box.childElementCount || box.__brFxHidden) markItems(box, box.__brFxW);
+                        if (box.__brFxN !== box.childElementCount || box.__brFxHidden) collectItems(box, box.__brFxW, writes);
                         continue;
                     }
                     if (!isFlexBox(box, kind === 2)) continue;
                     box.__brFx = kind;
-                    markItems(box, width);
-                    bfBoxes.push(box);
+                    collectItems(box, width, writes);
+                    kept.push(box);
                 }
             }
         }
+        // (then the writes, all together)
+        for (i = 0; i < gone.length; i++) unmarkItems(gone[i]);
+        writeItems(writes);
+        bfBoxes = kept;
     };
     // align-self of flex items (cssfix sends the rules that set it, with their specificity and media queries, see
     // alignSelfOf): the old boxes align all their children alike (-webkit-box-align of the box). A box with items
@@ -2781,7 +2794,10 @@
         if (!saved.hasOwnProperty(prop)) saved[prop] = el.style.getPropertyValue(prop);
         el.style.setProperty(prop, value);
     };
+    // (what was set, taken back; the old boxes lay out again only the items whose own style changed, the others kept
+    // the sizes of the other alignment, so the boxes are then laid out afresh, all at once, see relayoutAll)
     var asUndo = function (box) {
+        if (!box.hasAttribute('data-br-asp')) return false;
         box.removeAttribute('data-br-asp');
         for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
             var saved = c.__brAsSet;
@@ -2792,6 +2808,23 @@
             c.__brAsSet = null;
         }
         box.__brAsSig = null;
+        return true;
+    };
+    // (relayout of several boxes with one layout of the page: out of it together, one read, back together)
+    var relayoutAll = function (boxes) {
+        if (!boxes.length) return;
+        var prev = [], i, s;
+        for (i = 0; i < boxes.length; i++) {
+            s = boxes[i].style;
+            prev.push(s.getPropertyValue('display'), s.getPropertyPriority('display'));
+            s.setProperty('display', 'none', 'important');
+        }
+        var x = document.body ? document.body.offsetHeight : 0;
+        for (i = 0; i < boxes.length; i++) {
+            s = boxes[i].style;
+            if (prev[2 * i]) s.setProperty('display', prev[2 * i], prev[2 * i + 1]); else s.removeProperty('display');
+        }
+        return x;
     };
     var num0 = function (v) { return parseFloat(v) || 0; };
     // (the state a box was aligned in: its width and height and every item's height and value)
@@ -2800,54 +2833,67 @@
         for (var i = 0; i < kids.length; i++) s.push(kids[i].code, kids[i].el.offsetHeight);
         return s.join(',');
     };
-    var alignBox = function (box, kids) {
-        var cs = getComputedStyle(box), P = BOX_CODE[cs.webkitBoxAlign] || 'x', i, k, kcs;
-        var vertical = box.__brFx === 2 || cs.webkitBoxOrient === 'vertical' || cs.webkitBoxOrient === 'block-axis';
-        var any = false;
+    // (read: the box's own alignment, whether any item differs, the stretched items)
+    var asPrepare = function (t) {
+        var box = t.box, cs = getComputedStyle(box), P = BOX_CODE[cs.webkitBoxAlign] || 'x', kids = t.kids, i, k, kcs, any = false;
+        t.P = P;
+        t.vertical = box.__brFx === 2 || cs.webkitBoxOrient === 'vertical' || cs.webkitBoxOrient === 'block-axis';
         for (i = 0; i < kids.length; i++) { kids[i].eff = kids[i].code || P; if (kids[i].eff !== P) any = true; }
         if (!any) return false;
-        if (vertical) {
-            // (read: the stretched items, as wide as the box; write: the box at the start, items placed by margins)
-            var cw = box.clientWidth - num0(cs.paddingLeft) - num0(cs.paddingRight);
-            for (i = 0; i < kids.length; i++) {
-                k = kids[i]; kcs = getComputedStyle(k.el);
+        t.padA = t.vertical ? num0(cs.paddingLeft) + num0(cs.paddingRight) : num0(cs.paddingTop) + num0(cs.paddingBottom);
+        var room = (t.vertical ? box.clientWidth : box.clientHeight) - t.padA;
+        for (i = 0; i < kids.length; i++) {
+            k = kids[i]; kcs = getComputedStyle(k.el);
+            if (t.vertical) {
                 k.m = num0(kcs.marginLeft) + num0(kcs.marginRight);
-                k.full = Math.abs(k.el.offsetWidth + k.m - cw) < 1.5;
-            }
-            box.setAttribute('data-br-asp', box.__brFx === 2 ? 'b' : 'v');
-            for (i = 0; i < kids.length; i++) {
-                k = kids[i];
-                if (k.eff === 'x' && (P !== 'x' || k.full)) {
-                    k.el.setAttribute('data-br-as', 'w');
-                    asSet(k.el, 'width', k.m ? '-webkit-calc(100% - ' + k.m + 'px)' : '100%');
-                } else if (k.eff === 'c' || k.eff === 'e') {
-                    k.el.setAttribute('data-br-as', k.eff);
-                    if (!k.el.__brAsSet) k.el.__brAsSet = {};
-                }
-            }
-        } else {
-            // (read: the stretched items and the heights at the start; write: min-heights and top margins)
-            var ch0 = box.clientHeight - num0(cs.paddingTop) - num0(cs.paddingBottom);
-            for (i = 0; i < kids.length; i++) {
-                k = kids[i]; kcs = getComputedStyle(k.el);
+                k.full = Math.abs(k.el.offsetWidth + k.m - room) < 1.5;
+            } else {
                 k.mt = num0(kcs.marginTop); k.mb = num0(kcs.marginBottom);
-                k.full = Math.abs(k.el.offsetHeight + k.mt + k.mb - ch0) < 1.5;
-            }
-            box.setAttribute('data-br-asp', 'h');
-            var H = box.clientHeight - num0(cs.paddingTop) - num0(cs.paddingBottom);
-            for (i = 0; i < kids.length; i++) kids[i].h = kids[i].el.offsetHeight;
-            for (i = 0; i < kids.length; i++) {
-                k = kids[i];
-                if (k.eff === 'x' && (P !== 'x' || k.full)) asSet(k.el, 'min-height', Math.max(0, H - k.mt - k.mb) + 'px');
-                else if (k.eff === 'c') asSet(k.el, 'margin-top', Math.round((k.mt + (H - k.h - k.mt - k.mb) / 2) * 10) / 10 + 'px');
-                else if (k.eff === 'e') asSet(k.el, 'margin-top', Math.max(k.mt, H - k.h - k.mb) + 'px');
+                k.full = Math.abs(k.el.offsetHeight + k.mt + k.mb - room) < 1.5;
             }
         }
         return true;
     };
+    // (write: the box at the start; a column's items placed by margins or given the full width)
+    var asStart = function (t) {
+        var box = t.box, kids = t.kids, i, k;
+        box.setAttribute('data-br-asp', t.vertical ? (box.__brFx === 2 ? 'b' : 'v') : 'h');
+        if (!t.vertical) return;
+        for (i = 0; i < kids.length; i++) {
+            k = kids[i];
+            if (k.eff === 'x' && (t.P !== 'x' || k.full)) {
+                k.el.setAttribute('data-br-as', 'w');
+                asSet(k.el, 'width', k.m ? '-webkit-calc(100% - ' + k.m + 'px)' : '100%');
+            } else if (k.eff === 'c' || k.eff === 'e') {
+                k.el.setAttribute('data-br-as', k.eff);
+                if (!k.el.__brAsSet) k.el.__brAsSet = {};
+            }
+        }
+    };
+    // (a row, read: its height and the items' heights at the start)
+    var asMeasureRow = function (t) {
+        t.H = t.box.clientHeight - t.padA;
+        for (var i = 0; i < t.kids.length; i++) t.kids[i].h = t.kids[i].el.offsetHeight;
+    };
+    // (a row, write: stretched items get its height as min-height, centred and end ones a top margin)
+    var asPlaceRow = function (t) {
+        var H = t.H, k;
+        for (var i = 0; i < t.kids.length; i++) {
+            k = t.kids[i];
+            if (k.eff === 'x' && (t.P !== 'x' || k.full)) asSet(k.el, 'min-height', Math.max(0, H - k.mt - k.mb) + 'px');
+            else if (k.eff === 'c') asSet(k.el, 'margin-top', Math.round((k.mt + (H - k.h - k.mt - k.mb) / 2) * 10) / 10 + 'px');
+            else if (k.eff === 'e') asSet(k.el, 'margin-top', Math.max(k.mt, H - k.h - k.mb) + 'px');
+        }
+    };
     var alignFlexItems = function () {
-        var rules = window.__brAlignSelfRules;
-        if (!rules || !rules.length) { for (var u = 0; u < asBoxes.length; u++) asUndo(asBoxes[u]); asBoxes = []; return; }
+        var rules = window.__brAlignSelfRules, i, j, k, t;
+        if (!rules || !rules.length) {
+            var back = [];
+            for (i = 0; i < asBoxes.length; i++) if (asUndo(asBoxes[i])) back.push(asBoxes[i]);
+            relayoutAll(back);
+            asBoxes = [];
+            return;
+        }
         if (!asRule) {
             asRule = document.createElement('style');
             asRule.__brOwn = true;
@@ -2859,7 +2905,7 @@
             head.insertBefore(asRule, head.firstChild);
         }
         // the winning align-self of every element some rule gives one (specificity, then the later rule)
-        var media = {}, gen = (alignFlexItems.gen = (alignFlexItems.gen || 0) + 1), boxes = [], i, j, k;
+        var media = {}, gen = (alignFlexItems.gen = (alignFlexItems.gen || 0) + 1), boxes = [];
         for (i = 0; i < rules.length; i++) {
             var e = rules[i];
             if (e.m && !asMediaOk(e.m, media)) continue;
@@ -2868,16 +2914,16 @@
                 try { els = document.querySelectorAll(e.sl[k]); } catch (x) { continue; }
                 for (j = 0; j < els.length; j++) {
                     var el = els[j], p = el.parentNode, sp = e.sp[k] || 0;
-                    if (!p || !p.__brFx) continue;   // (items of the flex containers markFlexItems found)
+                    if (!p || !p.__brFx || p.__brFx === -1) continue;   // (items of the flex containers markFlexItems found)
                     if (el.__brAsGen !== gen) { el.__brAsGen = gen; el.__brAsSp = -1; }
                     if (sp >= el.__brAsSp) { el.__brAsSp = sp; el.__brAsCode = AS_CODE(e.as); }
                     if (p.__brAsGen !== gen) { p.__brAsGen = gen; boxes.push(p); }
                 }
             }
         }
-        // boxes aligned before and no longer: taken back
-        for (i = 0; i < asBoxes.length; i++) if (asBoxes[i].__brAsGen !== gen) asUndo(asBoxes[i]);
-        var aligned = [];
+        // read: every box's items, and the boxes that changed since they were aligned (the others stay as they are)
+        var undo = [], todo = [], kept = [];
+        for (i = 0; i < asBoxes.length; i++) if (asBoxes[i].__brAsGen !== gen) undo.push(asBoxes[i]);
         for (i = 0; i < boxes.length; i++) {
             var box = boxes[i], kids = [];
             for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
@@ -2886,21 +2932,43 @@
                 if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
                 kids.push({ el: c, code: c.__brAsGen === gen ? c.__brAsCode : '' });
             }
-            // (unchanged since last time: left as it is)
-            if (box.__brAsSig && box.__brAsSig === asSignature(box, kids)) { aligned.push(box); continue; }
-            asUndo(box);
-            if (alignBox(box, kids)) { box.__brAsSig = asSignature(box, kids); aligned.push(box); }
+            if (box.__brAsSig && box.__brAsSig === asSignature(box, kids)) { kept.push(box); continue; }
+            todo.push({ box: box, kids: kids });
+            undo.push(box);
         }
-        asBoxes = aligned;
+        if (!todo.length && !undo.length) return;
+        // write: taken back, laid out afresh
+        var fresh = [];
+        for (i = 0; i < undo.length; i++) if (asUndo(undo[i])) fresh.push(undo[i]);
+        relayoutAll(fresh);
+        // read, write: boxes to the start, columns placed; laid out afresh; rows measured and placed
+        var go = [], rows = [];
+        for (i = 0; i < todo.length; i++) if (asPrepare(todo[i])) go.push(todo[i]);
+        for (i = 0; i < go.length; i++) asStart(go[i]);
+        var moved = [];
+        for (i = 0; i < go.length; i++) { moved.push(go[i].box); if (!go[i].vertical) rows.push(go[i]); }
+        relayoutAll(moved);
+        for (i = 0; i < rows.length; i++) asMeasureRow(rows[i]);
+        for (i = 0; i < rows.length; i++) asPlaceRow(rows[i]);
+        for (i = 0; i < go.length; i++) { t = go[i]; t.box.__brAsSig = asSignature(t.box, t.kids); kept.push(t.box); }
+        asBoxes = kept;
     };
-    onMarkers(function () { markFlexItems(); alignFlexItems(); });
+    onMarkers(function () {
+        var t0 = Date.now();
+        markFlexItems();
+        var t1 = Date.now();
+        alignFlexItems();
+        var t2 = Date.now();
+        // (debugging: the time of each, the containers marked and the boxes aligned)
+        if (window.__brNoteSlow) window.__brNoteSlow('flex items', t2 - t0, 'mark ' + (t1 - t0) + ' (' + bfBoxes.length + ' boxes), align ' + (t2 - t1) + ' (' + asBoxes.length + ' boxes)');
+    });
     var zRule = null, zWidth = 0;
     var positionsInside = function (el) {
         var stack = [], seen = 0, c, n, pos;
         for (c = el.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
         while (stack.length) {
             n = stack.pop();
-            if (++seen > 300) return true;   // (too many to look at: left as it is)
+            if (++seen > 120) return true;   // (too many to look at: left as it is)
             pos = getComputedStyle(n).position;
             if (pos === 'absolute') return true;
             if (pos !== 'static' || n.tagName === 'svg') continue;   // (the boxes inside a positioned one are placed in it)
@@ -2917,32 +2985,36 @@
         if (cs.position !== 'static' || cs.display === 'none') return false;
         return !positionsInside(el);
     };
+    // (all the items at once: each read after a write made the engine lay the page out again, 2 s on github.com)
     onMarkers(function (marked) {
-        var w = window.innerWidth, again = w !== zWidth;
+        var w = window.innerWidth, again = w !== zWidth, todo = [], ok = [], i, el;
         zWidth = w;
-        for (var i = 0; i < marked.length; i++) {
+        for (i = 0; i < marked.length; i++) {
             if (marked[i].cr.indexOf('br-zi') < 0) continue;
-            var el = marked[i].el;
+            el = marked[i].el;
             if (el.__brZi && !again) continue;
             el.__brZi = true;
-            if (!zRule) {
-                zRule = document.createElement('style');
-                zRule.__brOwn = true;
-                zRule.textContent = '[data-br-z]{position:relative}';
-                var head = document.head || document.documentElement;
-                head.insertBefore(zRule, head.firstChild);
-            }
-            var had = el.hasAttribute('data-br-z');
-            if (had) el.removeAttribute('data-br-z');   // (what the page's own rules make of it now)
-            if (stacksByZ(el)) {
-                var r0 = el.getBoundingClientRect();
-                el.setAttribute('data-br-z', '');
-                var r1 = el.getBoundingClientRect();
-                // (offsets the page gives it, which move a positioned item only (the engine reports them as auto
-                // until then), or a z-index its rules no longer give: left as it was)
-                if (Math.abs(r1.left - r0.left) > 0.5 || Math.abs(r1.top - r0.top) > 0.5 || getComputedStyle(el).zIndex === 'auto') el.removeAttribute('data-br-z');
-            }
+            todo.push(el);
         }
+        if (!todo.length) return;
+        if (!zRule) {
+            zRule = document.createElement('style');
+            zRule.__brOwn = true;
+            zRule.textContent = '[data-br-z]{position:relative}';
+            var head = document.head || document.documentElement;
+            head.insertBefore(zRule, head.firstChild);
+        }
+        for (i = 0; i < todo.length; i++) if (todo[i].hasAttribute('data-br-z')) todo[i].removeAttribute('data-br-z');   // (what the page's own rules make of it now)
+        for (i = 0; i < todo.length; i++) if (stacksByZ(todo[i])) ok.push(todo[i], todo[i].getBoundingClientRect());
+        for (i = 0; i < ok.length; i += 2) ok[i].setAttribute('data-br-z', '');
+        var back = [];
+        for (i = 0; i < ok.length; i += 2) {
+            var r0 = ok[i + 1], r1 = ok[i].getBoundingClientRect();
+            // (offsets the page gives it, which move a positioned item only (the engine reports them as auto until
+            // then), or a z-index its rules no longer give: left as it was)
+            if (Math.abs(r1.left - r0.left) > 0.5 || Math.abs(r1.top - r0.top) > 0.5 || getComputedStyle(ok[i]).zIndex === 'auto') back.push(ok[i]);
+        }
+        for (i = 0; i < back.length; i++) back[i].removeAttribute('data-br-z');
     });
     // A child with a percentage height (cssfix marks it "br-pcth <percent x 100>") of a stretched item of a flex row
     // (a horizontal 2009 box here) grows with every layout on this engine, three times each time: a card's picture at
