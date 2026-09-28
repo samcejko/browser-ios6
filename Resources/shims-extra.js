@@ -969,6 +969,71 @@
             return root;
         };
         addStyle('[data-shadow-root]{display:inherit}');
+        // A slot's nodes stay where they are in the host (nothing is projected), so a slot that is not shown (display:
+        // none from the root's styles or its hidden attribute) hides them here: developer.mozilla.org's language menu
+        // (hidden by ":host(:not([loaded],:focus-within)) slot[name=dropdown]{display:none}") stood open on every page.
+        // Run by the style passes and after taps and focus changes (menus open on them).
+        var slotShown = function (slot, root) {
+            for (var n = slot; n && n !== root; n = n.parentNode) if (n.nodeType === 1 && getComputedStyle(n).display === 'none') return false;
+            return true;
+        };
+        var syncSlots = function () {
+            var slots = document.querySelectorAll('[data-shadow-root] slot');
+            for (var i = 0; i < slots.length; i++) {
+                var slot = slots[i], root = slot.parentNode;
+                while (root && !(root.nodeType === 1 && root.hasAttribute('data-shadow-root'))) root = root.parentNode;
+                var host = root && root.host;
+                if (!host) continue;
+                var shown = slotShown(slot, root), name = slot.getAttribute('name') || '';
+                for (var c = host.firstChild; c; c = c.nextSibling) {
+                    if (c.nodeType !== 1 || c === root || (c.getAttribute('slot') || '') !== name) continue;
+                    if (!shown && !c.__brSlotHid) {
+                        c.__brSlotHid = [c.style.getPropertyValue('display'), c.style.getPropertyPriority('display')];
+                        c.style.setProperty('display', 'none', 'important');
+                    } else if (shown && c.__brSlotHid) {
+                        if (c.__brSlotHid[0]) c.style.setProperty('display', c.__brSlotHid[0], c.__brSlotHid[1]); else c.style.removeProperty('display');
+                        c.__brSlotHid = null;
+                    }
+                }
+            }
+        };
+        window.__brSyncSlots = syncSlots;
+        // Events of a slot's nodes: they are not inside the slot here, so the listeners of a slot (a menu that opens on a
+        // click on its slotted button: mdn-dropdown) are called by one on the document for the events that come from the
+        // slot's nodes, as the path of an event goes through the slot in a real shadow tree.
+        var slotTypes = {};
+        var slotOf = function (node) {   // the slot a light child of a host goes to
+            var host = node.parentNode, root = host && host.shadowRoot;
+            if (!root || root.nodeType !== 1 || root === node || !root.hasAttribute('data-shadow-root')) return null;
+            var name = node.nodeType === 1 ? node.getAttribute('slot') || '' : '', slots = root.getElementsByTagName('slot');
+            for (var i = 0; i < slots.length; i++) if ((slots[i].getAttribute('name') || '') === name) return slots[i];
+            return null;
+        };
+        var runSlotListeners = function (e, capture) {
+            for (var n = e.target; n && n !== document; n = n.parentNode) {
+                var slot = slotOf(n);
+                if (!slot || !slot.__brSlotL) continue;
+                var list = slot.__brSlotL.slice(0);
+                for (var i = 0; i < list.length; i++) {
+                    var r = list[i];
+                    if (r.type !== e.type || r.capture !== capture) continue;
+                    try { if (typeof r.fn === 'function') r.fn.call(slot, e); else r.fn.handleEvent(e); } catch (err) { setTimeout(function () { throw err; }, 0); }
+                }
+            }
+        };
+        window.__brSlotListen = function (slot, type, fn, options) {
+            var capture = options && typeof options === 'object' ? !!options.capture : !!options;
+            (slot.__brSlotL || (slot.__brSlotL = [])).push({ type: type, fn: fn, capture: capture });
+            var key = type + (capture ? '|c' : '|b');
+            if (slotTypes[key]) return;
+            slotTypes[key] = true;
+            // (focus and blur do not bubble: seen on the way down)
+            document.addEventListener(type, function (e) { runSlotListeners(e, capture); }, capture || type === 'focus' || type === 'blur');
+        };
+        var slotSoon = function () { setTimeout(syncSlots, 0); };
+        document.addEventListener('click', slotSoon, true);
+        document.addEventListener('focus', slotSoon, true);
+        document.addEventListener('blur', slotSoon, true);
     }
     if (Np && !Np.getRootNode) Np.getRootNode = function () { var n = this; while (n.parentNode) n = n.parentNode; return n; };
     if (Ep && !Ep.checkVisibility) Ep.checkVisibility = function (opts) {
@@ -3406,6 +3471,7 @@
             try { if (window.__brDeferred) window.__brDeferred.apply(); } catch (e3) {}
             t.push(Date.now());
             try { if (window.__brGrid) window.__brGrid.apply(); } catch (e8) {}
+            try { if (window.__brSyncSlots) window.__brSyncSlots(); } catch (e10) {}
             applyEnd = Date.now();
             applyCost = applyEnd - t0;
             if (window.__brNoteSlow) window.__brNoteSlow('style pass', applyCost, 'structural ' + (t[0] - t0) + ', :has ' + (t[1] - t[0]) + ', markers ' + (t[2] - t[1]) +
@@ -7997,6 +8063,8 @@
             if (!fn) return;
             // (a page that listens for drag events gets dragging by finger, see the drag and drop block)
             if (typeof type === 'string' && (type === 'drop' || type.slice(0, 4) === 'drag')) window.__brPageDnD = true;
+            // (called unbound too, addEventListener('load', f): this is undefined in here then)
+            if (this && this.tagName === 'SLOT' && window.__brSlotListen) window.__brSlotListen(this, type, fn, options);
             if (options && typeof options === 'object') {
                 var capture = !!options.capture, actual = fn;
                 if (options.once) {
@@ -8014,6 +8082,9 @@
         };
         obj.removeEventListener = function (type, fn, options) {
             var capture = options && typeof options === 'object' ? !!options.capture : !!options;
+            if (this && this.tagName === 'SLOT' && this.__brSlotL) {
+                for (var sl = this.__brSlotL.length - 1; sl >= 0; sl--) { var rec = this.__brSlotL[sl]; if (rec.type === type && rec.fn === fn && rec.capture === capture) this.__brSlotL.splice(sl, 1); }
+            }
             if (fn && fn.__brOnce) origRemove.call(this, type, fn.__brOnce, capture);
             return origRemove.call(this, type, fn, capture);
         };

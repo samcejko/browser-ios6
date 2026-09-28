@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slot test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>Slots of emulated shadow roots</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<!-- a menu whose panel's slot is hidden until its button's slot hears a click (developer.mozilla.org's mdn-dropdown) -->
+<my-dd id="dd"><button slot="btn" id="b">Menu</button><div slot="panel" id="p">Panel</div></my-dd>
+<script>
+class MyDD extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    const r = this.attachShadow({ mode: 'open' });
+    r.innerHTML = '<style>:host{display:block}slot[name=panel][hidden]{display:none}</style><slot name="btn"></slot><slot name="panel" hidden></slot>';
+    const btnSlot = r.querySelector('slot[name=btn]'), panelSlot = r.querySelector('slot[name=panel]');
+    btnSlot.addEventListener('click', () => { if (panelSlot.hasAttribute('hidden')) panelSlot.removeAttribute('hidden'); else panelSlot.setAttribute('hidden', ''); });
+  }
+}
+customElements.define('my-dd', MyDD);
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var shown = function (id) { var r = document.getElementById(id).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    show('the button of a shown slot is shown', shown('b'));
+    show('the panel of a hidden slot is hidden', !shown('p'));
+    document.getElementById('b').click();
+    setTimeout(function () {
+      show('a click on the button reaches its slot and the panel shows', shown('p'));
+      document.getElementById('b').click();
+      setTimeout(function () {
+        show('a second click hides it again', !shown('p'));
+        document.getElementById('summary').textContent = pass + ' / ' + total;
+        document.title = 'slot ' + pass + '/' + total;
+        window.__slotResults = results;
+      }, 400);
+    }, 400);
+  }, 2000);
+}, false);
+</script>
+</body>
+</html>
