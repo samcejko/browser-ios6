@@ -15,6 +15,24 @@
         for (var n = 0; n < names.length; n++) con[names[n]] = quiet;
         try { self.console = con; } catch (e0) {}
     }
+    // current engines name the scope WorkerGlobalScope / DedicatedWorkerGlobalScope and scripts test
+    // `self instanceof WorkerGlobalScope` (vercel.com's turbopack worker entry refused to start: "Worker entrypoint
+    // must be loaded in a worker context"); the constructors take the prototypes of the scope's own chain
+    if (!self.WorkerGlobalScope && typeof importScripts === 'function') {
+        var illegal = function () { throw new TypeError('Illegal constructor'); };
+        var own = Object.getPrototypeOf(self), base = own && Object.getPrototypeOf(own);
+        if (!base || base === Object.prototype) base = own;
+        if (own && own !== Object.prototype) {
+            var WGS = function WorkerGlobalScope() { illegal(); };
+            WGS.prototype = base;
+            try { self.WorkerGlobalScope = WGS; } catch (e2) {}
+            if (!self.DedicatedWorkerGlobalScope) {
+                var DWGS = function DedicatedWorkerGlobalScope() { illegal(); };
+                DWGS.prototype = own;
+                try { self.DedicatedWorkerGlobalScope = DWGS; } catch (e3) {}
+            }
+        }
+    }
     if (!self.performance) { try { self.performance = {}; } catch (e1) {} }
     if (self.performance && !self.performance.now) {
         var origin = Date.now();
