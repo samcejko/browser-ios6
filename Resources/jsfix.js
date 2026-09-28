@@ -496,6 +496,9 @@
                 return m;
             };
             try { Object.defineProperty(re, '__brRe', { value: { names: names } }); } catch (e) {}
+            // (String.prototype.match/replace/split look for such expressions from now on, see regexp-shim.js)
+            var G = typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : null;
+            if (G && G.__brNoteLowered) G.__brNoteLowered();
             return re;
         },
         // import(): the module loader of the page shim, when there is one

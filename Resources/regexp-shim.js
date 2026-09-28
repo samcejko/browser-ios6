@@ -168,9 +168,14 @@
         }
         return g;
     };
+    // (until an expression with its own exec exists, String.prototype.match/replace/split go straight to the engine:
+    // every replace of a page, 220,000 on nextjs.org, looked the property up on its expression)
+    var anyLowered = false;
+    hidden(G, '__brNoteLowered', function () { anyLowered = true; });
     var decorate = function (re, l) {
         var info = l.info, anchored = null, scan = null, behind = info.behind;
         hidden(re, '__brRe', info);
+        if (info.names || info.sticky || info.indices || behind) anyLowered = true;
         // a leading lookbehind: candidates of the rest, each kept when the text before it does (not) end in X
         if (behind) scan = new Native(l.pattern, l.flags.indexOf('g') >= 0 ? l.flags : l.flags + 'g');
         // sticky: (?:pattern)|() always matches at lastIndex; the empty alternative taking it means no match there
@@ -300,7 +305,7 @@
     };
     String.prototype.match = function match(re) {
         'use strict';
-        if (!isLowered(re) || this === null || this === undefined) return nativeMatch.apply(this, arguments);
+        if (!anyLowered || !isLowered(re) || this === null || this === undefined) return nativeMatch.apply(this, arguments);
         var s = String(this);
         if (!re.global) return re.exec(s);
         var all = [], m;
@@ -310,7 +315,7 @@
     };
     String.prototype.replace = function replace(re, rep) {
         'use strict';
-        if (!isLowered(re) || this === null || this === undefined) return nativeReplace.apply(this, arguments);
+        if (!anyLowered || !isLowered(re) || this === null || this === undefined) return nativeReplace.apply(this, arguments);
         var s = String(this), found = [], m, i;
         if (re.global) re.lastIndex = 0;
         while ((m = re.exec(s))) {
@@ -337,7 +342,7 @@
     var nativeSplit = String.prototype.split;
     String.prototype.split = function split(sep, limit) {
         'use strict';
-        if (!isLowered(sep) || this === null || this === undefined) return nativeSplit.apply(this, arguments);
+        if (!anyLowered || !isLowered(sep) || this === null || this === undefined) return nativeSplit.apply(this, arguments);
         var s = String(this), out = [], lim = limit === undefined ? 4294967295 : limit >>> 0;
         if (!lim) return out;
         var rx = new BRRegExp(sep.__brRe.source, sep.__brRe.flags.replace(/[gy]/g, '') + 'g'), m, p = 0, q = 0, e, i;

@@ -4122,7 +4122,7 @@
     (function () {
         var manifest = null, lastText = '', applyTimer = null, fetching = false, fetchTimer = null, fetches = 0;
         var manifestURL = function () { return window.__brManifestURL || ('https://ios6-browser.invalid/manifest?doc=' + encodeURIComponent(location.href.split('#')[0])); };   // the override is for tests
-        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return String(s).trim(); };
         var splitTop = function (s, sep) {
             var parts = [], depth = 0, start = 0, q = null;
             for (var i = 0; i < s.length; i++) {
@@ -4589,7 +4589,7 @@
         var entries = [], byHash = {}, tryRules = {}, inlineMarked = [], hasInline = false;
         var gen = 0, recGen = 0, tracked = [], positioned = [], timelineRecs = [], anchors = {}, scopes = [], scrollTimer = null;
         var SVGNS = 'http://www.w3.org/2000/svg';
-        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return String(s).trim(); };
         var num = function (s) { var n = parseFloat(s); return isNaN(n) ? 0 : n; };
         var round2 = function (n) { return Math.round(n * 100) / 100; };
         var isGlobal = function (v) { return v === 'inherit' || v === 'initial' || v === 'unset' || v === 'revert' || v === 'revert-layer'; };
@@ -6041,7 +6041,7 @@
         if (probe.style.display === 'grid' && !window.__brGridForce) { window.__brGrid = { setManifest: function () {}, apply: function () {} }; return; }
         var entries = [], gen = 0, touched = [], stats = { passes: 0, grids: 0, items: 0, ms: 0 };
         var PROPS = ['position', 'left', 'top', 'right', 'bottom', 'width', 'height'];
-        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return String(s).trim(); };
         var num = function (v) { var n = parseFloat(v); return isNaN(n) ? 0 : n; };
         // top-level tokens: whitespace separates; (...), [...] and strings stay whole
         var tokens = function (s) {
@@ -7061,7 +7061,7 @@
         var rules = [], registered = {}, rootVars = {}, gen = 0, tracked = [], timer = null, busy = false, lastCost = 0, universal = {};
         var watchStates = false, observer = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
         var pseudoTracked = [], stats = { passes: 0, applied: 0, skipped: 0, rules: 0 };
-        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return String(s).trim(); };
         var norm = function (s) { return trim(String(s)).replace(/\s+/g, ' ').replace(/\s*([,()\/])\s*/g, '$1').toLowerCase(); };
         var matchParen = function (s, i) {
             var depth = 0;
@@ -9466,7 +9466,7 @@
         var STATES = { 'focus-within': '.br-focus-within', 'placeholder-shown': '.br-placeholder-shown', 'user-invalid': '.br-user-invalid',
             'user-valid': '.br-user-valid', 'popover-open': '.br-popover-open', modal: '.br-modal', fullscreen: '.br-fullscreen', 'focus-visible': ':focus',
             'any-link': ':link', defined: '', 'read-write': ':read-write', blank: '.br-blank', playing: '.br-playing', paused: '.br-paused' };
-        var trim = function (s) { return s.replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return s.trim(); };
         var splitList = function (s) {
             var out = [], depth = 0, quote = '', start = 0;
             for (var i = 0; i < s.length; i++) {
@@ -10315,7 +10315,7 @@
             'hyphens', 'textSizeAdjust', 'fontFeatureSettings', 'fontKerning', 'boxDecorationBreak', 'textEmphasis', 'textEmphasisColor',
             'textEmphasisStyle', 'textEmphasisPosition', 'textStroke', 'textStrokeColor', 'textStrokeWidth', 'textFillColor', 'lineClamp',
             'tapHighlightColor', 'touchCallout', 'clipPath', 'shapeOutside', 'textOrientation', 'boxReflect', 'textCombineUpright'];
-        var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return String(s).trim(); };
         var dashed = function (camel) { return camel.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); }); };
         var camel = function (d) { return d.replace(/^-webkit-/, 'webkit-').replace(/-([a-z])/g, function (m, c) { return c.toUpperCase(); }); };
         var DASHED = {};   // standard dashed name -> the prefixed one the engine knows
@@ -10979,7 +10979,7 @@
         // parsing
         var NUM_RE = /^([-+]?(?:\d*\.\d+|\d+)(?:e[-+]?\d+)?)([a-z%]*)$/i;
         var splitTop = function (s, sep) { var parts = [], depth = 0, start = 0, q = null; for (var i = 0; i < s.length; i++) { var c = s.charAt(i); if (q) { if (c === q) q = null; continue; } if (c === '"' || c === "'") q = c; else if (c === '(') depth++; else if (c === ')') depth--; else if (depth === 0 && c === sep) { parts.push(s.slice(start, i)); start = i + 1; } } parts.push(s.slice(start)); return parts; };
-        var trim = function (s) { return s.replace(/^\s+|\s+$/g, ''); };
+        var trim = function (s) { return s.trim(); };
         var parseNumeric = function (s) {
             s = trim(s);
             var m = NUM_RE.exec(s);
