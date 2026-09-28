@@ -9,6 +9,46 @@
         window.requestAnimationFrame = window.webkitRequestAnimationFrame || function (cb) { return window.setTimeout(function () { cb(Date.now()); }, 16); };
         window.cancelAnimationFrame = window.webkitCancelAnimationFrame || window.webkitCancelRequestAnimationFrame || function (id) { window.clearTimeout(id); };
     }
+    // Frames on a budget: a page that draws every frame (stripe.com's WebGL gradient) kept the page's thread busy all
+    // the time on this hardware, and taps, scrolling and the rest of the page waited. After a frame that took more
+    // than 20 ms the next one waits as long again: such drawing gets about half the time, and the animation runs slower.
+    (function () {
+        var native = window.requestAnimationFrame;
+        if (!native || native.__brBudget) return;
+        var queue = [], nextId = 1, pending = false, lastCost = 0, lastEnd = 0;
+        var run = function (ts) {
+            pending = false;
+            var list = queue, t0 = Date.now();
+            queue = [];
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].off) continue;
+                try { list[i].cb(ts); } catch (e) { window.setTimeout(function () { throw e; }, 0); }
+            }
+            lastEnd = Date.now();
+            lastCost = lastEnd - t0;
+        };
+        var schedule = function () {
+            if (pending) return;
+            pending = true;
+            var wait = lastCost > 20 ? lastEnd + lastCost - Date.now() : 0;
+            if (wait > 0) window.setTimeout(function () { native.call(window, run); }, wait);
+            else native.call(window, run);
+        };
+        window.requestAnimationFrame = function (cb) {
+            var id = nextId++;
+            queue.push({ id: id, cb: cb });
+            schedule();
+            return id;
+        };
+        window.cancelAnimationFrame = function (id) {
+            for (var i = 0; i < queue.length; i++) if (queue[i].id === id) queue[i].off = true;
+        };
+        window.requestAnimationFrame.__brBudget = true;
+        if (window.webkitRequestAnimationFrame) {
+            window.webkitRequestAnimationFrame = window.requestAnimationFrame;
+            window.webkitCancelAnimationFrame = window.webkitCancelRequestAnimationFrame = window.cancelAnimationFrame;
+        }
+    })();
     if (!window.MutationObserver && window.WebKitMutationObserver) window.MutationObserver = window.WebKitMutationObserver;
     if (!window.requestIdleCallback) {
         window.requestIdleCallback = function (cb) { return window.setTimeout(function () { var start = Date.now(); cb({ didTimeout: false, timeRemaining: function () { return Math.max(0, 50 - (Date.now() - start)); } }); }, 1); };

@@ -30,6 +30,13 @@ static long BRScriptRoomMB(long bytes)
     long small = (long)((long long)bytes * BRRoomPerMBScript / (1024 * 1024)), big = 30 + (long)((long long)bytes * 25 / (1024 * 1024));
     return MIN(small, big);
 }
+// A small script takes little room of its own (the tree of a 7 KB module is well under a megabyte): a lower floor, so it
+// does not wait a minute for room it does not need and then stay unlowered (stripe.com: a 7 KB module waited 60 s for
+// 55 MB with 52 available, and the page stood still behind it).
+static long BRScriptFloorMB(long bytes)
+{
+    return bytes < 64 * 1024 ? 30 : BRRoomFloorMB;
+}
 // bumped when a page load is stopped for lack of memory: queued work of that page is dropped
 static volatile NSUInteger g_workGeneration;
 static NSString *BRPageKey(NSURL *url);
@@ -442,7 +449,8 @@ static NSArray *BRManifestKinds(void)
     // waits for (a synchronous request: the page stands still) waits less, and one that did not fit a moment ago does
     // not wait again (a page may ask for it over and over).
     long work = MAX(0L, (long)data.length - lazyBytes);
-    long need = BRRoomFloorMB + BRScriptRoomMB(work);
+    long floorMB = BRScriptFloorMB(work);
+    long need = floorMB + BRScriptRoomMB(work);
     BOOL lazyPart = [url.host isEqualToString:@"ios6-browser.invalid"];
     NSString *optsJSON = @"{}";
     NSMutableDictionary *o = [NSMutableDictionary dictionary];
@@ -468,7 +476,7 @@ static NSArray *BRManifestKinds(void)
             [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
             return nil;
         }
-        if ([plan isEqualToString:@"islands"] || [plan isEqualToString:@"stand-in"]) need = BRRoomFloorMB + BRScriptPlanMB(work);
+        if ([plan isEqualToString:@"islands"] || [plan isEqualToString:@"stand-in"]) { floorMB = BRRoomFloorMB; need = floorMB + BRScriptPlanMB(work); }
     }
     NSDate *noRoom = nil;
     @synchronized (self) { noRoom = _noRoom[key]; }
@@ -477,7 +485,7 @@ static NSArray *BRManifestKinds(void)
     NSTimeInterval patience = (noRoom && -[noRoom timeIntervalSinceNow] < 120) ? 0 : lazyPart ? 10 : 60;
     BOOL fits = patience > 0 ? [BRMemory waitForAvailableMB:need timeout:patience reason:[NSString stringWithFormat:@"lowering %@ (%lu KB)", name, (unsigned long)(work >> 10)] engine:engine]
                              : [BRMemory availableMB] >= need;
-    if (!fits && [BRMemory availableMB] < BRRoomFloorMB + (need - BRRoomFloorMB) / 2) {
+    if (!fits && [BRMemory availableMB] < floorMB + (need - floorMB) / 2) {
         BRLog(@"jsfix %@: left unlowered, not enough memory", name);
         @synchronized (self) {
             if (!_noRoom) _noRoom = [NSMutableDictionary dictionary];
