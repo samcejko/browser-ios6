@@ -200,6 +200,16 @@
         }];
         return YES;
     }
+    if ([target hasPrefix:@"symbols"]) {
+        // browser:symbols?addrs=0x39c63180,0x39c63096 names addresses of a crash report from the same boot (the shared
+        // cache sits at the same place in every process until a restart), to tmp/symbols.txt
+        NSRange ar = [target rangeOfString:@"addrs="];
+        NSString *list = ar.location == NSNotFound ? @"" : [[target substringFromIndex:ar.location + ar.length] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+        NSString *report = [BRProfiler symbolicate:list ?: @""];
+        [report writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"symbols.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        BRLog(@"Symbols: %@", report.length > 1500 ? [report substringToIndex:1500] : report);
+        return YES;
+    }
     if ([target isEqualToString:@"requests"]) {
         // browser:requests: what the page still waits for (a page whose load never ends), also to tmp/eval.txt
         NSString *report = [BRURLProtocol activeRequestsReport];

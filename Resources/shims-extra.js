@@ -11015,8 +11015,22 @@
         CSSStyleValue.parse = function (property, text) { var v = parseValue(String(text)); if (v === undefined) throw new TypeError('Empty value'); return v; };
         CSSStyleValue.parseAll = function (property, text) { var parts = splitTop(String(text), ','), out = []; for (var i = 0; i < parts.length; i++) { var v = parseValue(parts[i]); if (v !== undefined) out.push(v); } return out; };
         // property maps
-        var StylePropertyMapReadOnly = function StylePropertyMapReadOnly(decl) { this.__d = decl; };
-        StylePropertyMapReadOnly.prototype.get = function (p) { var v = this.__d.getPropertyValue(String(p)); return v ? parseValue(v) : undefined; };
+        var StylePropertyMapReadOnly = function StylePropertyMapReadOnly(decl, computed) { this.__d = decl; this.__c = !!computed; };
+        // a computed map answers every property: what the old engine does not know comes as its initial value (lidl.cz
+        // read computedStyleMap().get('row-gap').value and stopped on undefined)
+        var INITIAL = { 'row-gap': 'normal', 'column-gap': 'normal', gap: 'normal', 'aspect-ratio': 'auto', translate: 'none', rotate: 'none', scale: 'none',
+            inset: 'auto', 'inset-block': 'auto', 'inset-inline': 'auto', 'container-type': 'normal', 'container-name': 'none', 'accent-color': 'auto',
+            'scroll-behavior': 'auto', 'overscroll-behavior': 'auto', 'scrollbar-gutter': 'auto', 'content-visibility': 'visible', 'place-items': 'normal',
+            'place-content': 'normal', 'justify-items': 'normal', 'justify-self': 'auto', 'align-self': 'auto', 'align-items': 'normal', 'align-content': 'normal',
+            'justify-content': 'normal', 'flex-direction': 'row', 'flex-wrap': 'nowrap', 'flex-grow': '0', 'flex-shrink': '1', 'flex-basis': 'auto', order: '0',
+            'grid-template-columns': 'none', 'grid-template-rows': 'none', 'grid-auto-flow': 'row', 'text-wrap': 'wrap', 'white-space-collapse': 'collapse',
+            'font-optical-sizing': 'auto', 'font-variation-settings': 'normal', 'color-scheme': 'normal', 'forced-color-adjust': 'auto', 'touch-action': 'auto',
+            'will-change': 'auto', 'object-position': '50% 50%', 'object-fit': 'fill', isolation: 'auto', 'mix-blend-mode': 'normal', 'backdrop-filter': 'none' };
+        StylePropertyMapReadOnly.prototype.get = function (p) {
+            var name = String(p), v = this.__d.getPropertyValue(name);
+            if (!v && this.__c) v = INITIAL.hasOwnProperty(name) ? INITIAL[name] : name.indexOf('--') === 0 ? '' : 'normal';
+            return v ? parseValue(v) : undefined;
+        };
         StylePropertyMapReadOnly.prototype.getAll = function (p) { var v = this.__d.getPropertyValue(String(p)); if (!v) return []; return /^(transition|animation|background|font-family|will-change|mask|box-shadow|text-shadow)/.test(p) ? CSSStyleValue.parseAll(p, v) : [parseValue(v)]; };
         StylePropertyMapReadOnly.prototype.has = function (p) { return !!this.__d.getPropertyValue(String(p)); };
         StylePropertyMapReadOnly.prototype.size = 0;
@@ -11031,7 +11045,7 @@
         StylePropertyMap.prototype['delete'] = function (p) { this.__d.removeProperty(String(p)); };
         StylePropertyMap.prototype.clear = function () { var names = this.keys(); for (var i = 0; i < names.length; i++) this.__d.removeProperty(names[i]); };
         if (Ep) {
-            Ep.computedStyleMap = function () { return new StylePropertyMapReadOnly(window.getComputedStyle(this)); };
+            Ep.computedStyleMap = function () { return new StylePropertyMapReadOnly(window.getComputedStyle(this), true); };
             try { Object.defineProperty(Ep, 'attributeStyleMap', { get: function () { if (!this.__brStyleMap) this.__brStyleMap = new StylePropertyMap(this.style); return this.__brStyleMap; }, configurable: true }); } catch (e) {}
         }
         var units = ['number', 'percent', 'em', 'ex', 'ch', 'ic', 'rem', 'lh', 'rlh', 'vw', 'vh', 'vi', 'vb', 'vmin', 'vmax', 'svw', 'svh', 'svi', 'svb', 'svmin', 'svmax', 'lvw', 'lvh', 'lvi', 'lvb', 'lvmin', 'lvmax', 'dvw', 'dvh', 'dvi', 'dvb', 'dvmin', 'dvmax', 'cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax', 'cm', 'mm', 'Q', 'in', 'pt', 'pc', 'px', 'deg', 'grad', 'rad', 'turn', 's', 'ms', 'Hz', 'kHz', 'dpi', 'dpcm', 'dppx', 'fr', 'cap', 'rcap', 'rex', 'rch', 'ric'];

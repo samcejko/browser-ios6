@@ -252,8 +252,73 @@ static NSString *BRKindOf(NSString *image, NSString *name, BOOL top)
     size_t distinct = 0;
     for (size_t i = 0; i < total; i++) if (!distinct || unique[distinct - 1] != unique[i]) unique[distinct++] = unique[i];
 
-    // what each address is: dladdr, then the local symbols per library, the app's methods, or JIT code
     NSMutableArray *images = [NSMutableArray arrayWithCapacity:distinct], *labels = [NSMutableArray arrayWithCapacity:distinct];
+    [self label:unique count:distinct images:images labels:labels];
+
+    // per sample: the kind of work (the first frame from the top that tells), whether a script asked for it, and the
+    // functions (on top, deciding, anywhere in the stack)
+    // (the kind of each address, found when first needed: on top of the stack, and deeper)
+    NSMutableArray *topKinds = [NSMutableArray arrayWithCapacity:distinct], *deepKinds = [NSMutableArray arrayWithCapacity:distinct];
+    for (size_t i = 0; i < distinct; i++) { [topKinds addObject:[NSNull null]]; [deepKinds addObject:[NSNull null]]; }
+    NSCountedSet *selfNames = [NSCountedSet set], *deciding = [NSCountedSet set], *inclusive = [NSCountedSet set];
+    NSCountedSet *kindCounts = [NSCountedSet set], *scriptCounts = [NSCountedSet set];
+    for (int s = 0; s < count; s++) {
+        NSString *kind = nil, *decider = @"?";
+        BOOL script = NO;
+        NSMutableSet *seen = [NSMutableSet set];
+        for (int d = 0; d < depths[s]; d++) {
+            uintptr_t v = frames[(size_t)s * BRProfileDepth + d];
+            size_t lo = 0, hi = distinct;
+            while (lo < hi) { size_t mid = (lo + hi) / 2; if (unique[mid] < v) lo = mid + 1; else hi = mid; }
+            NSString *label = labels[lo];
+            if (d == 0) [selfNames addObject:label];
+            if (![seen containsObject:label]) { [seen addObject:label]; [inclusive addObject:label]; }
+            if (script) continue;
+            NSMutableArray *cache = d == 0 ? topKinds : deepKinds;
+            NSString *k = cache[lo];
+            if ((id)k == [NSNull null]) {
+                id image = images[lo];
+                k = BRKindOf(image == [NSNull null] ? nil : image, label, d == 0) ?: @"";
+                cache[lo] = k;
+            }
+            if (!k.length) continue;
+            if (!kind) { kind = k; decider = label; }
+            else if ([k isEqualToString:@"JavaScript"] || [k isEqualToString:@"DOM calls"]) script = YES;
+        }
+        if (!kind) kind = @"other";
+        [kindCounts addObject:kind];
+        if (script && ![kind isEqualToString:@"JavaScript"]) [scriptCounts addObject:kind];
+        [deciding addObject:[NSString stringWithFormat:@"%@  (%@)", decider, kind]];
+    }
+    free(unique);
+
+    NSMutableString *out = [NSMutableString stringWithFormat:@"%@ profile: %d samples in %.1f s (every %.1f ms)\n", threadName, count, seconds, seconds * 1000.0 / count];
+    NSArray *(^ranked)(NSCountedSet *, NSUInteger) = ^NSArray *(NSCountedSet *set, NSUInteger limit) {
+        NSArray *all = [set.allObjects sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+            NSUInteger x = [set countForObject:a], y = [set countForObject:b];
+            return x > y ? NSOrderedAscending : x < y ? NSOrderedDescending : NSOrderedSame;
+        }];
+        return all.count > limit ? [all subarrayWithRange:NSMakeRange(0, limit)] : all;
+    };
+    [out appendString:@"by kind of work:"];
+    for (NSString *kind in ranked(kindCounts, 20)) {
+        NSUInteger c = [kindCounts countForObject:kind], fromScript = [scriptCounts countForObject:kind];
+        [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * c / count, kind];
+        if (fromScript) [out appendFormat:@" (%.1f %% asked for by scripts)", 100.0 * fromScript / count];
+    }
+    [out appendString:@"\nfunctions that decided the kind:"];
+    for (NSString *n in ranked(deciding, 40)) [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * [deciding countForObject:n] / count, n];
+    [out appendString:@"\non top of the stack:"];
+    for (NSString *n in ranked(selfNames, 30)) [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * [selfNames countForObject:n] / count, n];
+    [out appendString:@"\nanywhere in the stack:"];
+    for (NSString *n in ranked(inclusive, 50)) [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * [inclusive countForObject:n] / count, n];
+    return out;
+}
+
+// what each address of a sorted list without repeats is: dladdr, then the local symbols per library, the app's
+// methods, or JIT code (one entry per address in images and labels)
++ (void)label:(const uintptr_t *)unique count:(size_t)distinct images:(NSMutableArray *)images labels:(NSMutableArray *)labels
+{
     NSMutableDictionary *redacted = [NSMutableDictionary dictionary];   // library path -> NSMutableArray of @[index, start]
     NSMutableDictionary *headers = [NSMutableDictionary dictionary];    // library path -> header address
     NSMutableData *appImps = nil;
@@ -314,64 +379,37 @@ static NSString *BRKindOf(NSString *image, NSString *name, BOOL top)
             if (label) labels[[e[0] unsignedIntegerValue]] = label;
         }
     }
+}
 
-    // per sample: the kind of work (the first frame from the top that tells), whether a script asked for it, and the
-    // functions (on top, deciding, anywhere in the stack)
-    // (the kind of each address, found when first needed: on top of the stack, and deeper)
-    NSMutableArray *topKinds = [NSMutableArray arrayWithCapacity:distinct], *deepKinds = [NSMutableArray arrayWithCapacity:distinct];
-    for (size_t i = 0; i < distinct; i++) { [topKinds addObject:[NSNull null]]; [deepKinds addObject:[NSNull null]]; }
-    NSCountedSet *selfNames = [NSCountedSet set], *deciding = [NSCountedSet set], *inclusive = [NSCountedSet set];
-    NSCountedSet *kindCounts = [NSCountedSet set], *scriptCounts = [NSCountedSet set];
-    for (int s = 0; s < count; s++) {
-        NSString *kind = nil, *decider = @"?";
-        BOOL script = NO;
-        NSMutableSet *seen = [NSMutableSet set];
-        for (int d = 0; d < depths[s]; d++) {
-            uintptr_t v = frames[(size_t)s * BRProfileDepth + d];
-            size_t lo = 0, hi = distinct;
-            while (lo < hi) { size_t mid = (lo + hi) / 2; if (unique[mid] < v) lo = mid + 1; else hi = mid; }
-            NSString *label = labels[lo];
-            if (d == 0) [selfNames addObject:label];
-            if (![seen containsObject:label]) { [seen addObject:label]; [inclusive addObject:label]; }
-            if (script) continue;
-            NSMutableArray *cache = d == 0 ? topKinds : deepKinds;
-            NSString *k = cache[lo];
-            if ((id)k == [NSNull null]) {
-                id image = images[lo];
-                k = BRKindOf(image == [NSNull null] ? nil : image, label, d == 0) ?: @"";
-                cache[lo] = k;
-            }
-            if (!k.length) continue;
-            if (!kind) { kind = k; decider = label; }
-            else if ([k isEqualToString:@"JavaScript"] || [k isEqualToString:@"DOM calls"]) script = YES;
-        }
-        if (!kind) kind = @"other";
-        [kindCounts addObject:kind];
-        if (script && ![kind isEqualToString:@"JavaScript"]) [scriptCounts addObject:kind];
-        [deciding addObject:[NSString stringWithFormat:@"%@  (%@)", decider, kind]];
++ (NSString *)symbolicate:(NSString *)list
+{
+    NSMutableData *given = [NSMutableData data];
+    NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefABCDEFxX"] invertedSet];
+    for (NSString *token in [list componentsSeparatedByCharactersInSet:other]) {
+        unsigned long long v = 0;
+        if (!token.length || ![[NSScanner scannerWithString:token] scanHexLongLong:&v] || !v) continue;
+        uintptr_t a = (uintptr_t)v;
+        [given appendBytes:&a length:sizeof(a)];
+    }
+    NSUInteger n = given.length / sizeof(uintptr_t);
+    if (!n) return @"(no addresses)";
+    uintptr_t *unique = malloc(n * sizeof(uintptr_t));
+    if (!unique) return @"(no memory)";
+    memcpy(unique, given.bytes, n * sizeof(uintptr_t));
+    qsort(unique, n, sizeof(uintptr_t), BRCompareAddress);
+    size_t distinct = 0;
+    for (size_t i = 0; i < n; i++) if (!distinct || unique[distinct - 1] != unique[i]) unique[distinct++] = unique[i];
+    NSMutableArray *images = [NSMutableArray arrayWithCapacity:distinct], *labels = [NSMutableArray arrayWithCapacity:distinct];
+    [self label:unique count:distinct images:images labels:labels];
+    NSMutableString *out = [NSMutableString string];
+    const uintptr_t *addrs = given.bytes;
+    for (NSUInteger i = 0; i < n; i++) {
+        size_t lo = 0, hi = distinct;
+        while (lo < hi) { size_t mid = (lo + hi) / 2; if (unique[mid] < addrs[i]) lo = mid + 1; else hi = mid; }
+        id image = images[lo];
+        [out appendFormat:@"0x%08lx  %@  %@\n", (unsigned long)addrs[i], image == [NSNull null] ? @"?" : image, labels[lo]];
     }
     free(unique);
-
-    NSMutableString *out = [NSMutableString stringWithFormat:@"%@ profile: %d samples in %.1f s (every %.1f ms)\n", threadName, count, seconds, seconds * 1000.0 / count];
-    NSArray *(^ranked)(NSCountedSet *, NSUInteger) = ^NSArray *(NSCountedSet *set, NSUInteger limit) {
-        NSArray *all = [set.allObjects sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
-            NSUInteger x = [set countForObject:a], y = [set countForObject:b];
-            return x > y ? NSOrderedAscending : x < y ? NSOrderedDescending : NSOrderedSame;
-        }];
-        return all.count > limit ? [all subarrayWithRange:NSMakeRange(0, limit)] : all;
-    };
-    [out appendString:@"by kind of work:"];
-    for (NSString *kind in ranked(kindCounts, 20)) {
-        NSUInteger c = [kindCounts countForObject:kind], fromScript = [scriptCounts countForObject:kind];
-        [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * c / count, kind];
-        if (fromScript) [out appendFormat:@" (%.1f %% asked for by scripts)", 100.0 * fromScript / count];
-    }
-    [out appendString:@"\nfunctions that decided the kind:"];
-    for (NSString *n in ranked(deciding, 40)) [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * [deciding countForObject:n] / count, n];
-    [out appendString:@"\non top of the stack:"];
-    for (NSString *n in ranked(selfNames, 30)) [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * [selfNames countForObject:n] / count, n];
-    [out appendString:@"\nanywhere in the stack:"];
-    for (NSString *n in ranked(inclusive, 50)) [out appendFormat:@"\n  %5.1f %%  %@", 100.0 * [inclusive countForObject:n] / count, n];
     return out;
 }
 

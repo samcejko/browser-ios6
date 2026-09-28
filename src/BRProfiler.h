@@ -10,4 +10,8 @@
 // `completion` gets the report on the main queue (nil when the thread was not found or a profile is running).
 + (void)profileThreadNamed:(NSString *)name seconds:(NSTimeInterval)seconds completion:(void (^)(NSString *report))completion;
 
+// Names for addresses ("0x39c63180,0x39c63096 ..." in any separators) as the profiler finds them: one line per
+// address, "address  library  function". For crash reports of the same boot (WebCore crashes name no functions).
++ (NSString *)symbolicate:(NSString *)list;
+
 @end
