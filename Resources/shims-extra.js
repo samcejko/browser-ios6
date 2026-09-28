@@ -5106,7 +5106,8 @@
         };
         var probe = null;
         var colorOf = function (c) {
-            if (!probe) { probe = document.createElement('i'); probe.style.display = 'none'; (document.body || document.documentElement).appendChild(probe); }
+            // (under <html>, after <body>: React 19 hydrates <body> as a singleton and takes elements there for its own)
+            if (!probe) { probe = document.createElement('i'); probe.__brOwn = true; probe.style.display = 'none'; document.documentElement.appendChild(probe); }
             probe.style.color = '';
             probe.style.color = c;
             if (!probe.style.color) return null;
@@ -7445,7 +7446,8 @@
             for (i = 0; i < fb.length; i++) if (CONTEXT_VALUE.test(fb[i][1]) || /line-height|^font$/.test(fb[i][0])) vals = null;
             if (vals) {
                 if (!probe) { probe = document.createElement('div'); probe.__brOwn = true; }
-                if (!probe.parentNode) (document.body || document.documentElement).appendChild(probe);
+                // (under <html>, not in <body>: React 19 would take a <div> there for one of its own when it hydrates)
+                if (!probe.parentNode) document.documentElement.appendChild(probe);
                 probe.style.cssText = PROBE_BASE;
                 for (i = 0; i < fb.length; i++) probe.style.setProperty(fb[i][0], fb[i][1], '');
                 var cs = getComputedStyle(probe);
