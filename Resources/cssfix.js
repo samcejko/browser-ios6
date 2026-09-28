@@ -3026,14 +3026,23 @@ var CSSFix = (function () {
                     else if (lv === 'contents') {
                         // an element without a box of its own, whose children take part in the parent's layout: here it
                         // takes the parent's kind of box (in a flex row it lays its children out in a row: vercel.com
-                        // wraps each menu entry in one, and the menu stood in a column) and no margins, padding or border
+                        // wraps each menu entry in one, and the menu stood in a column), the way the parent spreads its
+                        // items, and no margins, padding or border. Marked for the shim, which lets it take the room
+                        // left over in a row that spreads its items (see fixContents in shims-extra.js).
                         push(out, 'display', 'inherit', imp);
                         push(out, '-webkit-box-orient', 'inherit', imp);
                         push(out, '-webkit-box-direction', 'inherit', imp);
                         push(out, '-webkit-box-align', 'inherit', imp);
+                        push(out, '-webkit-box-pack', 'inherit', imp);
                         push(out, 'margin', '0', imp);
                         push(out, 'padding', '0', imp);
                         push(out, 'border-width', '0', imp);
+                        if (!keyframe) markers.push('br-contents 1');
+                    }
+                    else if (lv === 'inherit') {
+                        // (a child of a display: contents element is one too: the shim treats it like one, see above)
+                        push(out, 'display', 'inherit', imp);
+                        if (!keyframe) markers.push('br-dinherit 1');
                     }
                     else if (lv === 'grid' || lv === 'flow-root') push(out, 'display', 'block', imp);
                     else if (lv === 'inline-grid') push(out, 'display', 'inline-block', imp);

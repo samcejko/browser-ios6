@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>contents test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+/* apple.com's global menu: the entries sit three levels of display: contents deep in a row that spreads its items */
+.list { display: flex; justify-content: space-between; width: 800px; margin: 0; padding: 0; list-style: none; background: #eee; }
+.list > li { padding: 0 4px; }
+.menu { display: contents; }
+.flyout { display: inherit; }
+.mlist { display: inherit; }
+.item a { display: block; padding: 0 6px; white-space: nowrap; background: #ccd; }
+/* a wrapper in a row that packs its items at the start: its children follow one another, the next item right after */
+.row2 { display: flex; width: 800px; background: #eee; }
+.wrap2 { display: contents; }
+.row2 span { padding: 0 6px; background: #dcd; }
+</style>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>display: contents in flex rows</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<ul class="list" id="list"><li id="logo">Logo</li><li class="menu"><div class="flyout"><div class="mlist"><div class="item" id="first"><a>Store</a></div><div class="item"><a>Mac</a></div><div class="item"><a>iPad</a></div><div class="item"><a>iPhone</a></div><div class="item" id="last"><a>Support</a></div></div></div></li><li id="search">Search</li><li id="bag">Bag</li></ul>
+<div class="row2" id="row2"><span id="a">one</span><div class="wrap2"><span id="b">two</span><span id="c">three</span></div><span id="d">four</span></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var box = function (id) { var r = document.getElementById(id).getBoundingClientRect(); return { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width) }; };
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    var list = box('list'), logo = box('logo'), first = box('first'), last = box('last'), search = box('search'), bag = box('bag');
+    var fa = document.querySelector('#first a'), la = document.querySelector('#last a');
+    show('the entries keep their width', fa.scrollWidth <= fa.clientWidth + 1 && la.scrollWidth <= la.clientWidth + 1, 'Store ' + first.w + ', Support ' + last.w);
+    show('the entries are spread over the row', first.l - logo.r > 20 && search.l - last.r > 20, 'logo to ' + logo.r + ', Store from ' + first.l + ', Support to ' + last.r + ', search from ' + search.l);
+    show('the row ends with the bag at its right edge', Math.abs(bag.r - list.r) <= 1, 'bag to ' + bag.r + ', row to ' + list.r);
+    var a = box('a'), b = box('b'), c = box('c'), d = box('d');
+    show('in a row packed at the start the children follow one another', Math.abs(b.l - a.r) <= 1 && Math.abs(c.l - b.r) <= 1 && Math.abs(d.l - c.r) <= 1, [a.r, b.l, b.r, c.l, c.r, d.l].join(' '));
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'contents ' + pass + '/' + total;
+    window.__contentsResults = results;
+  }, 3000);
+}, false);
+</script>
+</body>
+</html>

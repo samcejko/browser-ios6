@@ -2318,6 +2318,20 @@
             if (d === '-webkit-box' || d === '-webkit-inline-box') { relayout(a); break; }
         }
     };
+    // display: contents, which the rewriter turns into the parent's kind of box that spreads its children as the parent
+    // does (marked br-contents, see cssfix.js): in a row that spreads its items (justify-content: space-between and the
+    // like) the box takes the room left over, so that its children are spread over it with the others. (apple.com's menu
+    // sits three levels of display: contents deep in a spread row: its entries were squeezed into 480 px of 950.)
+    var fixContents = function (el) {
+        var p = el.parentNode;
+        if (!p || p.nodeType !== 1) return;
+        var pcs = getComputedStyle(p);
+        var spread = /^-webkit-(inline-)?box$/.test(pcs.display) && pcs.webkitBoxOrient !== 'vertical' && pcs.webkitBoxOrient !== 'block-axis' && pcs.webkitBoxPack === 'justify';
+        var want = spread ? '1' : '';
+        if ((el.style.getPropertyValue('-webkit-box-flex') || '') !== want) {
+            if (want) el.style.setProperty('-webkit-box-flex', want); else el.style.removeProperty('-webkit-box-flex');
+        }
+    };
     // (a box that changed its width since, a rotation: measured again)
     var recheckPercentHeights = function () {
         var keep = [];
@@ -2405,6 +2419,16 @@
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 marked.push({ el: el, cr: cr });
+                if (cr.indexOf('br-contents') >= 0) { el.__brContents = true; fixContents(el); }
+                else if (cr.indexOf('br-dinherit') >= 0 && el.parentNode && el.parentNode.__brContents) {
+                    // display: inherit under a display: contents element is display: contents too (apple.com's menu)
+                    if (!el.__brContents) {
+                        var dk = ['-webkit-box-orient', '-webkit-box-direction', '-webkit-box-align', '-webkit-box-pack'];
+                        for (var dki = 0; dki < dk.length; dki++) el.style.setProperty(dk[dki], 'inherit');
+                        el.__brContents = true;
+                    }
+                    fixContents(el);
+                }
                 if (cr.indexOf('br-c') >= 0) {   // container-type / container-name markers (see the manifest block)
                     var names = [], cn = /br-cn-([\w-]+)/g, cm;
                     while ((cm = cn.exec(cr)) !== null) names.push(cm[1]);
