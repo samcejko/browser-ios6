@@ -6964,14 +6964,35 @@
             touched = keep;
         };
         var running = false;
+        // (nothing changed since the last pass: as many elements in the page, the grids with their classes and widths,
+        // their items with theirs and their sizes as the pass left them: the pass is skipped, collection and all; a
+        // pass cost 2.3 s on bbc.com, 286 grids, and style passes come with every change of the page)
+        var lastSig = null, lastGrids = null, lastFull = 0, allEls = document.getElementsByTagName('*');
+        var gridSignature = function () {
+            if (!lastGrids) return null;
+            var s = [window.innerWidth, allEls.length], i, g, c;
+            for (i = 0; i < lastGrids.length; i++) {
+                g = lastGrids[i];
+                if (!g.parentNode) return null;
+                s.push(g.className, g.clientWidth, g.childElementCount);
+                for (c = g.firstElementChild; c; c = c.nextElementSibling) s.push(c.className, c.offsetWidth, c.offsetHeight);
+            }
+            return s.join('|');
+        };
         var apply = function () {
             if (running || (!entries.length && !touched.length)) return;
+            // (at least every 10 s a whole pass all the same: a grid made by a class change alone is not in the signature)
+            var sig = gridSignature(), t0 = Date.now();
+            if (sig !== null && sig === lastSig && t0 - lastFull < 10000) { stats.skipped = (stats.skipped || 0) + 1; return; }
+            lastFull = t0;
             running = true;
-            var t0 = Date.now();
             try { layoutAll(); } catch (e) { if (window.console && console.error) console.error(e); }
             running = false;
             stats.passes++;
             stats.ms = Date.now() - t0;
+            lastGrids = [];
+            for (var i = 0; i < touched.length; i++) if (touched[i].__brGridNow === gen) lastGrids.push(touched[i]);
+            lastSig = gridSignature();
         };
         // a picture that loads in a grid item changes its height
         document.addEventListener('load', function (e) {
