@@ -2682,13 +2682,38 @@
                     }
                     var over = total - avail;
                     if (over <= 1 || scaled <= 0) continue;
-                    for (var n = 0; n < items.length; n += 3) {
+                    // The overflow is shared in proportion to the widths; an item whose content cannot get that narrow
+                    // keeps its narrowest width (min-width: auto) and what it did not give up is shared among the others
+                    // again, as flexbox freezes such items (github.com: its menu could not shrink, so the buttons beside
+                    // it took only part of the overflow and the header stood 270 px past the screen).
+                    var active = [], n;
+                    for (n = 0; n < items.length; n += 3) {
                         if (!items[n + 2]) continue;
                         var it = items[n];
                         it.__brShrink = it.style.maxWidth;
-                        it.style.maxWidth = Math.max(0, Math.floor(items[n + 1] - over * items[n + 1] / scaled)) + 'px';
                         shrunk.push(it);
                         applied.push(it);
+                        active.push(it, items[n + 1]);
+                    }
+                    for (var pass = 0; pass < 4 && over > 1 && active.length; pass++) {
+                        var share = 0, j2, next = [];
+                        for (j2 = 0; j2 < active.length; j2 += 2) share += active[j2 + 1];
+                        if (share <= 0) break;
+                        for (j2 = 0; j2 < active.length; j2 += 2) active[j2].style.maxWidth = Math.max(0, Math.floor(active[j2 + 1] - over * active[j2 + 1] / share)) + 'px';
+                        for (j2 = 0; j2 < active.length; j2 += 2) {
+                            var aw = active[j2];
+                            if (aw.scrollWidth > aw.clientWidth + 1) aw.style.maxWidth = (aw.scrollWidth + aw.offsetWidth - aw.clientWidth) + 'px';
+                            else next.push(aw, aw.offsetWidth);
+                        }
+                        var sum = 0;
+                        for (var c2 = row.firstChild; c2; c2 = c2.nextSibling) {
+                            if (c2.nodeType !== 1) continue;
+                            var c2s = getComputedStyle(c2);
+                            if (c2s.display === 'none' || c2s.position === 'absolute' || c2s.position === 'fixed') continue;
+                            sum += (c2.offsetWidth || c2.getBoundingClientRect().width) + (parseFloat(c2s.marginLeft) || 0) + (parseFloat(c2s.marginRight) || 0);
+                        }
+                        over = sum - avail;
+                        active = next;
                     }
                 }
                 // A row that wraps (flex-wrap: the rewriter marks it -webkit-box-lines: multiple) through a class of its own,
