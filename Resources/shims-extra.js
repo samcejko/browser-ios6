@@ -2055,22 +2055,414 @@
         window.URL.createObjectURL = function (blob) { return nativeURLObject.createObjectURL(blob); };
         window.URL.revokeObjectURL = function (url) { return nativeURLObject.revokeObjectURL(url); };
     }
-    if (window.crypto && !window.crypto.subtle && !window.crypto.webkitSubtle) {
-        var cryptoUnsupported = rejectWith('NotSupportedError', 'This operation is not available in this browser');
-        var subtle = {
-            digest: function (algorithm, data) {
-                if (!P) return null;
-                var name = String(typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || '').toUpperCase().replace('-', '');
-                try {
-                    var bytes = toBytes(data);
-                    if (name === 'SHA256') return P.resolve(sha256(bytes).buffer);
-                    if (name === 'SHA1') return P.resolve(sha1(bytes).buffer);
-                } catch (e) { return P.reject(e); }
-                return cryptoUnsupported();
-            },
-            encrypt: cryptoUnsupported, decrypt: cryptoUnsupported, sign: cryptoUnsupported, verify: cryptoUnsupported, generateKey: cryptoUnsupported,
-            deriveKey: cryptoUnsupported, deriveBits: cryptoUnsupported, importKey: cryptoUnsupported, exportKey: cryptoUnsupported, wrapKey: cryptoUnsupported, unwrapKey: cryptoUnsupported
+    // ---- crypto.subtle beyond digests: SHA-384/512, HMAC sign/verify, AES-GCM/CBC/CTR encrypt/decrypt, PBKDF2 and HKDF,
+    // secret keys imported, exported (raw bytes or JWK) and generated. Public-key algorithms stay unavailable. Written
+    // from the specifications (AES after SJCL's table method); tools/crypto-test.html compares every operation with a
+    // current browser's own. (AWS WAF's challenge in front of imdb.com encrypts with AES-GCM: it failed here.)
+    var brSubtle = (function () {
+        if (!P || !window.Uint8Array) return null;
+        var K512 = [0x428a2f98, 0xd728ae22, 0x71374491, 0x23ef65cd, 0xb5c0fbcf, 0xec4d3b2f, 0xe9b5dba5, 0x8189dbbc, 0x3956c25b, 0xf348b538, 0x59f111f1, 0xb605d019, 0x923f82a4, 0xaf194f9b, 0xab1c5ed5, 0xda6d8118, 0xd807aa98, 0xa3030242, 0x12835b01, 0x45706fbe, 0x243185be, 0x4ee4b28c, 0x550c7dc3, 0xd5ffb4e2, 0x72be5d74, 0xf27b896f, 0x80deb1fe, 0x3b1696b1, 0x9bdc06a7, 0x25c71235, 0xc19bf174, 0xcf692694, 0xe49b69c1, 0x9ef14ad2, 0xefbe4786, 0x384f25e3, 0x0fc19dc6, 0x8b8cd5b5, 0x240ca1cc, 0x77ac9c65, 0x2de92c6f, 0x592b0275, 0x4a7484aa, 0x6ea6e483, 0x5cb0a9dc, 0xbd41fbd4, 0x76f988da, 0x831153b5, 0x983e5152, 0xee66dfab, 0xa831c66d, 0x2db43210, 0xb00327c8, 0x98fb213f, 0xbf597fc7, 0xbeef0ee4, 0xc6e00bf3, 0x3da88fc2, 0xd5a79147, 0x930aa725, 0x06ca6351, 0xe003826f, 0x14292967, 0x0a0e6e70, 0x27b70a85, 0x46d22ffc, 0x2e1b2138, 0x5c26c926, 0x4d2c6dfc, 0x5ac42aed, 0x53380d13, 0x9d95b3df, 0x650a7354, 0x8baf63de, 0x766a0abb, 0x3c77b2a8, 0x81c2c92e, 0x47edaee6, 0x92722c85, 0x1482353b, 0xa2bfe8a1, 0x4cf10364, 0xa81a664b, 0xbc423001, 0xc24b8b70, 0xd0f89791, 0xc76c51a3, 0x0654be30, 0xd192e819, 0xd6ef5218, 0xd6990624, 0x5565a910, 0xf40e3585, 0x5771202a, 0x106aa070, 0x32bbd1b8, 0x19a4c116, 0xb8d2d0c8, 0x1e376c08, 0x5141ab53, 0x2748774c, 0xdf8eeb99, 0x34b0bcb5, 0xe19b48a8, 0x391c0cb3, 0xc5c95a63, 0x4ed8aa4a, 0xe3418acb, 0x5b9cca4f, 0x7763e373, 0x682e6ff3, 0xd6b2b8a3, 0x748f82ee, 0x5defb2fc, 0x78a5636f, 0x43172f60, 0x84c87814, 0xa1f0ab72, 0x8cc70208, 0x1a6439ec, 0x90befffa, 0x23631e28, 0xa4506ceb, 0xde82bde9, 0xbef9a3f7, 0xb2c67915, 0xc67178f2, 0xe372532b, 0xca273ece, 0xea26619c, 0xd186b8c7, 0x21c0c207, 0xeada7dd6, 0xcde0eb1e, 0xf57d4f7f, 0xee6ed178, 0x06f067aa, 0x72176fba, 0x0a637dc5, 0xa2c898a6, 0x113f9804, 0xbef90dae, 0x1b710b35, 0x131c471b, 0x28db77f5, 0x23047d84, 0x32caab7b, 0x40c72493, 0x3c9ebe0a, 0x15c9bebc, 0x431d67c4, 0x9c100d4c, 0x4cc5d4be, 0xcb3e42b6, 0x597f299c, 0xfc657e2a, 0x5fcb6fab, 0x3ad6faec, 0x6c44198c, 0x4a475817];
+        var H512 = [0x6a09e667, 0xf3bcc908, 0xbb67ae85, 0x84caa73b, 0x3c6ef372, 0xfe94f82b, 0xa54ff53a, 0x5f1d36f1, 0x510e527f, 0xade682d1, 0x9b05688c, 0x2b3e6c1f, 0x1f83d9ab, 0xfb41bd6b, 0x5be0cd19, 0x137e2179];
+        var H384 = [0xcbbb9d5d, 0xc1059ed8, 0x629a292a, 0x367cd507, 0x9159015a, 0x3070dd17, 0x152fecd8, 0xf70e5939, 0x67332667, 0xffc00b31, 0x8eb44a87, 0x68581511, 0xdb0c2e0d, 0x64f98fa7, 0x47b5481d, 0xbefa4fa4];
+        var TWO32 = 4294967296;
+        // SHA-512 on 64-bit words kept as (high, low) 32-bit halves
+        var sha512 = function (bytes, is384) {
+            var H = (is384 ? H384 : H512).slice(0), l = bytes.length, padLen = ((l + 17 + 127) >> 7) << 7, msg = new Uint8Array(padLen), i, p;
+            msg.set(bytes);
+            msg[l] = 0x80;
+            var bits = l * 8, bh = Math.floor(bits / TWO32), bl = bits >>> 0;
+            msg[padLen - 8] = bh >>> 24; msg[padLen - 7] = (bh >>> 16) & 255; msg[padLen - 6] = (bh >>> 8) & 255; msg[padLen - 5] = bh & 255;
+            msg[padLen - 4] = bl >>> 24; msg[padLen - 3] = (bl >>> 16) & 255; msg[padLen - 2] = (bl >>> 8) & 255; msg[padLen - 1] = bl & 255;
+            var W = new Array(160);
+            for (var off = 0; off < padLen; off += 128) {
+                for (i = 0; i < 32; i++) { p = off + i * 4; W[i] = (msg[p] << 24) | (msg[p + 1] << 16) | (msg[p + 2] << 8) | msg[p + 3]; }
+                for (i = 16; i < 80; i++) {
+                    var xh = W[2 * i - 30], xl = W[2 * i - 29];
+                    var s0h = ((xh >>> 1) | (xl << 31)) ^ ((xh >>> 8) | (xl << 24)) ^ (xh >>> 7);
+                    var s0l = ((xl >>> 1) | (xh << 31)) ^ ((xl >>> 8) | (xh << 24)) ^ ((xl >>> 7) | (xh << 25));
+                    xh = W[2 * i - 4]; xl = W[2 * i - 3];
+                    var s1h = ((xh >>> 19) | (xl << 13)) ^ ((xl >>> 29) | (xh << 3)) ^ (xh >>> 6);
+                    var s1l = ((xl >>> 19) | (xh << 13)) ^ ((xh >>> 29) | (xl << 3)) ^ ((xl >>> 6) | (xh << 26));
+                    var lo = (s1l >>> 0) + (W[2 * i - 13] >>> 0) + (s0l >>> 0) + (W[2 * i - 31] >>> 0);
+                    W[2 * i] = (s1h + W[2 * i - 14] + s0h + W[2 * i - 32] + Math.floor(lo / TWO32)) | 0;
+                    W[2 * i + 1] = lo | 0;
+                }
+                var ah = H[0], al = H[1], bh2 = H[2], bl2 = H[3], ch = H[4], cl = H[5], dh = H[6], dl = H[7];
+                var eh = H[8], el = H[9], fh = H[10], fl = H[11], gh = H[12], gl = H[13], hh = H[14], hl = H[15];
+                for (i = 0; i < 80; i++) {
+                    var S1h = ((eh >>> 14) | (el << 18)) ^ ((eh >>> 18) | (el << 14)) ^ ((el >>> 9) | (eh << 23));
+                    var S1l = ((el >>> 14) | (eh << 18)) ^ ((el >>> 18) | (eh << 14)) ^ ((eh >>> 9) | (el << 23));
+                    var chh = (eh & fh) ^ (~eh & gh), chl = (el & fl) ^ (~el & gl);
+                    var t1l = (hl >>> 0) + (S1l >>> 0) + (chl >>> 0) + (K512[2 * i + 1] >>> 0) + (W[2 * i + 1] >>> 0);
+                    var t1h = hh + S1h + chh + K512[2 * i] + W[2 * i] + Math.floor(t1l / TWO32);
+                    var S0h = ((ah >>> 28) | (al << 4)) ^ ((al >>> 2) | (ah << 30)) ^ ((al >>> 7) | (ah << 25));
+                    var S0l = ((al >>> 28) | (ah << 4)) ^ ((ah >>> 2) | (al << 30)) ^ ((ah >>> 7) | (al << 25));
+                    var mjh = (ah & bh2) ^ (ah & ch) ^ (bh2 & ch), mjl = (al & bl2) ^ (al & cl) ^ (bl2 & cl);
+                    var t2l = (S0l >>> 0) + (mjl >>> 0), t2h = S0h + mjh + Math.floor(t2l / TWO32);
+                    hh = gh; hl = gl; gh = fh; gl = fl; fh = eh; fl = el;
+                    var nel = (dl >>> 0) + (t1l >>> 0) % TWO32;
+                    eh = (dh + t1h + Math.floor(nel / TWO32)) | 0; el = nel | 0;
+                    dh = ch; dl = cl; ch = bh2; cl = bl2; bh2 = ah; bl2 = al;
+                    var nal = (t1l % TWO32) + (t2l % TWO32);
+                    ah = (t1h + t2h + Math.floor(nal / TWO32)) | 0; al = nal | 0;
+                }
+                var add = function (k, xh2, xl2) { var s = (H[k + 1] >>> 0) + (xl2 >>> 0); H[k] = (H[k] + xh2 + Math.floor(s / TWO32)) | 0; H[k + 1] = s | 0; };
+                add(0, ah, al); add(2, bh2, bl2); add(4, ch, cl); add(6, dh, dl); add(8, eh, el); add(10, fh, fl); add(12, gh, gl); add(14, hh, hl);
+            }
+            var n = is384 ? 12 : 16, out = new Uint8Array(n * 4);
+            for (i = 0; i < n; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 255; out[i * 4 + 2] = (H[i] >>> 8) & 255; out[i * 4 + 3] = H[i] & 255; }
+            return out;
         };
+        // name -> [hash, block size, output size]
+        var HASHES = { 'SHA-1': [sha1, 64, 20], 'SHA-256': [sha256, 64, 32], 'SHA-384': [function (b) { return sha512(b, true); }, 128, 48], 'SHA-512': [function (b) { return sha512(b, false); }, 128, 64] };
+        var algName = function (a) { return String(typeof a === 'string' ? a : (a && a.name) || '').toUpperCase(); };
+        var hashName = function (h) { var n = algName(h); if (/^SHA\d/.test(n)) n = 'SHA-' + n.slice(3); return HASHES[n] ? n : null; };
+        var hmac = function (hn, key, data) {
+            var hf = HASHES[hn], bs = hf[1], k = key.length > bs ? hf[0](key) : key, i;
+            var inner = new Uint8Array(bs + data.length), outer = new Uint8Array(bs + hf[2]);
+            for (i = 0; i < bs; i++) { var kb = i < k.length ? k[i] : 0; inner[i] = kb ^ 0x36; outer[i] = kb ^ 0x5c; }
+            inner.set(data, bs);
+            outer.set(hf[0](inner), bs);
+            return hf[0](outer);
+        };
+        // ---- AES (SJCL's tables: the S-box and the combined round tables, both directions)
+        var T = null;
+        var aesTables = function () {
+            if (T) return T;
+            var enc = [[], [], [], [], []], dec = [[], [], [], [], []], sbox = enc[4], sboxInv = dec[4], d = [], th = [], i, x, xInv, x2, x4, x8, s, tEnc, tDec;
+            for (i = 0; i < 256; i++) th[(d[i] = i << 1 ^ (i >> 7) * 283) ^ i] = i;
+            for (x = xInv = 0; !sbox[x]; x ^= x2 || 1, xInv = th[xInv] || 1) {
+                s = xInv ^ xInv << 1 ^ xInv << 2 ^ xInv << 3 ^ xInv << 4;
+                s = s >> 8 ^ s & 255 ^ 99;
+                sbox[x] = s;
+                sboxInv[s] = x;
+                x8 = d[x4 = d[x2 = d[x]]];
+                tDec = x8 * 0x1010101 ^ x4 * 0x10001 ^ x2 * 0x101 ^ x * 0x1010100;
+                tEnc = d[s] * 0x101 ^ s * 0x1010100;
+                for (i = 0; i < 4; i++) {
+                    enc[i][x] = tEnc = tEnc << 24 ^ tEnc >>> 8;
+                    dec[i][s] = tDec = tDec << 24 ^ tDec >>> 8;
+                }
+            }
+            T = [enc, dec];
+            return T;
+        };
+        var aesKey = function (bytes) {
+            var t = aesTables(), sbox = t[0][4], decT = t[1], key = [], i, j, tmp, rcon = 1;
+            for (i = 0; i < bytes.length; i += 4) key.push((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]);
+            var keyLen = key.length, encKey = key.slice(0), decKey = [];
+            for (i = keyLen; i < 4 * keyLen + 28; i++) {
+                tmp = encKey[i - 1];
+                if (i % keyLen === 0 || (keyLen === 8 && i % keyLen === 4)) {
+                    tmp = sbox[tmp >>> 24] << 24 ^ sbox[tmp >> 16 & 255] << 16 ^ sbox[tmp >> 8 & 255] << 8 ^ sbox[tmp & 255];
+                    if (i % keyLen === 0) { tmp = tmp << 8 ^ tmp >>> 24 ^ rcon << 24; rcon = rcon << 1 ^ (rcon >> 7) * 283; }
+                }
+                encKey[i] = encKey[i - keyLen] ^ tmp;
+            }
+            for (j = 0; i; j++, i--) {
+                tmp = encKey[j & 3 ? i : i - 4];
+                if (i <= 4 || j < 4) decKey[j] = tmp;
+                else decKey[j] = decT[0][sbox[tmp >>> 24]] ^ decT[1][sbox[tmp >> 16 & 255]] ^ decT[2][sbox[tmp >> 8 & 255]] ^ decT[3][sbox[tmp & 255]];
+            }
+            return [encKey, decKey];
+        };
+        // one block (4 big-endian words) through the cipher: dir 0 encrypts, 1 decrypts
+        var aesBlock = function (ks, input, dir) {
+            var key = ks[dir], a = input[0] ^ key[0], b = input[dir ? 3 : 1] ^ key[1], c = input[2] ^ key[2], d = input[dir ? 1 : 3] ^ key[3];
+            var a2, b2, c2, rounds = key.length / 4 - 2, i, k = 4, out = [0, 0, 0, 0], table = aesTables()[dir];
+            var t0 = table[0], t1 = table[1], t2 = table[2], t3 = table[3], sbox = table[4];
+            for (i = 0; i < rounds; i++) {
+                a2 = t0[a >>> 24] ^ t1[b >> 16 & 255] ^ t2[c >> 8 & 255] ^ t3[d & 255] ^ key[k];
+                b2 = t0[b >>> 24] ^ t1[c >> 16 & 255] ^ t2[d >> 8 & 255] ^ t3[a & 255] ^ key[k + 1];
+                c2 = t0[c >>> 24] ^ t1[d >> 16 & 255] ^ t2[a >> 8 & 255] ^ t3[b & 255] ^ key[k + 2];
+                d = t0[d >>> 24] ^ t1[a >> 16 & 255] ^ t2[b >> 8 & 255] ^ t3[c & 255] ^ key[k + 3];
+                k += 4;
+                a = a2; b = b2; c = c2;
+            }
+            for (i = 0; i < 4; i++) {
+                out[dir ? 3 & -i : i] = sbox[a >>> 24] << 24 ^ sbox[b >> 16 & 255] << 16 ^ sbox[c >> 8 & 255] << 8 ^ sbox[d & 255] ^ key[k++];
+                a2 = a; a = b; b = c; c = d; d = a2;
+            }
+            return out;
+        };
+        var words = function (b, o) { return [(b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3], (b[o + 4] << 24) | (b[o + 5] << 16) | (b[o + 6] << 8) | b[o + 7],
+            (b[o + 8] << 24) | (b[o + 9] << 16) | (b[o + 10] << 8) | b[o + 11], (b[o + 12] << 24) | (b[o + 13] << 16) | (b[o + 14] << 8) | b[o + 15]]; };
+        var putWords = function (w, b, o) { for (var i = 0; i < 4; i++) { b[o + 4 * i] = w[i] >>> 24; b[o + 4 * i + 1] = (w[i] >>> 16) & 255; b[o + 4 * i + 2] = (w[i] >>> 8) & 255; b[o + 4 * i + 3] = w[i] & 255; } };
+        var err = function (name, msg) { return domException(name, msg); };
+        // ---- GCM
+        var gmul = function (x, y) {
+            var z0 = 0, z1 = 0, z2 = 0, z3 = 0, v0 = y[0], v1 = y[1], v2 = y[2], v3 = y[3], i, lsb;
+            for (i = 0; i < 128; i++) {
+                if ((x[i >>> 5] >>> (31 - (i & 31))) & 1) { z0 ^= v0; z1 ^= v1; z2 ^= v2; z3 ^= v3; }
+                lsb = v3 & 1;
+                v3 = (v3 >>> 1) | (v2 << 31); v2 = (v2 >>> 1) | (v1 << 31); v1 = (v1 >>> 1) | (v0 << 31); v0 = v0 >>> 1;
+                if (lsb) v0 ^= 0xE1000000;
+            }
+            return [z0, z1, z2, z3];
+        };
+        var ghashInto = function (Hk, y, bytes) {
+            var padded = bytes.length % 16 ? new Uint8Array(bytes.length + 16 - bytes.length % 16) : bytes;
+            if (padded !== bytes) padded.set(bytes);
+            for (var o = 0; o < padded.length; o += 16) {
+                var w = words(padded, o);
+                y = gmul([y[0] ^ w[0], y[1] ^ w[1], y[2] ^ w[2], y[3] ^ w[3]], Hk);
+            }
+            return y;
+        };
+        var lenBlock = function (a, c) {
+            var b = new Uint8Array(16), la = a * 8, lc = c * 8;
+            var put = function (v, o) { var h = Math.floor(v / TWO32), l = v >>> 0; b[o] = h >>> 24; b[o + 1] = (h >>> 16) & 255; b[o + 2] = (h >>> 8) & 255; b[o + 3] = h & 255; b[o + 4] = l >>> 24; b[o + 5] = (l >>> 16) & 255; b[o + 6] = (l >>> 8) & 255; b[o + 7] = l & 255; };
+            put(la, 0); put(lc, 8);
+            return b;
+        };
+        var gctr = function (ks, cb, input) {
+            var out = new Uint8Array(input.length), ctr = cb.slice(0), blk = new Uint8Array(16);
+            for (var o = 0; o < input.length; o += 16) {
+                putWords(aesBlock(ks, ctr, 0), blk, 0);
+                for (var i = 0; i < 16 && o + i < input.length; i++) out[o + i] = input[o + i] ^ blk[i];
+                ctr[3] = (ctr[3] + 1) | 0;
+            }
+            return out;
+        };
+        var gcm = function (ks, iv, aad, data, tagBits, decrypt) {
+            var Hk = aesBlock(ks, [0, 0, 0, 0], 0), J0;
+            if (iv.length === 12) J0 = [words(new Uint8Array([iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7], iv[8], iv[9], iv[10], iv[11], 0, 0, 0, 1]), 0)][0];
+            else J0 = ghashInto(Hk, ghashInto(Hk, [0, 0, 0, 0], iv), lenBlock(0, iv.length));
+            var tagLen = tagBits / 8, ct = data;
+            if (decrypt) {
+                if (data.length < tagLen) throw err('OperationError', 'The data is too short');
+                ct = data.subarray(0, data.length - tagLen);
+            }
+            var start = J0.slice(0);
+            start[3] = (start[3] + 1) | 0;
+            var body = decrypt ? null : gctr(ks, start, data), cipher = decrypt ? ct : body;
+            var S = ghashInto(Hk, ghashInto(Hk, ghashInto(Hk, [0, 0, 0, 0], aad), cipher), lenBlock(aad.length, cipher.length));
+            var tagFull = new Uint8Array(16), ej = aesBlock(ks, J0, 0);
+            putWords([ej[0] ^ S[0], ej[1] ^ S[1], ej[2] ^ S[2], ej[3] ^ S[3]], tagFull, 0);
+            if (decrypt) {
+                var given = data.subarray(data.length - tagLen), diff = 0;
+                for (var i = 0; i < tagLen; i++) diff |= given[i] ^ tagFull[i];
+                if (diff) throw err('OperationError', 'The operation failed for an operation-specific reason');
+                return gctr(ks, start, ct);
+            }
+            var out = new Uint8Array(body.length + tagLen);
+            out.set(body);
+            out.set(tagFull.subarray(0, tagLen), body.length);
+            return out;
+        };
+        // ---- CBC (PKCS #7 padding) and CTR (a counter of `length` low bits)
+        var cbc = function (ks, iv, data, decrypt) {
+            var prev = words(iv, 0), i, o, w;
+            if (!decrypt) {
+                var pad = 16 - data.length % 16, inp = new Uint8Array(data.length + pad), outE = new Uint8Array(inp.length);
+                inp.set(data);
+                for (i = data.length; i < inp.length; i++) inp[i] = pad;
+                for (o = 0; o < inp.length; o += 16) {
+                    w = words(inp, o);
+                    prev = aesBlock(ks, [w[0] ^ prev[0], w[1] ^ prev[1], w[2] ^ prev[2], w[3] ^ prev[3]], 0);
+                    putWords(prev, outE, o);
+                }
+                return outE;
+            }
+            if (!data.length || data.length % 16) throw err('OperationError', 'The data is not a whole number of blocks');
+            var outD = new Uint8Array(data.length);
+            for (o = 0; o < data.length; o += 16) {
+                w = words(data, o);
+                var p = aesBlock(ks, w, 1);
+                putWords([p[0] ^ prev[0], p[1] ^ prev[1], p[2] ^ prev[2], p[3] ^ prev[3]], outD, o);
+                prev = w;
+            }
+            var n = outD[outD.length - 1];
+            if (n < 1 || n > 16) throw err('OperationError', 'Bad padding');
+            for (i = outD.length - n; i < outD.length; i++) if (outD[i] !== n) throw err('OperationError', 'Bad padding');
+            return outD.subarray(0, outD.length - n);
+        };
+        var ctrMode = function (ks, counter, length, data) {
+            var ctr = new Uint8Array(counter), out = new Uint8Array(data.length), blk = new Uint8Array(16);
+            for (var o = 0; o < data.length; o += 16) {
+                putWords(aesBlock(ks, words(ctr, 0), 0), blk, 0);
+                for (var i = 0; i < 16 && o + i < data.length; i++) out[o + i] = data[o + i] ^ blk[i];
+                // (the low `length` bits count up, wrapping; the others stay)
+                for (var bit = 0, pos = 15; bit < length && pos >= 0; pos--, bit += 8) {
+                    var span = Math.min(8, length - bit), mask = (1 << span) - 1, v = ctr[pos] & mask;
+                    v = (v + 1) & mask;
+                    ctr[pos] = (ctr[pos] & ~mask & 255) | v;
+                    if (v !== 0) break;
+                }
+            }
+            return out;
+        };
+        // ---- keys
+        var b64u = function (bytes) { var s = ''; for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+        var unb64u = function (s) {
+            s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+            while (s.length % 4) s += '=';
+            var bin = atob(s), out = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+            return out;
+        };
+        var CryptoKeyC = window.CryptoKey || function CryptoKey() { throw new TypeError('Illegal constructor'); };
+        if (!window.CryptoKey) window.CryptoKey = CryptoKeyC;
+        var AES = { 'AES-GCM': 1, 'AES-CBC': 1, 'AES-CTR': 1, 'AES-KW': 1 };
+        // (own properties: a CryptoKey prototype of the engine's has getters only)
+        // (the CryptoKey of the moment: the interface stubs further down may put another one in place)
+        var makeKey = function (raw, alg, extractable, usages) {
+            var C = typeof window.CryptoKey === 'function' ? window.CryptoKey : CryptoKeyC;
+            var k = Object.create(C.prototype), own = function (name, v, en) { Object.defineProperty(k, name, { value: v, enumerable: en, configurable: true }); };
+            own('type', 'secret', true);
+            own('extractable', !!extractable, true);
+            own('algorithm', alg, true);
+            own('usages', Array.prototype.slice.call(usages || []), true);
+            own('__brRaw', raw, false);
+            return k;
+        };
+        var keyAlgorithm = function (name, algorithm, raw) {
+            if (AES[name]) {
+                if (raw.length !== 16 && raw.length !== 24 && raw.length !== 32) throw err('DataError', 'AES key data must be 128, 192 or 256 bits');
+                return { name: name, length: raw.length * 8 };
+            }
+            if (name === 'HMAC') {
+                var hn = hashName(algorithm && algorithm.hash);
+                if (!hn) throw err('NotSupportedError', 'Unrecognized hash');
+                return { name: 'HMAC', hash: { name: hn }, length: raw.length * 8 };
+            }
+            if (name === 'PBKDF2' || name === 'HKDF') return { name: name };
+            throw err('NotSupportedError', 'Algorithm: Unrecognized name');
+        };
+        var JWK_ALG = { 'AES-GCM': 'GCM', 'AES-CBC': 'CBC', 'AES-CTR': 'CTR', 'AES-KW': 'KW' };
+        var keyOf = function (key) { if (!key || !key.__brRaw) throw err('InvalidAccessError', 'The key is not usable here'); return key.__brRaw; };
+        var run = function (fn) { return new P(function (resolve) { resolve(fn()); }); };
+        var copy = function (u) { var out = new Uint8Array(u.length); out.set(u); return out.buffer; };
+        var deriveBitsNow = function (algorithm, baseKey, length) {
+            var name = algName(algorithm), raw = keyOf(baseKey), hn = hashName(algorithm.hash);
+            if (!hn) throw err('NotSupportedError', 'Unrecognized hash');
+            if (!length || length % 8) throw err('OperationError', 'The length must be a multiple of 8');
+            var n = length / 8, hl = HASHES[hn][2], out = new Uint8Array(n), i, j, k, u, t;
+            if (name === 'PBKDF2') {
+                var salt = toBytes(algorithm.salt), iters = algorithm.iterations | 0;
+                if (iters < 1) throw err('OperationError', 'The iterations must be at least 1');
+                for (i = 1, k = 0; k < n; i++) {
+                    var block = new Uint8Array(salt.length + 4);
+                    block.set(salt);
+                    block[salt.length] = i >>> 24; block[salt.length + 1] = (i >>> 16) & 255; block[salt.length + 2] = (i >>> 8) & 255; block[salt.length + 3] = i & 255;
+                    u = hmac(hn, raw, block);
+                    t = new Uint8Array(u);
+                    for (j = 1; j < iters; j++) { u = hmac(hn, raw, u); for (var q = 0; q < t.length; q++) t[q] ^= u[q]; }
+                    for (j = 0; j < hl && k < n; j++) out[k++] = t[j];
+                }
+                return out;
+            }
+            if (name === 'HKDF') {
+                var prk = hmac(hn, algorithm.salt ? toBytes(algorithm.salt) : new Uint8Array(hl), raw), info = algorithm.info ? toBytes(algorithm.info) : new Uint8Array(0);
+                if (n > 255 * hl) throw err('OperationError', 'The length is too big');
+                t = new Uint8Array(0);
+                for (i = 1, k = 0; k < n; i++) {
+                    var m = new Uint8Array(t.length + info.length + 1);
+                    m.set(t); m.set(info, t.length); m[m.length - 1] = i;
+                    t = hmac(hn, prk, m);
+                    for (j = 0; j < t.length && k < n; j++) out[k++] = t[j];
+                }
+                return out;
+            }
+            throw err('NotSupportedError', 'Algorithm: Unrecognized name');
+        };
+        var importNow = function (format, keyData, algorithm, extractable, usages) {
+            var name = algName(algorithm), raw;
+            if (format === 'raw') raw = new Uint8Array(toBytes(keyData));
+            else if (format === 'jwk') {
+                if (!keyData || keyData.kty !== 'oct' || typeof keyData.k !== 'string') throw err('DataError', 'Only symmetric JWK keys are supported');
+                raw = unb64u(keyData.k);
+            } else throw err('NotSupportedError', 'Unsupported key format');
+            return makeKey(raw, keyAlgorithm(name, algorithm, raw), extractable, usages);
+        };
+        var cryptNow = function (algorithm, key, data, decrypt) {
+            var name = algName(algorithm), raw = keyOf(key), bytes = toBytes(data);
+            if (!AES[name] || key.algorithm.name !== name) throw err('InvalidAccessError', 'The key does not match the algorithm');
+            var ks = aesKey(raw);
+            if (name === 'AES-GCM') {
+                var iv = toBytes(algorithm.iv), tl = algorithm.tagLength === undefined ? 128 : algorithm.tagLength;
+                if (!iv.length) throw err('OperationError', 'The iv must not be empty');
+                if ([32, 64, 96, 104, 112, 120, 128].indexOf(tl) < 0) throw err('OperationError', 'Bad tagLength');
+                return gcm(ks, iv, algorithm.additionalData ? toBytes(algorithm.additionalData) : new Uint8Array(0), bytes, tl, decrypt);
+            }
+            if (name === 'AES-CBC') {
+                var civ = toBytes(algorithm.iv);
+                if (civ.length !== 16) throw err('OperationError', 'The iv must be 16 bytes');
+                return cbc(ks, civ, bytes, decrypt);
+            }
+            if (name === 'AES-CTR') {
+                var ctr = toBytes(algorithm.counter), len = algorithm.length | 0;
+                if (ctr.length !== 16 || len < 1 || len > 128) throw err('OperationError', 'Bad counter or length');
+                return ctrMode(ks, ctr, len, bytes);
+            }
+            throw err('NotSupportedError', 'Algorithm: Unrecognized name');
+        };
+        return {
+            digest: function (algorithm, data) {
+                return run(function () {
+                    var hn = hashName(algorithm);
+                    if (!hn) throw err('NotSupportedError', 'Algorithm: Unrecognized name');
+                    return HASHES[hn][0](toBytes(data)).buffer;
+                });
+            },
+            importKey: function (format, keyData, algorithm, extractable, usages) { return run(function () { return importNow(format, keyData, algorithm, extractable, usages); }); },
+            exportKey: function (format, key) {
+                return run(function () {
+                    var raw = keyOf(key);
+                    if (!key.extractable) throw err('InvalidAccessError', 'The key is not extractable');
+                    if (format === 'raw') return copy(raw);
+                    if (format === 'jwk') {
+                        var a = key.algorithm, alg = a.name === 'HMAC' ? 'HS' + a.hash.name.slice(4) : JWK_ALG[a.name] ? 'A' + a.length + JWK_ALG[a.name] : undefined;
+                        var jwk = { kty: 'oct', k: b64u(raw), ext: true, key_ops: key.usages.slice() };
+                        if (alg) jwk.alg = alg;
+                        return jwk;
+                    }
+                    throw err('NotSupportedError', 'Unsupported key format');
+                });
+            },
+            generateKey: function (algorithm, extractable, usages) {
+                return run(function () {
+                    var name = algName(algorithm), n;
+                    if (AES[name]) n = (algorithm.length | 0) / 8;
+                    else if (name === 'HMAC') { var hn = hashName(algorithm.hash); if (!hn) throw err('NotSupportedError', 'Unrecognized hash'); n = algorithm.length ? Math.ceil(algorithm.length / 8) : HASHES[hn][1]; }
+                    else throw err('NotSupportedError', 'Algorithm: Unrecognized name');
+                    var raw = new Uint8Array(n);
+                    window.crypto.getRandomValues(raw);
+                    return makeKey(raw, keyAlgorithm(name, algorithm, raw), extractable, usages);
+                });
+            },
+            encrypt: function (algorithm, key, data) { return run(function () { return copy(cryptNow(algorithm, key, data, false)); }); },
+            decrypt: function (algorithm, key, data) { return run(function () { return copy(cryptNow(algorithm, key, data, true)); }); },
+            sign: function (algorithm, key, data) {
+                return run(function () {
+                    if (algName(algorithm) !== 'HMAC' || !key || !key.algorithm || key.algorithm.name !== 'HMAC') throw err('NotSupportedError', 'Only HMAC signatures are available');
+                    return hmac(key.algorithm.hash.name, keyOf(key), toBytes(data)).buffer;
+                });
+            },
+            verify: function (algorithm, key, signature, data) {
+                return run(function () {
+                    if (algName(algorithm) !== 'HMAC' || !key || !key.algorithm || key.algorithm.name !== 'HMAC') throw err('NotSupportedError', 'Only HMAC signatures are available');
+                    var mac = hmac(key.algorithm.hash.name, keyOf(key), toBytes(data)), sig = toBytes(signature), diff = mac.length ^ sig.length;
+                    for (var i = 0; i < mac.length && i < sig.length; i++) diff |= mac[i] ^ sig[i];
+                    return diff === 0;
+                });
+            },
+            deriveBits: function (algorithm, baseKey, length) { return run(function () { return deriveBitsNow(algorithm, baseKey, length).buffer; }); },
+            deriveKey: function (algorithm, baseKey, derivedKeyType, extractable, usages) {
+                return run(function () {
+                    var dn = algName(derivedKeyType), len = derivedKeyType.length;
+                    if (dn === 'HMAC' && !len) { var hn = hashName(derivedKeyType.hash); len = hn ? HASHES[hn][1] * 8 : 0; }
+                    var bits = deriveBitsNow(algorithm, baseKey, len);
+                    return makeKey(bits, keyAlgorithm(dn, derivedKeyType, bits), extractable, usages);
+                });
+            },
+            wrapKey: rejectWith('NotSupportedError', 'This operation is not available in this browser'),
+            unwrapKey: rejectWith('NotSupportedError', 'This operation is not available in this browser')
+        };
+    })();
+    try { Object.defineProperty(window, '__brSubtleImpl', { value: brSubtle, configurable: true }); } catch (e) {}   // (for tools/crypto-test.html)
+    if (window.crypto && !window.crypto.subtle && !window.crypto.webkitSubtle) {
+        var subtle = brSubtle;
         // getRandomValues of this engine fills the array but returns nothing (apple.com reads [0] of the result)
         try {
             var cproto = Object.getPrototypeOf(window.crypto), nativeGRV = cproto && cproto.getRandomValues;
@@ -2722,15 +3114,14 @@
     // that would move something: offsets it sets, or absolutely positioned boxes inside it that it would become the
     // containing block of (a flex item is not one). Looked at again when the width changes (other media rules).
     // Flex items are blocks (see BLOCKIFY in cssfix.js): the children of flex containers (found with the selectors of
-    // the page's flex rules from the manifest) get data-br-bf, valued with the block-level form of the display they
-    // have when marked (b block, t table, x box, l list-item) for the rules here, which stand ahead of the page's
-    // styles: wherever a rule of the page sets a display its twin decides. A display in the style attribute is changed
-    // there. Children hidden when looked at are looked at again; a container that is no longer flex lets go of its
-    // children. Line-clamped boxes (display: -webkit-box of the page's own) keep their inline children.
+    // the page's flex rules from the manifest, and by the boxes of style attributes) get data-br-bf: "b" for the kinds
+    // of element the engine makes inline (see bfValueOf), made blocks by the rule here, which stands ahead of the page's
+    // styles; wherever a rule of the page sets a display its twin decides. A display in the style attribute is changed
+    // there. A container that is no longer flex lets go of its children. Line-clamped boxes (display: -webkit-box of the
+    // page's own) keep their inline children.
     var bfRule = null, bfBoxes = [], fxPlan = null, fxKey = null;
-    var BF_OF = { inline: 'b', 'inline-block': 'b', 'run-in': 'b', compact: 'b', 'inline-table': 't', '-webkit-inline-box': 'x', 'inline-list-item': 'l' };
     var BF_STYLE = { inline: 'block', 'inline-block': 'block', 'inline-table': 'table', '-webkit-inline-box': '-webkit-box' };
-    var BF_SKIP = { BR: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1, LINK: 1, META: 1 };
+    var BF_SKIP = { BR: 1, WBR: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1, LINK: 1, META: 1, NOSCRIPT: 1, DATALIST: 1, SOURCE: 1, TRACK: 1, PARAM: 1, AREA: 1, TITLE: 1, BASE: 1, DIALOG: 1 };
     var flexPlan = function () {
         var rules = window.__brFlexRules;
         if (!rules) return null;
@@ -2757,22 +3148,34 @@
         if (column) return d === 'block' && cs.webkitBoxOrient === 'vertical';
         return d === '-webkit-box' || d === '-webkit-inline-box';
     };
-    // (reads only: the children to mark go to `writes`; reading and writing in turn made the engine work out the
-    // page's styles again for every child, 30 s on novinky.cz)
+    // (the value comes from the element's kind, not its computed style: every display rule of the page has its twin,
+    // so only the engine's own display is left to give, and that follows the tag: inline for spans, links, pictures,
+    // form fields and unknown (custom) elements; reading each child's style took 0.9 s on theguardian.com)
+    var BF_INLINE = { A: 1, ABBR: 1, ACRONYM: 1, B: 1, BDI: 1, BDO: 1, BIG: 1, CITE: 1, CODE: 1, DATA: 1, DEL: 1, DFN: 1, EM: 1, FONT: 1, I: 1, IMG: 1,
+        INS: 1, KBD: 1, LABEL: 1, MARK: 1, METER: 1, OUTPUT: 1, PICTURE: 1, PROGRESS: 1, Q: 1, S: 1, SAMP: 1, SELECT: 1, SMALL: 1, SPAN: 1, STRIKE: 1,
+        STRONG: 1, SUB: 1, SUP: 1, TEXTAREA: 1, TIME: 1, TT: 1, U: 1, VAR: 1, BUTTON: 1, INPUT: 1, VIDEO: 1, CANVAS: 1, IFRAME: 1, EMBED: 1,
+        OBJECT: 1, svg: 1, SVG: 1, math: 1, MATH: 1, NOBR: 1 };
+    var bfValueOf = function (c) {
+        var t = c.tagName;
+        if (t === 'INPUT' && String(c.type).toLowerCase() === 'hidden') return null;   // (the engine hides these)
+        if (t === 'AUDIO') return c.hasAttribute('controls') ? 'b' : null;
+        if (BF_INLINE[t] || t.indexOf('-') > 0) return 'b';
+        return '';
+    };
+    // (reads only, and of the DOM only: the children to mark go to `writes`; reading and writing in turn made the
+    // engine work out the page's styles again for every child, 30 s on novinky.cz)
     var collectItems = function (box, width, writes) {
-        var n = 0, hidden = false;
+        var n = 0;
         for (var c = box.firstElementChild; c; c = c.nextElementSibling) {
             n++;
             if (BF_SKIP[c.tagName] || c.__brBfBox === box) continue;
             if (c.__brContents) { collectItems(c, width, writes); c.__brBfBox = box; continue; }   // (display: contents: its children are the items)
-            var d = getComputedStyle(c).display;
-            if (d === 'none') { hidden = true; continue; }   // (looked at again when it shows: its own display is not known)
-            writes.push(c, BF_OF[d] || '');
+            var v = bfValueOf(c);
+            if (v !== null) writes.push(c, v);
             c.__brBfBox = box;
         }
         box.__brFxN = n;
         box.__brFxW = width;
-        box.__brFxHidden = hidden;
     };
     var writeItems = function (writes) {
         for (var i = 0; i < writes.length; i += 2) {
@@ -2792,14 +3195,18 @@
         }
         box.__brFxN = box.__brFxW = box.__brFx = undefined;
     };
+    var markStats = { plan: 0, query: 0, check: 0, checks: 0, write: 0, writes: 0 };
     var markFlexItems = function () {
         if (window.__brNoFlexItems) return;   // (debugging switch)
-        var plan = flexPlan();
+        var tp = Date.now(), plan = flexPlan();
+        markStats.plan = Date.now() - tp;
+        markStats.query = markStats.check = markStats.checks = 0;
         if (!plan) return;
         if (!bfRule) {
             bfRule = document.createElement('style');
             bfRule.__brOwn = true;
-            bfRule.textContent = '[data-br-bf=b]{display:block}[data-br-bf=t]{display:table}[data-br-bf=x]{display:-webkit-box}[data-br-bf=l]{display:list-item}';
+            // (not over the engine's own hiding of elements with the hidden attribute)
+            bfRule.textContent = '[data-br-bf=b]:not([hidden]){display:block}';
             var head = document.head || document.documentElement;
             head.insertBefore(bfRule, head.firstChild);
         }
@@ -2814,25 +3221,33 @@
         for (var kind = 1; kind <= 2; kind++) {
             var sels = kind === 1 ? plan.box : plan.col;
             for (k = 0; k < sels.length; k++) {
+                var tq = Date.now();
                 try { list = document.querySelectorAll(sels[k]); } catch (e) { continue; }
+                var tc = Date.now();
+                markStats.query += tc - tq;
                 for (i = 0; i < list.length; i++) {
                     box = list[i];
                     if (box.__brFx === -1) continue;   // (no longer flex: let go of below)
                     if (box.__brFx) {
-                        // (known: only its new children, when it has some, and the hidden ones)
-                        if (box.__brFxN !== box.childElementCount || box.__brFxHidden) collectItems(box, box.__brFxW, writes);
+                        // (known: only its new children, when it has some)
+                        if (box.__brFxN !== box.childElementCount) collectItems(box, box.__brFxW, writes);
                         continue;
                     }
+                    markStats.checks++;
                     if (!isFlexBox(box, kind === 2)) continue;
                     box.__brFx = kind;
                     collectItems(box, width, writes);
                     kept.push(box);
                 }
+                markStats.check += Date.now() - tc;
             }
         }
         // (then the writes, all together)
+        var tw = Date.now();
         for (i = 0; i < gone.length; i++) unmarkItems(gone[i]);
         writeItems(writes);
+        markStats.write = Date.now() - tw;
+        markStats.writes = writes.length / 2;
         bfBoxes = kept;
     };
     // align-self of flex items (cssfix sends the rules that set it, with their specificity and media queries, see
@@ -2924,7 +3339,17 @@
                 k.full = Math.abs(k.el.offsetHeight + k.mt + k.mb - room) < 1.5;
             }
         }
-        return true;
+        // (only when some item would sit elsewhere: an item of a stretching box that is not stretched, a height of its
+        // own, already sits at the start; one as big as the box sits the same anywhere. 48 boxes of theguardian.com)
+        var P0 = box.__brFx === 2 ? 'x' : P;
+        for (i = 0; i < kids.length; i++) {
+            k = kids[i];
+            if (k.eff === base) continue;
+            if (k.eff === 'x') { if (!k.full) return true; continue; }
+            if (P0 === 'x') { if (k.eff !== 's' || k.full) return true; continue; }
+            if (!k.full) return true;
+        }
+        return false;
     };
     // (write: the box at the start; a column's items placed by margins or given the full width)
     var asStart = function (t) {
@@ -3024,7 +3449,12 @@
         relayoutAll(fresh);
         // read, write: boxes to the start, columns placed; rows laid out afresh, measured and placed
         var go = [], rows = [];
-        for (i = 0; i < todo.length; i++) if (asPrepare(todo[i])) go.push(todo[i]);
+        for (i = 0; i < todo.length; i++) {
+            if (asPrepare(todo[i])) { go.push(todo[i]); continue; }
+            // (nothing to move: remembered as it is, so that it is not measured again until something changes)
+            todo[i].box.__brAsSig = asSignature(todo[i].box, todo[i].kids);
+            kept.push(todo[i].box);
+        }
         for (i = 0; i < go.length; i++) asStart(go[i]);
         var moved = [];
         for (i = 0; i < go.length; i++) if (!go[i].vertical) { moved.push(go[i].box); rows.push(go[i]); }
@@ -3041,7 +3471,8 @@
         alignFlexItems();
         var t2 = Date.now();
         // (debugging: the time of each, the containers marked and the boxes aligned)
-        if (window.__brNoteSlow) window.__brNoteSlow('flex items', t2 - t0, 'mark ' + (t1 - t0) + ' (' + bfBoxes.length + ' boxes), align ' + (t2 - t1) + ' (' + asBoxes.length + ' boxes)');
+        if (window.__brNoteSlow) window.__brNoteSlow('flex items', t2 - t0, 'mark ' + (t1 - t0) + ' (' + bfBoxes.length + ' boxes: plan ' + markStats.plan + ', queries ' + markStats.query +
+            ', checks ' + markStats.check + ' for ' + markStats.checks + ', writes ' + markStats.write + ' for ' + markStats.writes + '), align ' + (t2 - t1) + ' (' + asBoxes.length + ' boxes)');
     });
     var zRule = null, zWidth = 0;
     var positionsInside = function (el) {

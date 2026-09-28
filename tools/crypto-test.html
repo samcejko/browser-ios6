@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crypto test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>crypto.subtle (the app's, see shims-extra.js)</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<pre id="dump"></pre>
+<script>
+// Every operation runs on the app's implementation (window.__brSubtleImpl, which is crypto.subtle on the device); in a
+// current browser the same runs on its own crypto.subtle too and the two must agree, and EXPECTED (made so) is what the
+// device must give.
+var EXPECTED = {"sha384 abc":"cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7","sha512 abc":"ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f","sha512 300":"46e56ad30db9ef50f8b6762ba55839737f3fba34ab47863c9daff7b3f58f97fe3465a52dd364560db47f802909ced49093322621ea0aebf8e0696b85ca8f81f0","sha384 empty":"38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b","sha256 300":"04773f8726c81cafcfa1a09a82664b98b00d2021031a1715bca1154f2dad3472","hmac SHA-1":"de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9","hmac verify SHA-1":"true","hmac verify bad SHA-1":"false","hmac SHA-256":"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8","hmac verify SHA-256":"true","hmac verify bad SHA-256":"false","hmac SHA-384":"d7f4727e2c0b39ae0f1e40cc96f60242d5b7801841cea6fc592c5d3e1ae50700582a96cf35e1e554995fe4e03381c237","hmac verify SHA-384":"true","hmac verify bad SHA-384":"false","hmac SHA-512":"b42af09057bac1e2d41708e48a902e09b5ff7f12ab428a4fe86653c73dd248fb82f948a549f7b791a5b41915ee4d1ec3935357e4e2317250d0372afa2ebeeb3a","hmac verify SHA-512":"true","hmac verify bad SHA-512":"false","hmac long key":"5016cc250ab6206ec3814c2e833921695a7b27fab662baed993b52d27556f4bc","gcm128":"55060f85a806ff3c7c3535abea037cc8e6bb685346b0fae131364d1041035dc82f78fc68bb01bb6e900e7706a9f3aff1a277b6220ccf7778d05ce6c280efbc3d0b92","gcm128 back":"050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c","gcm128 tampered":"OperationError","gcm256":"0ddc23e7a61087457856432444a2ed31454f6a9b5fe75121d6dd22ba8e06722f9d90c260dca35928fabaad8fc5d5b8379894c6680e37be8eaa8874023dcb40ba9d1f","gcm256 back":"050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c","gcm256 tampered":"OperationError","gcm iv16 tag96":"8f4f64fd13fb3b405b0bfc953f44ce656a354d5394dad39c4c5028a47311e885010d015f8de183fe2bc895422a","gcm empty":"7da37c7126a5af919326115be586e737","cbc128":"34abbb44e271b085087a4cef75783d92b3e5ce39db7381d40af783a635187101c2b61dcde2ee33e643293814e3cfd69e","cbc128 back":"020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2","cbc256":"f74d3580f96da8a732f6a897710ce9fb3145f5594b633837083aa181cbe0701c276d7fb2e0803e2bc5cd716f5889be92","cbc256 back":"020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2","ctr64 wrap":"84619612c46dd142b9791fb428c4baffa4cb567126c6bae3e16ee29e8b7a540a0ac2341d94f6aa12bd6b46c6d6ef0708949c1483f4a806d0aded19050e3e5a8cce1e10c0fc30","pbkdf2 sha256":"632c2812e46d4604102ba7618e9d6d7d2f8128f6266b4a03264d2a0460b7dcb3","pbkdf2 sha512":"ded5fd36ace28019108070acb5acc9db892eb04230f71ecda77c0dbf97e38a8dd7cd384c0b3a5a903fa8137516563d12c6666db019ef7781ef996b4fcd6b62caa1","pbkdf2 derived key":"250ddbe05252f14a0036d5f6c9ec4da6","hkdf sha256":"5c5c95a1030c1e83bd230a91687e56b8d4d1a28e3e979e5142818d65c1a4631457c1125d5c9acc071827","jwk raw":"000102030405060708090a0b0c0d0e0f","jwk out":"oct AAECAwQFBgcICQoLDA0ODw A128GCM","key algorithm":"AES-GCM 128 secret true true","generated round trip":"ok","not extractable":"InvalidAccessError"};
+var hex = function (buf) { var b = new Uint8Array(buf), s = ''; for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16); return s; };
+var bytes = function (s) { var out = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255; return out; };
+var seq = function (n, start) { var out = new Uint8Array(n); for (var i = 0; i < n; i++) out[i] = (start + i * 7) & 255; return out; };
+var computeAll = function (S) {
+  var r = {}, text = bytes('The quick brown fox jumps over the lazy dog'), long = seq(300, 3), P = Promise;
+  var step = function (name, promise, map) { return promise.then(function (v) { r[name] = map ? map(v) : hex(v); }, function (e) { r[name] = 'ERR ' + (e && e.name); }); };
+  var chain = P.resolve();
+  var add = function (fn) { chain = chain.then(fn); };
+  add(function () { return step('sha384 abc', S.digest('SHA-384', bytes('abc'))); });
+  add(function () { return step('sha512 abc', S.digest({ name: 'SHA-512' }, bytes('abc'))); });
+  add(function () { return step('sha512 300', S.digest('SHA-512', long)); });
+  add(function () { return step('sha384 empty', S.digest('SHA-384', new Uint8Array(0))); });
+  add(function () { return step('sha256 300', S.digest('SHA-256', long)); });
+  ['SHA-1', 'SHA-256', 'SHA-384', 'SHA-512'].forEach(function (h) {
+    add(function () {
+      return S.importKey('raw', bytes('key'), { name: 'HMAC', hash: h }, true, ['sign', 'verify']).then(function (k) {
+        return step('hmac ' + h, S.sign('HMAC', k, text)).then(function () {
+          return S.sign('HMAC', k, text).then(function (sig) {
+            return step('hmac verify ' + h, S.verify('HMAC', k, sig, text), String).then(function () {
+              var bad = new Uint8Array(sig); bad[0] ^= 1;
+              return step('hmac verify bad ' + h, S.verify('HMAC', k, bad, text), String);
+            });
+          });
+        });
+      });
+    });
+  });
+  add(function () {
+    return S.importKey('raw', seq(80, 11), { name: 'HMAC', hash: 'SHA-256' }, true, ['sign']).then(function (k) { return step('hmac long key', S.sign('HMAC', k, text)); });
+  });
+  [16, 32].forEach(function (klen) {   // (current browsers refuse 192-bit AES keys)
+    add(function () {
+      return S.importKey('raw', seq(klen, 1), 'AES-GCM', true, ['encrypt', 'decrypt']).then(function (k) {
+        var alg = { name: 'AES-GCM', iv: seq(12, 9), additionalData: bytes('header') };
+        return S.encrypt(alg, k, seq(50, 5)).then(function (ct) {
+          r['gcm' + klen * 8] = hex(ct);
+          return S.decrypt(alg, k, ct).then(function (pt) { r['gcm' + klen * 8 + ' back'] = hex(pt); }).then(function () {
+            var t = new Uint8Array(ct); t[t.length - 1] ^= 1;
+            return S.decrypt(alg, k, t).then(function () { r['gcm' + klen * 8 + ' tampered'] = 'accepted'; }, function (e) { r['gcm' + klen * 8 + ' tampered'] = e && e.name; });
+          });
+        });
+      });
+    });
+  });
+  add(function () {
+    return S.importKey('raw', seq(16, 2), 'AES-GCM', false, ['encrypt']).then(function (k) {
+      return step('gcm iv16 tag96', S.encrypt({ name: 'AES-GCM', iv: seq(16, 4), tagLength: 96 }, k, seq(33, 8)));
+    });
+  });
+  add(function () {
+    return S.importKey('raw', seq(16, 2), 'AES-GCM', false, ['encrypt']).then(function (k) {
+      return step('gcm empty', S.encrypt({ name: 'AES-GCM', iv: seq(12, 1) }, k, new Uint8Array(0)));
+    });
+  });
+  [16, 32].forEach(function (klen) {
+    add(function () {
+      return S.importKey('raw', seq(klen, 6), { name: 'AES-CBC' }, true, ['encrypt', 'decrypt']).then(function (k) {
+        var alg = { name: 'AES-CBC', iv: seq(16, 13) };
+        return S.encrypt(alg, k, seq(33, 2)).then(function (ct) {
+          r['cbc' + klen * 8] = hex(ct);
+          return S.decrypt(alg, k, ct).then(function (pt) { r['cbc' + klen * 8 + ' back'] = hex(pt); });
+        });
+      });
+    });
+  });
+  add(function () {
+    return S.importKey('raw', seq(16, 7), 'AES-CTR', true, ['encrypt', 'decrypt']).then(function (k) {
+      var ctr = seq(16, 0); ctr[15] = 254; ctr[14] = 255;
+      return step('ctr64 wrap', S.encrypt({ name: 'AES-CTR', counter: ctr, length: 64 }, k, seq(70, 1)));
+    });
+  });
+  add(function () {
+    return S.importKey('raw', bytes('password'), 'PBKDF2', false, ['deriveBits', 'deriveKey']).then(function (k) {
+      return step('pbkdf2 sha256', S.deriveBits({ name: 'PBKDF2', salt: bytes('salt'), iterations: 1000, hash: 'SHA-256' }, k, 256)).then(function () {
+        return step('pbkdf2 sha512', S.deriveBits({ name: 'PBKDF2', salt: bytes('salt'), iterations: 10, hash: 'SHA-512' }, k, 520));
+      }).then(function () {
+        return S.deriveKey({ name: 'PBKDF2', salt: bytes('s2'), iterations: 5, hash: 'SHA-1' }, k, { name: 'AES-GCM', length: 128 }, true, ['encrypt']).then(function (dk) {
+          return step('pbkdf2 derived key', S.exportKey('raw', dk));
+        });
+      });
+    });
+  });
+  add(function () {
+    return S.importKey('raw', seq(22, 11), 'HKDF', false, ['deriveBits']).then(function (k) {
+      return step('hkdf sha256', S.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: seq(13, 0), info: seq(10, 240) }, k, 336));
+    });
+  });
+  add(function () {
+    return S.importKey('jwk', { kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODw', alg: 'A128GCM', ext: true }, 'AES-GCM', true, ['encrypt']).then(function (k) {
+      return step('jwk raw', S.exportKey('raw', k)).then(function () {
+        return S.exportKey('jwk', k).then(function (j) { r['jwk out'] = j.kty + ' ' + j.k + ' ' + j.alg; });
+      }).then(function () {
+        r['key algorithm'] = k.algorithm.name + ' ' + k.algorithm.length + ' ' + k.type + ' ' + k.extractable + ' ' + (k instanceof CryptoKey);
+      });
+    });
+  });
+  add(function () {
+    return S.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']).then(function (k) {
+      var alg = { name: 'AES-GCM', iv: seq(12, 3) };
+      return S.encrypt(alg, k, text).then(function (ct) { return S.decrypt(alg, k, ct); }).then(function (pt) { r['generated round trip'] = hex(pt) === hex(text) ? 'ok' : 'differs'; });
+    });
+  });
+  add(function () {
+    return S.importKey('raw', seq(16, 1), 'AES-GCM', false, ['encrypt']).then(function (k) {
+      return S.exportKey('raw', k).then(function () { r['not extractable'] = 'exported'; }, function (e) { r['not extractable'] = e && e.name; });
+    });
+  });
+  return chain.then(function () { return r; });
+};
+var show = function (name, ok, detail) {
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+};
+var finish = function (mine, want) {
+  var pass = 0, total = 0, bad = [];
+  for (var k in want) {
+    if (!want.hasOwnProperty(k)) continue;
+    total++;
+    var ok = mine[k] === want[k];
+    if (ok) pass++; else bad.push(k);
+    show(k, ok, ok ? '' : 'got ' + String(mine[k]).slice(0, 60) + ' want ' + String(want[k]).slice(0, 60));
+  }
+  document.getElementById('summary').textContent = pass + ' / ' + total;
+  document.title = 'crypto ' + pass + '/' + total;
+  window.__cryptoResults = { pass: pass, total: total, bad: bad };
+};
+window.addEventListener('load', function () {
+  var impl = window.__brSubtleImpl;
+  if (!impl) { document.title = 'crypto no impl'; return; }
+  var native = window.crypto && window.crypto.subtle && window.crypto.subtle !== impl ? window.crypto.subtle : null;
+  computeAll(impl).then(function (mine) {
+    if (native) {
+      return computeAll(native).then(function (want) {
+        document.getElementById('dump').textContent = JSON.stringify(want);
+        finish(mine, want);
+      });
+    }
+    finish(mine, EXPECTED || {});
+  }).then(null, function (e) { document.title = 'crypto error ' + e; });
+}, false);
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</body>
+</html>
