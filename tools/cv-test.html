@@ -45,6 +45,15 @@ var page = [
   '.tie-scope { --tc: rgb(255, 0, 0); }',
   '.tie-a { color: var(--tc); }',
   '.tie-b.tie-a { color: rgb(0, 0, 255); }',
+  '.fbox { --fc: rgb(0, 128, 0); }',
+  '.fck:checked + .fbox { --fc: rgb(128, 0, 0); }',
+  '.fbox span { color: var(--fc); }',
+  ':root { --fb: rgb(0, 0, 128); }',
+  '.fscope { --fb: rgb(0, 128, 128); }',
+  '.fck:checked + .fuse { background-color: var(--fb); }',
+  '*, ::before, ::after { --tw-rotate: 0; --tw-scale-x: 1; }',
+  '.rot { --tw-rotate: 45deg; }',
+  '.twbox { transform: rotate(var(--tw-rotate)) scaleX(var(--tw-scale-x)); width: 10px; height: 10px; }',
   '</style>',
   '<ul><li id="l1" class="imp">a</li><li id="l2">b</li><li id="l3" class="imp">c</li><li id="l4" class="imp">d</li></ul>',
   '<table><colgroup><col><col class="sel"></colgroup><tr><td id="c1">1</td><td id="c2">2</td><td id="c3">3</td></tr><tr><td id="c4" colspan="2">4</td><td id="c5">5</td></tr></table>',
@@ -60,7 +69,10 @@ var page = [
   '<div class="npparent"><div class="npchild" id="np1"></div></div>',
   '<div style="--k: 33px"><div id="inl" style="width: var(--k, 5px); height: 5px; background: #ccc"></div></div>',
   '<div class="hsl" id="h1"></div><div class="hsl dark" id="h2"></div>',
-  '<div class="tie-scope"><span class="tie-a tie-b" id="t1">tie</span> <span class="tie-a" id="t2">scoped</span></div>'
+  '<div class="tie-scope"><span class="tie-a tie-b" id="t1">tie</span> <span class="tie-a" id="t2">scoped</span></div>',
+  '<input type="checkbox" class="fck" id="ck1"><div class="fbox" id="fb1"><span id="fs1">state scope</span></div>',
+  '<div class="fscope"><input type="checkbox" class="fck" id="ck2"><span class="fuse" id="fu1">state use</span></div>',
+  '<div class="twbox" id="tw1"></div><div class="twbox rot" id="tw2"></div><div class="rot"><div class="twbox" id="tw3"></div></div>'
 ].join('\n');
 var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
 var html = result.out;
@@ -98,6 +110,9 @@ var run = function () {
   var blue = function (id) { return cs(id).backgroundColor === 'rgb(0, 0, 200)'; }, bold = function (id) { return cs(id).fontWeight === '700'; };
   check(':nth-col(2) with colspan', !blue('c1') && blue('c2') && !blue('c3') && blue('c4') && !blue('c5'), ['c1', 'c2', 'c3', 'c4', 'c5'].map(blue).join());
   check('column combinator col.sel || td', !bold('c1') && bold('c2') && !bold('c3') && bold('c4') && !bold('c5'), ['c1', 'c2', 'c3', 'c4', 'c5'].map(bold).join());
+  // `*` definitions hold on every element: a child of .rot gets the `*` value again, it does not inherit 45deg
+  var tf = function (id) { return cs(id).transform || cs(id).webkitTransform; };
+  check('universal definitions (Tailwind *, ::before, ::after)', /^matrix\(1, 0, 0, 1/.test(tf('tw1')) && /^matrix\(0\.7071/.test(tf('tw2')) && /^matrix\(1, 0, 0, 1/.test(tf('tw3')), tf('tw1') + ' | ' + tf('tw2') + ' | ' + tf('tw3'));
   // dynamic: a class and a script-set custom property
   document.getElementById('b0').className += ' btn-danger';
   document.getElementById('sp1').style.setProperty('--sp', '77px');
@@ -122,12 +137,38 @@ var run = function () {
     check('insertRule rewritten, still one rule', inserted === 0 && r0.length === 1 && /-webkit-box/.test(r0[0].cssText) && /rgba\(0, 0, 255, 0\.5\)/.test(r0[0].cssText), r0.length + ' ' + (r0[0] && r0[0].cssText));
     check('<style> text rewritten', /-webkit-box/.test(rtText.textContent) && /top:\s*0/.test(rtText.textContent), rtText.textContent);
     check('runtime style with scoped custom properties', document.getElementById('rq').offsetWidth === 9, document.getElementById('rq').offsetWidth + ' ' + rtVars.textContent.slice(0, 200));
+    // state pseudo-classes (hover, focus, checked...): an event redoes only what those rules match (with the subtree
+    // where they define custom properties), not the whole page. (:checked here: the test page has no focus)
+    var tick = function (id, on) {
+      var box = document.getElementById(id);
+      box.checked = on;
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    var st0 = window.__brVars.state().passes;
+    tick('ck1', true);
+    setTimeout(function () {
+      var st1 = window.__brVars.state();
+      check('state rule defines a custom property (subtree)', cs('fs1').color === 'rgb(128, 0, 0)', cs('fs1').color);
+      check('a state pass is partial', st1.passes > st0 && /changed, change/.test(st1.dirty || ''), JSON.stringify(st1));
+      tick('ck1', false);
+      tick('ck2', true);
+      setTimeout(function () {
+        check('state rule uses a scoped custom property', cs('fu1').backgroundColor === 'rgb(0, 128, 128)' && cs('fs1').color === 'rgb(0, 128, 0)', cs('fu1').backgroundColor + ' ' + cs('fs1').color);
+        tick('ck2', false);
+        setTimeout(function () {
+          check('the state ends: value taken back', cs('fu1').backgroundColor === 'rgba(0, 0, 0, 0)', cs('fu1').backgroundColor);
+          finish();
+        }, 1500);
+      }, 1500);
+    }, 1500);
+  }, 1500);
+  var finish = function () {
     checks.push('errors: ' + (window.__errors.join(' | ') || 'none'));
     checks.push('state ' + JSON.stringify(window.__brVars && window.__brVars.state()) + ' cv=' + (window.__manifest && window.__manifest.cv ? window.__manifest.cv.length : 0));
     document.getElementById('out').textContent = checks.join('\n');
     var fails = checks.filter(function (c) { return c.indexOf('FAIL') === 0; }).length;
     document.title = 'cv ' + (checks.length - 2 - fails) + '/' + (checks.length - 2);
-  }, 1500);
+  };
 };
 // hidden tabs run timers at most once a second: wait for the shim's first pass
 var waitStart = Date.now();

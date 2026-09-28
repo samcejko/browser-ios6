@@ -7054,7 +7054,7 @@
     // that match the element, or else its parent's value. Declarations that come out different from the substituted
     // value are set inline (on ::before/::after through generated rules), unless another rule wins that property.
     (function () {
-        var rules = [], registered = {}, rootVars = {}, gen = 0, tracked = [], timer = null, busy = false, lastCost = 0;
+        var rules = [], registered = {}, rootVars = {}, gen = 0, tracked = [], timer = null, busy = false, lastCost = 0, universal = {};
         var watchStates = false, observer = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
         var pseudoTracked = [], stats = { passes: 0, applied: 0, skipped: 0, rules: 0 };
         var trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
@@ -7115,10 +7115,11 @@
             if (m) { pseudo = m[1].replace(/^:(?!:)/, '::').toLowerCase(); s = trim(s.slice(0, m.index)) || '*'; if (/[\s>+~]$/.test(s)) s += '*'; }
             var req = [], stripped = s.replace(/\[[^\]]*\]/g, ' ').replace(/:(not|-webkit-any|is|where|matches|has)\((?:[^()]|\([^()]*\))*\)/gi, ' '), re = /\.((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/g, cm;
             while ((cm = re.exec(stripped)) !== null) req.push(unescapeCSS(cm[1]));
-            if (/:(hover|active|focus|checked|target|enabled|disabled|valid|invalid|indeterminate)/i.test(s)) watchStates = true;
+            var state = /:(hover|active|focus|checked|target|enabled|disabled|valid|invalid|indeterminate)/i.test(s);
+            if (state) watchStates = true;
             var attrRe = /\[\s*([\w-]+)/g, am;
             while ((am = attrRe.exec(s)) !== null) attrNames[am[1].toLowerCase()] = 1;
-            return { base: s, pseudo: pseudo, req: req };
+            return { base: s, pseudo: pseudo, req: req, state: state };
         };
         // attributes whose changes can change what the selectors match ("style" only when a selector looks at it:
         // scripts animating inline styles would otherwise start a pass every frame)
@@ -7147,7 +7148,8 @@
             if (!memo || memo.g !== gen) memo = el.__brCVm = { g: gen, v: {} };
             if (memo.v.hasOwnProperty(name)) return memo.v[name];
             memo.v[name] = null;   // a reference cycle makes the property invalid
-            var rec = el.__brCV, own = rec && rec.g === gen ? rec.d[name] : null, val;
+            var rec = el.__brCV, own = rec && rec.g === gen ? rec.d[name] : null, val, uni = universal[name];
+            if (uni && (!own || beats(uni, own))) own = uni;
             // the style attribute (and style.setProperty of scripts, the later write) beats the stylesheets, unless a
             // rule has !important and the inline declaration does not
             var inl = el.__brCVi, cs0 = el.style, cp = cs0 && cs0.__brCP, iv, ii = false;
@@ -7278,7 +7280,14 @@
         var run = function () {
             gen++;
             stats.passes++;
-            stats.dirty = dirtyAll ? dirtyWhy : dirtyRoots.length + ' changed';
+            stats.dirty = dirtyAll ? dirtyWhy : dirtyRoots.length + ' changed' + (dirtyWhy ? ', ' + dirtyWhy : '');
+            // (for the debug log: the biggest changed subtree)
+            if (!dirtyAll && dirtyRoots.length) {
+                var big = null, bigN = -1;
+                for (i = 0; i < dirtyRoots.length; i++) { var nn = dirtyRoots[i].getElementsByTagName('*').length; if (nn > bigN) { bigN = nn; big = dirtyRoots[i]; } }
+                var bc = big.getAttribute('class');
+                stats.dirty += ' (' + big.tagName.toLowerCase() + (big.id ? '#' + big.id : '') + (bc ? '.' + bc.split(/\s+/)[0].slice(0, 30) : '') + ' ' + bigN + ')';
+            }
             var tRun = Date.now();
             var classes = docClasses(), mediaCache = {}, users = [], i, b, k, r, list, el, rec;
             var mediaOk = function (m) {
@@ -7291,15 +7300,28 @@
                 return true;
             };
             var recOf = function (e2) { var rc = e2.__brCV; if (!rc || rc.g !== gen) rc = e2.__brCV = { g: gen, d: {}, u: {}, user: false }; return rc; };
-            var matched = 0;
+            var matched = 0, stateNow = [], stateNowSub = [];
+            universal = {};
             for (i = 0; i < rules.length; i++) {
                 r = rules[i];
                 if (!r.s || !mediaOk(r.m)) continue;
                 for (b = 0; b < r.sel.length; b++) {
                     var sel = r.sel[b];
                     if (!possible(sel.req, classes)) continue;
+                    // a rule for every element that only defines custom properties (Tailwind's `*, ::before, ::after`
+                    // with 40 --tw-* properties): one entry that holds wherever no other rule wins, not 40 records per
+                    // element (nextjs.org: 200,000, a second of every pass)
+                    if (sel.base === '*' && !sel.pseudo && r.d && !r.u) {
+                        matched++;
+                        for (var ud = 0; ud < r.d.length; ud++) {
+                            var uv = { v: r.d[ud][1], sp: r.sp ? r.sp[b] : 0, o: r.o, i: r.d[ud][2] }, uc = universal[r.d[ud][0]];
+                            if (!uc || beats(uv, uc)) universal[r.d[ud][0]] = uv;
+                        }
+                        continue;
+                    }
                     try { list = document.querySelectorAll(sel.base); } catch (x) { continue; }
                     if (list.length) matched++;
+                    if (sel.state) for (k = 0; k < list.length; k++) { stateNow.push(list[k]); stateNowSub.push(!!(r.d && r.d.length)); }
                     var spec = r.sp ? r.sp[b] : 0;
                     for (k = 0; k < list.length; k++) {
                         el = list[k];
@@ -7322,6 +7344,8 @@
                 }
             }
             stats.rules = matched;
+            stateEls = stateNow;
+            stateSub = stateNowSub;
             stats.tCollect = Date.now() - tRun;
             // style attributes (and style.setProperty('--x') of scripts)
             var inl = [], seen = [];
@@ -7331,8 +7355,14 @@
             for (i = 0; i < inlineEls.length; i++) if (root.contains(inlineEls[i])) { keepInline.push(inlineEls[i]); seen.push(inlineEls[i]); }
             inlineEls = keepInline;
             if (cpUsed) {
-                var every = document.getElementsByTagName('*');
-                for (i = 0; i < every.length; i++) if (every[i].style && every[i].style.__brCP) seen.push(every[i]);
+                var every = document.getElementsByTagName('*'), est;
+                for (i = 0; i < every.length; i++) {
+                    est = every[i].style;
+                    if (!est || !est.__brCP) continue;
+                    seen.push(every[i]);
+                    // (a script set a custom property here since the last pass: this subtree is redone, not the page)
+                    if (est.__brCPdirty) { est.__brCPdirty = false; markDirty(every[i]); }
+                }
             }
             for (i = 0; i < seen.length; i++) {
                 el = seen[i];
@@ -7345,28 +7375,35 @@
                     for (k = 0; k < info.u.length; k++) { var ikey = '|' + info.u[k].p, icur = rec.u[ikey]; if (!icur || beats(info.u[k], icur)) rec.u[ikey] = info.u[k]; }
                 }
             }
+            stats.tInline = Date.now() - tRun - stats.tCollect;
             // what each user of a scoped property gets (an element nothing changed around keeps what it got last time)
-            var pending = [];
+            var pending = [], reused = 0, redone = 0;
             for (i = 0; i < users.length; i++) {
                 el = users[i];
                 rec = el.__brCV;
-                var prevRaw = isDirty(el) ? null : el.__brCVr, nextRaw = {};
+                var oldRaw = el.__brCVr, prevRaw = isDirty(el) ? null : oldRaw, nextRaw = {};
                 for (var ukey in rec.u) {
                     if (!rec.u.hasOwnProperty(ukey)) continue;
-                    var use = rec.u[ukey], raw, pr = prevRaw && prevRaw.hasOwnProperty(ukey) ? prevRaw[ukey] : null;
-                    if (pr && pr.v === use.v) raw = pr.raw;
+                    var use = rec.u[ukey], raw, same, pr = prevRaw && prevRaw.hasOwnProperty(ukey) ? prevRaw[ukey] : null;
+                    if (pr && pr.v === use.v) { raw = pr.raw; reused++; }
                     else {
+                        redone++;
                         raw = substitute(use.v, el, 0);
                         if (raw === null) raw = INHERITED.test(use.p) ? 'inherit' : 'initial';   // invalid at computed-value time
                     }
-                    nextRaw[ukey] = { v: use.v, raw: raw };
-                    if (use.st !== null && use.st !== undefined && norm(raw) === norm(use.st)) continue;   // the stylesheet already has it
+                    // (the comparison with the stylesheet's value is kept with the value: thousands of norm() calls a pass)
+                    var old = oldRaw && oldRaw.hasOwnProperty(ukey) ? oldRaw[ukey] : null;
+                    if (old && old.raw === raw && old.st === use.st) same = old.same;
+                    else same = use.st !== null && use.st !== undefined && norm(raw) === norm(use.st);
+                    nextRaw[ukey] = { v: use.v, raw: raw, st: use.st, same: same };
+                    if (same) continue;   // the stylesheet already has it
                     pending.push({ el: el, use: use, raw: raw, key: ukey });
                 }
                 el.__brCVr = nextRaw;
             }
             pending.sort(function (a, c) { return a.use.sp - c.use.sp || a.use.o - c.use.o; });
             stats.tResolve = Date.now() - tRun;
+            stats.resolveParts = [stats.tInline, users.length, reused, redone];
             lastPending = pending;
             var t1 = Date.now();
             apply(pending);
@@ -7375,12 +7412,14 @@
             stats.pending = pending.length;
             dirtyAll = false;
             dirtyRoots = [];
+            dirtyWhy = '';
+            dirtyStamp++;
         };
         // ---- decisions of earlier passes stay while nothing that can change an element's rules happened around it
         // (a class or attribute of the element, an ancestor or a sibling, children added or removed)
-        var dirtyAll = true, dirtyRoots = [], dirtyWhy = 'start';
+        var dirtyAll = true, dirtyRoots = [], dirtyWhy = 'start', stateEls = [], stateSub = [], dirtyStamp = 1;
         var isDirty = function (el) {
-            if (dirtyAll) return true;
+            if (dirtyAll || el.__brCVdirty === dirtyStamp) return true;
             for (var i = 0; i < dirtyRoots.length; i++) { var r = dirtyRoots[i]; if (r === el || r.contains(el)) return true; }
             return false;
         };
@@ -7389,6 +7428,8 @@
             for (var i = 0; i < dirtyRoots.length; i++) if (dirtyRoots[i] === node || dirtyRoots[i].contains(node)) return;
             dirtyRoots.push(node);
         };
+        // the element alone (a rule that only uses custom properties changes nothing its subtree inherits)
+        var markDirtyEl = function (el) { if (el && el.nodeType === 1) el.__brCVdirty = dirtyStamp; };
         // ---- the rule's substituted value as the engine computes it, on a hidden probe (values that depend on the
         // element - em, %, currentColor, auto, line-height - are measured on the element itself instead)
         var probe = null, probeCache = {}, probeCacheSize = 0;
@@ -7577,30 +7618,41 @@
             if (cssomList) return cssomList;
             cssomList = [];
             cssomByProp = {};
+            var vp = window.innerWidth + 'x' + window.innerHeight;
             var mediaOn = function (m) { var t = m && m.mediaText; if (!t) return true; try { return window.matchMedia(t).matches; } catch (e) { return true; } };
-            var walk = function (list, depth) {
+            var walk = function (list, depth, out) {
                 if (!list || depth > 6) return;
                 for (var i = 0; i < list.length; i++) {
                     var r = list[i];
                     if (r.type === 1) {
-                        var entry = { rule: r, key: normSel(r.selectorText), order: cssomList.length, sels: null }, st = r.style, n = st ? st.length : 0;
-                        cssomList.push(entry);
+                        var entry = { rule: r, key: normSel(r.selectorText), order: 0, sels: null, items: [] }, st = r.style, n = st ? st.length : 0;
                         for (var d = 0; d < n; d++) {
                             var p = st[d];
-                            if (!p) continue;
-                            (cssomByProp.hasOwnProperty(p) ? cssomByProp[p] : (cssomByProp[p] = [])).push({ entry: entry, imp: st.getPropertyPriority(p) === 'important' });
+                            if (p) entry.items.push({ p: p, entry: entry, imp: st.getPropertyPriority(p) === 'important' });
                         }
+                        out.push(entry);
                         continue;
                     }
                     if (r.type === 4 && !mediaOn(r.media)) continue;
-                    if (r.cssRules) walk(r.cssRules, depth + 1);
+                    if (r.cssRules) walk(r.cssRules, depth + 1, out);
                 }
             };
+            // each sheet's walk is kept while its rule count and the window size stay (one stylesheet a script added
+            // walked all the others again: 6,000 rules, a second)
             for (var s = 0; s < document.styleSheets.length; s++) {
-                var sheet = document.styleSheets[s], rs = null;
+                var sheet = document.styleSheets[s], rs = null, entries = null;
                 if (sheet.disabled || (sheet.ownerNode && sheet.ownerNode.id === 'br-cv-pseudo') || !mediaOn(sheet.media)) continue;
                 try { rs = sheet.cssRules; } catch (e) { rs = null; }
-                walk(rs, 0);
+                if (!rs) continue;
+                var kept = sheet.__brCVw;
+                if (kept && kept.n === rs.length && kept.vp === vp) entries = kept.entries;
+                else { entries = []; walk(rs, 0, entries); try { sheet.__brCVw = { n: rs.length, vp: vp, entries: entries }; } catch (e2) {} }
+                for (var k = 0; k < entries.length; k++) {
+                    var en = entries[k];
+                    en.order = cssomList.length;
+                    cssomList.push(en);
+                    for (var q = 0; q < en.items.length; q++) { var it = en.items[q]; (cssomByProp.hasOwnProperty(it.p) ? cssomByProp[it.p] : (cssomByProp[it.p] = [])).push(it); }
+                }
             }
             return cssomList;
         };
@@ -7624,11 +7676,18 @@
                 else if (c === ')' || c === ']') depth--;
                 else if (!depth && (c === ' ' || c === '>' || c === '+' || c === '~')) start = i + 1;
             }
-            var last = s.slice(start).replace(/\[[^\]]*\]/g, ' ').replace(/:(not|-webkit-any|is|where|matches|has)\((?:[^()]|\([^()]*\))*\)/gi, ' ');
+            var raw = trim(s.slice(start)), outer = raw.replace(/:(not|-webkit-any|is|where|matches|has)\((?:[^()]|\([^()]*\))*\)/gi, ' ');
+            var last = outer.replace(/\[[^\]]*\]/g, ' ');
             var cls = [], re = /\.((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/g, m, id = /#((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/.exec(last);
             while ((m = re.exec(last)) !== null) cls.push(unescapeCSS(m[1]));
-            return { cls: cls, id: id ? unescapeCSS(id[1]) : null };
+            // also the subject's tag, the attributes it must have and a pseudo-element (which no element matches):
+            // `.prose table`, `[data-toast][data-styled="true"]`, `.x [data-light]::after` were most of the engine calls
+            var attrs = [], am, ar = /\[\s*([\w-]+)/g;
+            while ((am = ar.exec(outer)) !== null) attrs.push(am[1]);
+            var tag = raw.indexOf('|') < 0 ? /^([a-zA-Z][\w-]*)/.exec(raw) : null;
+            return { cls: cls, id: id ? unescapeCSS(id[1]) : null, tag: tag ? tag[1].toLowerCase() : null, attrs: attrs, pe: /::|:(before|after|first-line|first-letter)\b/i.test(outer) };
         };
+        var SIMPLE_SEL = /^(?:[.#](?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)+$/;
         var classSet = function (el) {
             var set = {}, c = el.className;
             if (typeof c !== 'string') c = c && typeof c.baseVal === 'string' ? c.baseVal : '';
@@ -7636,38 +7695,78 @@
             for (var i = 0; i < parts.length; i++) if (parts[i]) set[parts[i]] = 1;
             return set;
         };
-        // does another rule win `prop` on the item's element? (null when our own rule is not in the CSSOM)
-        var rivalWins = function (it, prop) {
-            var list = rulesSetting(prop), own = null, i, r;
-            for (i = 0; i < list.length; i++) if (list[i].entry.key === it.use.rk) own = list[i].entry;   // (the last copy counts)
-            if (!own) return null;
-            var ownImp = !!it.use.i;
+        // the rules that set `prop`, by what the subject of each selector needs first: its id, else its first class,
+        // else its tag, else nothing (an element looks only at the buckets of its own id, classes and tag: every rule
+        // setting `color` for every element was 4 s a pass on tailwind-style pages). Kept with the CSSOM list.
+        var rivalIndexes = {}, rivalIndexOf = null, hasOwnRI = Object.prototype.hasOwnProperty, selInfo = {}, selInfoSize = 0;
+        var bucket = function (map, k, item) { (hasOwnRI.call(map, k) ? map[k] : (map[k] = [])).push(item); };
+        var rivalIndex = function (prop) {
+            var list = rulesSetting(prop);
+            if (rivalIndexOf !== cssomList) { rivalIndexes = {}; rivalIndexOf = cssomList; }
+            if (hasOwnRI.call(rivalIndexes, prop)) return rivalIndexes[prop];
+            var ix = { own: {}, id: {}, cls: {}, tag: {}, any: [] }, i, j;
             for (i = 0; i < list.length; i++) {
-                r = list[i];
-                if (r.entry === own || r.entry.key === it.use.rk || (ownImp && !r.imp)) continue;
-                var e = r.entry, later = e.order > own.order;
+                var r = list[i], e = r.entry;
+                ix.own['$' + e.key] = e;   // (the last copy counts)
                 if (!e.sels) {
-                    e.sels = [];
-                    var parts = selectorList(e.rule.selectorText);
-                    for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: selectorSpecificity(parts[k]), need: subjectNeeds(parts[k]) });
+                    // (by selector text: a sheet walked again keeps what its selectors need)
+                    var text = e.rule.selectorText;
+                    if (hasOwnRI.call(selInfo, text)) e.sels = selInfo[text];
+                    else {
+                        e.sels = [];
+                        var parts = selectorList(text);
+                        // (a selector of classes and an id only matches every element that has them: no engine call; most
+                        // utility-class selectors are such, tailwind-style pages made 7,000 matches a pass, 2.7 s)
+                        for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: selectorSpecificity(parts[k]), need: subjectNeeds(parts[k]), simple: SIMPLE_SEL.test(trim(parts[k])) });
+                        if (selInfoSize++ > 30000) { selInfo = {}; selInfoSize = 0; }
+                        selInfo[text] = e.sels;
+                    }
                 }
-                for (var j = 0; j < e.sels.length; j++) {
-                    var sp = e.sels[j].sp, need = e.sels[j].need, miss = false;
-                    // only a selector that would beat ours needs matching
-                    if (!(r.imp && !ownImp) && (sp < it.use.sp || (sp === it.use.sp && !later))) continue;
-                    if (need.id !== null && it.el.id !== need.id) continue;
-                    if (!it.cls) it.cls = classSet(it.el);
-                    for (var c = 0; c < need.cls.length && !miss; c++) if (it.cls[need.cls[c]] !== 1) miss = true;
-                    if (miss) continue;
-                    matchCalls++;
-                    if (matchesEl(it.el, e.sels[j].s)) return e.sels[j].s;
+                for (j = 0; j < e.sels.length; j++) {
+                    var sel = e.sels[j], need = sel.need, item = { r: r, sel: sel };
+                    if (need.pe) continue;   // a pseudo-element: never the element itself
+                    if (need.id !== null) bucket(ix.id, need.id, item);
+                    else if (need.cls.length) bucket(ix.cls, need.cls[0], item);
+                    else if (need.tag !== null && need.tag !== '*') bucket(ix.tag, need.tag, item);
+                    else ix.any.push(item);
                 }
             }
-            return false;
+            return (rivalIndexes[prop] = ix);
         };
-        var matchCalls = 0;
+        // does another rule win `prop` on the item's element? (null when our own rule is not in the CSSOM)
+        var rivalWins = function (it, prop) {
+            var ix = rivalIndex(prop), own = hasOwnRI.call(ix.own, '$' + it.use.rk) ? ix.own['$' + it.use.rk] : null;
+            if (!own) return null;
+            var ownImp = !!it.use.i, el = it.el, tag = el.tagName.toLowerCase(), hit = false, c;
+            if (!it.cls) it.cls = classSet(el);
+            var look = function (items) {
+                for (var b = 0; b < items.length; b++) {
+                    var r = items[b].r, e = r.entry, sel = items[b].sel, need = sel.need, miss = false, k;
+                    if (e === own || e.key === it.use.rk || (ownImp && !r.imp)) continue;
+                    // only a selector that would beat ours needs matching
+                    if (!(r.imp && !ownImp) && (sel.sp < it.use.sp || (sel.sp === it.use.sp && e.order <= own.order))) continue;
+                    if (need.id !== null && el.id !== need.id) continue;
+                    if (need.tag !== null && need.tag !== '*' && need.tag !== tag) continue;
+                    for (k = 0; k < need.cls.length && !miss; k++) if (it.cls[need.cls[k]] !== 1) miss = true;
+                    for (k = 0; k < need.attrs.length && !miss; k++) if (!el.hasAttribute(need.attrs[k])) miss = true;
+                    if (miss) continue;
+                    if (sel.simple) return sel.s;
+                    matchCalls++;
+                    if (rivalSelCount) rivalSelCount[sel.s] = (rivalSelCount[sel.s] || 0) + 1;
+                    if (matchesEl(el, sel.s)) return sel.s;
+                }
+                return false;
+            };
+            if (el.id && hasOwnRI.call(ix.id, el.id)) hit = look(ix.id[el.id]);
+            if (!hit) for (c in it.cls) if (hasOwnRI.call(it.cls, c) && hasOwnRI.call(ix.cls, c) && (hit = look(ix.cls[c]))) break;
+            if (!hit && hasOwnRI.call(ix.tag, tag)) hit = look(ix.tag[tag]);
+            if (!hit) hit = look(ix.any);
+            return hit || false;
+        };
+        var matchCalls = 0, rivalSelCount = null;
         var rivalCheck = function (work) {
             var i, k, it, t0 = Date.now(), key = cssomFingerprint();
+            rivalSelCount = window.__brNoteSlow ? {} : null;
             if (key !== cssomKey) { cssomList = null; cssomKey = key; }
             var t1 = Date.now();
             cssomRules();
@@ -7690,6 +7789,14 @@
                 it.part = keep.length ? keep : null;
             }
             stats.rivalParts = [t1 - t0, t2 - t1, Date.now() - t2, matchCalls, cssomList ? cssomList.length : 0];
+            // (for the debug log: the selectors matched most often)
+            if (rivalSelCount) {
+                var top = [];
+                for (var s in rivalSelCount) if (rivalSelCount.hasOwnProperty(s)) top.push([rivalSelCount[s], s]);
+                top.sort(function (a, b) { return b[0] - a[0]; });
+                stats.rivalTop = top.slice(0, 5).map(function (t) { return t[0] + 'x ' + t[1].slice(0, 70); }).join(' | ');
+                if (matchCalls > (stats.rivalTopMaxCalls || 0)) { stats.rivalTopMaxCalls = matchCalls; stats.rivalTopMax = matchCalls + ' calls: ' + stats.rivalTop; }
+            }
         };
         // an unchanged decision: our inline value stays (unless a script replaced it meanwhile: then the page's stays)
         var keepInline = function (it, p, v) {
@@ -7767,18 +7874,25 @@
             if (!rules.length || busy) return;
             busy = true;
             var t0 = Date.now();
-            try { run(); } catch (e) { if (window.console && console.warn) console.warn('cv pass: ' + e); }
+            try { run(); } catch (e) { stats.err = String(e); if (window.console && console.warn) console.warn('cv pass: ' + e); }
             lastCost = Date.now() - t0;
             busy = false;
-            if (window.__brNoteSlow) window.__brNoteSlow('custom properties', lastCost, '(' + stats.dirty + ') collect ' + stats.tCollect + ', resolve ' + (stats.tResolve - stats.tCollect) + ', apply ' + stats.tApply +
+            // (the last passes, for state(): why, cost, collect/resolve/apply, work items)
+            if (!stats.log) stats.log = [];
+            stats.log.push(stats.dirty + ': ' + lastCost + ' = ' + stats.tCollect + '/' + (stats.tResolve - stats.tCollect) + '/' + stats.tApply + ' work ' + (stats.applyParts ? stats.applyParts[stats.applyParts.length - 3] : '?') +
+                           ' [' + (stats.applyParts || []).slice(0, 9).join(' ') + '] rival ' + (stats.rivalParts || []).join(' ') + (stats.rivalTop ? ' top ' + stats.rivalTop.slice(0, 160) : ''));
+            if (stats.log.length > 12) stats.log.shift();
+            if (window.__brNoteSlow) window.__brNoteSlow('custom properties', lastCost, '(' + stats.dirty + ') collect ' + stats.tCollect + ', resolve ' + (stats.tResolve - stats.tCollect) +
+                                                        ' [inline users reused redone: ' + (stats.resolveParts || []).join(' ') + '], apply ' + stats.tApply +
                                                         ' [fix freeze before probe slow rival set keep thaw / work keep slow: ' + (stats.applyParts || []).join(' ') + '], pending ' + stats.pending +
-                                                        ', rival [key index match / matches rules: ' + (stats.rivalParts || []).join(' ') + ']');
+                                                        ', rival [key index match / matches rules: ' + (stats.rivalParts || []).join(' ') + '] top ' + (stats.rivalTop || ''));
             if (observer && observer.takeRecords) observer.takeRecords();   // our own style changes
         };
-        var schedule = function () {
+        var schedule = function (soon) {
             if (timer || !rules.length) return;
-            // (an expensive pass waits four times its cost: blesk.cz's took 1.5 s and came every second)
-            timer = setTimeout(pass, lastCost > 40 ? Math.min(20000, lastCost * 4) : 40);
+            // (an expensive pass waits four times its cost: blesk.cz's took 1.5 s and came every second; a hover or tap
+            // waits at most 1.5 s, it changes little)
+            timer = setTimeout(pass, lastCost > 40 ? Math.min(soon ? 1500 : 20000, lastCost * (soon ? 1 : 4)) : 40);
         };
         var OWN_CLASSES = /(?:^|\s)br-[\w-]+/g;
         var watch = function () {
@@ -7820,9 +7934,34 @@
             });
             try { observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: filter }); } catch (e) { observer = null; }
             var everything = function (e) { dirtyAll = true; dirtyWhy = e && e.type || 'event'; schedule(); };
+            // a hover, tap or focus changes only what the rules with state pseudo-classes match: the elements they
+            // matched before and match now (with their subtrees, which inherit) are redone, not the page (nextjs.org:
+            // 15 s after every mouseover)
+            var stateChange = function (e) {
+                if (busy || dirtyAll || !rules.length) return;
+                var now = [], nowSub = [], i, b, list;
+                for (i = 0; i < rules.length; i++) {
+                    var r = rules[i];
+                    if (!r.s) continue;
+                    for (b = 0; b < r.sel.length; b++) {
+                        if (!r.sel[b].state) continue;
+                        try { list = document.querySelectorAll(r.sel[b].base); } catch (x) { continue; }
+                        for (var k = 0; k < list.length; k++) { now.push(list[k]); nowSub.push(!!(r.d && r.d.length)); }
+                    }
+                }
+                var before = stateEls, beforeSub = stateSub, changed = before.length !== now.length;
+                for (i = 0; i < now.length && !changed; i++) if (now[i] !== before[i]) changed = true;
+                stateEls = now;
+                stateSub = nowSub;
+                if (!changed) return;
+                for (i = 0; i < before.length && !dirtyAll; i++) { if (beforeSub[i]) markDirty(before[i]); else markDirtyEl(before[i]); }
+                for (i = 0; i < now.length && !dirtyAll; i++) { if (nowSub[i]) markDirty(now[i]); else markDirtyEl(now[i]); }
+                dirtyWhy = (e && e.type || 'event') + (dirtyAll ? ', many' : '');
+                schedule(!dirtyAll);
+            };
             if (watchStates) {
                 var ev = ['touchstart', 'touchend', 'mouseover', 'mouseout', 'focus', 'blur', 'change', 'input'];
-                for (var k = 0; k < ev.length; k++) document.addEventListener(ev[k], everything, true);
+                for (var k = 0; k < ev.length; k++) document.addEventListener(ev[k], stateChange, true);
             }
             window.addEventListener('resize', everything, false);
             window.addEventListener('orientationchange', everything, false);
@@ -7836,11 +7975,14 @@
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
                     if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
                     // an empty value removes the declaration (null: removed, the attribute's value no longer counts)
-                    this.__brCP[name] = value === null || value === undefined || String(value) === '' ? null : String(value);
-                    this.__brCPi[name] = String(priority || '').toLowerCase() === 'important';
+                    var nv = value === null || value === undefined || String(value) === '' ? null : String(value);
+                    var ni = String(priority || '').toLowerCase() === 'important';
+                    if (this.__brCP.hasOwnProperty(name) && this.__brCP[name] === nv && !!this.__brCPi[name] === ni) return;   // (unchanged)
+                    this.__brCP[name] = nv;
+                    this.__brCPi[name] = ni;
                     cpUsed = true;
-                    dirtyAll = true;
-                    dirtyWhy = 'setProperty ' + name;
+                    this.__brCPdirty = true;
+                    if (!dirtyAll && !dirtyWhy) dirtyWhy = 'setProperty ' + name;
                     schedule();
                     return;
                 }
@@ -7862,8 +8004,8 @@
                     if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
                     this.__brCP[name] = null;
                     cpUsed = true;
-                    dirtyAll = true;
-                    dirtyWhy = 'removeProperty ' + name;
+                    this.__brCPdirty = true;
+                    if (!dirtyAll && !dirtyWhy) dirtyWhy = 'removeProperty ' + name;
                     schedule();
                     return old;
                 }
@@ -7942,7 +8084,8 @@
             },
             apply: function () { if (rules.length) pass(); },
             resolve: function (el, name) { return computedVar(el, name); },
-            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, collectMs: stats.tCollect, resolveMs: stats.tResolve, applyMs: stats.tApply, pending: stats.pending }; },
+            state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, collectMs: stats.tCollect, resolveMs: stats.tResolve, applyMs: stats.tApply, pending: stats.pending, dirty: stats.dirty, work: stats.applyParts ? stats.applyParts[stats.applyParts.length - 3] : null, rivalTop: stats.rivalTop, err: stats.err || null, rivalTopMax: stats.rivalTopMax || null,
+                                        applyParts: stats.applyParts, resolveParts: stats.resolveParts, rivalParts: stats.rivalParts, log: stats.log || [] }; },
             rivals: function () { return lastRivals; },
             // the decision steps for one declaration of an element (diagnosis)
             explain: function (el, prop) {
