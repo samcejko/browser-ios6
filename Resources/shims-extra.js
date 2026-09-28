@@ -2744,7 +2744,8 @@
                 }
                 return plan;
             };
-            fxPlan = { box: build(rules.box), col: build(rules.col) };
+            // (and the boxes of style attributes: flex written there by the rewriter or by scripts, see "Flex set by scripts")
+            fxPlan = { box: build(rules.box.concat('[style*="-webkit-box"]')), col: build(rules.col) };
             fxKey = rules.key;
         }
         return fxPlan;
@@ -9780,6 +9781,141 @@
         };
         window.ElementInternals = ElementInternals;
         window.CustomStateSet = CustomStateSet;
+    })();
+    // ---- Flex set by scripts. The old engine rejects display: flex and knows no flex property in element styles either
+    // (checked on the device: setProperty('display', 'flex'), setAttribute('style', 'display:flex') and
+    // style.justifyContent all left a block). These become the 2009-box forms cssfix.js writes: setProperty() and
+    // setAttribute('style', ...) with flex values, and the flex properties scripts set by name (style.justifyContent,
+    // which the engine does not know: an accessor here takes them). The boxes made so are found by the item marking
+    // through their style attribute (see markFlexItems). A display assigned as style.display = 'flex' (or in cssText)
+    // cannot be seen: the engine takes such an assignment itself, and the value is gone.
+    (function () {
+        var CSDp = window.CSSStyleDeclaration && window.CSSStyleDeclaration.prototype, probe = document.createElement('div').style;
+        if (!CSDp || !CSDp.setProperty || ('justifyContent' in probe) || CSDp.__brFlexStyles) return;
+        CSDp.__brFlexStyles = true;
+        var DISPLAY = { flex: '-webkit-box', 'inline-flex': '-webkit-inline-box', grid: 'block', 'inline-grid': 'inline-block', 'flow-root': 'block' };
+        var PACK = { 'flex-start': 'start', start: 'start', left: 'start', normal: 'start', stretch: 'start', 'flex-end': 'end', end: 'end', right: 'end',
+            center: 'center', 'space-between': 'justify', 'space-around': 'justify', 'space-evenly': 'justify' };
+        var ALIGN = { 'flex-start': 'start', start: 'start', 'self-start': 'start', 'flex-end': 'end', end: 'end', 'self-end': 'end', center: 'center',
+            baseline: 'baseline', stretch: 'stretch', normal: 'stretch' };
+        // the flex properties by their dashed and script names, and the engine's properties each is written as
+        var NAMES = { 'justify-content': 'justifyContent', 'align-items': 'alignItems', 'flex-direction': 'flexDirection', 'flex-wrap': 'flexWrap',
+            'flex-flow': 'flexFlow', flex: 'flex', 'flex-grow': 'flexGrow', order: 'order' };
+        var ENGINE = { 'justify-content': ['-webkit-box-pack'], 'align-items': ['-webkit-box-align'], 'flex-direction': ['-webkit-box-orient', '-webkit-box-direction'],
+            'flex-wrap': ['-webkit-box-lines'], 'flex-flow': ['-webkit-box-orient', '-webkit-box-direction', '-webkit-box-lines'], flex: ['-webkit-box-flex'],
+            'flex-grow': ['-webkit-box-flex'], order: ['-webkit-box-ordinal-group'] };
+        var low = function (v) { return String(v === null || v === undefined ? '' : v).replace(/^\s+|\s+$/g, '').toLowerCase(); };
+        // [[name, value]...] the engine takes for one declaration, or null
+        var boxForm = function (name, v) {
+            var m, out;
+            switch (name) {
+                case 'display': return DISPLAY[v] ? [['display', DISPLAY[v]]] : null;
+                case 'flex-direction':
+                    return /^(row|column)(-reverse)?$/.test(v) ? [['-webkit-box-orient', v.indexOf('column') === 0 ? 'vertical' : 'horizontal'], ['-webkit-box-direction', /reverse/.test(v) ? 'reverse' : 'normal']] : null;
+                case 'flex-wrap': return /^(wrap|nowrap|wrap-reverse)$/.test(v) ? [['-webkit-box-lines', v === 'nowrap' ? 'single' : 'multiple']] : null;
+                case 'flex-flow':
+                    out = [];
+                    if ((m = /\b(row|column)(-reverse)?\b/.exec(v))) out = out.concat(boxForm('flex-direction', m[0]));
+                    if ((m = /\b(nowrap|wrap-reverse|wrap)\b/.exec(v))) out = out.concat(boxForm('flex-wrap', m[0]));
+                    return out.length ? out : null;
+                case 'justify-content': return PACK[v] ? [['-webkit-box-pack', PACK[v]]] : null;
+                case 'align-items': return ALIGN[v] ? [['-webkit-box-align', ALIGN[v]]] : null;
+                case 'flex-grow': return /^\d*\.?\d+$/.test(v) ? [['-webkit-box-flex', v]] : null;
+                case 'flex':
+                    if (v === 'none') return [['-webkit-box-flex', '0']];
+                    if (v === 'auto') return [['-webkit-box-flex', '1']];
+                    return (m = /^(\d*\.?\d+)(\s|$)/.exec(v)) ? [['-webkit-box-flex', m[1]]] : null;
+                case 'order': return /^-?\d+$/.test(v) ? [['-webkit-box-ordinal-group', String(Math.max(1, parseInt(v, 10) + 1))]] : null;
+            }
+            return null;
+        };
+        var origSet = CSDp.setProperty, origGet = CSDp.getPropertyValue, origRemove = CSDp.removeProperty;
+        // (one flex declaration on a style object: its value kept for reading back, its box form written; an empty value
+        // takes the box form away)
+        var put = function (style, name, value, priority) {
+            var v = low(value).replace(/\s*!\s*important$/, '');
+            if (name !== 'display') {
+                var vals = style.__brFlexVals || (style.__brFlexVals = {});
+                vals[name] = v === '' ? '' : String(value);
+            }
+            if (v === '') {
+                if (name === 'display') return false;
+                var eng = ENGINE[name] || [];
+                for (var i = 0; i < eng.length; i++) origRemove.call(style, eng[i]);
+                return true;
+            }
+            var decls = boxForm(name, v);
+            if (!decls) return name !== 'display';
+            for (var k = 0; k < decls.length; k++) origSet.call(style, decls[k][0], decls[k][1], priority || '');
+            return true;
+        };
+        CSDp.setProperty = function (n, value, priority) {
+            var name = typeof n === 'string' ? n.toLowerCase() : '';
+            if ((name === 'display' || NAMES.hasOwnProperty(name)) && put(this, name, value, priority)) return;
+            return origSet.apply(this, arguments);
+        };
+        CSDp.getPropertyValue = function (n) {
+            var name = typeof n === 'string' ? n.toLowerCase() : '';
+            if (NAMES.hasOwnProperty(name)) { var vals = this.__brFlexVals; return vals && vals[name] ? vals[name] : ''; }
+            return origGet.apply(this, arguments);
+        };
+        CSDp.removeProperty = function (n) {
+            var name = typeof n === 'string' ? n.toLowerCase() : '';
+            if (NAMES.hasOwnProperty(name)) { var old = this.getPropertyValue(name); put(this, name, '', ''); return old; }
+            return origRemove.apply(this, arguments);
+        };
+        var accessor = function (name) {
+            return {
+                get: function () { var vals = this.__brFlexVals; return vals && vals[name] ? vals[name] : ''; },
+                set: function (v) { try { put(this, name, v, ''); } catch (e) {} },
+                configurable: true
+            };
+        };
+        for (var dn in NAMES) {
+            if (!NAMES.hasOwnProperty(dn) || (NAMES[dn] in probe)) continue;
+            try { Object.defineProperty(CSDp, NAMES[dn], accessor(dn)); } catch (e) {}
+        }
+        // style attributes set by scripts: each flex declaration followed by its box form (the original stays, for
+        // reading back; the engine drops it)
+        var splitDecls = function (s) {
+            var out = [], depth = 0, q = null, start = 0;
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '(') depth++;
+                else if (c === ')') depth--;
+                else if (c === ';' && depth === 0) { out.push(s.slice(start, i)); start = i + 1; }
+            }
+            out.push(s.slice(start));
+            return out;
+        };
+        var fixStyleText = function (text) {
+            var parts = splitDecls(text), changed = false, out = [];
+            for (var i = 0; i < parts.length; i++) {
+                var part = parts[i], colon = part.indexOf(':');
+                if (colon < 0) { if (/\S/.test(part)) out.push(part); continue; }
+                out.push(part);
+                var name = low(part.slice(0, colon)), raw = part.slice(colon + 1), imp = /!\s*important\s*$/i.test(raw);
+                if (name !== 'display' && !NAMES.hasOwnProperty(name)) continue;
+                var decls = boxForm(name, low(raw).replace(/\s*!\s*important$/, ''));
+                if (!decls) continue;
+                for (var k = 0; k < decls.length; k++) out.push(decls[k][0] + ':' + decls[k][1] + (imp ? ' !important' : ''));
+                changed = true;
+            }
+            return changed ? out.join(';') : null;
+        };
+        var Elp = window.Element && window.Element.prototype;
+        if (Elp && Elp.setAttribute) {
+            var origSetAttr = Elp.setAttribute;
+            Elp.setAttribute = function (name, value) {
+                if (typeof name === 'string' && name.length === 5 && name.toLowerCase() === 'style' && typeof value === 'string' && /flex|grid|order|justify|align-items/i.test(value)) {
+                    var fixed = fixStyleText(value);
+                    if (fixed !== null) return origSetAttr.call(this, name, fixed);
+                }
+                return origSetAttr.apply(this, arguments);
+            };
+        }
     })();
     // ---- element.part: the tokens of the part attribute (what ::part() selects)
     if (Ep && !('part' in Ep)) try {

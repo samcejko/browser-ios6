@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>script flex test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+.frame { width: 400px; margin: 6px 0; background: #eee; }
+.frame > * { background: #9cf; }
+.flex { display: flex; }
+</style>
+</head>
+<body>
+<h1>Flex set by scripts</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div class="frame" id="a"><span id="a1">left</span><span id="a2">right</span></div>
+<div class="frame" id="b"><span id="b1">one</span><span id="b2">two</span></div>
+<div class="frame flex" id="c"><span id="c1">end</span></div>
+<div class="frame flex" id="d"><span id="d1">fixed</span><span id="d2">grows</span></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var R = function (id) { return document.getElementById(id).getBoundingClientRect(); };
+var near = function (a, b) { return Math.abs(a - b) <= 2; };
+// a: setProperty
+var a = document.getElementById('a');
+a.style.setProperty('display', 'flex');
+a.style.setProperty('justify-content', 'space-between');
+// b: the style attribute
+document.getElementById('b').setAttribute('style', 'display:flex;flex-direction:column;align-items:center');
+// c: a property by name on a flex box of the stylesheet
+document.getElementById('c').style.justifyContent = 'flex-end';
+// d: flex on an item
+document.getElementById('d2').style.flex = '1';
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    var fa = R('a'), a1 = R('a1'), a2 = R('a2');
+    show('setProperty display flex, space-between', near(a1.left, fa.left) && near(a2.right, fa.right) && near(a1.top, a2.top), Math.round(a1.left - fa.left) + '..' + Math.round(a2.right - fa.left));
+    var fb = R('b'), b1 = R('b1'), b2 = R('b2');
+    show('style attribute: a centred column', b2.top >= b1.bottom - 1 && near((b1.left + b1.right) / 2, (fb.left + fb.right) / 2) && b1.width < fb.width - 20, 'b1 ' + Math.round(b1.left - fb.left) + '..' + Math.round(b1.right - fb.left) + ' top ' + Math.round(b1.top - fb.top) + ', b2 top ' + Math.round(b2.top - fb.top));
+    var fc = R('c'), c1 = R('c1');
+    show('style.justifyContent on a flex box', near(c1.right, fc.right), Math.round(c1.left - fc.left) + '..' + Math.round(c1.right - fc.left));
+    var fd = R('d'), d2 = R('d2');
+    show('style.flex on an item', near(d2.right, fd.right), Math.round(d2.left - fd.left) + '..' + Math.round(d2.right - fd.left));
+    show('style.justifyContent reads back', document.getElementById('c').style.justifyContent === 'flex-end', document.getElementById('c').style.justifyContent);
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'jsflex ' + pass + '/' + total;
+    window.__jsFlexResults = results;
+  }, 1500);
+}, false);
+</script>
+</body>
+</html>
