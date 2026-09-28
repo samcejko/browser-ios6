@@ -45,6 +45,10 @@ var CASES = [
     var target = {}; ownKeys(Object(src), true).forEach(function (k) { Object.defineProperty(target, k, { value: src[k], enumerable: true, configurable: true, writable: true }); });
     return [target.a, target.b, target[S], target[T], Object.keys(target).join()];
   }, [1, 2, 3, undefined, 'a,b']],
+  ['JSON.stringify leaves symbols out', function () { return [JSON.stringify({ a: 1, s: Symbol('x'), arr: [Symbol('y'), 2] }), String(JSON.stringify(Symbol('z')))]; }, ['{"a":1,"arr":[null,2]}', 'undefined']],
+  ['JSON.stringify well-formed', function () { return [JSON.stringify('\uDEAD'), JSON.stringify('𝌆').length, JSON.stringify('a\uD800b')]; }, ['"\\udead"', 4, '"a\\ud800b"']],
+  ['JSON.stringify replacer and space', function () { var keys = []; var s = JSON.stringify([5, { b: 2 }], function (k, v) { keys.push(typeof k); return v; }, 1); return [s.split('\n').length, keys.join()]; }, [6, 'string,string,string,string']],
+  ['JSON.stringify is the engine\'s', function () { return JSON.stringify !== window.__brNative.stringify && JSON.stringify({ x: [1, 'a', null, true] }); }, '{"x":[1,"a",null,true]}'],
   ['toStringTag', function () { var o = {}; o[Symbol.toStringTag] = 'Custom'; return Object.prototype.toString.call(o); }, '[object Custom]'],
   ['function name stays when fixed', function () { var f = function g() {}; Object.defineProperty(f, 'name', { value: 'h', configurable: true }); return typeof f.name; }, 'string']
 ];

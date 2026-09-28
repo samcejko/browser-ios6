@@ -384,6 +384,28 @@
             for (var i = 0; i < names.length; i++) if (names[i].charCodeAt(0) === 83) return nativeGOPS(o);
             return [];
         };
+        // JSON.stringify: core-js's (which its Symbol brings along) calls a replacer of its own for every value to leave
+        // its symbols out, six times slower here. A symbol gets a toJSON that gives undefined instead, which the engine's
+        // stringify then leaves out as the standard does, and lone surrogates are escaped afterwards (well-formed
+        // JSON.stringify, which core-js added as well).
+        var engineStringify = N.stringify, SymP = window.Symbol && window.Symbol.prototype;
+        if (engineStringify && window.JSON && JSON.stringify !== engineStringify && SymP && typeof SymP === 'object') {
+            try { nativeDP(SymP, 'toJSON', { value: function () { return undefined; }, writable: true, configurable: true }); } catch (eS) { SymP = null; }
+            var LONE = /[\uD800-\uDFFF]/g;
+            var escapeLone = function (match, offset, string) {
+                var c = match.charCodeAt(0), prev = string.charCodeAt(offset - 1), next = string.charCodeAt(offset + 1);
+                var lead = c <= 0xDBFF;
+                if ((lead && !(next >= 0xDC00 && next <= 0xDFFF)) || (!lead && !(prev >= 0xD800 && prev <= 0xDBFF))) return '\\u' + c.toString(16);
+                return match;
+            };
+            if (SymP) JSON.stringify = function stringify(value, replacer, space) {
+                var args = arguments;
+                // (this engine hands a replacer the index of an array item as a number)
+                if (typeof replacer === 'function') args = [value, function (k, v) { return replacer.call(this, String(k), v); }, space];
+                var out = engineStringify.apply(JSON, args);
+                return typeof out === 'string' && /[\uD800-\uDFFF]/.test(out) ? out.replace(LONE, escapeLone) : out;
+            };
+        }
         if (!fixed) return;
         var own = Object.prototype.hasOwnProperty;
         Object.defineProperties = function (o, props) {

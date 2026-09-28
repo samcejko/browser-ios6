@@ -8,7 +8,7 @@
 (function () {
     try {
         Object.defineProperty(window, '__brNative', { value: { defineProperty: Object.defineProperty, getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
-            keys: Object.keys, getOwnPropertyNames: Object.getOwnPropertyNames }, writable: true, configurable: true });
+            keys: Object.keys, getOwnPropertyNames: Object.getOwnPropertyNames, stringify: window.JSON && JSON.stringify }, writable: true, configurable: true });
     } catch (e) {}
 })();
 (function () {
