@@ -2725,6 +2725,7 @@
         box.__brFxN = box.__brFxW = box.__brFx = undefined;
     };
     var markFlexItems = function () {
+        if (window.__brNoFlexItems) return;   // (debugging switch)
         var plan = flexPlan();
         if (!plan) return;
         if (!bfRule) {
@@ -2838,8 +2839,11 @@
         var box = t.box, cs = getComputedStyle(box), P = BOX_CODE[cs.webkitBoxAlign] || 'x', kids = t.kids, i, k, kcs, any = false;
         t.P = P;
         t.vertical = box.__brFx === 2 || cs.webkitBoxOrient === 'vertical' || cs.webkitBoxOrient === 'block-axis';
-        for (i = 0; i < kids.length; i++) { kids[i].eff = kids[i].code || P; if (kids[i].eff !== P) any = true; }
+        // (a column that stays a block stretches every item, whatever its own alignment says)
+        var base = box.__brFx === 2 ? 'x' : P;
+        for (i = 0; i < kids.length; i++) { kids[i].eff = kids[i].code || P; if (kids[i].eff !== base) any = true; }
         if (!any) return false;
+        if (box.__brFx === 2) t.P = 'x';
         t.padA = t.vertical ? num0(cs.paddingLeft) + num0(cs.paddingRight) : num0(cs.paddingTop) + num0(cs.paddingBottom);
         var room = (t.vertical ? box.clientWidth : box.clientHeight) - t.padA;
         for (i = 0; i < kids.length; i++) {
@@ -2858,16 +2862,19 @@
     var asStart = function (t) {
         var box = t.box, kids = t.kids, i, k;
         box.setAttribute('data-br-asp', t.vertical ? (box.__brFx === 2 ? 'b' : 'v') : 'h');
+        box.__brAsRow = !t.vertical;
         if (!t.vertical) return;
+        // (every item's style changes, so that each is laid out again: at the start, margin-right: auto changes nothing
+        // there; a fresh layout of the box instead cost 1.7 s on github.com)
         for (i = 0; i < kids.length; i++) {
             k = kids[i];
             if (k.eff === 'x' && (t.P !== 'x' || k.full)) {
                 k.el.setAttribute('data-br-as', 'w');
                 asSet(k.el, 'width', k.m ? '-webkit-calc(100% - ' + k.m + 'px)' : '100%');
-            } else if (k.eff === 'c' || k.eff === 'e') {
-                k.el.setAttribute('data-br-as', k.eff);
-                if (!k.el.__brAsSet) k.el.__brAsSet = {};
+                continue;
             }
+            k.el.setAttribute('data-br-as', k.eff === 'c' || k.eff === 'e' ? k.eff : 's');
+            if (!k.el.__brAsSet) k.el.__brAsSet = {};
         }
     };
     // (a row, read: its height and the items' heights at the start)
@@ -2886,20 +2893,19 @@
         }
     };
     var alignFlexItems = function () {
-        var rules = window.__brAlignSelfRules, i, j, k, t;
-        if (!rules || !rules.length) {
-            var back = [];
-            for (i = 0; i < asBoxes.length; i++) if (asUndo(asBoxes[i])) back.push(asBoxes[i]);
-            relayoutAll(back);
-            asBoxes = [];
-            return;
+        if (window.__brNoAlignSelf) return;   // (debugging switch)
+        var rules = window.__brAlignSelfRules || [], i, j, k, t;
+        if (!rules.length && !asBoxes.length) {
+            var anyCol = false;
+            for (i = 0; i < bfBoxes.length && !anyCol; i++) if (bfBoxes[i].__brFx === 2) anyCol = true;
+            if (!anyCol) return;
         }
         if (!asRule) {
             asRule = document.createElement('style');
             asRule.__brOwn = true;
             asRule.textContent = '[data-br-asp=v],[data-br-asp=h]{-webkit-box-align:start!important}' +
                 '[data-br-asp=b]{display:-webkit-box!important;-webkit-box-orient:vertical!important;-webkit-box-align:start!important}' +
-                '[data-br-as=c]{margin-left:auto!important;margin-right:auto!important}[data-br-as=e]{margin-left:auto!important}' +
+                '[data-br-as=c]{margin-left:auto!important;margin-right:auto!important}[data-br-as=e]{margin-left:auto!important}[data-br-as=s]{margin-right:auto!important}' +
                 '[data-br-as=w]{-webkit-box-sizing:border-box}';
             var head = document.head || document.documentElement;
             head.insertBefore(asRule, head.firstChild);
@@ -2921,6 +2927,13 @@
                 }
             }
         }
+        // (columns that stay blocks and centre or end their items: aligned here too)
+        for (i = 0; i < bfBoxes.length; i++) {
+            var cb = bfBoxes[i];
+            if (cb.__brFx !== 2 || cb.__brAsGen === gen || !cb.parentNode) continue;
+            var cba = getComputedStyle(cb).webkitBoxAlign;
+            if (cba && cba !== 'stretch') { cb.__brAsGen = gen; boxes.push(cb); }
+        }
         // read: every box's items, and the boxes that changed since they were aligned (the others stay as they are)
         var undo = [], todo = [], kept = [];
         for (i = 0; i < asBoxes.length; i++) if (asBoxes[i].__brAsGen !== gen) undo.push(asBoxes[i]);
@@ -2937,16 +2950,16 @@
             undo.push(box);
         }
         if (!todo.length && !undo.length) return;
-        // write: taken back, laid out afresh
+        // write: taken back, rows laid out afresh (in a column every item's style changed)
         var fresh = [];
-        for (i = 0; i < undo.length; i++) if (asUndo(undo[i])) fresh.push(undo[i]);
+        for (i = 0; i < undo.length; i++) { var row = undo[i].__brAsRow; if (asUndo(undo[i]) && row) fresh.push(undo[i]); }
         relayoutAll(fresh);
-        // read, write: boxes to the start, columns placed; laid out afresh; rows measured and placed
+        // read, write: boxes to the start, columns placed; rows laid out afresh, measured and placed
         var go = [], rows = [];
         for (i = 0; i < todo.length; i++) if (asPrepare(todo[i])) go.push(todo[i]);
         for (i = 0; i < go.length; i++) asStart(go[i]);
         var moved = [];
-        for (i = 0; i < go.length; i++) { moved.push(go[i].box); if (!go[i].vertical) rows.push(go[i]); }
+        for (i = 0; i < go.length; i++) if (!go[i].vertical) { moved.push(go[i].box); rows.push(go[i]); }
         relayoutAll(moved);
         for (i = 0; i < rows.length; i++) asMeasureRow(rows[i]);
         for (i = 0; i < rows.length; i++) asPlaceRow(rows[i]);
