@@ -674,7 +674,7 @@
         var noteSlow = function (what, ms, text) {
             if (ms < 1500 || slow >= 15) return;
             slow++;
-            sendToApp('brlog', 'JS debug (slow ' + what + '): ' + ms + ' ms' + (text ? ' in ' + String(text).replace(/\s+/g, ' ').slice(0, 200) : '') + ' page ' + location.hostname);
+            sendToApp('brlog', 'JS debug (slow ' + what + '): ' + ms + ' ms' + (text ? ' in ' + String(text).replace(/\s+/g, ' ').slice(0, 400) : '') + ' page ' + location.hostname);
         };
         window.__brNoteSlow = noteSlow;
         var guard = function (fn, kind) {
@@ -3704,6 +3704,45 @@
             if (!lo || !hi || hi.n === lo.n) return null;
             return String(Math.round(Math.max(0, Math.min(1, (size - lo.n) / (hi.n - lo.n))) * 10000) / 10000);
         };
+        var MEASURE_KEYS = ['width', 'height', 'display', 'white-space', 'min-width', 'max-width', 'min-height', 'max-height'], BOX_DISPLAY = /^-webkit-(inline-)?box$/;
+        // The content widths of a pass measured together: every element in its measuring form, one layout, all read,
+        // all put back (a layout per element took 4-7 s a pass on theguardian.com, for 108 flex footers of cards).
+        // (measureBasis measures one alone the same way)
+        var measureWidths = function (recs) {
+            var list = [], i, k, it;
+            for (i = 0; i < recs.length; i++) {
+                var w = recs[i].props.width || recs[i].props['inline-size'];
+                if (!w) continue;
+                var t = trim(w.v).toLowerCase().replace(/^-(webkit|moz)-/, '');
+                if (t !== 'fit-content' && t !== 'max-content' && t !== 'min-content') continue;
+                if (t !== 'min-content' && inHorizontalBox(recs[i].el)) continue;
+                list.push({ el: recs[i].el, basis: t });
+            }
+            if (list.length < 2) return;
+            for (i = 0; i < list.length; i++) list[i].box = BOX_DISPLAY.test(getComputedStyle(list[i].el).display);
+            for (i = 0; i < list.length; i++) {
+                it = list[i];
+                var style = it.el.style;
+                it.saved = [];
+                for (k = 0; k < MEASURE_KEYS.length; k++) it.saved.push([style.getPropertyValue(MEASURE_KEYS[k]), style.getPropertyPriority(MEASURE_KEYS[k])]);
+                style.setProperty('min-width', '0px', 'important');
+                style.setProperty('max-width', 'none', 'important');
+                style.setProperty('display', it.box ? '-webkit-inline-box' : 'inline-block', 'important');
+                style.setProperty('width', it.basis === 'min-content' ? '0px' : 'auto', 'important');
+                if (it.basis === 'max-content') style.setProperty('white-space', 'nowrap', 'important');
+            }
+            for (i = 0; i < list.length; i++) {
+                it = list[i];
+                var cs = getComputedStyle(it.el), px = it.basis === 'min-content' ? it.el.scrollWidth : it.el.offsetWidth;
+                if (cs.boxSizing !== 'border-box' && cs.webkitBoxSizing !== 'border-box') px -= num(cs.paddingLeft) + num(cs.paddingRight) + num(cs.borderLeftWidth) + num(cs.borderRightWidth);
+                it.px = Math.max(0, px);
+            }
+            for (i = 0; i < list.length; i++) {
+                it = list[i];
+                for (k = 0; k < MEASURE_KEYS.length; k++) { if (it.saved[k][0]) it.el.style.setProperty(MEASURE_KEYS[k], it.saved[k][0], it.saved[k][1]); else it.el.style.removeProperty(MEASURE_KEYS[k]); }
+                it.el.__brFit = { gen: gen, basis: it.basis, px: it.px };
+            }
+        };
         var measureBasis = function (el, prop, basis) {
             var isX = !/height|block/.test(prop), dim = isX ? 'width' : 'height';
             if (basis === 'any') return 0;
@@ -3728,13 +3767,17 @@
                 }
                 return Math.max(0, avail);
             }
-            var style = el.style, keys = ['width', 'height', 'display', 'white-space', 'min-width', 'max-width', 'min-height', 'max-height'], saved = [], k;
+            // (measured together with the others of the pass, see measureWidths)
+            var fit = el.__brFit;
+            if (isX && fit && fit.gen === gen && fit.basis === basis) return fit.px;
+            var style = el.style, keys = MEASURE_KEYS, saved = [], k, box = isX && BOX_DISPLAY.test(cs0.display);
             for (k = 0; k < keys.length; k++) saved.push([style.getPropertyValue(keys[k]), style.getPropertyPriority(keys[k])]);
             style.setProperty('min-' + dim, '0px', 'important');
             style.setProperty('max-' + dim, 'none', 'important');
             if (basis === 'stretch') style.setProperty(dim, '-webkit-fill-available', 'important');
             else if (isX && (basis === 'min-content' || basis === 'max-content' || basis === 'fit-content')) {
-                style.setProperty('display', 'inline-block', 'important');
+                // (a box, the stand-in for a flex container, keeps its row: its inline form)
+                style.setProperty('display', box ? '-webkit-inline-box' : 'inline-block', 'important');
                 style.setProperty(dim, basis === 'min-content' ? '0px' : 'auto', 'important');
                 if (basis === 'max-content') style.setProperty('white-space', 'nowrap', 'important');
             } else style.setProperty(dim, 'auto', 'important');
@@ -3868,8 +3911,18 @@
             if (t === 'fill-available' || t === 'available' || t === 'contain') t = 'stretch';
             return 'calc-size(' + t + ', size)';
         };
+        // an item of a horizontal box (the stand-in for a flex row) is as wide as its content already at width: auto: no
+        // measuring (theguardian.com: 126 such items, a layout each, 4-7 s a pass)
+        var CONTENT_WIDTH = /^(-webkit-|-moz-)?(fit|max)-content$/i;
+        var inHorizontalBox = function (el) {
+            var p = el.parentNode;
+            if (!p || p.nodeType !== 1) return false;
+            var cs = getComputedStyle(p);
+            return !!cs && /^-webkit-(inline-)?box$/.test(cs.display) && !/vertical|block-axis/.test(cs.webkitBoxOrient || '');
+        };
         var evalValue = function (el, prop, v, st) {
             var s = String(v);
+            if ((prop === 'width' || prop === 'inline-size') && CONTENT_WIDTH.test(trim(s)) && inHorizontalBox(el)) return 'auto';
             if (/^(width|height|min-|max-|inline-size|block-size|flex-basis)/.test(prop)) s = intrinsicAsCalcSize(s);
             s = replaceFunctions(s, 'sibling-index', function () { return String(siblingIndex(el)); });
             s = replaceFunctions(s, 'sibling-count', function () { return String(siblingCount(el)); });
@@ -4649,10 +4702,11 @@
         var pass = function (positionOnly) {
             if (!entries.length) return;
             gen++;
-            var i;
+            var i, t0 = Date.now(), tc = t0, ta = t0, counts = {};
             if (!positionOnly) {
                 recGen = gen;
                 var recs = collect();
+                tc = Date.now();
                 anchors = {};
                 scopes = [];
                 positioned = [];
@@ -4670,16 +4724,29 @@
                 }
                 for (var an in anchors) if (anchors.hasOwnProperty(an)) anchors[an].sort(byDocumentOrder);
                 timelineRecs = [];
+                try { measureWidths(recs); } catch (em) {}
                 for (i = 0; i < recs.length; i++) {
                     try { applyGeneral(recs[i]); } catch (e1) {}
                     if (needsPositioning(recs[i].props)) positioned.push(recs[i]);
-                    for (var tp in recs[i].props) if (recs[i].props.hasOwnProperty(tp) && TIMELINE_VALUE.test(recs[i].props[tp].v)) { timelineRecs.push(recs[i]); break; }
+                    for (var tp in recs[i].props) if (recs[i].props.hasOwnProperty(tp)) {
+                        counts[tp] = (counts[tp] || 0) + 1;
+                        if (TIMELINE_VALUE.test(recs[i].props[tp].v)) { timelineRecs.push(recs[i]); break; }
+                    }
                 }
+                ta = Date.now();
             } else {
                 for (i = 0; i < timelineRecs.length; i++) { try { applyGeneral(timelineRecs[i]); } catch (e3) {} }
             }
             for (i = 0; i < positioned.length; i++) { try { positionElement(positioned[i]); } catch (e2) {} }
+            var tp2 = Date.now();
             if (!positionOnly) restoreStale();
+            if (window.__brNoteSlow && !positionOnly) {
+                var top = [];
+                for (var cp in counts) if (counts.hasOwnProperty(cp)) top.push(cp + ' ' + counts[cp]);
+                top.sort(function (a, b) { return parseInt(b.split(' ').pop(), 10) - parseInt(a.split(' ').pop(), 10); });
+                window.__brNoteSlow('deferred values', Date.now() - t0, 'collect ' + (tc - t0) + ', apply ' + (ta - tc) + ', position ' + (tp2 - ta) + ', restore ' + (Date.now() - tp2) +
+                                    '; ' + (recs ? recs.length : 0) + ' elements, ' + positioned.length + ' positioned, ' + entries.length + ' entries: ' + top.slice(0, 8).join(', '));
+            }
         };
         onMarkers(function (marked) {
             inlineMarked = [];
@@ -5933,6 +6000,7 @@
         var run = function () {
             gen++;
             stats.passes++;
+            stats.dirty = dirtyAll ? dirtyWhy : dirtyRoots.length + ' changed';
             var tRun = Date.now();
             var classes = docClasses(), mediaCache = {}, users = [], i, b, k, r, list, el, rec;
             var mediaOk = function (m) {
@@ -5999,18 +6067,25 @@
                     for (k = 0; k < info.u.length; k++) { var ikey = '|' + info.u[k].p, icur = rec.u[ikey]; if (!icur || beats(info.u[k], icur)) rec.u[ikey] = info.u[k]; }
                 }
             }
-            // what each user of a scoped property gets
+            // what each user of a scoped property gets (an element nothing changed around keeps what it got last time)
             var pending = [];
             for (i = 0; i < users.length; i++) {
                 el = users[i];
                 rec = el.__brCV;
+                var prevRaw = isDirty(el) ? null : el.__brCVr, nextRaw = {};
                 for (var ukey in rec.u) {
                     if (!rec.u.hasOwnProperty(ukey)) continue;
-                    var use = rec.u[ukey], raw = substitute(use.v, el, 0);
-                    if (raw === null) raw = INHERITED.test(use.p) ? 'inherit' : 'initial';   // invalid at computed-value time
+                    var use = rec.u[ukey], raw, pr = prevRaw && prevRaw.hasOwnProperty(ukey) ? prevRaw[ukey] : null;
+                    if (pr && pr.v === use.v) raw = pr.raw;
+                    else {
+                        raw = substitute(use.v, el, 0);
+                        if (raw === null) raw = INHERITED.test(use.p) ? 'inherit' : 'initial';   // invalid at computed-value time
+                    }
+                    nextRaw[ukey] = { v: use.v, raw: raw };
                     if (use.st !== null && use.st !== undefined && norm(raw) === norm(use.st)) continue;   // the stylesheet already has it
                     pending.push({ el: el, use: use, raw: raw, key: ukey });
                 }
+                el.__brCVr = nextRaw;
             }
             pending.sort(function (a, c) { return a.use.sp - c.use.sp || a.use.o - c.use.o; });
             stats.tResolve = Date.now() - tRun;
@@ -6025,14 +6100,14 @@
         };
         // ---- decisions of earlier passes stay while nothing that can change an element's rules happened around it
         // (a class or attribute of the element, an ancestor or a sibling, children added or removed)
-        var dirtyAll = true, dirtyRoots = [];
+        var dirtyAll = true, dirtyRoots = [], dirtyWhy = 'start';
         var isDirty = function (el) {
             if (dirtyAll) return true;
             for (var i = 0; i < dirtyRoots.length; i++) { var r = dirtyRoots[i]; if (r === el || r.contains(el)) return true; }
             return false;
         };
         var markDirty = function (node) {
-            if (!node || node.nodeType !== 1 || dirtyRoots.length > 40) { dirtyAll = true; return; }
+            if (!node || node.nodeType !== 1 || dirtyRoots.length > 40) { dirtyAll = true; dirtyWhy = dirtyRoots.length > 40 ? 'many changes' : 'a node'; return; }
             for (var i = 0; i < dirtyRoots.length; i++) if (dirtyRoots[i] === node || dirtyRoots[i].contains(node)) return;
             dirtyRoots.push(node);
         };
@@ -6100,7 +6175,7 @@
             it.part = !it.ok && same.length ? same : null;
         };
         var apply = function (pending) {
-            var work = [], keep = [], slow = [], i, k, it, cs;
+            var work = [], keep = [], slow = [], i, k, it, cs, tm = [Date.now()];
             for (i = 0; i < pending.length; i++) {
                 it = pending[i];
                 it.decls = fixDecl(it.use.p, it.raw);
@@ -6116,6 +6191,7 @@
                 it.check = true;
             }
             // elements whose inline values may change: transitions held, our earlier values taken back
+            tm.push(Date.now());
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 freeze(it.el);   // the new value appears at once instead of fading in (and a restore does not animate)
@@ -6124,6 +6200,7 @@
                 if (it.prevPart) for (k = 0; k < it.prevPart.length; k++) restoreInline(it.el, it.prevPart[k]);
             }
             // what the stylesheets give the element now, against what the rule's own value computes to
+            tm.push(Date.now());
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (!it.check) continue;
@@ -6134,6 +6211,7 @@
                 it.own = false;
                 for (k = 0; k < it.fb.length; k++) if (it.el.style.getPropertyValue(it.fb[k][0]) && !it.use.i) it.own = true;
             }
+            tm.push(Date.now());
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (!it.check) continue;
@@ -6142,8 +6220,11 @@
                 if (pv === null) { slow.push(it); continue; }
                 decide(it, pv);
             }
+            tm.push(Date.now());
             if (slow.length) slowCheck(slow);
+            tm.push(Date.now());
             rivalCheck(work);
+            tm.push(Date.now());
             for (i = 0; i < work.length; i++) {
                 it = work[i];
                 if (!it.el.__brCVc) it.el.__brCVc = {};
@@ -6153,13 +6234,20 @@
                 stats.applied++;
                 for (k = 0; k < set.length; k++) setInline(it.el, set[k][0], set[k][1], it.use.i);
             }
+            tm.push(Date.now());
             for (i = 0; i < keep.length; i++) {
                 it = keep[i];
                 var kept = it.ok ? it.decls : it.part ? longhandValues(it.decls, it.part) : [];
                 for (k = 0; k < kept.length; k++) keepInline(it, kept[k][0], kept[k][1]);
             }
             restoreStale();
+            tm.push(Date.now());
             thaw();
+            tm.push(Date.now());
+            // (for the debug log: fix, freeze, before, probe, slow, rival, set, keep, thaw; work/keep/slow counts)
+            stats.applyParts = [];
+            for (i = 1; i < tm.length; i++) stats.applyParts.push(tm[i] - tm[i - 1]);
+            stats.applyParts.push(work.length, keep.length, slow.length);
         };
         // ---- ties: the stylesheet gives the element the rule's substituted value, but another rule with the same value
         // may be the one winning. The style rules of the CSSOM that set the property and match the element are
@@ -6192,7 +6280,21 @@
             c += (s.replace(/[.#:][\w-]+/g, ' ').match(/(^|[\s>+~(,])[a-zA-Z][\w-]*/g) || []).length;
             return Math.min(a, 99) * 10000 + Math.min(Math.max(b, 0), 99) * 100 + Math.min(c, 99);
         };
-        // the style rules in effect, in cascade order ({rule, key, order}; @media blocks that do not match left out)
+        // the style rules in effect, in cascade order ({rule, key, order}; @media blocks that do not match left out), and
+        // for each property the rules that set it ({entry, imp}), from one walk over the declarations. Kept while the
+        // stylesheets stay as they are (their count and rule counts; a resize starts over): the walk read the CSSOM of
+        // every rule for every property, in every pass (tailwindcss.com: 5 s of each 8 s pass).
+        var cssomKey = '';
+        var cssomFingerprint = function () {
+            var parts = [document.styleSheets.length, window.innerWidth, window.innerHeight];
+            for (var s = 0; s < document.styleSheets.length; s++) {
+                var sh = document.styleSheets[s], n = -1, owner = sh.ownerNode;
+                if (owner && (owner.__brOwn || /^br-/.test(owner.id || ''))) continue;   // (the shims' own, rewritten every pass)
+                try { n = sh.cssRules ? sh.cssRules.length : -1; } catch (e) {}
+                parts.push(n, sh.disabled ? 1 : 0);
+            }
+            return parts.join(',');
+        };
         var cssomRules = function () {
             if (cssomList) return cssomList;
             cssomList = [];
@@ -6202,7 +6304,16 @@
                 if (!list || depth > 6) return;
                 for (var i = 0; i < list.length; i++) {
                     var r = list[i];
-                    if (r.type === 1) { cssomList.push({ rule: r, key: normSel(r.selectorText), order: cssomList.length, sels: null }); continue; }
+                    if (r.type === 1) {
+                        var entry = { rule: r, key: normSel(r.selectorText), order: cssomList.length, sels: null }, st = r.style, n = st ? st.length : 0;
+                        cssomList.push(entry);
+                        for (var d = 0; d < n; d++) {
+                            var p = st[d];
+                            if (!p) continue;
+                            (cssomByProp.hasOwnProperty(p) ? cssomByProp[p] : (cssomByProp[p] = [])).push({ entry: entry, imp: st.getPropertyPriority(p) === 'important' });
+                        }
+                        continue;
+                    }
                     if (r.type === 4 && !mediaOn(r.media)) continue;
                     if (r.cssRules) walk(r.cssRules, depth + 1);
                 }
@@ -6217,16 +6328,36 @@
         };
         // the rules that set `prop` ({entry, imp})
         var rulesSetting = function (prop) {
-            if (cssomByProp.hasOwnProperty(prop)) return cssomByProp[prop];
-            var all = cssomRules(), out = [];
-            for (var i = 0; i < all.length; i++) {
-                var st = all[i].rule.style;
-                if (st && st.getPropertyValue(prop)) out.push({ entry: all[i], imp: st.getPropertyPriority(prop) === 'important' });
-            }
-            cssomByProp[prop] = out;
-            return out;
+            cssomRules();
+            return cssomByProp.hasOwnProperty(prop) ? cssomByProp[prop] : [];
         };
         var matchesEl = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { return !!f.call(el, s); } catch (e) { return false; } };
+        // what the subject of a selector (its last compound) needs on the element itself: its classes and id. A
+        // selector whose subject needs a class the element lacks cannot match it: no engine call (tailwindcss.com: 84,000
+        // selector matches, 5 s, a pass).
+        var subjectNeeds = function (sel) {
+            var s = String(sel), depth = 0, start = 0, q = null;
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '\\') i++;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && (c === ' ' || c === '>' || c === '+' || c === '~')) start = i + 1;
+            }
+            var last = s.slice(start).replace(/\[[^\]]*\]/g, ' ').replace(/:(not|-webkit-any|is|where|matches|has)\((?:[^()]|\([^()]*\))*\)/gi, ' ');
+            var cls = [], re = /\.((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/g, m, id = /#((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/.exec(last);
+            while ((m = re.exec(last)) !== null) cls.push(unescapeCSS(m[1]));
+            return { cls: cls, id: id ? unescapeCSS(id[1]) : null };
+        };
+        var classSet = function (el) {
+            var set = {}, c = el.className;
+            if (typeof c !== 'string') c = c && typeof c.baseVal === 'string' ? c.baseVal : '';
+            var parts = c.split(/\s+/);
+            for (var i = 0; i < parts.length; i++) if (parts[i]) set[parts[i]] = 1;
+            return set;
+        };
         // does another rule win `prop` on the item's element? (null when our own rule is not in the CSSOM)
         var rivalWins = function (it, prop) {
             var list = rulesSetting(prop), own = null, i, r;
@@ -6240,20 +6371,30 @@
                 if (!e.sels) {
                     e.sels = [];
                     var parts = selectorList(e.rule.selectorText);
-                    for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: selectorSpecificity(parts[k]) });
+                    for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: selectorSpecificity(parts[k]), need: subjectNeeds(parts[k]) });
                 }
                 for (var j = 0; j < e.sels.length; j++) {
-                    var sp = e.sels[j].sp;
+                    var sp = e.sels[j].sp, need = e.sels[j].need, miss = false;
                     // only a selector that would beat ours needs matching
                     if (!(r.imp && !ownImp) && (sp < it.use.sp || (sp === it.use.sp && !later))) continue;
+                    if (need.id !== null && it.el.id !== need.id) continue;
+                    if (!it.cls) it.cls = classSet(it.el);
+                    for (var c = 0; c < need.cls.length && !miss; c++) if (it.cls[need.cls[c]] !== 1) miss = true;
+                    if (miss) continue;
+                    matchCalls++;
                     if (matchesEl(it.el, e.sels[j].s)) return e.sels[j].s;
                 }
             }
             return false;
         };
+        var matchCalls = 0;
         var rivalCheck = function (work) {
-            var i, k, it;
-            cssomList = null;
+            var i, k, it, t0 = Date.now(), key = cssomFingerprint();
+            if (key !== cssomKey) { cssomList = null; cssomKey = key; }
+            var t1 = Date.now();
+            cssomRules();
+            var t2 = Date.now();
+            matchCalls = 0;
             lastRivals = [];
             for (i = 0; i < work.length; i++) {
                 it = work[i];
@@ -6270,6 +6411,7 @@
                 it.ok = false;
                 it.part = keep.length ? keep : null;
             }
+            stats.rivalParts = [t1 - t0, t2 - t1, Date.now() - t2, matchCalls, cssomList ? cssomList.length : 0];
         };
         // an unchanged decision: our inline value stays (unless a script replaced it meanwhile: then the page's stays)
         var keepInline = function (it, p, v) {
@@ -6350,6 +6492,9 @@
             try { run(); } catch (e) { if (window.console && console.warn) console.warn('cv pass: ' + e); }
             lastCost = Date.now() - t0;
             busy = false;
+            if (window.__brNoteSlow) window.__brNoteSlow('custom properties', lastCost, '(' + stats.dirty + ') collect ' + stats.tCollect + ', resolve ' + (stats.tResolve - stats.tCollect) + ', apply ' + stats.tApply +
+                                                        ' [fix freeze before probe slow rival set keep thaw / work keep slow: ' + (stats.applyParts || []).join(' ') + '], pending ' + stats.pending +
+                                                        ', rival [key index match / matches rules: ' + (stats.rivalParts || []).join(' ') + ']');
             if (observer && observer.takeRecords) observer.takeRecords();   // our own style changes
         };
         var schedule = function () {
@@ -6357,25 +6502,46 @@
             // (an expensive pass waits four times its cost: blesk.cz's took 1.5 s and came every second)
             timer = setTimeout(pass, lastCost > 40 ? Math.min(20000, lastCost * 4) : 40);
         };
+        var OWN_CLASSES = /(?:^|\s)br-[\w-]+/g;
         var watch = function () {
             if (observer || !window.MutationObserver) return;
             var filter = [];
             for (var a in attrNames) if (attrNames.hasOwnProperty(a)) filter.push(a);
+            // (the shims' own elements: the probe, generated styles, measuring boxes)
+            var ownNode = function (n) { return n === probe || !!n.__brOwn || (n.nodeType === 1 && /^br-/.test(n.id || '')); };
+            // below <body> or <html> itself only the element and its following siblings (+ ~ :nth-*): a whole
+            // subtree of <body> is the whole page (an element a script appends there started every pass over)
+            var isTop = function (n) { return n === document.body || n === document.documentElement; };
+            var markSiblings = function (from) { for (var s = from; s; s = s.nextSibling) if (s.nodeType === 1) markDirty(s); };
             observer = new MutationObserver(function (records) {
                 if (busy) return;
                 var any = false;
                 for (var i = 0; i < records.length; i++) {
-                    var t = records[i].target;
+                    var r = records[i], t = r.target, n;
                     if (!t || t.id === 'br-cv-pseudo' || t === probe) continue;
+                    if (r.type === 'attributes') {
+                        // (the classes the page shims set, br-..., change no rule of the page: every pass started over for them)
+                        if (r.attributeName === 'class' && String(r.oldValue || '').replace(OWN_CLASSES, '').replace(/\s+/g, ' ').replace(/^ | $/g, '') ===
+                            String(t.getAttribute('class') || '').replace(OWN_CLASSES, '').replace(/\s+/g, ' ').replace(/^ | $/g, '')) continue;
+                        any = true;
+                        // an attribute can change what its element, the descendants and the following siblings match
+                        if (t.parentNode && t.parentNode.nodeType === 1 && !isTop(t.parentNode)) markDirty(t.parentNode);
+                        else { markDirty(t); markSiblings(t.nextSibling); }
+                        continue;
+                    }
+                    var mine = true;
+                    for (n = 0; n < r.addedNodes.length && mine; n++) mine = ownNode(r.addedNodes[n]);
+                    for (n = 0; n < r.removedNodes.length && mine; n++) mine = ownNode(r.removedNodes[n]);
+                    if (mine) continue;
                     any = true;
-                    // an attribute can change what its element, the descendants and the following siblings match
-                    if (records[i].type === 'attributes') markDirty(t.parentNode && t.parentNode.nodeType === 1 ? t.parentNode : t);
-                    else markDirty(t);
+                    if (!isTop(t)) { markDirty(t); continue; }
+                    for (n = 0; n < r.addedNodes.length; n++) if (r.addedNodes[n].nodeType === 1) markDirty(r.addedNodes[n]);
+                    markSiblings(r.nextSibling);
                 }
                 if (any) schedule();
             });
-            try { observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: filter }); } catch (e) { observer = null; }
-            var everything = function () { dirtyAll = true; schedule(); };
+            try { observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: filter }); } catch (e) { observer = null; }
+            var everything = function (e) { dirtyAll = true; dirtyWhy = e && e.type || 'event'; schedule(); };
             if (watchStates) {
                 var ev = ['touchstart', 'touchend', 'mouseover', 'mouseout', 'focus', 'blur', 'change', 'input'];
                 for (var k = 0; k < ev.length; k++) document.addEventListener(ev[k], everything, true);
@@ -6396,6 +6562,7 @@
                     this.__brCPi[name] = String(priority || '').toLowerCase() === 'important';
                     cpUsed = true;
                     dirtyAll = true;
+                    dirtyWhy = 'setProperty ' + name;
                     schedule();
                     return;
                 }
@@ -6418,6 +6585,7 @@
                     this.__brCP[name] = null;
                     cpUsed = true;
                     dirtyAll = true;
+                    dirtyWhy = 'removeProperty ' + name;
                     schedule();
                     return old;
                 }
@@ -6488,6 +6656,7 @@
                     rules.push(e);
                 }
                 dirtyAll = true;
+                dirtyWhy = 'manifest';
                 if (rules.length) watch();
             },
             apply: function () { if (rules.length) pass(); },
