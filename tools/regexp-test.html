@@ -72,7 +72,17 @@ var CASES = [
   ['constructor identity', function () { var re = /a/g; return [RegExp(re) === re, new RegExp(re) !== re, re.constructor === RegExp, new RegExp('a') instanceof RegExp, new RegExp('a', 'y') instanceof RegExp, Object.prototype.toString.call(new RegExp('a', 'y'))]; }, [true, true, true, true, true, '[object RegExp]']],
   ['new RegExp(re, flags)', function () { return [new RegExp(/a/g, 'i').flags, new RegExp(new RegExp(NAMED)).exec('2024-05').groups.y]; }, ['i', '2024']],
   ['bad flags still throw', function () { try { new RegExp('a', 'x'); return 'no'; } catch (e) { return e instanceof SyntaxError; } }, true],
-  ['lookbehind is not lowered', function () { try { new RegExp('(?<=a)b'); return 'no'; } catch (e) { return e.name; } }, 'SyntaxError'],
+  // a lookbehind at the start of the pattern (the old engine has none): the rest is searched, the text before tested
+  ['leading lookbehind', function () { var m = new RegExp('(?<=\\$)\\d+').exec('cost 7 $42'); return [m[0], m.index]; }, ['42', 8]],
+  ['negative lookbehind replace', function () { return '1.2 a.b'.replace(new RegExp('(?<![0-9])\\.', 'g'), '!'); }, '1.2 a!b'],
+  ['lookbehind over the previous match', function () { return 'bbb'.match(new RegExp('(?<=b)b', 'g')); }, ['b', 'b']],
+  ['lookbehind with \\p{} (u)', function () { return 'a~b ~c'.replace(new RegExp('(?<=[\\p{L}\\p{N}_])~(?!~)(?=[\\p{L}\\p{N}_])', 'gu'), '-'); }, 'a-b ~c'],
+  ['split by a lookbehind', function () { return 'a1b2c3'.split(new RegExp('(?<=\\d)')); }, ['a1', 'b2', 'c3']],
+  ['sticky lookbehind', function () { var re = new RegExp('(?<=a)b', 'y'); re.lastIndex = 1; return [re.test('ab'), re.lastIndex, re.test('ab'), re.lastIndex]; }, [true, 2, false, 0]],
+  ['other lookbehinds still throw', function () { var out = []; ['a(?<=a)b', '(?<=1)(?<!1)', '(?<=a)b|c'].forEach(function (p) { try { new RegExp(p); out.push('no'); } catch (e) { out.push(e.name); } }); return out; }, ['SyntaxError', 'SyntaxError', 'SyntaxError']],
+  // (properties added for libraries: FormatJS's message parser, CJK tests with Bopomofo)
+  ['\\p{Pattern_Syntax} with y', function () { return new RegExp('([^\\p{White_Space}\\p{Pattern_Syntax}]*)', 'yu').exec('abc def}')[0]; }, 'abc'],
+  ['CJK scripts incl. Bopomofo', function () { var r = new RegExp('[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}\\p{Script=Bopomofo}]', 'u'); return [r.test('ㄅ'), r.test('漢'), r.test('a')]; }, [true, true, false]],
   ['plain use unchanged', function () { return ['aXbX'.replace(/X/g, '-'), 'abc'.match(/b/).index, 'a-b'.replace('-', '$&$&'), 'x'.match(/y/g), 'a1b2'.match(/\d/g)]; }, ['a-b-', 1, 'a--b', null, ['1', '2']]],
   ['transpiled named literal', function () { var out = JSFix.transpile('(function () { var m = "2024-05".match(/(?<y>\\d{4})-(?<m>\\d\\d)/); return [m.groups.m, "2024-05".replace(/(?<y>\\d{4})-(?<m>\\d\\d)/, "$<m>/$<y>")]; })();', {}); return (0, eval)(out); }, ['05', '05/2024']],
   ['transpiled sticky literal', function () { var out = JSFix.transpile('(function () { var re = /a/y; re.lastIndex = 1; return [re.test("ba"), re.lastIndex, re.test("ba")]; })();', {}); return (0, eval)(out); }, [true, 2, false]]

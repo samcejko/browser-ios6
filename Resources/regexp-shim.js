@@ -91,29 +91,72 @@
         }
         return false;
     };
+    // A lookbehind at the very start of the pattern, (?<=X)rest or (?<!X)rest, with no alternation after it and no
+    // groups of its own: {neg, behind: X, rest} (the engine has no lookbehind at all; the rest is searched and X tested
+    // against the text before each candidate), else null. Other lookbehinds are not lowered.
+    var leadingLookbehind = function (p) {
+        if (!/^\(\?<[=!]/.test(p)) return null;
+        var depth = 0, inClass = false, i, c, close = -1;
+        for (i = 0; i < p.length; i++) {
+            c = p.charAt(i);
+            if (c === '\\') { i++; continue; }
+            if (inClass) { if (c === ']') inClass = false; continue; }
+            if (c === '[') { inClass = true; continue; }
+            if (c === '(') depth++;
+            else if (c === ')') { depth--; if (!depth) { close = i; break; } }
+        }
+        if (close < 0) return null;
+        var behind = p.slice(4, close), rest = p.slice(close + 1);
+        // (groups of its own would shift the numbers; alternatives after it would lose it; a second lookbehind)
+        if (/\((?!\?)/.test(behind.replace(/\\./g, '')) || /\(\?<[=!]/.test(rest)) return null;
+        depth = 0; inClass = false;
+        for (i = 0; i < rest.length; i++) {
+            c = rest.charAt(i);
+            if (c === '\\') { i++; continue; }
+            if (inClass) { if (c === ']') inClass = false; continue; }
+            if (c === '[') inClass = true;
+            else if (c === '(') depth++;
+            else if (c === ')') depth--;
+            else if (c === '|' && !depth) return null;
+        }
+        return { neg: p.charAt(3) === '!', behind: behind, rest: rest };
+    };
     // {pattern, flags (for the engine), info} or null when it cannot be lowered
     var lower = function (source, flags) {
-        var p = source, all = '', i, c, names = null;
+        var p = source, all = '', i, c, names = null, lb = null;
         for (i = 0; i < flags.length; i++) {
             c = flags.charAt(i);
             if (ORDER.indexOf(c) < 0 || all.indexOf(c) >= 0) return null;
             all += c;
         }
         var has = function (f) { return all.indexOf(f) >= 0; };
-        if ((has('u') && has('v')) || /\(\?<[=!]/.test(p)) return null;   // (lookbehind is not lowered)
+        if (has('u') && has('v')) return null;
+        if (/\(\?<[=!]/.test(p)) {
+            lb = leadingLookbehind(p);
+            if (!lb) return null;
+            p = lb.rest;
+        }
+        var unicode = function (q) {
+            if (!(has('u') || has('v')) || !(NEEDS_UNICODE.test(q) || hasDot(q))) return q;
+            if (!unicodeLowering(/\\[pP]\{/.test(q))) return null;
+            try { return G.JSFix.lowerUnicode(q); } catch (e) { return null; }
+        };
         if (has('s')) p = dotAll(p);
         if (/\(\?<[A-Za-z_$]/.test(p)) { var r = namedGroups(p); p = r.pattern; names = r.names; }
-        if ((has('u') || has('v')) && (NEEDS_UNICODE.test(p) || hasDot(p))) {
-            if (!unicodeLowering(/\\[pP]\{/.test(p))) return null;
-            var u = null;
-            try { u = G.JSFix.lowerUnicode(p); } catch (e) { u = null; }
-            if (u === null) return null;
-            p = u;
+        p = unicode(p);
+        if (p === null) return null;
+        var behind = null;
+        if (lb) {
+            behind = unicode(has('s') ? dotAll(lb.behind) : lb.behind);
+            if (behind === null) return null;
+            // (without a quantifier that repeats without end, what it matches is short: only the last 256 characters
+            // before a candidate are tested)
+            behind = { re: new Native('(?:' + behind + ')$', has('i') ? 'i' : ''), neg: lb.neg, bounded: !/[*+]|\{\d*,\}/.test(behind.replace(/\\./g, '')) };
         }
         var sorted = '';
         for (i = 0; i < ORDER.length; i++) if (has(ORDER.charAt(i))) sorted += ORDER.charAt(i);
         return { pattern: p, flags: (has('g') ? 'g' : '') + (has('i') ? 'i' : '') + (has('m') ? 'm' : ''),
-                 info: { source: source, flags: sorted, names: names, sticky: has('y'), indices: has('d') } };
+                 info: { source: source, flags: sorted, names: names, sticky: has('y'), indices: has('d'), behind: behind } };
     };
     var groupsOf = function (m, names) {
         var g = {};
@@ -126,15 +169,30 @@
         return g;
     };
     var decorate = function (re, l) {
-        var info = l.info, anchored = null;
+        var info = l.info, anchored = null, scan = null, behind = info.behind;
         hidden(re, '__brRe', info);
+        // a leading lookbehind: candidates of the rest, each kept when the text before it does (not) end in X
+        if (behind) scan = new Native(l.pattern, l.flags.indexOf('g') >= 0 ? l.flags : l.flags + 'g');
         // sticky: (?:pattern)|() always matches at lastIndex; the empty alternative taking it means no match there
-        if (info.sticky) anchored = new Native('(?:' + l.pattern + ')|()', l.flags.indexOf('g') >= 0 ? l.flags : l.flags + 'g');
-        if (!anchored && !info.names && !info.indices) return re;
+        else if (info.sticky) anchored = new Native('(?:' + l.pattern + ')|()', l.flags.indexOf('g') >= 0 ? l.flags : l.flags + 'g');
+        if (!anchored && !scan && !info.names && !info.indices) return re;
         hidden(re, 'exec', function (s) {
             s = String(s);
             var m;
-            if (anchored) {
+            if (scan) {
+                var moving = this.global || info.sticky, from = moving ? this.lastIndex : 0, c;
+                m = null;
+                while (from <= s.length) {
+                    scan.lastIndex = from;
+                    c = nativeExec.call(scan, s);
+                    if (!c || (info.sticky && c.index !== from)) break;
+                    if (behind.re.test(s.slice(behind.bounded ? Math.max(0, c.index - 256) : 0, c.index)) !== behind.neg) { m = c; break; }
+                    if (info.sticky) break;
+                    from = c.index + 1;
+                }
+                if (moving) this.lastIndex = m ? m.index + m[0].length : 0;
+                if (!m) return null;
+            } else if (anchored) {
                 anchored.lastIndex = this.lastIndex;
                 m = nativeExec.call(anchored, s);
                 if (!m || m[m.length - 1] !== undefined) { this.lastIndex = 0; return null; }
@@ -267,6 +325,30 @@
             if (pos >= next) { out += s.slice(next, pos) + r; next = pos + m[0].length; }
         }
         return out + s.slice(next);
+    };
+    // split by a lowered expression (a lookbehind's is only right through its exec): the ES2015 algorithm, with a
+    // global search standing in for the sticky one (a match found further on is the sticky match at that position)
+    var nativeSplit = String.prototype.split;
+    String.prototype.split = function split(sep, limit) {
+        'use strict';
+        if (!isLowered(sep) || this === null || this === undefined) return nativeSplit.apply(this, arguments);
+        var s = String(this), out = [], lim = limit === undefined ? 4294967295 : limit >>> 0;
+        if (!lim) return out;
+        var rx = new BRRegExp(sep.__brRe.source, sep.__brRe.flags.replace(/[gy]/g, '') + 'g'), m, p = 0, q = 0, e, i;
+        if (!s.length) return rx.exec(s) ? out : [s];
+        while (q < s.length) {
+            rx.lastIndex = q;
+            m = rx.exec(s);
+            if (!m || m.index >= s.length) break;
+            e = m.index + m[0].length;
+            if (e === p) { q = m.index + 1; continue; }
+            out.push(s.slice(p, m.index));
+            if (out.length === lim) return out;
+            for (i = 1; i < m.length; i++) { out.push(m[i]); if (out.length === lim) return out; }
+            p = q = e;
+        }
+        out.push(s.slice(p));
+        return out;
     };
     if (!String.prototype.matchAll) {
         hidden(String.prototype, 'matchAll', function matchAll(re) {

@@ -9,7 +9,15 @@
         'Emoji_Modifier', 'Emoji_Modifier_Base', 'Emoji_Component', 'Extended_Pictographic', 'Uppercase', 'Lowercase', 'ID_Start', 'ID_Continue',
         'Diacritic', 'Ideographic', 'Regional_Indicator', 'ASCII', 'Any', 'Assigned', 'Script=Latin', 'Script=Greek', 'Script=Cyrillic',
         'Script=Armenian', 'Script=Hebrew', 'Script=Arabic', 'Script=Devanagari', 'Script=Bengali', 'Script=Thai', 'Script=Georgian',
-        'Script=Hangul', 'Script=Hiragana', 'Script=Katakana', 'Script=Han', 'Script=Common', 'Script=Inherited'];
+        'Script=Hangul', 'Script=Hiragana', 'Script=Katakana', 'Script=Han', 'Script=Common', 'Script=Inherited',
+        // (more that libraries use: FormatJS's message parser [^\p{White_Space}\p{Pattern_Syntax}], CJK tests with
+        // Bopomofo - one unknown property and the whole pattern failed, kosik.cz stopped at its loader)
+        'C', 'Cn', 'Cs', 'LC', 'Pattern_Syntax', 'Pattern_White_Space', 'XID_Start', 'XID_Continue', 'Dash', 'Hex_Digit', 'ASCII_Hex_Digit',
+        'Math', 'Quotation_Mark', 'Terminal_Punctuation', 'Sentence_Terminal', 'Variation_Selector', 'Default_Ignorable_Code_Point', 'Cased',
+        'Case_Ignorable', 'Join_Control', 'Extender', 'Grapheme_Extend', 'Unified_Ideograph',
+        'Script=Bopomofo', 'Script=Tamil', 'Script=Telugu', 'Script=Kannada', 'Script=Malayalam', 'Script=Gujarati', 'Script=Gurmukhi',
+        'Script=Oriya', 'Script=Sinhala', 'Script=Khmer', 'Script=Lao', 'Script=Myanmar', 'Script=Tibetan', 'Script=Ethiopic',
+        'Script=Mongolian', 'Script=Syriac', 'Script=Thaana'];
     var build = function () {
         var tables = {};
         for (var k = 0; k < PROPS.length; k++) {

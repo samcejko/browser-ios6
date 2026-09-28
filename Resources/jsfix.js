@@ -831,12 +831,18 @@
         Letter_Number: 'Nl', Other_Number: 'No', Punctuation: 'P', punct: 'P', Connector_Punctuation: 'Pc', Dash_Punctuation: 'Pd', Open_Punctuation: 'Ps',
         Close_Punctuation: 'Pe', Initial_Punctuation: 'Pi', Final_Punctuation: 'Pf', Other_Punctuation: 'Po', Symbol: 'S', Math_Symbol: 'Sm',
         Currency_Symbol: 'Sc', Modifier_Symbol: 'Sk', Other_Symbol: 'So', Separator: 'Z', Space_Separator: 'Zs', Line_Separator: 'Zl',
-        Paragraph_Separator: 'Zp', Control: 'Cc', cntrl: 'Cc', Format: 'Cf', Private_Use: 'Co' };
+        Paragraph_Separator: 'Zp', Control: 'Cc', cntrl: 'Cc', Format: 'Cf', Private_Use: 'Co', Other: 'C', Unassigned: 'Cn', Surrogate: 'Cs',
+        Cased_Letter: 'LC' };
     var BIN_ALIAS = { Alpha: 'Alphabetic', space: 'White_Space', EPres: 'Emoji_Presentation', EMod: 'Emoji_Modifier', EBase: 'Emoji_Modifier_Base',
         EComp: 'Emoji_Component', ExtPict: 'Extended_Pictographic', Upper: 'Uppercase', Lower: 'Lowercase', IDS: 'ID_Start', IDC: 'ID_Continue',
-        Dia: 'Diacritic', Ideo: 'Ideographic', RI: 'Regional_Indicator' };
+        Dia: 'Diacritic', Ideo: 'Ideographic', RI: 'Regional_Indicator', Pat_Syn: 'Pattern_Syntax', Pat_WS: 'Pattern_White_Space', XIDS: 'XID_Start',
+        XIDC: 'XID_Continue', Hex: 'Hex_Digit', AHex: 'ASCII_Hex_Digit', QMark: 'Quotation_Mark', Term: 'Terminal_Punctuation',
+        STerm: 'Sentence_Terminal', VS: 'Variation_Selector', DI: 'Default_Ignorable_Code_Point', CI: 'Case_Ignorable', Join_C: 'Join_Control',
+        Ext: 'Extender', Gr_Ext: 'Grapheme_Extend', UIdeo: 'Unified_Ideograph' };
     var SCRIPT_ALIAS = { Latn: 'Latin', Grek: 'Greek', Cyrl: 'Cyrillic', Armn: 'Armenian', Hebr: 'Hebrew', Arab: 'Arabic', Deva: 'Devanagari',
-        Beng: 'Bengali', Geor: 'Georgian', Hang: 'Hangul', Hira: 'Hiragana', Kana: 'Katakana', Hani: 'Han', Zyyy: 'Common', Zinh: 'Inherited', Qaai: 'Inherited' };
+        Beng: 'Bengali', Geor: 'Georgian', Hang: 'Hangul', Hira: 'Hiragana', Kana: 'Katakana', Hani: 'Han', Zyyy: 'Common', Zinh: 'Inherited', Qaai: 'Inherited',
+        Bopo: 'Bopomofo', Taml: 'Tamil', Telu: 'Telugu', Knda: 'Kannada', Mlym: 'Malayalam', Gujr: 'Gujarati', Guru: 'Gurmukhi', Orya: 'Oriya',
+        Sinh: 'Sinhala', Khmr: 'Khmer', Laoo: 'Lao', Mymr: 'Myanmar', Tibt: 'Tibetan', Ethi: 'Ethiopic', Mong: 'Mongolian', Syrc: 'Syriac', Thaa: 'Thaana' };
     var uniCache = {};
     // the code point ranges [start, end, start, end...] of a property, null when unknown
     var uniRanges = function (spec) {
