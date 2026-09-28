@@ -2312,6 +2312,8 @@
     // resolve such a chain: the box gets its height in pixels (what it has anyway), the percentage then resolves.
     var PCT_TAGS = { IMG: 1, VIDEO: 1, CANVAS: 1, IFRAME: 1, PICTURE: 1, EMBED: 1, OBJECT: 1 };
     var pctFixed = [];
+    // (debugging: the trials of the marker scan that write and read back, each a layout of the page)
+    var scanStats = { pct: 0, svgTry: 0, svgPct: 0, aspect: 0, pctMs: 0, svgMs: 0 };
     var fixPercentHeight = function (el) {
         var p = el.parentNode;
         if (!p || p.nodeType !== 1 || p.__brPctFix || el.offsetHeight > 2 || el.offsetWidth < 20) return;
@@ -2324,6 +2326,7 @@
         var cs = getComputedStyle(p), inner = ph - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
         if (inner < 20) return;
         el.__brPctTried = p.offsetWidth;
+        scanStats.pct++;
         p.style.height = (cs.boxSizing === 'border-box' ? p.offsetHeight : inner) + 'px';
         if (el.offsetHeight > 2) { p.__brPctFix = p.offsetWidth; pctFixed.push(p); }
         else p.style.height = '';   // (not that: left as it was)
@@ -2387,29 +2390,91 @@
         if (isNaN(w) || isNaN(h)) { var r = el.getBoundingClientRect(); return { width: r.width, height: r.height }; }
         return { width: w, height: h };
     };
-    var svgGiven = function (el, p) {
-        var others = [], textBeside = false, n, i;
+    // The trials (what a drawing was given) go together: the scan plans them, then every box takes its trial form, the
+    // drawings are measured, and the boxes are put back, one layout of the page for all of them (one each took 140 ms
+    // on seznam.cz, 51 drawings: 7 s, and as long again for the scan reading styles after each). Boxes inside one
+    // another, or the same box, wait for the next round (a trial hides the other children of its box).
+    var SVG_PROBE = [['display', 'table'], ['width', 'auto'], ['min-width', '0'], ['max-width', 'none']];
+    var svgQueue = null;   // ({tries, fixes} while the scan runs)
+    var svgPlanTry = function (el, p) {
+        var others = [], textBeside = false, n;
         for (n = p.firstChild; n; n = n.nextSibling) {
             if (n === el) continue;
             if (n.nodeType === 3) { if (/\S/.test(n.nodeValue)) textBeside = true; }
-            else if (n.nodeType === 1) { if (others.length >= 8) return null; others.push([n, n.style.getPropertyValue('display'), n.style.getPropertyPriority('display'), n.hasAttribute('style')]); }
+            else if (n.nodeType === 1) { if (others.length >= 8) return null; others.push(n); }
         }
-        var probe = [['display', 'table'], ['width', 'auto'], ['min-width', '0'], ['max-width', 'none']], old = [], hadStyle = p.hasAttribute('style');
-        for (i = 0; i < probe.length; i++) {
-            old.push([probe[i][0], p.style.getPropertyValue(probe[i][0]), p.style.getPropertyPriority(probe[i][0])]);
-            p.style.setProperty(probe[i][0], probe[i][1], 'important');
+        return { el: el, p: p, others: others, textBeside: textBeside };
+    };
+    var svgTrySet = function (t) {
+        var p = t.p, i;
+        t.hadStyle = p.hasAttribute('style');
+        t.old = [];
+        for (i = 0; i < SVG_PROBE.length; i++) {
+            t.old.push(p.style.getPropertyValue(SVG_PROBE[i][0]), p.style.getPropertyPriority(SVG_PROBE[i][0]));
+            p.style.setProperty(SVG_PROBE[i][0], SVG_PROBE[i][1], 'important');
         }
-        for (i = 0; i < others.length; i++) others[i][0].style.setProperty('display', 'none', 'important');
-        var r = svgBox(el);
-        for (i = 0; i < others.length; i++) { restoreStyle(others[i][0], 'display', others[i][1], others[i][2]); if (!others[i][3] && !others[i][0].style.length) others[i][0].removeAttribute('style'); }
-        for (i = 0; i < old.length; i++) restoreStyle(p, old[i][0], old[i][1], old[i][2]);
-        if (!hadStyle && !p.style.length) p.removeAttribute('style');
-        return { w: textBeside ? true : r.width > 1, h: r.height >= 0.5 };
+        t.oldOthers = [];
+        for (i = 0; i < t.others.length; i++) {
+            var o = t.others[i];
+            t.oldOthers.push(o.style.getPropertyValue('display'), o.style.getPropertyPriority('display'), o.hasAttribute('style'));
+            o.style.setProperty('display', 'none', 'important');
+        }
+    };
+    var svgTryUnset = function (t) {
+        var p = t.p, i;
+        for (i = 0; i < t.others.length; i++) {
+            var o = t.others[i];
+            restoreStyle(o, 'display', t.oldOthers[3 * i], t.oldOthers[3 * i + 1]);
+            if (!t.oldOthers[3 * i + 2] && !o.style.length) o.removeAttribute('style');
+        }
+        for (i = 0; i < SVG_PROBE.length; i++) restoreStyle(p, SVG_PROBE[i][0], t.old[2 * i], t.old[2 * i + 1]);
+        if (!t.hadStyle && !p.style.length) p.removeAttribute('style');
+    };
+    var svgFix = function (el, prop, v, p) {
+        if (svgQueue) { svgQueue.fixes.push({ el: el, prop: prop, v: v, p: p }); return; }
+        svgApplyFixes([{ el: el, prop: prop, v: v, p: p }]);
+    };
+    var svgRunTries = function (tries) {
+        var rest = tries, i, j;
+        while (rest.length) {
+            var round = [], later = [];
+            for (i = 0; i < rest.length; i++) {
+                var t = rest[i], clash = false;
+                for (j = 0; j < round.length && !clash; j++) { var q = round[j].p; if (q === t.p || q.contains(t.p) || t.p.contains(q)) clash = true; }
+                (clash ? later : round).push(t);
+            }
+            scanStats.svgTry += round.length;
+            for (i = 0; i < round.length; i++) svgTrySet(round[i]);
+            for (i = 0; i < round.length; i++) round[i].box = svgBox(round[i].el);
+            for (i = 0; i < round.length; i++) svgTryUnset(round[i]);
+            for (i = 0; i < round.length; i++) {
+                var s = round[i], gw = s.textBeside ? true : s.box.width > 1, gh = s.box.height >= 0.5;
+                if (!s.hOwn && !gh && s.r.width >= 2) svgFix(s.el, 'height', s.r.width / s.ratio, s.p);
+                else if (!s.wOwn && !gw && (s.hOwn || gh) && s.r.height >= 1) svgFix(s.el, 'width', s.r.height * s.ratio, s.p);
+            }
+            rest = later;
+        }
+    };
+    // (the sizes set, then the 2009 boxes around them laid out afresh, together: a box keeps the old heights of its items)
+    var svgApplyFixes = function (fixes) {
+        var boxes = [], i, a;
+        for (i = 0; i < fixes.length; i++) {
+            fixes[i].el.style.setProperty(fixes[i].prop, Math.round(fixes[i].v * 100) / 100 + 'px', 'important');
+            fixes[i].el.__brSvgFixed = true;
+        }
+        for (i = 0; i < fixes.length; i++) {
+            for (a = fixes[i].p; a && a.nodeType === 1; a = a.parentNode) {
+                var d = getComputedStyle(a).display;
+                if (d === '-webkit-box' || d === '-webkit-inline-box') { if (boxes.indexOf(a) < 0) boxes.push(a); break; }
+            }
+        }
+        relayoutAll(boxes);
     };
     // Is the box around a drawing with a percentage height as high as its content? Then current browsers take the
     // percentage for auto, the old engine a share of the screen (or of a box that grows with it): the box shrinks by
     // (most of) the drawing's height when the drawing is made 0 px high for a moment.
     var pctOfContent = function (el, p, h) {
+        scanStats.svgPct++;
         var had = el.hasAttribute('style'), before = p.offsetHeight;
         el.style.setProperty('height', '0px', 'important');
         var after = p.offsetHeight;
@@ -2441,20 +2506,13 @@
             if (wOwn && hOwn) return;
             var pos = getComputedStyle(el).position;
             if (pos === 'absolute' || pos === 'fixed') return;
-            var given = svgGiven(el, p);
-            if (!given) return;
-            if (!hOwn && !given.h && r.width >= 2) setH = r.width / ratio;
-            else if (!wOwn && !given.w && (hOwn || given.h) && r.height >= 1) setW = r.height * ratio;
+            var t = svgPlanTry(el, p);
+            if (!t) return;
+            t.r = r; t.ratio = ratio; t.wOwn = wOwn; t.hOwn = hOwn;
+            if (svgQueue) svgQueue.tries.push(t); else svgRunTries([t]);
+            return;
         }
-        if (setH) el.style.setProperty('height', Math.round(setH * 100) / 100 + 'px', 'important');
-        else if (setW) el.style.setProperty('width', Math.round(setW * 100) / 100 + 'px', 'important');
-        else return;
-        el.__brSvgFixed = true;
-        // (a 2009 box keeps the old heights of its items otherwise)
-        for (var a = p; a && a.nodeType === 1; a = a.parentNode) {
-            var d = getComputedStyle(a).display;
-            if (d === '-webkit-box' || d === '-webkit-inline-box') { relayout(a); break; }
-        }
+        svgFix(el, 'height', setH, p);
     };
     // display: contents, which the rewriter turns into the parent's kind of box that spreads its children as the parent
     // does (marked br-contents, see cssfix.js): in a row that spreads its items (justify-content: space-between and the
@@ -2578,10 +2636,11 @@
             recheckPercentHeights();
             var all = markerCandidates() || document.getElementsByTagName('*'), found = [], containers = [], marked = [];
             tm.push(Date.now());
+            svgQueue = { tries: [], fixes: [] };   // (the drawings' trials and fixes, together after the loop)
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
-                if (PCT_TAGS[el.tagName]) { var tq = Date.now(); fixPercentHeight(el); fixThinPicture(el); fixVideoHeight(el); media += Date.now() - tq; }
-                else if (el.tagName === 'svg') { var tv = Date.now(); fixSvgSize(el); media += Date.now() - tv; }
+                if (PCT_TAGS[el.tagName]) { var tq = Date.now(); fixPercentHeight(el); fixThinPicture(el); fixVideoHeight(el); media += Date.now() - tq; scanStats.pctMs += Date.now() - tq; }
+                else if (el.tagName === 'svg') { var tv = Date.now(); fixSvgSize(el); media += Date.now() - tv; scanStats.svgMs += Date.now() - tv; }
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 marked.push({ el: el, cr: cr });
@@ -2614,23 +2673,31 @@
                 var w = el.offsetWidth;
                 if (!w) continue;
                 var h = Math.round(w * parseInt(m[2], 10) / parseInt(m[1], 10));
-                if (Math.abs(el.offsetHeight - h) > 1) { el.style.height = h + 'px'; el.__brAspect = true; }
+                if (Math.abs(el.offsetHeight - h) > 1) { el.style.height = h + 'px'; el.__brAspect = true; scanStats.aspect++; }
                 found.push(el);
             }
             aspectElements = found;
             containerElements = containers;
+            var sq = svgQueue, ts = Date.now();
+            svgQueue = null;
+            svgRunTries(sq.tries);
+            svgApplyFixes(sq.fixes);
+            media += Date.now() - ts; scanStats.svgMs += Date.now() - ts;
             tm.push(Date.now());
             if (window.__brApplyContainerQueries) window.__brApplyContainerQueries(containers);
             tm.push(Date.now());
             for (var mh = 0; mh < markerHooks.length; mh++) { try { markerHooks[mh](marked); } catch (e2) {} tm.push(Date.now()); }
         } catch (e) {}
+        svgQueue = null;
         // (debugging: candidates, the scan (media fixes in it), container queries, each marker hook)
         if (window.__brNoteSlow && tm.length > 2) {
             var parts = [];
             for (var tp = 1; tp < tm.length; tp++) parts.push(tm[tp] - tm[tp - 1]);
             window.__brNoteSlow('marker scan', Date.now() - t0, 'candidates ' + (tm[0] - t0) + ' of ' + (all ? all.length : 0) + ', scan ' + parts[0] + ' (media ' + media + '), marked ' +
-                                (marked ? marked.length : 0) + ', containers ' + parts[1] + ', hooks ' + parts.slice(2).join(' '));
+                                (marked ? marked.length : 0) + ', containers ' + parts[1] + ', hooks ' + parts.slice(2).join(' ') +
+                                ' [pictures ' + scanStats.pctMs + ' ms, ' + scanStats.pct + ' tries; svg ' + scanStats.svgMs + ' ms, ' + scanStats.svgTry + ' size tries, ' + scanStats.svgPct + ' % tries; ' + scanStats.aspect + ' ratios]');
         }
+        scanStats.pct = scanStats.svgTry = scanStats.svgPct = scanStats.aspect = scanStats.pctMs = scanStats.svgMs = 0;
     };
     // (the scan reads the style of every element: on a big page that changes all the time it waits five times its cost)
     var aspectCost = 0, aspectEnd = 0;
