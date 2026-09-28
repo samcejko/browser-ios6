@@ -2187,6 +2187,7 @@
                     MEp.play = function () {
                         mutedByAttr(this);
                         if (soundWithoutTap(this)) return P ? P.reject(domException('NotAllowedError', "play() failed because the user didn't interact with the document first.")) : undefined;
+                        this.__brWantPlay = true;   // (kept for a switch to the media proxy, below)
                         var r;
                         try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; }
                         if (r && r.then) return r;
@@ -2196,6 +2197,34 @@
                 }
             } catch (e3) {}
         }
+        // Media the system's player cannot load (it has a network stack of its own, without the current TLS ciphers many
+        // servers insist on: developer.mozilla.org's videos gave error 4): the same file through the app's local proxy
+        // (BRMediaProxy), once per element, playing on if it was asked to play.
+        var viaProxy = function (media, src) {
+            if (media.__brProxied || !/^https?:/i.test(src || '') || /^http:\/\/127\.0\.0\.1:\d+\//.test(src)) return;
+            media.__brProxied = true;
+            var url = null;
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', 'https://ios6-browser.invalid/mediaproxy?u=' + encodeURIComponent(src), false);
+                x.send(null);
+                if (x.status === 200) url = JSON.parse(x.responseText).url;
+            } catch (e) { url = null; }
+            if (!url) return;
+            var play = media.__brWantPlay || media.autoplay;
+            media.src = url;   // (a src attribute wins over the <source> children)
+            try { media.load(); } catch (e2) {}
+            if (play) try { var pr = media.play(); if (pr && pr.then) pr.then(null, noop); } catch (e3) {}
+        };
+        document.addEventListener('error', function (e) {
+            var t = e.target, name = t && t.tagName;
+            if (name === 'SOURCE') {
+                var m = t.parentNode;
+                if (m && (m.tagName === 'VIDEO' || m.tagName === 'AUDIO')) viaProxy(m, t.src);
+            } else if ((name === 'VIDEO' || name === 'AUDIO') && t.error && (t.error.code === 2 || t.error.code === 4)) {
+                viaProxy(t, t.currentSrc || t.src);
+            }
+        }, true);
     }
     if (!window.HTMLTrackElement) window.HTMLTrackElement = function HTMLTrackElement() {};
     if (!window.TextTrack) { window.TextTrack = function TextTrack() {}; window.TextTrackCue = window.VTTCue = function VTTCue(start, end, text) { this.startTime = start; this.endTime = end; this.text = text; }; }

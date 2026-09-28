@@ -16,9 +16,9 @@ video { width: 160px; height: 90px; background: #eee; margin-right: 8px; }
 <h1>Autoplay as in current browsers</h1>
 <div id="summary"></div>
 <div id="out"></div>
-<!-- a muted loop plays by itself; one with sound waits for a tap -->
-<video id="v1" autoplay muted loop playsinline src="https://developer.mozilla.org/shared-assets/videos/flower.mp4"></video>
-<video id="v2" autoplay loop playsinline src="https://developer.mozilla.org/shared-assets/videos/flower.mp4"></video>
+<!-- a muted loop plays by itself; one with sound waits for a tap (the media player of iOS 6 loads the file with the system's network stack: a host it cannot reach, developer.mozilla.org, gives error 4) -->
+<video id="v1" autoplay muted loop playsinline src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+<video id="v2" autoplay loop playsinline src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
 <script>
 var results = [], pass = 0, total = 0;
 var show = function (name, ok, detail) {
@@ -30,9 +30,12 @@ var show = function (name, ok, detail) {
 };
 // play() of media with sound without a tap is refused; muted media plays
 var v3 = document.createElement('video'), v4 = document.createElement('video');
-v3.src = v4.src = 'https://developer.mozilla.org/shared-assets/videos/flower.mp4';
 v3.setAttribute('playsinline', ''); v4.setAttribute('playsinline', '');
+// (iOS 6 ignores muted = true from a script: only the muted attribute mutes there, so media muted only through the
+// property has sound as far as the policy knows and waits for a tap)
+v4.setAttribute('muted', '');
 v4.muted = true;
+v3.src = v4.src = 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
 document.body.appendChild(v3); document.body.appendChild(v4);
 var p3 = null, p4 = null;
 setTimeout(function () {

@@ -3,6 +3,7 @@
 #import "BRAdBlock.h"
 #import "BRCSSRewriter.h"
 #import "BRFontConverter.h"
+#import "BRMediaProxy.h"
 #import "BRImageConverter.h"
 #import "BRSpeech.h"
 #import "BRCommon.h"
@@ -1080,6 +1081,18 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         BOOL ads = [BRSettings adBlockEnabled] && ![BRSettings adBlockDisabledForHost:pageHost];
         body = [[NSString stringWithFormat:@"{\"compositing\":%@,\"adblock\":%@}", [BRMemory compositing] ? @"true" : @"false", ads ? @"true" : @"false"]
                 dataUsingEncoding:NSUTF8StringEncoding];
+        type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
+    } else if ([path isEqualToString:@"/mediaproxy"]) {
+        // a media file the system's player could not load (current TLS only): the same file through the app's network
+        // layer, from the local proxy (see BRMediaProxy)
+        NSString *u = nil;
+        for (NSString *pair in [(self.request.URL.query ?: @"") componentsSeparatedByString:@"&"])
+            if ([pair hasPrefix:@"u="]) u = [[pair substringFromIndex:2] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+        NSURL *mediaURL = u.length ? [NSURL URLWithString:u] : nil;
+        NSString *scheme = [mediaURL.scheme lowercaseString];
+        NSString *proxied = ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"]) ? [[BRMediaProxy shared] proxyURLStringForURL:mediaURL pageURL:self.request.mainDocumentURL] : nil;
+        body = [NSJSONSerialization dataWithJSONObject:@{ @"url": proxied ?: [NSNull null] } options:0 error:NULL];
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/speech/"]) {
