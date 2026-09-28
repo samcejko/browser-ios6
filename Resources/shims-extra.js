@@ -2257,21 +2257,62 @@
         el.style.width = Math.round(h * nw / nh) + 'px';
         el.__brThin = true;
     };
-    // An outermost <svg> without a height attribute is 100% high on this engine (the SVG 1.1 default); in a stretched
-    // item of a flex row (a 2009 box) that percentage grows with every layout (The Guardian's logo: 124 000 px and
-    // counting). One that is absurdly high for its viewBox gets the height the viewBox gives its width, as in current
-    // browsers, and the box around is laid out from scratch (it keeps old heights otherwise).
-    var fixSvgHeight = function (el) {
-        if (el.__brSvgH || el.getAttribute('height') !== null) return;
-        var p = el.parentNode;
-        if (!p || p.nodeType !== 1 || p.namespaceURI === 'http://www.w3.org/2000/svg') return;
-        var vb = (el.getAttribute('viewBox') || '').split(/[\s,]+/), vw = parseFloat(vb[2]), vh = parseFloat(vb[3]);
+    // Outermost <svg> sizes. The old engine lays out a width or a height the element was not given as 100% (the SVG 1.1
+    // default of the attributes), where current browsers take it from the other one and the viewBox proportions: a logo
+    // with only a height (Tailwind's h-8) lay in the middle of a row as wide as the page, or was nothing where the box
+    // shrinks to its content; a drawing with only a width was 2000 px high, and in a stretched item of a flex row (a
+    // 2009 box) that height grew with every layout (The Guardian's logo: 124 000 px and counting). Rules from other
+    // hosts are hidden from the page, so what the element was given is found by trying: in a table that shrinks to its
+    // content, a width or a height it was not given comes out as nothing (a percentage does not). Tried once per size,
+    // with the other children of the box out of the way (a text beside the drawing leaves the width unknown).
+    var SVG_NS = 'http://www.w3.org/2000/svg';
+    var restoreStyle = function (node, prop, value, prio) { if (value) node.style.setProperty(prop, value, prio); else node.style.removeProperty(prop); };
+    var svgGiven = function (el, p) {
+        var others = [], textBeside = false, n, i;
+        for (n = p.firstChild; n; n = n.nextSibling) {
+            if (n === el) continue;
+            if (n.nodeType === 3) { if (/\S/.test(n.nodeValue)) textBeside = true; }
+            else if (n.nodeType === 1) { if (others.length >= 8) return null; others.push([n, n.style.getPropertyValue('display'), n.style.getPropertyPriority('display'), n.hasAttribute('style')]); }
+        }
+        var probe = [['display', 'table'], ['width', 'auto'], ['min-width', '0'], ['max-width', 'none']], old = [], hadStyle = p.hasAttribute('style');
+        for (i = 0; i < probe.length; i++) {
+            old.push([probe[i][0], p.style.getPropertyValue(probe[i][0]), p.style.getPropertyPriority(probe[i][0])]);
+            p.style.setProperty(probe[i][0], probe[i][1], 'important');
+        }
+        for (i = 0; i < others.length; i++) others[i][0].style.setProperty('display', 'none', 'important');
         var r = el.getBoundingClientRect();
-        if (!(vw > 0 && vh > 0) || r.width < 1) return;
-        var want = r.width * vh / vw;
-        if (r.height <= Math.max(2000, want * 10)) return;
-        el.style.setProperty('height', Math.round(want) + 'px', 'important');
-        el.__brSvgH = true;
+        for (i = 0; i < others.length; i++) { restoreStyle(others[i][0], 'display', others[i][1], others[i][2]); if (!others[i][3] && !others[i][0].style.length) others[i][0].removeAttribute('style'); }
+        for (i = 0; i < old.length; i++) restoreStyle(p, old[i][0], old[i][1], old[i][2]);
+        if (!hadStyle && !p.style.length) p.removeAttribute('style');
+        return { w: textBeside ? true : r.width > 1, h: r.height >= 0.5 };
+    };
+    var fixSvgSize = function (el) {
+        if (el.__brSvgFixed) return;
+        var wOwn = el.getAttribute('width') !== null || !!el.style.width, hOwn = el.getAttribute('height') !== null || !!el.style.height;
+        if (wOwn && hOwn) return;
+        var p = el.parentNode;
+        if (!p || p.nodeType !== 1 || p.namespaceURI === SVG_NS || p === document.body || p === document.documentElement) return;
+        var vb = (el.getAttribute('viewBox') || '').split(/[\s,]+/), vw = parseFloat(vb[2]), vh = parseFloat(vb[3]);
+        if (!(vw > 0 && vh > 0)) return;
+        var r = el.getBoundingClientRect(), ratio = vw / vh;
+        if ((r.width < 1 && r.height < 1) || Math.abs(r.width - r.height * ratio) <= 1) return;
+        var seen = Math.round(r.width) + 'x' + Math.round(r.height), setH = 0, setW = 0;
+        if (el.__brSvgSeen === seen) return;
+        el.__brSvgSeen = seen;
+        if (!hOwn && r.width >= 1 && r.height > Math.max(2000, r.width / ratio * 10)) setH = r.width / ratio;   // (absurd: never meant)
+        else {
+            var pos = getComputedStyle(el).position;
+            if (pos === 'absolute' || pos === 'fixed') return;
+            var given = svgGiven(el, p);
+            if (!given) return;
+            if (!hOwn && !given.h && r.width >= 2) setH = r.width / ratio;
+            else if (!wOwn && !given.w && (hOwn || given.h) && r.height >= 1) setW = r.height * ratio;
+        }
+        if (setH) el.style.setProperty('height', Math.round(setH * 100) / 100 + 'px', 'important');
+        else if (setW) el.style.setProperty('width', Math.round(setW * 100) / 100 + 'px', 'important');
+        else return;
+        el.__brSvgFixed = true;
+        // (a 2009 box keeps the old heights of its items otherwise)
         for (var a = p; a && a.nodeType === 1; a = a.parentNode) {
             var d = getComputedStyle(a).display;
             if (d === '-webkit-box' || d === '-webkit-inline-box') { relayout(a); break; }
@@ -2360,7 +2401,7 @@
             for (var i = 0; i < all.length && i < 4000; i++) {
                 var el = all[i];
                 if (PCT_TAGS[el.tagName]) { var tq = Date.now(); fixPercentHeight(el); fixThinPicture(el); fixVideoHeight(el); media += Date.now() - tq; }
-                else if (el.tagName === 'svg') { var tv = Date.now(); fixSvgHeight(el); media += Date.now() - tv; }
+                else if (el.tagName === 'svg') { var tv = Date.now(); fixSvgSize(el); media += Date.now() - tv; }
                 var cr = getComputedStyle(el).counterReset || '';
                 if (cr.indexOf('br-') < 0) { if (el.__brAspect) { el.style.height = ''; el.__brAspect = false; } continue; }
                 marked.push({ el: el, cr: cr });

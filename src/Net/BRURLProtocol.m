@@ -161,10 +161,18 @@ static NSString *BRRawCacheTag(void)
     return [NSString stringWithFormat:@"%@/raw-%d%d-%lu-%lu-%lu", [BRCSSRewriter rewriteTag], [BRSettings cssFixEnabled], [BRSettings transpileEnabled],
             (unsigned long)BRMaxRewriteBody, (unsigned long)BRMaxScriptRewriteBody, (unsigned long)BRMaxDocumentRewriteBody];
 }
+// Fonts are kept as the converter made them (unpacked, variation tables and heavy layout tables dropped), tagged with
+// its version: they go stale when it changes. (2: ligature icon fonts keep their layout tables.)
+static NSString *const BRFontCacheTag = @"font-2";
+static BOOL BRIsFontType(NSString *type)
+{
+    return [type hasPrefix:@"font/"] || [type rangeOfString:@"font-"].location != NSNotFound || [type rangeOfString:@"opentype"].location != NSNotFound;
+}
 static BOOL BRCachedRewriteIsStale(NSCachedURLResponse *c)
 {
     if (![c.response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
     NSString *type = [BRHeader([(NSHTTPURLResponse *)c.response allHeaderFields], @"Content-Type") lowercaseString] ?: @"";
+    if (BRIsFontType(type)) return ![c.userInfo[BRCacheRewriteTagKey] isEqual:BRFontCacheTag];
     BOOL rewritable = [type hasPrefix:@"text/html"] || [type hasPrefix:@"text/css"] || [type hasPrefix:@"application/xhtml"] ||
                       [type rangeOfString:@"javascript"].location != NSNotFound || [type rangeOfString:@"ecmascript"].location != NSNotFound;
     if (!rewritable) return NO;
@@ -993,8 +1001,9 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 {
     if (!response || !data) return;
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
+    NSString *type = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
-                            BRCacheRewriteTagKey: rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
+                            BRCacheRewriteTagKey: BRIsFontType(type) ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
     // (the body is not changed after this: the request lets go of it)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     NSURLRequest *request = self.request;

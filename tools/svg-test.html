@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>svg test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+.box { width: 600px; margin: 4px 0; background: #eee; }
+.h20 { height: 20px; }
+.wfull { width: 100%; }
+.row { display: flex; align-items: center; }
+.fit { width: fit-content; }
+</style>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>Outermost svg sizes</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<!-- a height and an auto width: the width comes from the viewBox proportions (100 x 20 -> 5:1) -->
+<div class="box"><svg id="s1" viewBox="0 0 100 20" style="height:20px"><rect width="100" height="20" fill="#c00"/></svg></div>
+<div class="box"><svg id="s2" class="h20" viewBox="0 0 100 20"><rect width="100" height="20" fill="#c00"/></svg></div>
+<div class="box row"><svg id="s3" class="h20" viewBox="0 0 100 20"><rect width="100" height="20" fill="#c00"/></svg><span>text</span></div>
+<div class="box"><div class="fit"><svg id="s10" class="h20" viewBox="0 0 100 20" style="display:block"><rect width="100" height="20" fill="#c00"/></svg></div></div>
+<!-- widths of their own stay -->
+<div class="box"><svg id="s4" viewBox="0 0 100 20" style="height:20px;width:100%"><rect width="100" height="20" fill="#08c"/></svg></div>
+<div class="box"><svg id="s5" viewBox="0 0 100 20" style="height:20px;width:50px"><rect width="100" height="20" fill="#08c"/></svg></div>
+<div class="box"><svg id="s6" viewBox="0 0 100 20" width="50" style="height:20px"><rect width="100" height="20" fill="#08c"/></svg></div>
+<div class="box"><svg id="s7" class="wfull h20" viewBox="0 0 100 20"><rect width="100" height="20" fill="#08c"/></svg></div>
+<!-- the height from the width (or from the whole row when neither is given); stretched drawings keep the proportions for
+     their size (as current browsers do) -->
+<div class="box"><svg id="s8" viewBox="0 0 100 20"><rect width="100" height="20" fill="#c00"/></svg></div>
+<div class="box"><svg id="s9" viewBox="0 0 100 20" preserveAspectRatio="none" style="height:20px"><rect width="100" height="20" fill="#c00"/></svg></div>
+<div class="box"><svg id="s11" viewBox="0 0 100 20" style="width:200px"><rect width="100" height="20" fill="#c00"/></svg></div>
+<div class="box"><svg id="s12" viewBox="0 0 100 20" height="20"><rect width="100" height="20" fill="#c00"/></svg></div>
+<div class="box" style="height:300px"><svg id="s13" viewBox="0 0 100 20"><rect width="100" height="20" fill="#c00"/></svg></div>
+<!-- both given: kept; a text beside: the width cannot be told, left as it is -->
+<div class="box" style="height:300px"><svg id="s14" viewBox="0 0 100 20" style="width:100%;height:100%"><rect width="100" height="20" fill="#08c"/></svg></div>
+<div class="box"><a href="#" id="a15"><svg id="s15" class="h20" viewBox="0 0 100 20"><rect width="100" height="20" fill="#08c"/></svg> Brand</a></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var size = function (id) { var r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
+var near = function (a, b) { return Math.abs(a - b) <= 1; };
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    var s;
+    s = size('s1'); show('a height in the style attribute', near(s.w, 100) && near(s.h, 20), s.w + 'x' + s.h);
+    s = size('s2'); show('a height from a rule', near(s.w, 100) && near(s.h, 20), s.w + 'x' + s.h);
+    s = size('s3'); show('a height from a rule in a flex row', near(s.w, 100) && near(s.h, 20), s.w + 'x' + s.h);
+    s = size('s10'); show('a height in a box that fits its content', near(s.w, 100) && near(s.h, 20), s.w + 'x' + s.h);
+    s = size('s4'); show('width 100% stays', near(s.w, 600), s.w + 'x' + s.h);
+    s = size('s5'); show('a width in px stays', near(s.w, 50), s.w + 'x' + s.h);
+    s = size('s6'); show('a width attribute stays', near(s.w, 50), s.w + 'x' + s.h);
+    s = size('s7'); show('width 100% from a rule stays', near(s.w, 600), s.w + 'x' + s.h);
+    s = size('s8'); show('nothing given: as wide as the row, the height from it', near(s.w, 600) && near(s.h, 120), s.w + 'x' + s.h);
+    s = size('s9'); show('preserveAspectRatio none: the proportions too', near(s.w, 100) && near(s.h, 20), s.w + 'x' + s.h);
+    s = size('s11'); show('a width only: the height from it', near(s.w, 200) && near(s.h, 40), s.w + 'x' + s.h);
+    s = size('s12'); show('a height attribute only', near(s.w, 100) && near(s.h, 20), s.w + 'x' + s.h);
+    s = size('s13'); show('nothing given in a box with a height', near(s.w, 600) && near(s.h, 120), s.w + 'x' + s.h);
+    s = size('s14'); show('100% both ways stays', near(s.w, 600) && near(s.h, 300), s.w + 'x' + s.h);
+    s = size('s15'); show('a text beside: the width left alone', !document.getElementById('s15').style.width, s.w + 'x' + s.h);
+    show('the probe leaves no style attribute behind', !document.getElementById('a15').hasAttribute('style'));
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'svg ' + pass + '/' + total;
+    window.__svgResults = results;
+  }, 3000);
+}, false);
+</script>
+</body>
+</html>

@@ -132,6 +132,15 @@ var cases = [
   // OpenType features per rule, not for the whole page; defaults (kern, liga) are not asked for
   ['font variants as features', '.a{font-variant-numeric:tabular-nums slashed-zero}.c{font-variant-position:super}body{font-variant-numeric:oldstyle-nums}.d{font-feature-settings:"kern" 1}.e{font-feature-settings:"ss01"}.g{font-variant-ligatures:none}',
    '.a{font-variant-numeric:tabular-nums slashed-zero;-webkit-font-feature-settings:"tnum" 1, "zero" 1}\n.c{vertical-align:super;font-size:smaller;font-variant-position:super}\nbody{font-variant-numeric:oldstyle-nums}\n.e{-webkit-font-feature-settings:"ss01"}\n.g{font-variant-ligatures:none;-webkit-font-feature-settings:"liga" 0, "clig" 0, "dlig" 0, "hlig" 0, "calt" 0}'],
+  // icon fonts drawn as ligatures of the icon's name keep their ligatures; text keeps the fast path
+  ['ligature icon fonts', ".material-icons{font-family:'Material Icons';font-style:normal;line-height:1;text-rendering:optimizeLegibility}" +
+   '.logo{font-family:logo-font;font-style:normal;text-rendering:optimizelegibility}.ico{font:24px/1 icomoon;font-feature-settings:"liga"}' +
+   'body{font-family:Inter;font-style:normal;text-rendering:optimizeLegibility}.prose{font-family:Merriweather;text-rendering:optimizeLegibility}' +
+   '.x{font-family:serif;font-style:normal;text-rendering:optimizeLegibility}.y{font-family:Foo;font-style:normal;font-feature-settings:"liga" 0}',
+   ".material-icons{font-family:'Material Icons';font-style:normal;line-height:1;text-rendering:optimizeSpeed;-webkit-font-variant-ligatures:common-ligatures}\n" +
+   '.logo{font-family:logo-font;font-style:normal;text-rendering:optimizeSpeed;-webkit-font-variant-ligatures:common-ligatures}\n.ico{font:24px/1 icomoon;-webkit-font-variant-ligatures:common-ligatures}\n' +
+   'body{font-family:Inter;font-style:normal;text-rendering:optimizeSpeed}\n.prose{font-family:Merriweather;text-rendering:optimizeSpeed}\n' +
+   '.x{font-family:serif;font-style:normal;text-rendering:optimizeSpeed}\n.y{font-family:Foo;font-style:normal;-webkit-font-feature-settings:"liga" 0}'],
   // structural selectors the shim keeps as classes, states this browser knows
   ['structural and state selectors', 'li:nth-child(odd of .imp){xa:1}td:nth-last-col(1){xb:2}col.sel || td{xc:3}video:volume-locked{xd:4}:picture-in-picture{xe:5}details:open{xf:6}my-el:not(:defined){xg:7}:host{xh:8}',
    'li.br-sc-ykbk7f{xa:1}\ntd.br-sc-f388jw{xb:2}\ntd.br-sc-1tasjtt{xc:3}\nvideo:-webkit-any(audio,video){xd:4}\n:not(*){xe:5}\ndetails:-webkit-any([open],.br-popover-open){xf:6}\nmy-el.br-undefined{xg:7}\n:not(*){xh:8}\n/*br-manifest:{"has":[],"cq":[],"sc":[{"h":"ykbk7f","k":"nth","last":0,"an":"odd","of":".imp"},{"h":"f388jw","k":"col","last":1,"an":"1"},{"h":"1tasjtt","k":"cc","col":"col.sel","cell":"td"},{"h":"defined","k":"defined"}]}*/'],

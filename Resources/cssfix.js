@@ -2670,6 +2670,21 @@ var CSSFix = (function () {
     }
 
     // selectors that reach the whole page (features there would slow down all text)
+    // the first family of a font-family value (or of the font shorthand), without quotes; null when there is none
+    var GENERIC_FAMILIES = { serif: 1, 'sans-serif': 1, monospace: 1, cursive: 1, fantasy: 1, 'system-ui': 1, math: 1, emoji: 1, fangsong: 1,
+        'ui-serif': 1, 'ui-sans-serif': 1, 'ui-monospace': 1, 'ui-rounded': 1, '-apple-system': 1, blinkmacsystemfont: 1,
+        inherit: 1, initial: 1, unset: 1, revert: 1, 'revert-layer': 1 };
+    function firstFontFamily(v, shorthand) {
+        var list = v;
+        if (shorthand) {
+            var m = /(?:^|\s)(?:[\d.]+(?:px|pt|pc|em|rem|ex|ch|%|vw|vh|cm|mm|in|q)|xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)(?:\s*\/\s*\S+)?\s+(.+)$/.exec(v);
+            if (!m) return null;
+            list = m[1];
+        }
+        var f = trim(splitTop(list, ',')[0] || '').replace(/^["']|["']$/g, '');
+        return f ? f.toLowerCase() : null;
+    }
+
     function broadSelectors(sels) {
         if (!sels) return false;
         for (var i = 0; i < sels.length; i++) {
@@ -2804,6 +2819,7 @@ var CSSFix = (function () {
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
         var pctHeightMarked = false;
         var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
+        var ligaAsked = false, iconLike = false, ownFamily = null;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') { hasDisplay = true; dispVal = String(d.v).toLowerCase(); }
@@ -2823,6 +2839,15 @@ var CSSFix = (function () {
                 if (ms[0]) autoLeft = true;
                 if (ms[1]) autoRight = true;
             }
+            // (icon fonts, see below)
+            if (d.p === 'text-rendering') { if (/legibility|precision/.test(mvl)) ligaAsked = true; }
+            else if (d.p === 'font-feature-settings' || d.p === '-webkit-font-feature-settings') { if (/["'](liga|clig|dlig)["'](?!\s*(0|off)\b)/.test(mvl)) ligaAsked = true; }
+            else if (d.p === 'font-variant-ligatures' || d.p === '-webkit-font-variant-ligatures') { if (/(^|\s)(common|discretionary)-ligatures\b/.test(mvl)) ligaAsked = true; }
+            else if (d.p === 'font-family' || d.p === 'font') {
+                ownFamily = firstFontFamily(mvl, d.p === 'font');
+                if (d.p === 'font' && /\/\s*1(\s|$)/.test(mvl)) iconLike = true;   // (a line height of 1 in the shorthand)
+            }
+            else if ((d.p === 'font-style' && mvl === 'normal') || (d.p === 'line-height' && mvl === '1') || (d.p === 'white-space' && mvl === 'nowrap')) iconLike = true;
         }
         // "margin-left: auto" on one side only is how flex items are pushed to the far end. The 2009 box model
         // resolves that auto margin to all the free space before the flexible siblings get theirs (Google's
@@ -3591,6 +3616,13 @@ var CSSFix = (function () {
             }
             push(out, '-webkit-font-feature-settings', fset.join(', '), false);
         }
+        // Icon fonts that draw each icon as the ligature of its name (Material Icons and Symbols, a site's own icon or
+        // logo font: "home" becomes the house, denik.cz's logo is the word "denik"): the old engine forms ligatures only
+        // when asked, and the optimizeLegibility such rules ask with is turned off above because it slows all text
+        // down. A rule that asks for ligatures, names its font and sets what icon rules set (font-style: normal,
+        // line-height: 1, white-space: nowrap) gets them back; for an icon's few letters they cost nothing.
+        if (ligaAsked && iconLike && ownFamily && !GENERIC_FAMILIES.hasOwnProperty(ownFamily) && !keyframe && !broadSelectors(ctx.curSels))
+            push(out, '-webkit-font-variant-ligatures', 'common-ligatures', false);
         // a -webkit-calc() length in a property an earlier document of the page transitions: the rule takes the
         // transitions of its elements over (the list goes in at the end, see guardCalcTransitions)
         if (ctx.pageTrans && !keyframe) {

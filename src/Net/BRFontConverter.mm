@@ -44,6 +44,50 @@ static bool BRIsSFNT(const uint8_t *p, size_t len)
 // the page appears in seconds.
 static const size_t BRHeavyLayoutTables = 24 * 1024;
 
+// Icon fonts that draw each icon as the ligature of its name (Material Icons: 61 KB of ligatures, Material Symbols:
+// 125 KB; "home" becomes the house) keep the table whatever its size: without it the icons are just their names. Such
+// a font has many ligatures of four or more letters, a text font a handful (ffi, ffl). Counts them in the GSUB
+// ligature lookups (also behind extension lookups), up to `enough`.
+static size_t BRLongLigatures(const uint8_t *p, size_t len, size_t enough)
+{
+    if (len < 10) return 0;
+    size_t listOff = rd16(p + 8), count = 0;
+    if (listOff + 2 > len) return 0;
+    uint16_t lookups = rd16(p + listOff);
+    for (uint16_t i = 0; i < lookups; i++) {
+        if (listOff + 2 + (size_t)i * 2 + 2 > len) break;
+        size_t lookup = listOff + rd16(p + listOff + 2 + (size_t)i * 2);
+        if (lookup + 6 > len) continue;
+        uint16_t type = rd16(p + lookup), subtables = rd16(p + lookup + 4);
+        for (uint16_t j = 0; j < subtables; j++) {
+            if (lookup + 6 + (size_t)j * 2 + 2 > len) break;
+            size_t sub = lookup + rd16(p + lookup + 6 + (size_t)j * 2);
+            uint16_t subType = type;
+            if (subType == 7) {   // extension: the real type and a 32-bit offset
+                if (sub + 8 > len) continue;
+                subType = rd16(p + sub + 2);
+                sub += rd32(p + sub + 4);
+            }
+            if (subType != 4 || sub + 6 > len || rd16(p + sub) != 1) continue;
+            uint16_t sets = rd16(p + sub + 4);
+            for (uint16_t k = 0; k < sets; k++) {
+                if (sub + 6 + (size_t)k * 2 + 2 > len) break;
+                size_t set = sub + rd16(p + sub + 6 + (size_t)k * 2);
+                if (set + 2 > len) continue;
+                uint16_t ligatures = rd16(p + set);
+                for (uint16_t m = 0; m < ligatures; m++) {
+                    if (set + 2 + (size_t)m * 2 + 2 > len) break;
+                    size_t lig = set + rd16(p + set + 2 + (size_t)m * 2);
+                    if (lig + 4 <= len && rd16(p + lig + 2) >= 4 && ++count >= enough) return count;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+static const size_t BRIconLigatures = 16;
+
 static bool BRStripVariationTables(const std::string &in, std::string &out, int *dropped, bool *droppedLayout)
 {
     const uint8_t *p = (const uint8_t *)in.data();
@@ -57,6 +101,8 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
     std::vector<Rec> all;
     bool hasFvar = false, hasCFF2 = false;
     size_t layoutBytes = 0;
+    const uint8_t *gsub = NULL;
+    size_t gsubLength = 0;
     for (uint16_t i = 0; i < numTables; i++) {
         const uint8_t *r = p + 12 + (size_t)i * 16;
         Rec rec;
@@ -68,9 +114,12 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
         if (memcmp(rec.tag, "CFF2", 4) == 0) hasCFF2 = true;
         if (memcmp(rec.tag, "GSUB", 4) == 0 || memcmp(rec.tag, "GPOS", 4) == 0) layoutBytes += rec.length;
         if ((size_t)rec.offset + rec.length > len) return false;
+        if (memcmp(rec.tag, "GSUB", 4) == 0) { gsub = p + rec.offset; gsubLength = rec.length; }
         all.push_back(rec);
     }
-    bool dropLayout = layoutBytes > BRHeavyLayoutTables;
+    bool heavy = layoutBytes > BRHeavyLayoutTables;
+    bool dropLayout = heavy && !(gsub && BRLongLigatures(gsub, gsubLength, BRIconLigatures) >= BRIconLigatures);
+    if (heavy && !dropLayout) BRLog(@"Ligature icon font: its %lu KB of OpenType layout kept", (unsigned long)(layoutBytes >> 10));
     if (hasCFF2) return false;
     if (!hasFvar && !dropLayout) return false;
     std::vector<Rec> keep;
