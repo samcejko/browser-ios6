@@ -2657,7 +2657,6 @@
         if (pd !== '-webkit-box' && pd !== '-webkit-inline-box') return false;
         var cs = getComputedStyle(el);
         if (cs.position !== 'static' || cs.display === 'none') return false;
-        if (cs.top !== 'auto' || cs.left !== 'auto' || cs.right !== 'auto' || cs.bottom !== 'auto') return false;
         return !positionsInside(el);
     };
     onMarkers(function (marked) {
@@ -2677,11 +2676,13 @@
             }
             var had = el.hasAttribute('data-br-z');
             if (had) el.removeAttribute('data-br-z');   // (what the page's own rules make of it now)
-            var z = stacksByZ(el);
-            if (z) {
+            if (stacksByZ(el)) {
+                var r0 = el.getBoundingClientRect();
                 el.setAttribute('data-br-z', '');
-                // (a z-index the page's rules no longer give: left as it was)
-                if (getComputedStyle(el).zIndex === 'auto') el.removeAttribute('data-br-z');
+                var r1 = el.getBoundingClientRect();
+                // (offsets the page gives it, which move a positioned item only (the engine reports them as auto
+                // until then), or a z-index its rules no longer give: left as it was)
+                if (Math.abs(r1.left - r0.left) > 0.5 || Math.abs(r1.top - r0.top) > 0.5 || getComputedStyle(el).zIndex === 'auto') el.removeAttribute('data-br-z');
             }
         }
     });
