@@ -78,6 +78,9 @@ var cases = [
   // inside min(), max() and clamp() they are pixels at 16 px each, to be compared
   ['calc keeps em', '.s{font-size:44px;height:calc(1 * 1em);margin:calc(1em + 4px);width:clamp(1rem, calc(1rem + 2px), 3rem)}',
    '.s{font-size:44px;height:1em;margin:-webkit-calc(1em + 4px);width:18px}'],
+  // addresses and strings keep their text (a "6lh" in a base64 font became "7.2em"), names stay names
+  ['addresses and strings untouched', '@font-face{font-family:X;src:url(data:font/woff2;base64,AB6lhCD1icEF3dvh+/Gh) format("woff2")}.a{background:url(icons.svg#face) no-repeat;content:"Mark 2lh #abcd"}.b{animation-name:mark;font-family:Canvas,serif;color:canvastext;margin:1lh}',
+   '@font-face{font-family:X;src:url(data:font/woff2;base64,AB6lhCD1icEF3dvh+/Gh) format("truetype")}\n.a{background:url(icons.svg#face) no-repeat;content:"Mark 2lh #abcd"}\n.b{-webkit-animation-name:mark;animation-name:mark;font-family:Canvas,serif;color:#000000;margin:1.2em}'],
   ['viewport units per orientation', '.h{height:100vh;width:100vw;margin:0 auto}', '.h{margin:0 auto}\n@media (orientation: portrait){.h{height:930px;width:768px}}\n@media (orientation: landscape){.h{height:674px;width:1024px}}'],
   ['viewport units inside @media (no nested @media for the old engine)', '@media (min-width:600px){.a{height:50vh}.b{color:red}}', '@media (min-width:600px) and (orientation: portrait){.a{height:465px}}\n@media (min-width:600px) and (orientation: landscape){.a{height:337px}}\n@media (min-width:600px){.b{color:red}}'],
   ['viewport units: a later overlapping declaration follows', '.m{margin:5vw;margin-left:10px;padding:1vh}', '.m{margin-left:10px}\n@media (orientation: portrait){.m{margin:38.4px;margin-left:10px;padding:9.3px}}\n@media (orientation: landscape){.m{margin:51.2px;margin-left:10px;padding:6.74px}}'],

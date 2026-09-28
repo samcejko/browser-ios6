@@ -2023,8 +2023,27 @@ var CSSFix = (function () {
     // lh = line height (normal is about 1.2 em), cap = cap height, ic = ideographic advance, rex/rch = root ex/ch
     var FONT_UNITS = { lh: [1.2, 'em'], rlh: [1.2, 'rem'], cap: [0.7, 'em'], rcap: [0.7, 'rem'], ic: [1, 'em'], ric: [1, 'rem'], rex: [0.5, 'rem'], rch: [0.5, 'rem'] };
 
+    // properties whose words are names (an animation called "mark", a font called "Canvas"), never system colors
+    var NAME_PROPS = { 'font-family': 1, animation: 1, 'animation-name': 1, '-webkit-animation': 1, '-webkit-animation-name': 1,
+        'grid-area': 1, 'grid-row': 1, 'grid-column': 1, 'grid-row-start': 1, 'grid-row-end': 1, 'grid-column-start': 1, 'grid-column-end': 1,
+        'counter-reset': 1, 'counter-increment': 1, 'counter-set': 1, 'list-style-type': 1, 'will-change': 1, 'transition-property': 1,
+        'container-name': 1, container: 1, 'view-transition-name': 1, 'anchor-name': 1, 'position-anchor': 1 };
+
     var SIZING = { width: 1, height: 1, 'min-width': 1, 'min-height': 1, 'max-width': 1, 'max-height': 1, 'flex-basis': 1,
         'inline-size': 1, 'block-size': 1, 'min-inline-size': 1, 'max-inline-size': 1, 'min-block-size': 1, 'max-block-size': 1 };
+
+    // Addresses and strings are set aside while a value's units and colors are rewritten, and put back after: the
+    // passes rewrote them too (a "6lh" in a base64 font became "7.2em", url(icons.svg#face) a color, "Mark" a system color)
+    function maskLiterals(v, kept) {
+        if (!/url\(|["']/i.test(v)) return v;
+        return v.replace(/url\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/gi, function (m) {
+            kept.push(m);
+            return '' + (kept.length - 1) + '';
+        });
+    }
+    function unmaskLiterals(v, kept) {
+        return kept.length ? v.replace(/(\d+)/g, function (m, i) { return kept[+i]; }) : v;
+    }
 
     function fixValue(p, v) {
         // typed attr() and attr() fallbacks in content: the engine's plain attr(name)
@@ -2032,15 +2051,16 @@ var CSSFix = (function () {
         // request modifiers inside url(): url("a.png" crossorigin(anonymous) referrerpolicy(no-referrer)) -> url("a.png")
         if (/url\(\s*["']/i.test(v)) v = v.replace(/url\(\s*("[^"]*"|'[^']*')(?:\s+[a-z-]+\([^()]*\))+\s*\)/gi, 'url($1)');
         if (v.indexOf('(') >= 0) v = transformFunctions(v);
+        var kept = [];
+        v = maskLiterals(v, kept);
         v = fixHexAlpha(v);
-        if (COLOR_KEYWORD_RE.test(v)) v = v.replace(new RegExp(COLOR_KEYWORD_RE.source, 'gi'), function (m) { return COLOR_KEYWORDS[m.toLowerCase()] || m; });
+        if (COLOR_KEYWORD_RE.test(v) && !NAME_PROPS[p]) v = v.replace(new RegExp(COLOR_KEYWORD_RE.source, 'gi'), function (m) { return COLOR_KEYWORDS[m.toLowerCase()] || m; });
         if (/\d(dvh|svh|lvh|dvw|svw|lvw|cqw|cqh|cqi|cqb|cqmin|cqmax|vi|vb|svi|lvi|dvi|svb|lvb|dvb|svmin|lvmin|dvmin|svmax|lvmax|dvmax)\b/.test(v)) {
             v = v.replace(/(\d)(dvh|svh|lvh|cqh|cqb|vb|svb|lvb|dvb)\b/g, '$1vh').replace(/(\d)(dvw|svw|lvw|cqw|cqi|vi|svi|lvi|dvi)\b/g, '$1vw')
                  .replace(/(\d)(cqmin|svmin|lvmin|dvmin)\b/g, '$1vmin').replace(/(\d)(cqmax|svmax|lvmax|dvmax)\b/g, '$1vmax');
         }
-        // viewport units as pixels of the pass's viewport (see VP_UNIT_RE); addresses and strings stay as they are
-        if (/\dv(w|h|min|max)\b/i.test(v)) v = v.replace(/url\([^)]*\)|"[^"]*"|'[^']*'|(-?\d*\.?\d+)(vw|vh|vmin|vmax)\b/gi, function (m, n, u) {
-            if (!u) return m;
+        // viewport units as pixels of the pass's viewport (see VP_UNIT_RE)
+        if (/\dv(w|h|min|max)\b/i.test(v)) v = v.replace(/(-?\d*\.?\d+)(vw|vh|vmin|vmax)\b/gi, function (m, n, u) {
             u = u.toLowerCase();
             var base = u === 'vw' ? g_vpW : u === 'vh' ? g_vpH : u === 'vmin' ? Math.min(g_vpW, g_vpH) : Math.max(g_vpW, g_vpH);
             return (Math.round(parseFloat(n) * base) / 100) + 'px';
@@ -2050,6 +2070,7 @@ var CSSFix = (function () {
             var f = FONT_UNITS[unit];
             return (Math.round(parseFloat(num) * f[0] * 1000) / 1000) + f[1];
         });
+        v = unmaskLiterals(v, kept);
         var lv = v.toLowerCase();
         if (lv === 'unset' || lv === 'revert' || lv === 'revert-layer') return INHERITED[p] ? 'inherit' : 'initial';
         // a height sized by its content is what auto already gives
