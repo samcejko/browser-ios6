@@ -480,6 +480,14 @@
         },
         // regular expressions with named groups: exec results get .groups
         // (the page shim's String.prototype.match/replace use exec for expressions marked __brRe: .groups, $<name>)
+        // a literal lowered at build time (the s and u flags gone) keeps the flags it was written with for the page
+        // shim's getters (flags, unicode, dotAll): moo's lexer throws unless all its rules agree on /u
+        __br_reFlags: function (re, flags, source) {
+            var info = re.__brRe;
+            if (info) { info.flags = flags; info.source = source; }
+            else { try { Object.defineProperty(re, '__brRe', { value: { flags: flags, source: source }, writable: true, configurable: true }); } catch (e) {} }
+            return re;
+        },
         __br_named: function (re, names) {
             var exec = re.exec;
             re.exec = function (s) {
@@ -2049,6 +2057,14 @@
             var parts = [];
             for (var k in names) if (hasOwn.call(names, k)) parts.push(quote(k) + ':' + names[k]);
             code = this.h('__br_named') + '(' + code + ',{' + parts.join(',') + '})';
+            this.prec = P_CALL;
+        }
+        // (s or u lowered away here: the flags as written, in the order RegExp.prototype.flags gives them)
+        var written = n.regex.flags;
+        if ((written.indexOf('s') >= 0 && flags.indexOf('s') < 0) || (written.indexOf('u') >= 0 && flags.indexOf('u') < 0)) {
+            var sorted = '', ORDER = 'dgimsuvy';
+            for (var fi = 0; fi < ORDER.length; fi++) if (written.indexOf(ORDER.charAt(fi)) >= 0) sorted += ORDER.charAt(fi);
+            code = this.h('__br_reFlags') + '(' + code + ',' + quote(sorted) + ',' + quote(n.regex.pattern) + ')';
             this.prec = P_CALL;
         }
         return code;

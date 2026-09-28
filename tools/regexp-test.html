@@ -85,7 +85,9 @@ var CASES = [
   ['CJK scripts incl. Bopomofo', function () { var r = new RegExp('[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}\\p{Script=Bopomofo}]', 'u'); return [r.test('ㄅ'), r.test('漢'), r.test('a')]; }, [true, true, false]],
   ['plain use unchanged', function () { return ['aXbX'.replace(/X/g, '-'), 'abc'.match(/b/).index, 'a-b'.replace('-', '$&$&'), 'x'.match(/y/g), 'a1b2'.match(/\d/g)]; }, ['a-b-', 1, 'a--b', null, ['1', '2']]],
   ['transpiled named literal', function () { var out = JSFix.transpile('(function () { var m = "2024-05".match(/(?<y>\\d{4})-(?<m>\\d\\d)/); return [m.groups.m, "2024-05".replace(/(?<y>\\d{4})-(?<m>\\d\\d)/, "$<m>/$<y>")]; })();', {}); return (0, eval)(out); }, ['05', '05/2024']],
-  ['transpiled sticky literal', function () { var out = JSFix.transpile('(function () { var re = /a/y; re.lastIndex = 1; return [re.test("ba"), re.lastIndex, re.test("ba")]; })();', {}); return (0, eval)(out); }, [true, 2, false]]
+  // (a literal whose u / s the transpiler lowered keeps its flags: moo's lexer insists all rules agree on unicode)
+  ['transpiled u and s literals keep their flags', function () { var out = JSFix.transpile('(function () { var r = /\\p{L}+/gu, s = /a.b/s, n = /(?<x>a)/u; return [r.unicode, r.flags, s.dotAll, s.flags, r.test("é"), n.unicode, n.exec("a").groups.x, "béc".replace(/\\p{L}/gu, "-")]; })();', {}); return (0, eval)(out); }, [true, 'gu', true, 's', true, true, 'a', '---']],
+  ['transpiled sticky literal',function () { var out = JSFix.transpile('(function () { var re = /a/y; re.lastIndex = 1; return [re.test("ba"), re.lastIndex, re.test("ba")]; })();', {}); return (0, eval)(out); }, [true, 2, false]]
 ];
 var pass = 0, html = [];
 CASES.forEach(function (c) {

@@ -277,7 +277,13 @@
     try { G.RegExp = BRRegExp; } catch (e) { return; }
 
     // String methods over lowered expressions: through their exec, as ES2015 specifies
-    var isLowered = function (re) { return typeof re === 'object' && re !== null && re.__brRe !== undefined; };
+    // (only expressions whose exec does more than the engine's: named groups, sticky, indices, a lookbehind; a
+    // pattern that only lost its u or s flag is matched by the engine itself)
+    var isLowered = function (re) {
+        if (typeof re !== 'object' || re === null) return false;
+        var i = re.__brRe;
+        return i !== undefined && !!(i.names || i.sticky || i.indices || i.behind);
+    };
     var substitute = function (text, m, s, pos) {
         if (text.indexOf('$') < 0) return text;
         return nativeReplace.call(text, /\$([$&`']|\d\d?|<[^>]*>)/g, function (all, t) {
