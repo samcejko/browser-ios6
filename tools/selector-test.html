@@ -58,12 +58,14 @@ if (/[?&]emulate/.test(location.search)) {
 // Selectors of today on the old engine (shims-extra "selectors ... that the old engine rejects"): each query must work
 // or give the same answer a current browser gives. Chrome passes natively (and through the shims with ?emulate).
 (function () {
-    var res = [], root = document.getElementById('root');
+    var res = [], root = document.getElementById('root'), round = '';
     var check = function (name, fn, expect) {
         var got;
         try { got = fn(); } catch (e) { got = 'threw ' + e.message; }
-        res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+        res.push([name + round, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
     };
+    // (twice: the second time each selector comes from the shims' cache of what the engine took or refused)
+    for (var r = 0; r < 2; r++, round = ' (again)') {
     check(':is() list', function () { return document.querySelectorAll('#root :is(.a, .c)').length; }, 2);
     check(':where() list', function () { return root.querySelectorAll(':where(p, span).b, span').length; }, 2);
     check(':not(a, b)', function () { return root.querySelectorAll('p:not(.a, .x)').length; }, 1);
@@ -98,6 +100,7 @@ if (/[?&]emulate/.test(location.search)) {
         return [typeof r.length, [].indexOf.call(r, def) < 0, d.length];
     }, ['number', true, 1]);
     check('no marks left', function () { return document.querySelectorAll('[data-br-pick], [data-br-scope]').length; }, 0);
+    }
     var pass = 0, lines = [];
     for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
     document.getElementById('out-text').textContent = lines.join('\n');

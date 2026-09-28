@@ -9342,20 +9342,27 @@
             }
         }
     }
-    // ':scope' in selectors
+    // ':scope' in selectors (the old engine takes it, but for the root element, as in scoped style sheets: an element's
+    // querySelectorAll(':scope > li') found nothing)
     var scopeSupported = false;
-    try { document.documentElement.querySelector(':scope'); scopeSupported = true; } catch (e) {}
+    try {
+        var scopeProbe = document.createElement('div');
+        scopeProbe.appendChild(document.createElement('i'));
+        scopeSupported = scopeProbe.querySelector(':scope > i') === scopeProbe.firstChild;
+    } catch (e) {}
     if (!scopeSupported) {
         var fixScope = function (sel) { return typeof sel === 'string' && sel.indexOf(':scope') >= 0 ? sel.replace(/:scope\b\s*>?/g, function (m) { return m.indexOf('>') >= 0 ? ':scope-child' : ''; }) : sel; };
+        // (the try in a function of its own: a function with one makes a scope object on every call here)
+        var scopedCall = function (orig, el, sel) {
+            var tmpId = false;
+            if (!el.id) { el.id = 'br-scope-' + Math.random().toString(36).slice(2); tmpId = true; }
+            var rewritten = sel.replace(/:scope\b/g, '#' + el.id);
+            try { return orig.call(el.parentNode || document, rewritten); } finally { if (tmpId) el.removeAttribute('id'); }
+        };
         var scopedQuery = function (orig) {
             return function (sel) {
                 if (typeof sel === 'string' && sel.indexOf(':scope') >= 0) {
-                    var el = this, tmpId = false;
-                    if (el.nodeType === 1) {
-                        if (!el.id) { el.id = 'br-scope-' + Math.random().toString(36).slice(2); tmpId = true; }
-                        var rewritten = sel.replace(/:scope\b/g, '#' + el.id);
-                        try { return orig.call(el.parentNode || document, rewritten); } finally { if (tmpId) el.removeAttribute('id'); }
-                    }
+                    if (this.nodeType === 1) return scopedCall(orig, this, sel);
                     return orig.call(this, sel.replace(/:scope\b\s*/g, ''));
                 }
                 return orig.call(this, sel);
@@ -9427,11 +9434,15 @@
             }
             return marked;
         };
+        // (the try in a function of its own, and the cheap test first: every query of the page comes through here)
+        var query = function (self, orig, sel) {
+            var marked = mark();
+            try { return orig.call(self, rewrite(sel)); } finally { for (var i = 0; i < marked.length; i++) marked[i].removeAttribute('data-br-rw'); }
+        };
         var wrap = function (orig) {
             return function (sel) {
-                if (typeof sel !== 'string' || !RW.test(sel)) return orig.apply(this, arguments);
-                var marked = mark();
-                try { return orig.call(this, rewrite(sel)); } finally { for (var i = 0; i < marked.length; i++) marked[i].removeAttribute('data-br-rw'); }
+                if (typeof sel !== 'string' || sel.indexOf(':') < 0 || sel.indexOf('read-') < 0 || !RW.test(sel)) return orig.apply(this, arguments);
+                return query(this, orig, sel);
             };
         };
         var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
@@ -9625,26 +9636,47 @@
         var isSyntax = function (e) { return e && (e.code === 12 || /SYNTAX_ERR|SyntaxError/.test(String(e.name) + String(e.message))); };
         var refusedLogged = 0;
         var emptyList = function () { return document.createDocumentFragment().querySelectorAll('br-none'); };
+        // What each selector text turned out to be: true (the engine takes it) or its rewrite, so that a query runs
+        // without a try (a function with one makes a scope object on every call here) and a refused selector is not
+        // taken apart again on every call (Tailwind's [&_:is(...)] rules, matched for every element by the custom
+        // properties runtime). Bounded: pages that build selectors with ids start it over.
+        // (per kind of call: querySelector(All) take :scope, which matches() leaves to the rewrite)
+        var known = {}, knownCount = 0;
+        var remember = function (key, v) { if (knownCount >= 3000) { known = {}; knownCount = 0; } known[key] = v; knownCount++; };
+        var retry = function (self, orig, kind, qsa, sel, rw, e) {
+            var list = rw.list, direct = function (text) { return orig.call(self, text); };
+            try {
+                if (!list.length) return kind === 'all' ? emptyList() : kind === 'is' ? false : null;
+                if (!rw.filter) return scoped(self, rw.text, direct);
+                if (kind === 'is') return matchesList(self, list);
+                if (kind === 'up') { for (var el = self; el && el.nodeType === 1; el = el.parentNode) if (matchesList(el, list)) return el; return null; }
+                return pick(self, list, qsa, kind === 'one');
+            } catch (e2) {
+                // (debugging: which selector the retry could not take either; other engines' prefixed ones, which
+                // current browsers refuse too, are not worth a line)
+                if (window.__brDebugErrors && refusedLogged < 8 && !/:-(?:moz|ms)-/.test(sel)) { refusedLogged++; sendToApp('brlog', 'Selector refused: ' + sel.slice(0, 300) + ' page ' + location.hostname); }
+                if (e) throw e;
+                orig.call(self, sel);   // (the engine's own error, as the first time)
+                throw e2;
+            }
+        };
+        var first = function (self, orig, kind, qsa, sel, args, key) {
+            // (not a :scope selector: the engine takes it or not depending on the node, a fragment's has no element)
+            try { var r = orig.apply(self, args); if (key && sel.indexOf(':scope') < 0) remember(key, true); return r; } catch (e) {
+                if (!key || !isSyntax(e)) throw e;
+                var list = rewrite(sel), rw = { list: list, text: list.length ? joined(list) : '', filter: filtering(list) };
+                remember(key, rw);
+                return retry(self, orig, kind, qsa, sel, rw, e);
+            }
+        };
         // kind: 'one' querySelector, 'all' querySelectorAll, 'is' matches, 'up' closest; qsa: the owner's own querySelectorAll
         var wrap = function (orig, kind, qsa) {
+            var family = kind === 'one' || kind === 'all' ? 'q' : kind === 'is' ? 'm' : 'u';
             return function (sel) {
-                try { return orig.apply(this, arguments); } catch (e) {
-                    if (typeof sel !== 'string' || !isSyntax(e)) throw e;
-                    var self = this, list = rewrite(sel), direct = function (text) { return orig.call(self, text); }, result = null;
-                    try {
-                        if (!list.length) result = kind === 'all' ? emptyList() : kind === 'is' ? false : null;
-                        else if (!filtering(list)) result = scoped(self, joined(list), direct);
-                        else if (kind === 'is') result = matchesList(self, list);
-                        else if (kind === 'up') { for (var el = self; el && el.nodeType === 1; el = el.parentNode) if (matchesList(el, list)) { result = el; break; } }
-                        else result = pick(self, list, qsa, kind === 'one');
-                    } catch (e2) {
-                        // (debugging: which selector the retry could not take either; other engines' prefixed ones, which
-                        // current browsers refuse too, are not worth a line)
-                        if (window.__brDebugErrors && refusedLogged < 8 && !/:-(?:moz|ms)-/.test(sel)) { refusedLogged++; sendToApp('brlog', 'Selector refused: ' + sel.slice(0, 300) + ' page ' + location.hostname); }
-                        throw e;
-                    }
-                    return result;
-                }
+                var key = typeof sel === 'string' ? family + sel : null, k = key ? known[key] : undefined;
+                if (k === true) return orig.apply(this, arguments);
+                if (k) return retry(this, orig, kind, qsa, sel, k, null);
+                return first(this, orig, kind, qsa, sel, arguments, key);
             };
         };
         var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
