@@ -1195,6 +1195,19 @@ var CSSFix = (function () {
         if (wm) return /device-width/i.test(wm[1]) ? 0 : (parseFloat(wm[1]) > 0 ? Math.round(parseFloat(wm[1])) : 0);
         return /initial-scale/i.test(c) ? 0 : 980;
     }
+    // "width=device-width" without an initial scale: the old engine takes the device width for the portrait width in
+    // both orientations and zooms a landscape page in (github.com: laid out 768 px wide, its text a third larger);
+    // current browsers lay it out as wide as the screen, which an initial scale of 1 does here too (and what the
+    // viewport units above are computed for)
+    function deviceWidthScale(html) {
+        return html.replace(/<meta\b[^>]*\bname\s*=\s*["']?viewport\b[^>]*>/i, function (tag) {
+            return tag.replace(/(\bcontent\s*=\s*)("([^"]*)"|'([^']*)')/i, function (all, pre, quoted, dq, sq) {
+                var c = dq !== undefined ? dq : sq, q = dq !== undefined ? '"' : "'";
+                if (!/(?:^|[,;\s])width\s*=\s*device-width/i.test(c) || /initial-scale/i.test(c)) return all;
+                return pre + q + c.replace(/[\s,;]+$/, '') + ', initial-scale=1' + q;
+            });
+        });
+    }
     var INSET_SIDES = { top: 1, right: 1, bottom: 1, left: 1 }, TRANSFORM_FAMILY = { transform: 1, translate: 1, rotate: 1, scale: 1 };
     // whether declarations of a and b set (part of) the same thing: margin / margin-left, inset / top, ...
     function propsOverlap(a, b) {
@@ -4795,6 +4808,7 @@ var CSSFix = (function () {
         if (opts && opts.mainFrame) {
             var lw = metaLayoutWidth(html);
             if (lw !== null) { applyLayoutWidth(ctx, lw); ctx.root[' vpw'] = String(lw); }
+            html = deviceWidthScale(html);
         }
         // 1. collect variables from every <style> block first (they usually hold the theme)
         var m;
