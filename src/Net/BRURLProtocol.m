@@ -348,6 +348,8 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic) NSUInteger cacheLimit;                  // the most of this body that is gathered for the cache
 @property (nonatomic) BOOL fontBody;                          // a font: stored with the converter's version (BRFontCacheTag)
 @property (nonatomic, strong) NSHTTPURLResponse *response;
+@property (nonatomic, copy) NSDictionary *responseFields;          // the headers it was made from
+@property (nonatomic) NSInteger responseStatus;
 // CSS/HTML rewriting: the body is buffered and the response is sent once the rewritten data is ready
 @property (nonatomic, copy) NSString *rewriteKind;
 @property (nonatomic, strong) NSMutableData *rewriteBuffer;
@@ -691,7 +693,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         NSNumber *oldMaxAge = self.staleCached.userInfo[BRCacheMaxAgeKey];
         if (maxAge < 0 && oldMaxAge) maxAge = [oldMaxAge doubleValue];
         self.fontBody = [self.staleCached.userInfo[BRCacheRewriteTagKey] isEqual:BRFontCacheTag];   // (a font stays one)
-        [self storeResponse:(NSHTTPURLResponse *)self.staleCached.response data:self.staleCached.data maxAge:MAX(maxAge, 0)];
+        NSHTTPURLResponse *staleResponse = (NSHTTPURLResponse *)self.staleCached.response;
+        [self storeHeaders:staleResponse.allHeaderFields status:staleResponse.statusCode data:self.staleCached.data maxAge:MAX(maxAge, 0)];
         [self serveCachedResponse:self.staleCached];
         return;
     }
@@ -740,8 +743,11 @@ static BOOL BRIsWebPDataURL(NSURL *url)
             g_lastMainContentType = [r.responseHeaders[@"content-type"] copy];
         }
     }
-    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:[self headerFieldsForWebKit]];
+    NSDictionary *webKitFields = [self headerFieldsForWebKit];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:webKitFields];
     self.response = response;
+    self.responseFields = webKitFields;   // (what the cache is given, see storeHeaders)
+    self.responseStatus = status;
     self.cacheMaxAge = -1;
     self.cacheBody = nil;
     NSString *method = [self.request.HTTPMethod uppercaseString] ?: @"GET";
@@ -819,7 +825,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         self.rewriteKind = kind;
         self.rewriteBuffer = [NSMutableData data];
         self.pendingStatus = status;
-        self.pendingHeaderFields = response.allHeaderFields;
+        self.pendingHeaderFields = webKitFields;
         NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"charset\\s*=\\s*\"?([A-Za-z0-9_-]+)" options:0 error:NULL];
         NSTextCheckingResult *m = [re firstMatchInString:ctype options:0 range:NSMakeRange(0, ctype.length)];
         self.rewriteCharset = (m && m.numberOfRanges > 1) ? [ctype substringWithRange:[m rangeAtIndex:1]] : nil;
@@ -865,7 +871,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         if (converted && !isSFNT) BRSetHeaderField(f, @"Content-Type", (isFont || isWOFF) ? @"font/ttf" : imageType ?: @"image/png");
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:self.pendingStatus HTTPVersion:@"HTTP/1.1" headerFields:f];
-        if (self.cacheBody && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:self.cacheMaxAge];
+        if (self.cacheBody && out.length <= BRMaxCacheableBody) [self storeHeaders:f status:self.pendingStatus data:out maxAge:self.cacheMaxAge];
         self.cacheBody = nil;
         [self performOnClientThread:^{
             [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
@@ -912,7 +918,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)out.length]);
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:f];
         // (a stand-in for this time only, e.g. a script left unlowered for lack of memory, is not cached)
-        if (cacheable && keep && out.length <= BRMaxCacheableBody) [self storeResponse:response data:out maxAge:maxAge];
+        if (cacheable && keep && out.length <= BRMaxCacheableBody) [self storeHeaders:f status:status data:out maxAge:maxAge];
         [[BRCSSRewriter shared] registerManifestInData:out pageURL:page sourceURL:url];
         // (the page shim fetches the manifest from us: WebKit gets the text without it)
         NSData *body = [kind hasPrefix:@"js"] ? out : [BRCSSRewriter dataWithoutManifest:out];
@@ -963,7 +969,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         [self finishRewrite];
         return;
     }
-    if (self.cacheBody && self.response) [self storeResponse:self.response data:self.cacheBody maxAge:self.cacheMaxAge rewritten:NO];
+    if (self.cacheBody && self.responseFields) [self storeHeaders:self.responseFields status:self.responseStatus data:self.cacheBody maxAge:self.cacheMaxAge rewritten:NO];
     self.cacheBody = nil;
     [self performOnClientThread:^{
         [self.client URLProtocolDidFinishLoading:self];
@@ -975,21 +981,22 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 - (void)serveCachedResponse:(NSCachedURLResponse *)cached
 {
     self.done = YES;
-    NSHTTPURLResponse *response = (NSHTTPURLResponse *)cached.response;
+    NSHTTPURLResponse *stored = (NSHTTPURLResponse *)cached.response;
     NSData *data = cached.data;
-    NSString *cachedType = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
+    // (WebKit gets a response of its own, see storeHeaders)
+    NSMutableDictionary *f = [stored.allHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSString *cachedType = [BRHeader(f, @"Content-Type") lowercaseString] ?: @"";
     if ([cachedType hasPrefix:@"text/html"] && (!self.request.mainDocumentURL || [self.request.URL isEqual:self.request.mainDocumentURL]))
         BRNotePageDocument(self.request.URL, data, data.length);
     if ([cachedType hasPrefix:@"text/css"] || [cachedType hasPrefix:@"text/html"]) {
         [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL sourceURL:self.request.URL];
         NSData *body = [BRCSSRewriter dataWithoutManifest:data];
         if (body.length != data.length) {
-            NSMutableDictionary *f = [response.allHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
             BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)body.length]);
-            response = [[NSHTTPURLResponse alloc] initWithURL:response.URL statusCode:response.statusCode HTTPVersion:@"HTTP/1.1" headerFields:f];
             data = body;
         }
     }
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:stored.URL ?: self.request.URL statusCode:stored.statusCode HTTPVersion:@"HTTP/1.1" headerFields:f];
     [self performOnClientThread:^{
         [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
         if (data.length) [self.client URLProtocol:self didLoadData:data];
@@ -997,15 +1004,21 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     }];
 }
 
-- (void)storeResponse:(NSHTTPURLResponse *)response data:(NSData *)data maxAge:(NSTimeInterval)maxAge
+- (void)storeHeaders:(NSDictionary *)headers status:(NSInteger)status data:(NSData *)data maxAge:(NSTimeInterval)maxAge
 {
-    [self storeResponse:response data:data maxAge:maxAge rewritten:YES];
+    [self storeHeaders:headers status:status data:data maxAge:maxAge rewritten:YES];
 }
 
-- (void)storeResponse:(NSHTTPURLResponse *)response data:(NSData *)data maxAge:(NSTimeInterval)maxAge rewritten:(BOOL)rewritten
+// The cache gets a response object of its own, made from the headers here: NSURLCache archives the one it is given on
+// its own threads whenever it likes, and WebKit reads the one it was given on its own thread; the same object in both
+// crashed CFNetwork (KERN_INVALID_ADDRESS 0x10 / 0x14 on idnes.cz and seznam.cz). serveCachedResponse gives WebKit a copy
+// in turn.
+- (void)storeHeaders:(NSDictionary *)headers status:(NSInteger)status data:(NSData *)data maxAge:(NSTimeInterval)maxAge rewritten:(BOOL)rewritten
 {
-    if (!response || !data) return;
+    if (!headers || !data || !self.request.URL) return;
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:[headers copy]];
+    if (!response) return;
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
                             BRCacheRewriteTagKey: self.fontBody ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
     // (the body is not changed after this: the request lets go of it)
