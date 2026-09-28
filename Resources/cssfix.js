@@ -2864,9 +2864,13 @@ var CSSFix = (function () {
         var pctHeightMarked = false;
         var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
         var ligaAsked = false, iconLike = false, ownFamily = null, zIndexed = false, positioned = false;
+        var ovSetX = false, ovSetY = false;   // (the overflow axes the rule sets, see the overflow case)
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') { hasDisplay = true; dispVal = String(d.v).toLowerCase(); }
+            if (d.p === 'overflow') ovSetX = ovSetY = true;
+            else if (d.p === 'overflow-x' || d.p === 'overflow-inline') ovSetX = true;
+            else if (d.p === 'overflow-y' || d.p === 'overflow-block') ovSetY = true;
             if (d.p.charAt(0) === '-' && d.p.charAt(1) === '-') { if (!local) local = {}; local[d.p] = d.v; }
             else if ((d.p === 'flex-wrap' || d.p === 'flex-flow') && /wrap/i.test(d.v) && !/nowrap/i.test(d.v)) wrap = true;
             else if (d.p === 'object-fit') objectFit = d.v.toLowerCase();
@@ -3219,10 +3223,29 @@ var CSSFix = (function () {
                     continue;
                 }
                 case 'overflow': case 'overflow-x': case 'overflow-y': {
-                    var ovs = splitWS(lv), ovMap = function (x) { return x === 'overlay' ? 'auto' : x === 'clip' ? 'hidden' : x; };
+                    // auto scrolls as scroll: this engine draws no scrollbars and keeps no room for them, and a -webkit-box
+                    // with auto overflow inside a horizontal one crashed it when its scrollbars came or went (WebCore
+                    // LayoutState, from finishDelayUpdateScrollInfo: novinky.cz). Rules for html/body/:root and style
+                    // attributes (whose element may be those) keep auto, which carries over to the page's own scrolling.
+                    var ovAuto = ctx.curSels && ctx.curSels.length && !/(^|[\s,>+~(])(html|body|:root)(?![\w-])/i.test(ctx.curSels.join(',')) ? 'scroll' : 'auto';
+                    var ovs = splitWS(lv), ovMap = function (x) { return x === 'overlay' || x === 'auto' ? ovAuto : x === 'clip' ? 'hidden' : x; };
+                    // (one axis other than visible makes a visible other axis auto: that one scrolls as scroll too.
+                    // The crash above came from overflow-x: hidden alone on a button, which is a -webkit-box here)
+                    var ovOther = function (x) { return ovAuto === 'scroll' && /^(hidden|clip|scroll|auto|overlay)$/.test(x) ? 'scroll' : null; };
                     // two values (x y) are two properties here
-                    if (p === 'overflow' && ovs.length === 2 && !isGlobalKeyword(ovs[0])) { push(out, 'overflow-x', ovMap(ovs[0]), imp); push(out, 'overflow-y', ovMap(ovs[1]), imp); }
-                    else push(out, p, ovs.length === 1 ? ovMap(lv) : v, imp);
+                    if (p === 'overflow' && ovs.length === 2 && !isGlobalKeyword(ovs[0])) {
+                        var ov0 = ovMap(ovs[0]), ov1 = ovMap(ovs[1]);
+                        if (ov0 === 'visible' && ovOther(ovs[1])) ov0 = 'scroll';
+                        if (ov1 === 'visible' && ovOther(ovs[0])) ov1 = 'scroll';
+                        push(out, 'overflow-x', ov0, imp);
+                        push(out, 'overflow-y', ov1, imp);
+                    } else {
+                        push(out, p, ovs.length === 1 ? ovMap(lv) : v, imp);
+                        if (ovs.length === 1 && ovOther(lv)) {
+                            if ((p === 'overflow-x' || p === 'overflow-inline') && !ovSetY) push(out, 'overflow-y', 'scroll', imp);
+                            else if ((p === 'overflow-y' || p === 'overflow-block') && !ovSetX) push(out, 'overflow-x', 'scroll', imp);
+                        }
+                    }
                     // a box that scrolls vertically: marked for the page shim, which limits its height where the flex
                     // column that should have shrunk it is a plain block here (the buttons of a dialog below the screen)
                     var ovY = p === 'overflow-x' ? '' : ovs[ovs.length - 1];
