@@ -2863,7 +2863,7 @@ var CSSFix = (function () {
         var markers = [], markerKeyword = null;   // "inherit"/"initial" on a marker property becomes counter-reset: inherit/initial
         var pctHeightMarked = false;
         var features = [];   // OpenType features the rule's font-variant-* / font-feature-settings ask for
-        var ligaAsked = false, iconLike = false, ownFamily = null;
+        var ligaAsked = false, iconLike = false, ownFamily = null, zIndexed = false, positioned = false;
         for (i = 0; i < decls.length; i++) {
             d = decls[i];
             if (d.p === 'display') { hasDisplay = true; dispVal = String(d.v).toLowerCase(); }
@@ -2892,7 +2892,12 @@ var CSSFix = (function () {
                 if (d.p === 'font' && /\/\s*1(\s|$)/.test(mvl)) iconLike = true;   // (a line height of 1 in the shorthand)
             }
             else if ((d.p === 'font-style' && mvl === 'normal') || (d.p === 'line-height' && mvl === '1') || (d.p === 'white-space' && mvl === 'nowrap')) iconLike = true;
+            if (d.p === 'z-index') { if (/^-?\d+$/.test(mvl)) zIndexed = true; }
+            else if (d.p === 'position') { if (mvl !== 'static') positioned = true; }
         }
+        // A flex item stacks by its z-index without being positioned; the old engine's boxes (the 2009 model) ignore it
+        // there (a hero's backdrop covered its heading): marked "br-zi 1", the shim positions such items (see fixFlexZ)
+        if (zIndexed && !positioned && !keyframe) markers.push('br-zi 1');
         // "margin-left: auto" on one side only is how flex items are pushed to the far end. The 2009 box model
         // resolves that auto margin to all the free space before the flexible siblings get theirs (Google's
         // result text ended up 0 px wide next to its thumbnail), so the lone auto margin becomes 0.

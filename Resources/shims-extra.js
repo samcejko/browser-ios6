@@ -2630,6 +2630,61 @@
     onSettled(scheduleAspect);
     window.addEventListener('resize', scheduleAspect, false);
     window.addEventListener('load', scheduleAspect, false);
+    // z-index of flex items (cssfix marks rules with a z-index and no position "br-zi 1"): a flex item stacks by its
+    // z-index without being positioned; the old engine's boxes (the 2009 model) paint such items in document order
+    // (an item drawn over the one the page puts on top). A positioned item stacks by its z-index here, so the item gets
+    // position: relative from a rule ahead of the page's styles (any position of the page's own wins over it), unless
+    // that would move something: offsets it sets, or absolutely positioned boxes inside it that it would become the
+    // containing block of (a flex item is not one). Looked at again when the width changes (other media rules).
+    var zRule = null, zWidth = 0;
+    var positionsInside = function (el) {
+        var stack = [], seen = 0, c, n, pos;
+        for (c = el.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+        while (stack.length) {
+            n = stack.pop();
+            if (++seen > 300) return true;   // (too many to look at: left as it is)
+            pos = getComputedStyle(n).position;
+            if (pos === 'absolute') return true;
+            if (pos !== 'static' || n.tagName === 'svg') continue;   // (the boxes inside a positioned one are placed in it)
+            for (c = n.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+        }
+        return false;
+    };
+    var stacksByZ = function (el) {
+        var par = el.parentNode;
+        if (!par || par.nodeType !== 1) return false;
+        var pd = getComputedStyle(par).display;
+        if (pd !== '-webkit-box' && pd !== '-webkit-inline-box') return false;
+        var cs = getComputedStyle(el);
+        if (cs.position !== 'static' || cs.display === 'none') return false;
+        if (cs.top !== 'auto' || cs.left !== 'auto' || cs.right !== 'auto' || cs.bottom !== 'auto') return false;
+        return !positionsInside(el);
+    };
+    onMarkers(function (marked) {
+        var w = window.innerWidth, again = w !== zWidth;
+        zWidth = w;
+        for (var i = 0; i < marked.length; i++) {
+            if (marked[i].cr.indexOf('br-zi') < 0) continue;
+            var el = marked[i].el;
+            if (el.__brZi && !again) continue;
+            el.__brZi = true;
+            if (!zRule) {
+                zRule = document.createElement('style');
+                zRule.__brOwn = true;
+                zRule.textContent = '[data-br-z]{position:relative}';
+                var head = document.head || document.documentElement;
+                head.insertBefore(zRule, head.firstChild);
+            }
+            var had = el.hasAttribute('data-br-z');
+            if (had) el.removeAttribute('data-br-z');   // (what the page's own rules make of it now)
+            var z = stacksByZ(el);
+            if (z) {
+                el.setAttribute('data-br-z', '');
+                // (a z-index the page's rules no longer give: left as it was)
+                if (getComputedStyle(el).zIndex === 'auto') el.removeAttribute('data-br-z');
+            }
+        }
+    });
     // A child with a percentage height (cssfix marks it "br-pcth <percent x 100>") of a stretched item of a flex row
     // (a horizontal 2009 box here) grows with every layout on this engine, three times each time: a card's picture at
     // height: 100% made The Guardian's page 86 million px tall. What the percentage means there is the item's

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>z-index test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+.box { width: 100px; height: 60px; }
+.a { background: #36c; z-index: 2; }
+.b { background: #c63; z-index: 1; }
+/* flex items stack by z-index without being positioned */
+.row { display: flex; margin: 8px 0; }
+.row .b { margin-left: -50px; }
+/* grid items in the same cell stack by z-index too */
+.grid { display: grid; grid-template-columns: 100px; margin: 8px 0; }
+.grid > div { grid-area: 1 / 1; }
+.grid .b { margin-left: 50px; }
+/* a flex item with z-index is no containing block: its absolute child keeps the outer box's corner */
+.outer { position: relative; margin: 8px 0; padding: 20px; background: #eee; }
+.inner { display: flex; }
+.inner > div { z-index: 1; width: 80px; height: 40px; background: #9c6; }
+.abs { position: absolute; left: 0; top: 0; width: 10px; height: 10px; background: #000; }
+/* a position the page gives later wins; offsets of an unpositioned item move nothing */
+.later { position: absolute; }
+.row .off { top: 30px; z-index: 3; background: #999; }
+</style>
+</head>
+<body>
+<h1>z-index of flex and grid items</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div class="row"><div id="fa" class="box a"></div><div id="fb" class="box b"></div></div>
+<div class="row"><div id="la" class="box a"></div><div id="off" class="box off"></div></div>
+<div class="grid" id="grid"><div id="ga" class="box a"></div><div id="gb" class="box b"></div></div>
+<div class="outer" id="outer"><div class="inner"><div><span class="abs" id="abs"></span></div></div></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var topAt = function (a, b) {
+  var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+  var x = Math.max(ra.left, rb.left) + 5, y = Math.max(ra.top, rb.top) + 5;
+  var el = document.elementFromPoint(x, y);
+  return el === a ? 'a' : el === b ? 'b' : (el ? el.tagName + '.' + el.className : 'none');
+};
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    var fa = document.getElementById('fa'), fb = document.getElementById('fb');
+    var t = topAt(fa, fb);
+    show('flex item with the higher z-index is on top', t === 'a', 'top: ' + t);
+    var ga = document.getElementById('ga'), gb = document.getElementById('gb');
+    t = topAt(ga, gb);
+    show('grid item with the higher z-index is on top', t === 'a', 'top: ' + t);
+    var o = document.getElementById('outer').getBoundingClientRect(), s = document.getElementById('abs').getBoundingClientRect();
+    show('absolute child of a z-indexed flex item keeps its containing block', Math.abs(o.left - s.left) < 1 && Math.abs(o.top - s.top) < 1,
+         'outer ' + Math.round(o.left) + ',' + Math.round(o.top) + ' abs ' + Math.round(s.left) + ',' + Math.round(s.top));
+    var la = document.getElementById('la'), off = document.getElementById('off');
+    show('offsets of an unpositioned flex item move nothing', Math.abs(la.getBoundingClientRect().top - off.getBoundingClientRect().top) < 1,
+         'tops ' + Math.round(la.getBoundingClientRect().top) + ', ' + Math.round(off.getBoundingClientRect().top));
+    la.className += ' later';
+    var lp = getComputedStyle(la).position;
+    show('a position the page gives later wins', lp === 'absolute', lp);
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'zindex ' + pass + '/' + total;
+    window.__zIndexResults = results;
+  }, 1500);
+}, false);
+</script>
+</body>
+</html>
