@@ -197,7 +197,7 @@
                 throw new TypeError('Cannot create proxy with a non-object as target or handler');
             }
             var proxy, done = {}, getters = {}, isArr = Object.prototype.toString.call(target) === '[object Array]', slack = 0;
-            var INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1, __br_resync: 1 }, INDEX = /^(?:0|[1-9]\d*)$/;
+            var INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1, __br_resync: 1, __br_read: 1, __br_write: 1 }, INDEX = /^(?:0|[1-9]\d*)$/;
             // (the receiver of a set is the target: Reflect.set(target, key, v, proxy) would find our accessor on the
             // proxy and refuse)
             var read = function (key) { return handler.get ? handler.get(target, key, proxy) : target[key]; };
@@ -222,6 +222,35 @@
             };
             var proto = null;
             try { proto = handler.getPrototypeOf ? handler.getPrototypeOf(target) : Object.getPrototypeOf(target); } catch (e0) { proto = Object.getPrototypeOf(target); }
+            // a Map / Set target (Vue's reactive collections have only a get trap that returns instrumented methods):
+            // the methods go through the trap too, else they ran on this object and core-js refused ("Incompatible
+            // receiver, Map required")
+            var coll = false;
+            try { coll = (typeof Map === 'function' && target instanceof Map) || (typeof Set === 'function' && target instanceof Set) ||
+                         (typeof WeakMap === 'function' && target instanceof WeakMap) || (typeof WeakSet === 'function' && target instanceof WeakSet); } catch (e4) {}
+            // names for proxies that answer any key through a get trap (motion's motion.div / motion.create, style
+            // slots pt.root / pt.overlay of tailwind-variants): HTML and SVG tags and common slot names, as accessors
+            // of one shared prototype that read through the proxy's own trap
+            var NAMES = P.names || (P.names = (function () {
+                var list = ('a abbr address area article aside audio b bdi bdo blockquote body br button canvas caption cite code col colgroup data ' +
+                    'datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr ' +
+                    'html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p ' +
+                    'picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table ' +
+                    'tbody td template textarea tfoot th thead time title tr track u ul var video wbr svg animate animateMotion animateTransform circle ' +
+                    'clipPath defs desc ellipse feBlend feColorMatrix feComponentTransfer feComposite feDiffuseLighting feDisplacementMap feDropShadow ' +
+                    'feFlood feGaussianBlur feImage feMerge feMergeNode feMorphology feOffset feSpecularLighting feTile feTurbulence filter foreignObject ' +
+                    'g image line linearGradient marker mask path pattern polygon polyline radialGradient rect stop switch symbol text textPath tspan use ' +
+                    'view create custom root base overlay content description icon trigger item items wrapper container list close closeButton ' +
+                    'actions action indicator thumb track range viewport arrow separator group groupLabel avatar badge subtitle caption heading ' +
+                    'menuItem panel tab tabs tabList tooltip popover drawer sheet backdrop handle control value placeholder prefix suffix leading ' +
+                    'trailing start end left right top bottom inner outer card cardHeader cardBody cardFooter headerContent footerContent media hint ' +
+                    'error helper helperText message field checkbox radio slider bar fill spinner loader skeleton chip tag counter count dot divider ' +
+                    'spacer cell row column navigation breadcrumb pagination page prev next previous logo brand buttons primary secondary').split(' ');
+                var seen = {}, out = [];
+                for (var n = 0; n < list.length; n++) if (!seen['$' + list[n]]) { seen['$' + list[n]] = 1; out.push(list[n]); }
+                return out;
+            })());
+            var readOnly = !!handler.get && !handler.set && !handler.has && !handler.ownKeys && !handler.deleteProperty && !handler.defineProperty;
             if (typeof target === 'function') {
                 proxy = function () {
                     var args = slice.call(arguments);
@@ -229,6 +258,18 @@
                     return handler.apply ? handler.apply(target, this, args) : target.apply(this, args);
                 };
                 proxy.prototype = target.prototype;
+            } else if (readOnly && !isArr && !coll && (proto === Object.prototype || proto === null || proto === undefined)) {
+                if (!P.factory) {
+                    P.factory = Object.create(Object.prototype);
+                    for (var fn = 0; fn < NAMES.length; fn++) (function (k) {
+                        try {
+                            Object.defineProperty(P.factory, k, { get: function () { var r = this.__br_read; return r ? r(k) : undefined; },
+                                set: function (v) { var w = this.__br_write; if (w) w(k, v); }, configurable: true });
+                        } catch (e8) {}
+                    })(NAMES[fn]);
+                }
+                proxy = Object.create(P.factory);
+                try { Object.defineProperty(proxy, '__br_read', { value: read }); Object.defineProperty(proxy, '__br_write', { value: write }); } catch (e9) {}
             } else proxy = Object.create(proto === undefined ? Object.prototype : proto);
             // (again when the key's enumerability changed: an array index past the end that got a value)
             var define = function (key, len) {
@@ -357,32 +398,17 @@
             for (var f = 0; f < flags.length; f++) if (done['$' + flags[f]] === undefined) special(flags[f], false);
             // Immer's state (a registered symbol; the polyfilled ones are keys of their own)
             if (typeof Symbol === 'function' && Symbol['for']) { try { special(Symbol['for']('immer-state'), true); } catch (e3) {} }
-            // a Map / Set target (Vue's reactive collections have only a get trap that returns instrumented methods):
-            // the methods go through the trap too, else they ran on this object and core-js refused ("Incompatible
-            // receiver, Map required")
-            var coll = false;
-            try { coll = (typeof Map === 'function' && target instanceof Map) || (typeof Set === 'function' && target instanceof Set) ||
-                         (typeof WeakMap === 'function' && target instanceof WeakMap) || (typeof WeakSet === 'function' && target instanceof WeakSet); } catch (e4) {}
+            // (the collection methods of a Map / Set target, see coll above)
             if (coll && handler.get) {
                 var cm = ['get', 'set', 'has', 'add', 'delete', 'clear', 'forEach', 'size', 'keys', 'values', 'entries', '@@iterator'];
                 for (var ci = 0; ci < cm.length; ci++) if (done['$' + cm[ci]] === undefined) define(cm[ci]);
                 if (typeof Symbol === 'function' && Symbol.iterator && typeof Symbol.iterator !== 'string') { try { special(Symbol.iterator, false); } catch (e6) {} }
                 else if (typeof Symbol === 'function' && typeof Symbol.iterator === 'string' && done['$' + Symbol.iterator] === undefined) define(Symbol.iterator);
             }
-            // a factory proxy (framer-motion's motion.div, motion-v's motion.create): tag names for a function target
-            // with a get trap, or an object target whose handler only has get (Vue reactive, Immer: more traps)
-            if (handler.get && !coll && (typeof target === 'function' ||
-                (!isArr && !handler.set && !handler.has && !handler.ownKeys && !handler.deleteProperty && !handler.defineProperty))) {
-                var tags = ('a abbr address area article aside audio b bdi bdo blockquote body br button canvas caption cite code col colgroup data ' +
-                    'datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr ' +
-                    'html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p ' +
-                    'picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table ' +
-                    'tbody td template textarea tfoot th thead time title tr track u ul var video wbr svg animate animateMotion animateTransform circle ' +
-                    'clipPath defs desc ellipse feBlend feColorMatrix feComponentTransfer feComposite feDiffuseLighting feDisplacementMap feDropShadow ' +
-                    'feFlood feGaussianBlur feImage feMerge feMergeNode feMorphology feOffset feSpecularLighting feTile feTurbulence filter foreignObject ' +
-                    'g image line linearGradient marker mask path pattern polygon polyline radialGradient rect stop switch symbol text textPath tspan use ' +
-                    'view create custom').split(' ');
-                for (var tg = 0; tg < tags.length; tg++) if (!(tags[tg] in proxy)) define(tags[tg]);
+            // a factory proxy with a function target (framer-motion's motion.div) answers the names too (an object
+            // target whose handler only has get inherits them, see P.factory)
+            if (handler.get && !coll && typeof target === 'function') {
+                for (var tg = 0; tg < NAMES.length; tg++) if (!(NAMES[tg] in proxy)) define(NAMES[tg]);
             }
             if (isArr) {
                 try {
