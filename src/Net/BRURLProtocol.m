@@ -423,10 +423,23 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     return [[[s substringToIndex:MIN(s.length, (NSUInteger)32)] lowercaseString] hasPrefix:@"data:image/webp"];
 }
 
+// data:font/woff2;base64,... (fonts inlined in stylesheets): WOFF2, which the old engine cannot read, is decoded like
+// font responses (also under another media type: its signature, "wOF2", in base64)
+static BOOL BRIsFontDataURL(NSURL *url)
+{
+    NSString *s = url.absoluteString;
+    if (s.length < 40) return NO;
+    NSRange comma = [s rangeOfString:@"," options:0 range:NSMakeRange(0, MIN(s.length, (NSUInteger)128))];
+    if (comma.location == NSNotFound) return NO;
+    NSString *meta = [[s substringToIndex:comma.location] lowercaseString];
+    if ([meta rangeOfString:@"woff2"].location != NSNotFound) return YES;
+    return [meta hasSuffix:@";base64"] && s.length > comma.location + 7 && [[s substringWithRange:NSMakeRange(comma.location + 1, 6)] isEqualToString:@"d09GMg"];
+}
+
 + (BOOL)canInitWithRequest:(NSURLRequest *)request
 {
     NSString *scheme = [request.URL.scheme lowercaseString];
-    if ([scheme isEqualToString:@"data"]) return BRIsWebPDataURL(request.URL);
+    if ([scheme isEqualToString:@"data"]) return BRIsWebPDataURL(request.URL) || BRIsFontDataURL(request.URL);
     if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return NO;
     if (![request.URL.host length]) return NO;
     if ([NSURLProtocol propertyForKey:BRHandledKey inRequest:request]) return NO;
@@ -477,7 +490,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 
     // 0. A WebP picture in a data: URL
     if ([[url.scheme lowercaseString] isEqualToString:@"data"]) {
-        [self serveWebPDataURL];
+        if (BRIsFontDataURL(url)) [self serveFontDataURL]; else [self serveWebPDataURL];
         return;
     }
 
@@ -1026,6 +1039,30 @@ static BOOL BRIsWebPDataURL(NSURL *url)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     NSURLRequest *request = self.request;
     dispatch_async(BRCacheQueue(), ^{ [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:request]; });
+}
+
+- (void)serveFontDataURL
+{
+    NSURL *url = self.request.URL;
+    NSString *s = url.absoluteString;
+    NSRange comma = [s rangeOfString:@","];
+    NSData *font = nil;
+    if (comma.location != NSNotFound) {
+        NSString *meta = [[s substringToIndex:comma.location] lowercaseString], *payload = [s substringFromIndex:comma.location + 1];
+        if ([meta hasSuffix:@";base64"]) font = BRBase64Decode([payload stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: payload);
+        else font = [[payload stringByReplacingPercentEscapesUsingEncoding:NSISOLatin1StringEncoding] dataUsingEncoding:NSISOLatin1StringEncoding];
+    }
+    NSData *ttf = font.length ? [BRFontConverter ttfDataFromWOFF2:font] : nil;
+    NSData *out = ttf ?: font;
+    id<NSURLProtocolClient> client = self.client;
+    if (!out.length) {
+        [client URLProtocol:self didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotDecodeContentData userInfo:nil]];
+        return;
+    }
+    NSURLResponse *response = [[NSURLResponse alloc] initWithURL:url MIMEType:ttf ? @"font/ttf" : @"application/octet-stream" expectedContentLength:(NSInteger)out.length textEncodingName:nil];
+    [client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    [client URLProtocol:self didLoadData:out];
+    [client URLProtocolDidFinishLoading:self];
 }
 
 - (void)serveWebPDataURL
