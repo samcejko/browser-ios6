@@ -346,6 +346,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, strong) NSMutableData *cacheBody;
 @property (nonatomic) NSTimeInterval cacheMaxAge;
 @property (nonatomic) NSUInteger cacheLimit;                  // the most of this body that is gathered for the cache
+@property (nonatomic) BOOL fontBody;                          // a font: stored with the converter's version (BRFontCacheTag)
 @property (nonatomic, strong) NSHTTPURLResponse *response;
 // CSS/HTML rewriting: the body is buffered and the response is sent once the rewritten data is ready
 @property (nonatomic, copy) NSString *rewriteKind;
@@ -689,6 +690,7 @@ static BOOL BRIsWebPDataURL(NSURL *url)
         NSTimeInterval maxAge = BRMaxAgeForResponse(r.responseHeaders, r.setCookieHeaders.count > 0);
         NSNumber *oldMaxAge = self.staleCached.userInfo[BRCacheMaxAgeKey];
         if (maxAge < 0 && oldMaxAge) maxAge = [oldMaxAge doubleValue];
+        self.fontBody = [self.staleCached.userInfo[BRCacheRewriteTagKey] isEqual:BRFontCacheTag];   // (a font stays one)
         [self storeResponse:(NSHTTPURLResponse *)self.staleCached.response data:self.staleCached.data maxAge:MAX(maxAge, 0)];
         [self serveCachedResponse:self.staleCached];
         return;
@@ -808,6 +810,9 @@ static BOOL BRIsWebPDataURL(NSURL *url)
             if (declared <= (long long)BRMaxImageRewriteBody) kind = @"webp";
         }
     }
+    // (told from the network's own headers: the response object is WebKit's once it has it, and reading its headers
+    // on this thread while WebKit does crashed CFNetwork on idnes.cz)
+    self.fontBody = [kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"] || BRIsFontType(ctype);
     BOOL mainHTML = (!self.request.mainDocumentURL || [url isEqual:self.request.mainDocumentURL]) && ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]);
     if (mainHTML && ![kind isEqualToString:@"html"]) BRNotePageDocument(url, nil, (unsigned long long)MAX(0LL, [r.responseHeaders[@"content-length"] longLongValue]));
     if (kind) {
@@ -1001,9 +1006,8 @@ static BOOL BRIsWebPDataURL(NSURL *url)
 {
     if (!response || !data) return;
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
-    NSString *type = [BRHeader(response.allHeaderFields, @"Content-Type") lowercaseString] ?: @"";
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
-                            BRCacheRewriteTagKey: BRIsFontType(type) ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
+                            BRCacheRewriteTagKey: self.fontBody ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
     // (the body is not changed after this: the request lets go of it)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     NSURLRequest *request = self.request;
