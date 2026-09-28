@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>zone test</title>
+<script>
+window.__errs = [];
+window.onerror = function (msg, src, line) { window.__errs.push(msg + ' @' + String(src || '').split('/').pop() + ':' + line); };
+</script>
+<!-- zone.js patches EventTarget.prototype only: on the old engine every event target has to inherit from it -->
+<script src="https://cdn.jsdelivr.net/npm/zone.js@0.15.1/fesm2015/zone.js"></script>
+</head>
+<body>
+<button id="b">b</button>
+<pre id="out">running</pre>
+<script>
+(function () {
+  var results = [], pending = 0;
+  var check = function (name, ok, detail) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (detail !== undefined ? ' (' + detail + ')' : '')); };
+  var done = function () {
+    if (--pending > 0) return;
+    var fails = results.filter(function (r) { return r.indexOf('FAIL') === 0; }).length;
+    document.title = 'zone ' + (results.length - fails) + '/' + results.length;
+    document.getElementById('out').textContent = results.join('\n') + (window.__errs.length ? '\nERRORS\n' + window.__errs.join('\n') : '');
+  };
+  var z = Zone.current.fork({ name: 'test' });
+  check('EventTarget chain', document.body instanceof EventTarget && window instanceof EventTarget && new XMLHttpRequest() instanceof EventTarget,
+        [document.body instanceof EventTarget, window instanceof EventTarget, new XMLHttpRequest() instanceof EventTarget].join());
+  check('zone patched EventTarget', typeof EventTarget.prototype[Zone.__symbol__('addEventListener')] === 'function');
+  // a DOM listener added in a zone runs in it
+  var b = document.getElementById('b'), clicks = 0, zoneName = null;
+  var h = function () { clicks++; zoneName = Zone.current.name; };
+  z.run(function () { b.addEventListener('click', h); });
+  b.click();
+  check('DOM listener in its zone', clicks === 1 && zoneName === 'test', clicks + ' ' + zoneName);
+  b.removeEventListener('click', h);
+  b.click();
+  check('removeEventListener', clicks === 1, clicks);
+  // once
+  var onceCount = 0;
+  b.addEventListener('click', function () { onceCount++; }, { once: true });
+  b.click(); b.click();
+  check('once', onceCount === 1, onceCount);
+  // new EventTarget()
+  var et = new EventTarget(), got = 0;
+  et.addEventListener('x', function (e) { got++; });
+  et.addEventListener('x', { handleEvent: function () { got += 10; } });
+  var ev = document.createEvent('Event'); ev.initEvent('x', false, false);
+  et.dispatchEvent(ev);
+  check('new EventTarget()', got === 11, got);
+  // window listener in a zone
+  pending++;
+  z.run(function () {
+    window.addEventListener('message', function onMsg(e) {
+      if (e.data !== 'zone-test') return;
+      window.removeEventListener('message', onMsg);
+      check('window listener in its zone', Zone.current.name === 'test', Zone.current.name);
+      done();
+    });
+  });
+  window.postMessage('zone-test', '*');
+  // XMLHttpRequest in a zone (zone.js schedules it as a macrotask through the request's original addEventListener)
+  pending++;
+  z.run(function () {
+    try {
+      var x = new XMLHttpRequest();
+      x.open('GET', location.href, true);
+      x.addEventListener('load', function () {
+        check('XHR load in its zone', Zone.current.name === 'test' && x.status === 200, Zone.current.name + ' ' + x.status);
+        done();
+      });
+      x.send();
+    } catch (e) { check('XHR', false, String(e)); done(); }
+  });
+  pending++;
+  setTimeout(done, 0);
+})();
+</script>
+</body>
+</html>

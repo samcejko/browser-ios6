@@ -400,10 +400,21 @@
     }
     if (!window.KeyboardEvent || typeof window.KeyboardEvent !== 'function') {}
     if (!window.EventTarget) {
-        window.EventTarget = function () { this.__listeners = {}; };
-        window.EventTarget.prototype.addEventListener = function (t, f) { (this.__listeners[t] = this.__listeners[t] || []).push(f); };
-        window.EventTarget.prototype.removeEventListener = function (t, f) { var l = this.__listeners[t] || []; var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); };
-        window.EventTarget.prototype.dispatchEvent = function (e) { var l = (this.__listeners[e.type] || []).slice(); for (var i = 0; i < l.length; i++) l[i].call(this, e); return !e.defaultPrevented; };
+        // (new EventTarget(), its subclasses and objects made from its prototype: a listener store of their own)
+        var listenersOf = function (t) {
+            if (!Object.prototype.hasOwnProperty.call(t, '__listeners')) {
+                try { Object.defineProperty(t, '__listeners', { value: {}, writable: true, configurable: true }); } catch (e) { t.__listeners = {}; }
+            }
+            return t.__listeners;
+        };
+        window.EventTarget = function EventTarget() { listenersOf(this); };
+        window.EventTarget.prototype.addEventListener = function (t, f) { if (!f) return; var all = listenersOf(this), l = all[t] || (all[t] = []); if (l.indexOf(f) < 0) l.push(f); };
+        window.EventTarget.prototype.removeEventListener = function (t, f) { var l = listenersOf(this)[t] || []; var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); };
+        window.EventTarget.prototype.dispatchEvent = function (e) {
+            var l = (listenersOf(this)[e.type] || []).slice();
+            for (var i = 0; i < l.length; i++) { var f = l[i]; if (typeof f === 'function') f.call(this, e); else if (f && typeof f.handleEvent === 'function') f.handleEvent(e); }
+            return !e.defaultPrevented;
+        };
     }
 
     // AbortController
@@ -452,7 +463,8 @@
     // navigator
     if (!navigator.sendBeacon) navigator.sendBeacon = function (url, data) { try { var x = new XMLHttpRequest(); x.open('POST', url, true); x.send(data); } catch (e) {} return true; };
     if (!navigator.languages) try { navigator.languages = [navigator.language || 'en']; } catch (e4) {}
-    if (!navigator.connection) navigator.connection = { effectiveType: '3g', saveData: false, addEventListener: function () {} };
+    // (both listener methods: RxJS fromEvent(navigator.connection, 'change') throws 'Invalid event target' otherwise)
+    if (!navigator.connection) navigator.connection = { effectiveType: '3g', saveData: false, onchange: null, addEventListener: function () {}, removeEventListener: function () {}, dispatchEvent: function () { return true; } };
     // navigator.clipboard is provided by shims-extra.js (writes go to the app)
     if (!navigator.serviceWorker) navigator.serviceWorker = { register: function () { return window.Promise ? window.Promise.reject(new Error('unsupported')) : null; }, getRegistrations: function () { return window.Promise ? window.Promise.resolve([]) : null; },
         getRegistration: function () { return window.Promise ? window.Promise.resolve(undefined) : null; }, startMessages: function () {}, addEventListener: function () {}, removeEventListener: function () {},

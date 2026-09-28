@@ -9257,6 +9257,56 @@
                            window.MessagePort && window.MessagePort.prototype, window.Worker && window.Worker.prototype, window.MediaQueryList && window.MediaQueryList.prototype,
                            window.EventTarget && window.EventTarget.prototype];
     for (var lt = 0; lt < listenerTargets.length; lt++) patchEventTarget(listenerTargets[lt]);
+    // EventTarget.prototype above every event target, as in current engines. The old engine has no EventTarget: each
+    // interface (Node, the window, XMLHttpRequest, WebSocket...) has its own addEventListener. zone.js (Angular)
+    // patches EventTarget.prototype only, so it saw no DOM listener, and its XMLHttpRequest patch reads the original
+    // addEventListener from the request's prototype chain: "'undefined' is not an object (evaluating 'J.call')" on
+    // every request (aukro.cz). Each interface's methods move to __brAEL/__brREL/__brDEV and forward to
+    // EventTarget.prototype, whose methods call the target's own ones (or the listener store of new EventTarget()).
+    (function () {
+        var ET = window.EventTarget, ETp = ET && ET.prototype, own = Object.prototype.hasOwnProperty, gp = Object.getPrototypeOf;
+        // (an engine with EventTarget of its own: nodes inherit from it already)
+        if (!ETp || own.call(ETp, '__brUnified') || typeof ETp.addEventListener !== 'function' || !Np || ETp.isPrototypeOf(Np)) return;
+        var hide = function (o, k, v) { try { Object.defineProperty(o, k, { value: v, writable: true, configurable: true, enumerable: false }); return true; } catch (e) { return false; } };
+        var METHODS = [['addEventListener', '__brAEL'], ['removeEventListener', '__brREL'], ['dispatchEvent', '__brDEV']];
+        var dispatcher = function (name, key) {
+            var store = ETp[name];
+            var f = function () { var t = this === undefined || this === null ? window : this; return (t[key] || store).apply(t, arguments); };
+            hide(f, '__brFwd', true);
+            return f;
+        };
+        var forwarder = function (name) {
+            var f = function () { return ETp[name].apply(this === undefined || this === null ? window : this, arguments); };
+            hide(f, '__brFwd', true);
+            return f;
+        };
+        var m;
+        for (m = 0; m < METHODS.length; m++) ETp[METHODS[m][0]] = dispatcher(METHODS[m][0], METHODS[m][1]);
+        hide(ETp, '__brUnified', true);
+        // (not hasOwnProperty: the window reports everything its prototype has as its own)
+        var unify = function (p) {
+            if (!p || p === ETp || p === Object.prototype || typeof p.addEventListener !== 'function' || p.addEventListener.__brFwd) return;
+            for (var i = 0; i < METHODS.length; i++) {
+                var impl = p[METHODS[i][0]];
+                if (typeof impl !== 'function' || impl.__brFwd || !hide(p, METHODS[i][1], impl)) continue;
+                try { p[METHODS[i][0]] = forwarder(METHODS[i][0]); } catch (e) {}
+            }
+            var top = p, up = gp(p);
+            while (up && up !== Object.prototype && up !== ETp) { top = up; up = gp(up); }
+            if (up === Object.prototype) { try { top.__proto__ = ETp; } catch (e2) {} }
+        };
+        // (the window's prototype before the window, whose own methods are the wrappers above)
+        var targets = [gp(window), window, Np], NAMES = ['XMLHttpRequest', 'XMLHttpRequestUpload', 'WebSocket', 'EventSource', 'FileReader',
+                       'MessagePort', 'Worker', 'SharedWorker', 'MediaQueryList', 'SVGElementInstance', 'Notification', 'MediaController',
+                       'TextTrack', 'TextTrackCue', 'TextTrackList', 'DOMApplicationCache'];
+        for (m = 0; m < NAMES.length; m++) {
+            var p = window[NAMES[m]] && window[NAMES[m]].prototype;
+            while (p && p !== Object.prototype && !own.call(p, 'addEventListener')) p = gp(p);
+            targets.push(p);
+        }
+        if (window.applicationCache) targets.push(gp(window.applicationCache));
+        for (m = 0; m < targets.length; m++) unify(targets[m]);
+    })();
     // classList.add('a', 'b') only added the first class
     if (window.DOMTokenList && window.DOMTokenList.prototype) {
         var probeList = document.createElement('div');
