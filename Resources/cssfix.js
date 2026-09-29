@@ -4903,7 +4903,11 @@ var CSSFix = (function () {
                 return '<script>' + code + '\nwindow.__brModules&&__brModules.entry(null,' + jsString(id) + ');' + close;
             }
             if (!isJavaScriptType(type)) return all;
-            if (src) return all;                                            // external scripts are lowered by the network layer
+            // external scripts are lowered by the network layer. A crossorigin one is fetched in CORS mode by the parser
+            // but without by the preload scanner, and the old engine then refused to run it from the resource it had
+            // (Pinterest's app scripts from s.pinimg.com: no error, no app); without the attribute it runs as it should
+            // (the page loses only the details of its errors in window.onerror)
+            if (src) return /\scrossorigin\b/i.test(attrs) ? '<script' + attrs.replace(/\scrossorigin(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '') + '>' + body + close : all;
             // too big to lower here: the app keeps the text and the page loads it as a script file, which the network
             // layer lowers (it makes room for it and keeps the result; CNN's 2 MB of modules stayed ES2020). The file
             // first takes its own src away: webpack's automatic publicPath takes the src of the running script (or of
