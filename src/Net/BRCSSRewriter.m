@@ -597,11 +597,12 @@ static NSArray *BRManifestKinds(void)
         if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@), %ld -> %ld MB", name, ms, why ?: @"?", mb0, mb1);
     }
     [BRMemory setActivity:nil forKey:@"js"];
-    // given up for lack of memory (see jsfix.js MEMORY_FLOOR_MB): not remembered, a later visit lowers it
+    // given up for lack of memory (see jsfix.js MEMORY_FLOOR_MB): not remembered, a later visit lowers it; nor is a run
+    // that did not answer at all (its context went away: "unchanged" was kept for good)
     if (!out || module) {
         NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
-        if ([last rangeOfString:@"memory"].location != NSNotFound) {
-            BRLog(@"jsfix %@: gave up, the iPad is short of memory (%ld MB available)", name, [BRMemory availableMB]);
+        if (!last.length || [last rangeOfString:@"memory"].location != NSNotFound) {
+            BRLog(@"jsfix %@: gave up, %@ (%ld MB available)", name, last.length ? @"the iPad is short of memory" : @"the transpiler did not answer", [BRMemory availableMB]);
             _lastNoRoom = YES;
             [engine releaseContextNow];
             return out;

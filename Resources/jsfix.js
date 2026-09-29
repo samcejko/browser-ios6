@@ -3906,6 +3906,16 @@
         fns.semis = semis;
         return fns;
     };
+    // why the engine refuses code, for the log: its message and the start of the line it names
+    var engineError = function (code) {
+        var F = root.Function.__brNative || root.Function;
+        try { F(code); return 'the parser of the tests refused it'; } catch (e) {
+            var line = e && e.line ? e.line : 0, at = 0;
+            // (the engine counts the lines of the function it made around the code: two before it)
+            for (var n = 1; n < line - 2 && at >= 0; n++) at = code.indexOf('\n', at) + 1;
+            return String(e && e.message) + (line ? ' at line ' + (line - 2) + ': ' + code.slice(at, at + 160).split('\n')[0] : '');
+        }
+    };
     // whether the engine takes code as it is, read as strict code (what the old engine takes only in sloppy code is
     // lowered as usual); tests put an ES5 parser in root.__brES5Parses
     var engineTakes = function (code) {
@@ -4293,7 +4303,7 @@
                 continue;
             }
             if (prefix && low.slice(0, prefix.length) === prefix) low = low.slice(prefix.length);
-            if (!engineTakes(prefix + low)) throw new Unsupported('a lowered group does not parse');
+            if (!engineTakes(prefix + low)) throw new Unsupported('a lowered group does not parse (' + engineError(prefix + low) + ')');
             st.out.push(low);
             st.lowered++;
         }
