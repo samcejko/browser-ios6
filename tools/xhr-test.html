@@ -68,6 +68,23 @@ if (/[?&]force=all/.test(location.search)) window.__brForceXHR = 'all';
         x.send();
     })();
 
+    // withCredentials and responseType set before open() (today's XHR takes them; the old engine threw
+    // INVALID_STATE_ERR on TikTok)
+    start();
+    (function () {
+        var x = new X(), threw = '';
+        try { x.withCredentials = true; x.responseType = 'json'; } catch (e) { threw = e.message; }
+        check('set before open', threw === '' && x.withCredentials === true && x.responseType === 'json', threw);
+        x.open('GET', 'xhr-test.json?b=' + Math.random(), true);
+        x.onload = function () {
+            var r = x.response;
+            check('json set before open', r && r.name === 'xhr-test' && x.withCredentials === true, JSON.stringify(r));
+            end();
+        };
+        x.onerror = function () { check('json set before open', false, 'error'); end(); };
+        x.send();
+    })();
+
     // blob: the same bytes as an arraybuffer request
     start();
     (function () {

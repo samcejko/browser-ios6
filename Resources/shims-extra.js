@@ -481,7 +481,14 @@
                 return;
             }
             this.__fake = null;
-            return this.__x.open.apply(this.__x, arguments);
+            var opened = this.__x.open.apply(this.__x, arguments);
+            // (what was set before open, see withCredentials)
+            if (this.__wc !== undefined) try { this.__x.withCredentials = this.__wc; } catch (e1) {}
+            if (this.__type) {
+                var t = this.__type, n = (t === 'blob' && !nativeBlob) ? 'arraybuffer' : (t === 'json' && !nativeJSON) ? 'text' : t;
+                try { if (this.__x.responseType !== n) this.__x.responseType = n; } catch (e2) {}
+            }
+            return opened;
         };
         XP.send = function (body) {
             var self = this, x = this.__x, f = this.__fake;
@@ -557,7 +564,13 @@
         for (var g = 0; g < getters.length; g++) (function (name) {
             Object.defineProperty(XP, name, { get: function () { return this.__fake ? fakeGetters[name](this.__fake, this.__x) : this.__x[name]; }, configurable: true, enumerable: true });
         })(getters[g]);
-        Object.defineProperty(XP, 'withCredentials', { get: function () { return this.__x.withCredentials; }, set: function (v) { this.__x.withCredentials = v; }, configurable: true, enumerable: true });
+        // (withCredentials and responseType before open(): today's XHR takes them, the old engine throws INVALID_STATE_ERR
+        // (TikTok's request library sets them first); kept, and given to the native request once it is opened)
+        Object.defineProperty(XP, 'withCredentials', {
+            get: function () { return this.__wc !== undefined ? this.__wc : this.__x.withCredentials; },
+            set: function (v) { this.__wc = !!v; try { this.__x.withCredentials = !!v; } catch (e) {} },
+            configurable: true, enumerable: true
+        });
         Object.defineProperty(XP, 'timeout', {
             get: function () { return nativeTimeout ? this.__x.timeout : this.__timeout; },
             set: function (v) { if (nativeTimeout) this.__x.timeout = v; else this.__timeout = Math.max(0, Number(v) || 0); },
@@ -569,7 +582,7 @@
                 t = String(t);
                 if (!TYPES[t]) return;
                 var n = (t === 'blob' && !nativeBlob) ? 'arraybuffer' : (t === 'json' && !nativeJSON) ? 'text' : t;
-                if (!this.__fake) this.__x.responseType = n;
+                if (!this.__fake) try { this.__x.responseType = n; } catch (e) {}
                 this.__type = t;
                 this.__value = undefined;
             },
