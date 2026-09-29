@@ -4220,7 +4220,7 @@
                 if (key.charAt(0) === '$' || !x.hasOwnProperty(key)) continue;
                 var v = x[key];
                 if (!v || typeof v !== 'object') continue;
-                if (v instanceof Array) { for (var i = 0; i < v.length; i++) walk(v[i], false); }
+                if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) walk(v[i], false); }   // (the parser's arrays may be of another realm)
                 else walk(v, false);
             }
         };
