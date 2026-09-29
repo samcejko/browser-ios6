@@ -1831,23 +1831,25 @@
             }
         }
     };
-    // A statement the parser skipped whose text has a name a rename may concern (minified code: a `let e` in a block,
-    // an `e` in half the statements around it): parsed now and analysed in its place, as it was never skipped. Its
-    // text stays unless something in it changes (P.S prints it again then). Its var declarations count now too.
+    // Statements the parser skipped (a run of them up to a semicolon: `try{...}catch(e){...}if(x)return y;`) whose text
+    // has a name a rename may concern (minified code: a `let e` in a block, an `e` in half the statements around it):
+    // parsed now and analysed in their place, as they were never skipped. Their text stays unless something in them
+    // changes (P.S prints them again then). Their var and function declarations count now too.
     W.stmtAgain = function (n) {
-        var s = n.$scope, acorn = root.acorn;
+        var s = n.$scope, acorn = root.acorn, list = [];
         var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowReserved: true, locations: false }, this.src);
         p.pos = p.lastTokEnd = p.lastTokStart = n.start;
         p.strict = s.strict;
         p.nextToken();
-        var fresh = p.parseStatement(null, false);
-        if (fresh.start !== n.start || fresh.end !== n.end) throw new Unsupported('island-statement');
+        while (p.start < n.end && p.type !== acorn.tokTypes.eof) list.push(p.parseStatement(null, false));
+        var last = list.length ? list[list.length - 1] : null;
+        if (!last || list[0].start !== n.start || last.end !== n.end) throw new Unsupported('island-statement ' + n.start + '-' + n.end + ' parsed ' + (last ? list[0].start + '-' + last.end : 'nothing'));
         stats.stmtAgain++;
-        n.$fresh = fresh;
-        // (the functions around it as the walk had them: a statement the parser skips is never in an arrow's body)
+        n.$fresh = list;
+        // (the functions around them as the walk had them: code the parser skips is never in an arrow's body)
         var fns = this.fns;
         this.fns = s.fn && s.fn.node ? [s.fn.node] : [];
-        try { if (this.v(fresh, n, s)) markDirty(n); } finally { this.fns = fns; }
+        try { if (this.stmts(list, n, s, false)) markDirty(n); } finally { this.fns = fns; }
     };
     // A function the parser just completed, lowered on its own: analysed below a stand-in for the scopes around it
     // (not parsed completely yet), printed, and emptied. It keeps its text (null: unchanged), the free names with
@@ -2711,8 +2713,8 @@
             case 'SwitchStatement': return this.switchStmt(n);
             case 'WithStatement': return 'with(' + this.E(n.object, P_SEQ) + ')' + this.sub(n.body);
             case 'DebuggerStatement': return 'debugger;';
-            // (a skipped statement parsed again: see W.stmtAgain)
-            case 'BrRawStatement': if (n.$fresh) return this.S(n.$fresh); break;
+            // (skipped statements parsed again: see W.stmtAgain)
+            case 'BrRawStatement': if (n.$fresh) return this.block(n.$fresh, false); break;
             case 'ImportDeclaration': case 'ExportNamedDeclaration': case 'ExportDefaultDeclaration': case 'ExportAllDeclaration': throw new Unsupported('module');
         }
         throw new Unsupported(n.type);
@@ -3596,8 +3598,10 @@
                 parser.next();
             };
             p.__brParseFunctionBody = p.parseFunctionBody;
+            // (never the body of an async function or a generator: the engine took the text after its `async`, and the
+            // function must become a state machine; instagram.com's `async function(t,n,r){s(...)}` stayed so)
             p.parseFunctionBody = function (node, isArrowFunction, isMethod, forInit) {
-                var end = !isArrowFunction && !isMethod && this.type === tt.braceL && hasOwn.call(isl.fn, this.start) ? isl.fn[this.start] : 0;
+                var end = !isArrowFunction && !isMethod && !node.async && !node.generator && this.type === tt.braceL && hasOwn.call(isl.fn, this.start) ? isl.fn[this.start] : 0;
                 if (!end) return this.__brParseFunctionBody(node, isArrowFunction, isMethod, forInit);
                 var body = this.startNode();
                 body.body = [];
@@ -4033,8 +4037,9 @@
             for (i = 0; i < level.length; i++) {
                 f = fns[k = level[i]];
                 if (f[1] < 0 || f[2] - f[0] < ISLAND_PIECE) continue;
-                // (one holding most of the script is refused like the script itself, usually: its parts are looked at)
-                if (f[2] - f[0] >= src.length / 2 || occursIn(consts, f[0], f[2])) { state[k] = 2; continue; }
+                // (one holding most of the script is refused like the script itself, usually: its parts are looked at;
+                // an async one too, whose `async` the piece would not hold)
+                if (f[2] - f[0] >= src.length / 2 || occursIn(consts, f[0], f[2]) || asyncBefore(src, f[0])) { state[k] = 2; continue; }
                 pieces.push(islandPiece([f[0], f[2]], false, { k: k }));
             }
             ok = []; refused = [];
@@ -4074,6 +4079,7 @@
     // not one the parser's tokenizer reads differently when it skips its first token (a (, {, `, function or class
     // there), not one with a function refused; its functions kept go in empty. Nothing in a generator or async function:
     // its body becomes a state machine.
+    var asyncBefore = function (src, at) { return /async\s*$/.test(src.slice(Math.max(0, at - 12), at)); };
     var islandStatements = function (src, fns, owner, children, state, consts, pieces) {
         var f = owner < 0 ? null : fns[owner], semis = f ? f[4] : fns.semis;
         if (!semis || !semis.length) return;
@@ -4081,7 +4087,7 @@
         if (f) {
             k = f[0] + 8;
             while (k < src.length && src.charCodeAt(k) <= 32) k++;
-            if (src.charCodeAt(k) === 42 || /async\s*$/.test(src.slice(Math.max(0, f[0] - 12), f[0]))) return;
+            if (src.charCodeAt(k) === 42 || asyncBefore(src, f[0])) return;
         }
         for (i = 0; i < semis.length; start = semis[i] + 1, i++) {
             var end = semis[i] + 1;

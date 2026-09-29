@@ -137,7 +137,10 @@ function islandsCheck() {
             ['a parameter named like its function', "var kF = function e(e) { const z = e + 1;\nvar bigF = { first: e, second: e * 2, pad: " + long + " };\nreturn bigF.first + bigF.second + z; };\nout.push(kF(5));"],
             ['a renamed block let used by a skipped statement', "var resY = [];\nif (true) { let e = 'blockE'; var gY = function () { var arrowY = () => 1;\nvar holderY = { v: e, n: arrowY(), pad: " + long + " };\nreturn holderY.v + holderY.n; }; resY.push(gY()); }\nvar e = 'outerE';\nresY.push(e);\nout.push(resY);"],
             ['functions of a skipped statement with names of their own', "var resZ = [];\nif (true) { let e = 'blockZ'; resZ.push(e); }\nvar e = 'outerZ';\nvar hZ = function () { var arrowZ = () => 2;\nvar listZ = [1, 2].map(function (e) { return e * 10 + " + long + ".length; });\nreturn listZ.concat(arrowZ()); };\nresZ.push(hZ(), e);\nout.push(resZ);"],
-            ['a var of a skipped statement read by a parsed closure', "function fAC() { var getAC = () => w;\nif (true) { let w = 'blockW'; getAC.b = w; };\nvar w = 'fnW' + { pad: " + long + " }.pad.length;\nreturn [getAC(), getAC.b]; }\nout.push(fAC());"]
+            ['a var of a skipped statement read by a parsed closure', "function fAC() { var getAC = () => w;\nif (true) { let w = 'blockW'; getAC.b = w; };\nvar w = 'fnW' + { pad: " + long + " }.pad.length;\nreturn [getAC(), getAC.b]; }\nout.push(fAC());"],
+            ['a run of statements with a function declaration, parsed again', "var resAG = [];\nif (true) { let q2 = 'blockQ2'; var gAG = function () { var arrowAG = () => 6;\ntry { resAG.push(q2 + " + long + ".length); } catch (e) {} function midAG() { return q2 + '!'; } resAG.push(midAG(), typeof midAG);\nreturn arrowAG(); }; resAG.push(gAG()); }\nvar q2 = 'outerQ2';\nresAG.push(q2);\nout.push(resAG);"],
+            // (an async function without await: the engine takes the text after its `async`; instagram.com)
+            ['an async function without await', "var resAD = [];\nvar objAD = { run: async function (x) { resAD.push('ran ' + x + " + long + ".length); return x * 2; }, pad: " + long + " };\nvar pAD = objAD.run(3);\nout.push(resAD.slice(), typeof pAD.then);"]
         ];
         for (const [name, body] of cases) {
             const src = 'var out = [];\n!function () {\n' + pad + body + '\n' + pad + '}();';

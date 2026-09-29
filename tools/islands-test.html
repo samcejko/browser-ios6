@@ -131,6 +131,14 @@ var CASES = [
    "var resW = [], t3 = 'outer3';\nif (true) { let t3 = 'inner3'; var g3 = function () { var pad = " + LONG + "; return t3; }; resW.push(g3()); }\nresW.push(t3);\nout.push(resW);"],
   ['a skipped function inside a let block, its own names',
    "var resX = [];\nif (true) { let t4 = 'inner4'; var g4 = function (t4) { var pad = " + LONG + "; return t4 + '!'; }; resX.push(g4('arg'), t4); }\nout.push(resX);"],
+  ['a run of statements up to a semicolon, parsed again',
+   "var resAF = [];\nif (true) { let q = 'blockQ'; var gAF = function () { var arrowAF = () => 5;\ntry { resAF.push(q + " + LONG + ".length); } catch (e) { resAF.push('caught'); } if (!resAF.length) return 'none';\nfunction innerAF() { return q; }\nreturn [arrowAF(), innerAF()]; }; resAF.push(gAF()); }\nvar q = 'outerQ';\nresAF.push(q);\nout.push(resAF);"],
+  ['a function declaration inside a run parsed again',
+   "var resAG = [];\nif (true) { let q2 = 'blockQ2'; var gAG = function () { var arrowAG = () => 6;\ntry { resAG.push(q2 + " + LONG + ".length); } catch (e) {} function midAG() { return q2 + '!'; } resAG.push(midAG(), typeof midAG);\nreturn arrowAG(); }; resAG.push(gAG()); }\nvar q2 = 'outerQ2';\nresAG.push(q2);\nout.push(resAG);"],
+  ['an async function without await (its body alone is ES5)',
+   "var resAD = [];\nvar objAD = { run: async function (x) { resAD.push('ran ' + x + " + LONG + ".length); return x * 2; }, pad: " + LONG + " };\nvar pAD = objAD.run(3);\nout.push(resAD.slice(), typeof pAD.then);"],
+  ['an async function declaration without await, and one inside it',
+   "async function fAE(x) { var inner = async function (y) { return y + " + LONG + ".length; }; return inner(x); }\nvar pAE = fAE(1);\nout.push(typeof pAE.then, fAE.length);"],
   ['async-free generator lowered, skipped siblings',
    "function* genV() { yield 1; var padV = { p: " + LONG + " }; yield padV.p.length; }\nvar itV = genV(); out.push(itV.next().value, itV.next().value);"]
 ];
