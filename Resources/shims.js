@@ -907,6 +907,74 @@
             }
             return T;
         });
+        // replaceAll (core-js's: 82 us for 'a-b-c'.replaceAll('-', '+')): a global regular expression goes to replace, a
+        // string pattern without $ in the replacement to split/join, the rest through the positions of the matches
+        var REPLACE = keyOf(S && S.replace);
+        var substitute = function (rep, matched, str, pos) {
+            if (rep.indexOf('$') < 0) return rep;
+            return rep.replace(/\$([$&'`])/g, function (all, t) {
+                return t === '$' ? '$' : t === '&' ? matched : t === '`' ? str.slice(0, pos) : str.slice(pos + matched.length);
+            });
+        };
+        hidden(SP, 'replaceAll', function replaceAll(searchValue, replaceValue) {
+            var s = this;
+            if (typeof s !== 'string') s = thisStr(s, 'replaceAll');
+            if (searchValue !== null && searchValue !== undefined && typeof searchValue !== 'string') {
+                var m = MATCH !== null && typeof searchValue === 'object' ? searchValue[MATCH] : undefined;
+                if (m !== undefined ? !!m : toStr0.call(searchValue) === '[object RegExp]') {
+                    var flags = String(searchValue.flags !== undefined ? searchValue.flags : (searchValue.global ? 'g' : ''));
+                    if (flags.indexOf('g') < 0) throw new TypeError('replaceAll must be called with a global RegExp');
+                }
+                var replacer = REPLACE !== null && (typeof searchValue === 'object' || typeof searchValue === 'function') ? searchValue[REPLACE] : undefined;
+                if (replacer !== undefined && replacer !== null) return replacer.call(searchValue, s, replaceValue);
+                if (m !== undefined ? !!m : toStr0.call(searchValue) === '[object RegExp]') return s.replace(searchValue, replaceValue);
+            }
+            var search = argStr(searchValue), fn = typeof replaceValue === 'function', rep = fn ? null : argStr(replaceValue), out = '', p;
+            // ('' matches before every code unit and at the end)
+            if (!search.length) {
+                for (p = 0; p <= s.length; p++) out += (fn ? String(replaceValue('', p, s)) : substitute(rep, '', s, p)) + s.charAt(p);
+                return out;
+            }
+            if (!fn && rep.indexOf('$') < 0) return s.split(search).join(rep);
+            var last = 0;
+            for (p = s.indexOf(search); p !== -1; p = s.indexOf(search, last)) {
+                out += s.slice(last, p) + (fn ? String(replaceValue(search, p, s)) : substitute(rep, search, s, p));
+                last = p + search.length;
+            }
+            return out + s.slice(last);
+        });
+        hidden(SP, 'at', function at(index) {
+            var s = this;
+            if (typeof s !== 'string') s = thisStr(s, 'at');
+            var k = toInt(index);
+            if (k < 0) k += s.length;
+            return k < 0 || k >= s.length ? undefined : s.charAt(k);
+        });
+        var nOf = Array.of;
+        Array.of = function of() {
+            if (this === Array || this === undefined || typeof this !== 'function') return AP.slice.call(arguments);
+            return nOf.apply(this, arguments);
+        };
+        // getOwnPropertyDescriptors (core-js's: 121 us for two keys; Babel's object spread helper calls it for every
+        // other source): the engine's names and descriptors, symbols through core-js
+        var engineNames = N.getOwnPropertyNames, engineGOPD = N.getOwnPropertyDescriptor;
+        if (engineNames && engineGOPD) hidden(Object, 'getOwnPropertyDescriptors', function getOwnPropertyDescriptors(o) {
+            if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
+            var O = Object(o), names = engineNames(O), out = {}, i, d;
+            for (i = 0; i < names.length; i++) {
+                var k = names[i];
+                if (k.charCodeAt(0) === 83 && k.slice(0, 7) === 'Symbol(') continue;   // (core-js's symbols and their books)
+                d = engineGOPD(O, k);
+                if (d === undefined) continue;
+                if (k === '__proto__') def(out, k, { value: d, writable: true, enumerable: true, configurable: true });
+                else out[k] = d;
+            }
+            if (gops) {
+                var syms = gops(O);
+                for (i = 0; i < syms.length; i++) { d = Object.getOwnPropertyDescriptor(O, syms[i]); if (d !== undefined) out[syms[i]] = d; }
+            }
+            return out;
+        });
     })();
 
     // Promise, lean, in place of core-js's: its general machinery made every step cost 50-100 us here (new Promise 46-68,

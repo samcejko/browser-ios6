@@ -41,6 +41,18 @@ setTimeout(function () {
     var getterDone = Object.assign({ b: 1 }, Object.assign(Object.defineProperty({}, 'a', { enumerable: true, get: function () { Object.defineProperty(this, 'b', { value: 3, enumerable: false }); } }), { b: 2 })).b;
     return [Object.keys(r).join(), r[s], getterDone, Object.assign({}, 'ab')[1]];
   }, ['z,a,b,c', 3, 1, 'b']);
+  check('replaceAll: strings, $ patterns, functions, empty pattern, regular expressions', function () {
+    var r = ['a-b-c'.replaceAll('-', '+'), 'aaa'.replaceAll('a', '$&$&'), 'x.y'.replaceAll('.', '$$'), 'ab'.replaceAll('b', "[$`|$']"), 'abc'.replaceAll('', '-'),
+      'a1a2'.replaceAll('a', function (m, p, s) { return m.toUpperCase() + p; }), 'aXbX'.replaceAll(/x/gi, '_'), 'abc'.replaceAll('z', '!'), 'xx'.replaceAll('', function (m, p) { return p; })];
+    try { 'a'.replaceAll(/a/, 'b'); r.push('no'); } catch (e) { r.push(e instanceof TypeError); }
+    return r;
+  }, ['a+b+c', 'aaaaaa', 'x$y', 'a[a|]', '-a-b-c-', 'A01A22', 'a_b_', 'abc', '0x1x2', true]);
+  check('String at, Array.of', function () { return ['abc'.at(0), 'abc'.at(-1), 'abc'.at(5), 'abc'.at(-4), Array.of(7), Array.of(1, 2, 3), Array.of().length]; }, ['a', 'c', null, null, [7], [1, 2, 3], 0]);
+  check('getOwnPropertyDescriptors: data, accessors, non-enumerable, symbols', function () {
+    var s = S('d'), o = { a: 1 }; Object.defineProperty(o, 'g', { get: function () { return 2; }, enumerable: false, configurable: true }); o[s] = 3;
+    var d = Object.getOwnPropertyDescriptors(o);
+    return [d.a.value, d.a.writable, typeof d.g.get, d.g.enumerable, d[s] && d[s].value, Object.keys(d).join()];
+  }, [1, true, 'function', false, 3, 'a,g']);
   var pass = 0, lines = [];
   for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
   // timings (microseconds per call)
@@ -54,6 +66,10 @@ setTimeout(function () {
   time('assign', function () { return Object.assign({}, { a: 1, b: 2 }); });
   time('arr.includes', function () { return a8.includes(5); });
   time('find', function () { return a8.find(function (v) { return v === 5; }); });
+  time('replaceAll', function () { return 'a-b-c-d'.replaceAll('-', '+'); });
+  time('str.at', function () { return 'abc'.at(-1); });
+  time('Array.of', function () { return Array.of(1, 2, 3); });
+  time('getOwnPropertyDescriptors', function () { return Object.getOwnPropertyDescriptors({ a: 1, b: 2 }); });
   lines.push('us: ' + times.join(', '));
   document.getElementById('out').textContent = lines.join('\n');
   document.title = 'lean ' + pass + '/' + res.length;
