@@ -585,9 +585,22 @@
                 return typeof out === 'string' && SURROGATE.test(out) ? out.replace(LONE, escapeLone) : out;
             };
         }
-        if (!fixed) return;
-        var own = Object.prototype.hasOwnProperty;
-        Object.defineProperties = function (o, props) {
+        // Object.defineProperties: each property through the defineProperty above (the engine's for ordinary keys, a
+        // function's name/length handled, core-js for its symbols), the symbols among the descriptors through the
+        // getOwnPropertySymbols above. core-js's own went through its symbol machinery in JS for every key: 357 us a
+        // call on seznam.cz (1308 calls in its DOMContentLoaded handler).
+        // (core-js's propertyIsEnumerable for its symbols: to the engine their properties are all non-enumerable)
+        var own = Object.prototype.hasOwnProperty, pieDP = Object.prototype.propertyIsEnumerable;
+        if (engineKeys) Object.defineProperties = function (o, props) {
+            if (o === null || (typeof o !== 'object' && typeof o !== 'function')) throw new TypeError('Object.defineProperties called on non-object');
+            if (props === null || props === undefined) throw new TypeError('Cannot convert undefined or null to object');
+            var P = Object(props), keys = engineKeys(P), dp = Object.defineProperty, i;
+            for (i = 0; i < keys.length; i++) dp(o, keys[i], P[keys[i]]);
+            var syms = Object.getOwnPropertySymbols ? Object.getOwnPropertySymbols(P) : [];
+            for (i = 0; i < syms.length; i++) if (pieDP.call(P, syms[i])) dp(o, syms[i], P[syms[i]]);
+            return o;
+        };
+        else if (fixed) Object.defineProperties = function (o, props) {
             if (typeof o !== 'function' || !props || !(own.call(props, 'name') || own.call(props, 'length'))) return nativeDPs(o, props);
             var rest = {}, k;
             for (k in props) if (own.call(props, k)) { if (k === 'name' || k === 'length') Object.defineProperty(o, k, props[k]); else rest[k] = props[k]; }

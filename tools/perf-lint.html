@@ -14,6 +14,7 @@ td { padding: 1px 8px; vertical-align: top; }
 - even when that inner function is never made). Run in a desktop browser from the static server (tools/perf-lint.html).</p>
 <pre id="out">running</pre>
 <script src="https://cdn.jsdelivr.net/npm/acorn@8.12.1/dist/acorn.js"></script>
+<script src="../Resources/jsfix.js"></script>
 <script>
 var FILES = ['Resources/page-prelude.js', 'Resources/shims.js', 'Resources/regexp-shim.js', 'Resources/shims-extra.js'];
 var isFn = function (n) { return n && (n.type === 'FunctionExpression' || n.type === 'FunctionDeclaration' || n.type === 'ArrowFunctionExpression'); };
@@ -87,6 +88,8 @@ var analyze = function (file, text) {
   visit(ast, null, null);
 };
 var done = 0;
+// (the transpiler's runtime helpers, which lowered code calls all the time: as the polyfill bundle carries them)
+if (window.JSFix && JSFix.helperSource) { try { analyze('jsfix-helpers', JSFix.helperSource()); } catch (e) { rows.push({ file: 'jsfix-helpers', line: 0, name: 'PARSE ERROR ' + e.message, size: 0, what: '' }); } }
 FILES.forEach(function (f) {
   fetch('/' + f).then(function (r) { return r.text(); }).then(function (t) {
     try { analyze(f, t); } catch (e) { rows.push({ file: f, line: 0, name: 'PARSE ERROR ' + e.message, size: 0, what: '' }); }

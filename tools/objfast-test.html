@@ -31,6 +31,15 @@ var CASES = [
   ['assign onto null throws', function () { try { Object.assign(null, {}); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
   ['defineProperty string key', function () { var o = {}; Object.defineProperty(o, 'x', { value: 1, enumerable: true }); return [o.x, Object.keys(o).join()]; }, [1, 'x']],
   ['defineProperty symbol key', function () { var o = {}; Object.defineProperty(o, S, { value: 2, enumerable: true }); return [o[S], Object.keys(o).length, Object.getOwnPropertySymbols(o).length, Object.getOwnPropertyDescriptor(o, S).enumerable, o.propertyIsEnumerable(S)]; }, [2, 0, 1, true, true]],
+  ['defineProperties: strings, accessors, a symbol, a function, a non-object', function () {
+    var o = {}, props = { a: { value: 1, enumerable: true }, g: { get: function () { return 2; }, enumerable: false } };
+    props[S] = { value: 3, enumerable: true };
+    var r = Object.defineProperties(o, props);
+    var f = function () {};
+    Object.defineProperties(f, { x: { value: 5 } });
+    var threw = false; try { Object.defineProperties(1, {}); } catch (e) { threw = e instanceof TypeError; }
+    return [r === o, o.a, o.g, o[S], Object.keys(o).join(), Object.getOwnPropertySymbols(o).length, f.x, threw];
+  }, [true, 1, 2, 3, 'a', 1, 5, true]],
   ['defineProperty key starting with S', function () { var o = {}; Object.defineProperty(o, 'Size', { value: 3, enumerable: true }); return [o.Size, Object.keys(o).join()]; }, [3, 'Size']],
   ['defineProperty on a non-object throws TypeError', function () { try { Object.defineProperty(1, 'x', { value: 1 }); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
   ['defineProperty on Object.prototype', function () { Object.defineProperty(Object.prototype, '__objfastTest', { value: 7, configurable: true }); var r = ({}).__objfastTest; delete Object.prototype.__objfastTest; return r; }, 7],

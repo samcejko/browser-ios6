@@ -980,6 +980,8 @@
         window.HTMLSlotElement = window.HTMLSlotElement || function HTMLSlotElement() {};
         Ep.attachShadow = function (init) {
             if (this.shadowRoot) return this.shadowRoot;
+            // (from now on addEventListener asks whether its target is a slot: it costs a DOM call a listener)
+            window.__brShadowUsed = true;
             var host = this;
             var inline = /^(span|a|b|i|em|strong|label|button|small|code)$/i.test(host.tagName);
             var root = document.createElement(inline ? 'span' : 'div');
@@ -9345,25 +9347,30 @@
 
     // ---- Everyday DOM differences that break modern scripts on the old engine
     // addEventListener(type, fn, {passive, once, capture, signal}): the old engine reads the options object as capture=true
+    // (once and signal get their closures from functions of their own, and the target is asked whether it is a slot
+    // only on pages with shadow roots: this runs for every listener a page adds, and a closure in it, or a DOM getter,
+    // costs every call here)
+    var onceListener = function (target, type, fn, capture) {
+        return fn.__brOnce || (fn.__brOnce = function (ev) { target.removeEventListener(type, fn, capture); return typeof fn === 'function' ? fn.call(this, ev) : fn.handleEvent(ev); });
+    };
+    var removeOnAbort = function (signal, target, type, fn, capture) {
+        signal.addEventListener('abort', function () { target.removeEventListener(type, fn, capture); });
+    };
     var patchEventTarget = function (obj) {
         if (!obj || !obj.addEventListener || obj.__brListenerOptions) return;
         var origAdd = obj.addEventListener, origRemove = obj.removeEventListener;
         obj.addEventListener = function (type, fn, options) {
             if (!fn) return;
             // (a page that listens for drag events gets dragging by finger, see the drag and drop block)
-            if (typeof type === 'string' && (type === 'drop' || type.slice(0, 4) === 'drag')) window.__brPageDnD = true;
+            if (typeof type === 'string' && (type === 'drop' || type.indexOf('drag') === 0)) window.__brPageDnD = true;
             // (called unbound too, addEventListener('load', f): this is undefined in here then)
-            if (this && this.tagName === 'SLOT' && window.__brSlotListen) window.__brSlotListen(this, type, fn, options);
+            if (window.__brShadowUsed && this && this.tagName === 'SLOT' && window.__brSlotListen) window.__brSlotListen(this, type, fn, options);
             if (options && typeof options === 'object') {
                 var capture = !!options.capture, actual = fn;
-                if (options.once) {
-                    var self = this;
-                    actual = fn.__brOnce || (fn.__brOnce = function (ev) { self.removeEventListener(type, fn, capture); return typeof fn === 'function' ? fn.call(this, ev) : fn.handleEvent(ev); });
-                }
+                if (options.once) actual = onceListener(this, type, fn, capture);
                 if (options.signal) {
                     if (options.signal.aborted) return;
-                    var target = this;
-                    options.signal.addEventListener('abort', function () { target.removeEventListener(type, fn, capture); });
+                    removeOnAbort(options.signal, this, type, fn, capture);
                 }
                 return origAdd.call(this, type, actual, capture);
             }
@@ -9371,7 +9378,7 @@
         };
         obj.removeEventListener = function (type, fn, options) {
             var capture = options && typeof options === 'object' ? !!options.capture : !!options;
-            if (this && this.tagName === 'SLOT' && this.__brSlotL) {
+            if (this && this.__brSlotL && this.tagName === 'SLOT') {
                 for (var sl = this.__brSlotL.length - 1; sl >= 0; sl--) { var rec = this.__brSlotL[sl]; if (rec.type === type && rec.fn === fn && rec.capture === capture) this.__brSlotL.splice(sl, 1); }
             }
             if (fn && fn.__brOnce) origRemove.call(this, type, fn.__brOnce, capture);
@@ -9396,14 +9403,20 @@
         if (!ETp || own.call(ETp, '__brUnified') || typeof ETp.addEventListener !== 'function' || !Np || ETp.isPrototypeOf(Np)) return;
         var hide = function (o, k, v) { try { Object.defineProperty(o, k, { value: v, writable: true, configurable: true, enumerable: false }); return true; } catch (e) { return false; } };
         var METHODS = [['addEventListener', '__brAEL'], ['removeEventListener', '__brREL'], ['dispatchEvent', '__brDEV']];
+        // (the arguments by name, no arguments object and no apply: every listener a page adds or removes goes through
+        // both of these)
         var dispatcher = function (name, key) {
             var store = ETp[name];
-            var f = function () { var t = this === undefined || this === null ? window : this; return (t[key] || store).apply(t, arguments); };
+            var f = name === 'dispatchEvent' ?
+                function (ev) { var t = this === undefined || this === null ? window : this; return (t[key] || store).call(t, ev); } :
+                function (type, fn, options) { var t = this === undefined || this === null ? window : this; return (t[key] || store).call(t, type, fn, options); };
             hide(f, '__brFwd', true);
             return f;
         };
         var forwarder = function (name) {
-            var f = function () { return ETp[name].apply(this === undefined || this === null ? window : this, arguments); };
+            var f = name === 'dispatchEvent' ?
+                function (ev) { return ETp[name].call(this === undefined || this === null ? window : this, ev); } :
+                function (type, fn, options) { return ETp[name].call(this === undefined || this === null ? window : this, type, fn, options); };
             hide(f, '__brFwd', true);
             return f;
         };
