@@ -561,8 +561,9 @@ static NSArray *BRManifestKinds(void)
     for (int wait = 0; pieces && !result.length && wait < 4; wait++) {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
         if ([why rangeOfString:@"memory"].location == NSNotFound) break;
+        // (engine nil: the wait would release the transpiler's context, and the groups done with it)
         [engine collectGarbage];
-        if (![BRMemory waitForAvailableMB:BRPiecesResumeMB timeout:30 reason:[NSString stringWithFormat:@"going on with %@", name] engine:engine]) continue;
+        if (![BRMemory waitForAvailableMB:BRPiecesResumeMB timeout:30 reason:[NSString stringWithFormat:@"going on with %@", name] engine:nil]) continue;
         BRLog(@"jsfix %@: going on after a wait for room (%ld MB available)", name, [BRMemory availableMB]);
         result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
     }
