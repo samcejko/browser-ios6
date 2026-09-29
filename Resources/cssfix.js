@@ -4834,6 +4834,10 @@ var CSSFix = (function () {
 
     // the inline scripts of this document set aside for the app ([name, text], see fixScripts); null: kept inline
     var g_external = null;
+    // a script's directive prologue ("use strict"; and the like, with the comments and spaces around): code added in front
+    // of a script goes after it (a directive left to automatic semicolon insertion is not seen: minified scripts end
+    // theirs with a semicolon)
+    var DIRECTIVES = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:(["'])(?:[^"'\\\n]|\\.)*?\1\s*;(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*)*/;
 
     // a file name for a script's text: two 32-bit hashes and the length
     function scriptName(s) {
@@ -4900,18 +4904,19 @@ var CSSFix = (function () {
             }
             if (!isJavaScriptType(type)) return all;
             if (src) return all;                                            // external scripts are lowered by the network layer
-            // too big to lower here: the app keeps the text and the network layer lowers it (it makes room for it and
-            // keeps the result; CNN's 2 MB of modules stayed ES2020). The script stays inline and fetches the lowered
-            // text synchronously, then runs it as an inline script right after itself: with a src, webpack's automatic
-            // publicPath would take that URL for the directory of the page's chunks.
+            // too big to lower here: the app keeps the text and the page loads it as a script file, which the network
+            // layer lowers (it makes room for it and keeps the result; CNN's 2 MB of modules stayed ES2020). The file
+            // first takes its own src away: webpack's automatic publicPath takes the src of the running script (or of
+            // the last script with one) for the directory of the page's chunks, and an inline script has none. (Fetched
+            // synchronously instead, half a minute of lowering ended in a network error.)
             if (g_external && tooBigInline(body)) {
-                var name = scriptName(body);
-                g_external.push([name, body]);
-                return open + '(function(){var x=new XMLHttpRequest();x.open("GET","/__br_inline-' + name + '.js",false);x.send(null);' +
-                       'if(!(x.status===200||x.status===0&&x.responseText))return;' +
-                       'var all=document.getElementsByTagName("script"),me=all[all.length-1],s=document.createElement("script");' +
-                       's.__brClassic=true;s.text=x.responseText;x=null;me.parentNode.insertBefore(s,me.nextSibling);' +
-                       'if(s.parentNode)s.parentNode.removeChild(s);})();' + close;
+                var name = scriptName(body), url = '/__br_inline-' + name + '.js';
+                var dirs = DIRECTIVES.exec(body)[0];
+                g_external.push([name, dirs + '\n;(function(){var s=document.getElementsByTagName("script"),i=s.length;' +
+                                 'while(i--)if(s[i].getAttribute("src")===' + JSON.stringify(url) + '){s[i].removeAttribute("src");break;}})();\n' +
+                                 body.slice(dirs.length)]);
+                return '<script' + attrs.replace(/\s(?:async|defer|integrity|crossorigin|charset|onload|onerror|src)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '') +
+                       ' src="' + url + '" charset="utf-8">' + close;
             }
             var fixed = transpileInline(body);
             if (fixed === null) return all;
