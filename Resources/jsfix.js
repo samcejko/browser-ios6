@@ -557,6 +557,23 @@
         __br_dsdel: function (el, key) {
             try { return delete el.dataset[key]; } catch (e) { return true; }
         },
+        // x instanceof C where C has a Symbol.hasInstance of its own: the old engine's instanceof knows only the prototype
+        // chain (Zod 4 makes its schemas so that only the method knows them: "expected a Zod schema" on Pinterest). The
+        // symbol's key is found once (a polyfilled symbol as a key costs a conversion each time); the one every function
+        // inherits (core-js's) is the prototype chain again.
+        __br_instanceof: function (x, C) {
+            var k = __br_instanceof.k;
+            if (k === undefined) {
+                var S = typeof Symbol === 'function' ? Symbol : null, hi = S ? S.hasInstance : undefined;
+                k = __br_instanceof.k = hi === undefined ? null : typeof hi === 'symbol' ? hi : String(hi);
+                __br_instanceof.d = k === null ? undefined : Function.prototype[k];
+            }
+            if (k !== null && C !== null && (typeof C === 'function' || typeof C === 'object')) {
+                var h = C[k];
+                if (typeof h === 'function' && h !== __br_instanceof.d) return !!h.call(C, x);
+            }
+            return x instanceof C;
+        },
         // `k in o` where k may be a polyfilled symbol: core-js puts an accessor for every symbol on Object.prototype (so
         // that obj[sym] = v works in an ES5 engine), and `sym in {}` came out true for every object (YouTube's signals
         // then took every owner for a computed and threw "zc"); the symbol's key is looked for below Object.prototype
@@ -1491,6 +1508,8 @@
                 if (n.operator === '**') d = true;
                 // `key in obj` with a key that may be a symbol goes through a helper (see __br_in)
                 if (n.operator === 'in' && n.left.type !== 'PrivateIdentifier' && !(n.left.type === 'Literal' && (typeof n.left.value === 'string' || typeof n.left.value === 'number'))) { n.$in = true; d = true; }
+                // (instanceof asks Symbol.hasInstance, see __br_instanceof)
+                if (n.operator === 'instanceof') { n.$inst = true; d = true; }
                 if (n.left.type === 'PrivateIdentifier') { d = true; n.left.$p = n; } else if (this.v(n.left, n, s)) d = true;
                 if (this.v(n.right, n, s)) d = true;
                 break;
@@ -2208,6 +2227,7 @@
         if (op === '**') { code = 'Math.pow(' + this.E(n.left, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')'; this.prec = P_CALL; return code; }
         if (n.left.type === 'PrivateIdentifier') { code = quote(this.privName(n.left.name)) + ' in ' + this.E(n.right, 11); this.prec = 10; return code; }
         if (n.$in) { code = this.h('__br_in') + '(' + this.E(n.left, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')'; this.prec = P_CALL; return code; }
+        if (n.$inst) { code = this.h('__br_instanceof') + '(' + this.E(n.left, P_ASSIGN) + ',' + this.E(n.right, P_ASSIGN) + ')'; this.prec = P_CALL; return code; }
         code = this.E(n.left, p) + ' ' + op + ' ' + this.E(n.right, p + 1);
         this.prec = p;
         return code;
@@ -3457,6 +3477,7 @@
             case 'BinaryExpression': {
                 var l = viaTemp(null, n.left), r = viaTemp(null, n.right);
                 if (n.$in) return finish(this.h('__br_in') + '(' + l + ',' + r + ')');
+                if (n.$inst) return finish(this.h('__br_instanceof') + '(' + l + ',' + r + ')');
                 return finish(n.operator === '**' ? 'Math.pow(' + l + ',' + r + ')' : l + ' ' + n.operator + ' ' + r);
             }
             case 'UpdateExpression': return finish(n.prefix ? n.operator + this.gx(n.argument, false) : this.gx(n.argument, false) + n.operator);

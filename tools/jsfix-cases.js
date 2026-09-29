@@ -120,5 +120,7 @@ var JSFIX_CASES = [
   // names with characters beyond the BMP (an HTML entity table: {𝒶:"ascr"}), which ES5 names cannot hold
   ['astral property names', 'var o = { 𝒶: "ascr", b: () => 1 }; o.𝔞 = "afr"; var { 𝒶: q } = o; class C { 𝕒() { return 3; } } return [o.𝒶, o.𝔞, q, new C().𝕒(), Object.keys(o).length];'],
   // (℘ U+2118 is an ES2015 name start by Other_ID_Start, a math symbol for the old engine; 元 and á are letters in both)
+  // (Zod 4 makes its schemas answer instanceof through Symbol.hasInstance only)
+  ['instanceof asks Symbol.hasInstance', 'class A {} const B = { [Symbol.hasInstance](x) { return !!x && x.tag === "b"; } }; class C { static [Symbol.hasInstance](x) { return x === 1; } } class D extends A {} return [({ tag: "b" }) instanceof B, {} instanceof B, new D() instanceof A, 1 instanceof C, 2 instanceof C, [] instanceof Array, (() => 0) instanceof Function, null instanceof A];'],
   ['property names beyond ASCII', 'var o = { ℘: "wp", 元: "CNY", á: 1, b: () => 2 }; o.℘ += "!"; return [o.℘, o.元, o.á, Object.keys(o).join()];'],
 ];
