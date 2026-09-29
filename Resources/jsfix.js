@@ -3601,6 +3601,22 @@
     var PROXY_USE = /\bnew\s+Proxy\s*\(|(?:^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/, DIRECT_EVAL = /(?:^|[^.\w$])eval\s*\(/;
     var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src); };
     var needsBigInt = function (src) { return typeof root.BigInt !== 'function' && BIGINT_USE.test(src); };
+    // delete el.dataset.x in a script the engine takes as it is (see __br_dsdel; DuckDuckGo's Next.js chunks are ES5
+    // and do it at start): a target of plain names goes through the helper in the text
+    var DS_DELETE = /(^|[^\w$.])delete\s+((?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Za-z_$][\w$]*)\s*\.\s*dataset\s*(?:\.\s*([A-Za-z_$][\w$]*)|\[([^\[\]\n]+)\])(?!\s*[.\[(\w$])/g;
+    var needsDsDelete = function (src) {
+        if (src.indexOf('dataset') < 0) return false;
+        DS_DELETE.lastIndex = 0;
+        var found = DS_DELETE.test(src);
+        DS_DELETE.lastIndex = 0;
+        return found;
+    };
+    var dsDeletes = function (src) {
+        DS_DELETE.lastIndex = 0;
+        return src.replace(DS_DELETE, function (whole, head, target, name, key) {
+            return head + '__br_dsdel(' + target + ',' + (name ? quote(name) : '(' + key + ')') + ')';
+        });
+    };
     // a script the engine parses that only needs the stand-ins: `new Proxy(` / `BigInt(` replaced in the text (no
     // parse of a big bundle for that), unless the script has a Proxy or BigInt of its own
     var STANDIN_OWN = /\b(?:class|function|var|let|const)\s+(?:Proxy|BigInt)\b|[(,]\s*(?:Proxy|BigInt)\s*[,)=]/;
@@ -4187,7 +4203,7 @@
         var parses = !opts.force && engineParses(src);
         if (parses) {
             var evals = src.length < 300 * 1024 && DIRECT_EVAL.test(src);
-            if (!needsProxy(src) && !needsBigInt(src) && !evals) return 'es5';
+            if (!needsProxy(src) && !needsBigInt(src) && !evals && !needsDsDelete(src)) return 'es5';
             memo = { src: src, parses: true, prep: null, note: '' };
             return evals ? 'full' : 'stand-in';
         }
@@ -4225,12 +4241,12 @@
         var tc = new Date().getTime(), parsesAsIs = !opts.force && (planned ? planned.parses : engineParses(src)), evals = false;
         stats.checks = new Date().getTime() - tc;
         if (parsesAsIs) {
-            var np = needsProxy(src), nb = needsBigInt(src);
+            var np = needsProxy(src), nb = needsBigInt(src), nd = needsDsDelete(src);
             // (a direct eval of ES2015+ text needs the tree even in a script the engine takes; not worth a big
             // script's parse)
             evals = src.length < 300 * 1024 && DIRECT_EVAL.test(src);
-            if (!np && !nb && !evals) { stats.skipped++; stats.last = 'es5'; return ''; }
-            if (!evals && !STANDIN_OWN.test(src)) {
+            if (!np && !nb && !nd && !evals) { stats.skipped++; stats.last = 'es5'; return ''; }
+            if (!evals && (!(np || nb) || !STANDIN_OWN.test(src))) {
                 // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
                 var text = src, used = [];
                 if (np) {
@@ -4238,6 +4254,12 @@
                     used.push('__br_Proxy');
                 }
                 if (nb) { text = text.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); used.push('__br_BigInt'); }
+                if (nd) {
+                    // (such a delete inside a string would no longer parse: then the deletes stay)
+                    var dtext = dsDeletes(text);
+                    if (engineParses(dtext)) { text = dtext; used.push('__br_dsdel'); }
+                }
+                if (!used.length) { stats.skipped++; stats.last = 'es5'; return ''; }
                 stats.lowered++;
                 stats.last = 'stand-in';
                 return text + '\n;' + helperText(used);

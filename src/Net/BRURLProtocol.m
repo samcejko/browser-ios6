@@ -180,6 +180,11 @@ static BOOL BRCachedRewriteIsStale(NSCachedURLResponse *c)
     id tag = c.userInfo[BRCacheRewriteTagKey];
     return ![tag isEqual:[BRCSSRewriter rewriteTag]] && ![tag isEqual:BRRawCacheTag()];
 }
+static BOOL BRCachedIsHTML(NSCachedURLResponse *c)
+{
+    NSString *type = [c.response.MIMEType lowercaseString] ?: @"";
+    return [type isEqualToString:@"text/html"] || [type isEqualToString:@"application/xhtml+xml"];
+}
 static const NSUInteger BRMaxCacheableBody = 16 * 1024 * 1024;   // (big bundles and front pages are what is worth keeping)
 
 #pragma mark - HTTP authentication (Basic)
@@ -495,8 +500,10 @@ static BOOL BRIsFontDataURL(NSURL *url)
     }
 
     // 0a. Our own resources (polyfill bundle) live on a reserved host name that never resolves; the polyfill bundle
-    // is also answered on the page's own host (/__br_polyfills-<crc>.js, see BRCSSRewriter)
-    if ([[url.host lowercaseString] isEqualToString:@"ios6-browser.invalid"] || (isGET && [url.path hasPrefix:@"/__br_polyfills"] && [url.path hasSuffix:@".js"])) {
+    // is also answered on the page's own host (/__br_polyfills-<crc>.js, see BRCSSRewriter), and so are the big inline
+    // scripts the rewriter set aside (/__br_inline-<name>.js: same origin, so the page's error reports stay whole)
+    if ([[url.host lowercaseString] isEqualToString:@"ios6-browser.invalid"] ||
+        (isGET && ([url.path hasPrefix:@"/__br_polyfills"] || [url.path hasPrefix:@"/__br_inline-"]) && [url.path hasSuffix:@".js"])) {
         [self serveInternalResource];
         return;
     }
@@ -523,9 +530,10 @@ static BOOL BRIsFontDataURL(NSURL *url)
         __block NSCachedURLResponse *cached = nil;
         dispatch_sync(BRCacheQueue(), ^{
             cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
-            if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data])) {
-                // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later are
-                // gone from the transpiler's cache: loaded again)
+            if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data] ||
+                           (BRCachedIsHTML(cached) && ![BRCSSRewriter inlineScriptsPresentIn:cached.data]))) {
+                // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later, or a
+                // document whose inline scripts set aside, are gone from the transpiler's cache: loaded again)
                 [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
                 cached = nil;
             }
@@ -1182,6 +1190,21 @@ static BOOL BRIsFontDataURL(NSURL *url)
                 [self finishRewrite];
                 return;
             }
+        }
+    } else if ([path hasPrefix:@"/__br_inline-"] && [path hasSuffix:@".js"]) {
+        // a big inline script of a document, set aside by the rewriter: lowered like a script file (the transpiler
+        // keeps the result by its text)
+        body = [BRCSSRewriter inlineScriptNamed:[[path substringFromIndex:13] stringByDeletingPathExtension]];
+        cacheControl = @"no-store";
+        if (body && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
+            self.done = YES;
+            self.rewriteKind = @"js";
+            self.rewriteBuffer = [body mutableCopy];
+            self.rewriteCharset = @"utf-8";
+            self.pendingStatus = 200;
+            self.pendingHeaderFields = @{ @"Content-Type": type, @"Cache-Control": @"no-store" };
+            [self finishRewrite];
+            return;
         }
     } else if ([path hasPrefix:@"/lazy/"]) {
         // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request

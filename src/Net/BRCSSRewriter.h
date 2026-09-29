@@ -58,6 +58,11 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 - (NSData *)lazyModuleForBase:(NSString *)base index:(NSInteger)index;
 // NO when a lowered chunk keeps factories for later whose texts are gone (it must be lowered again); any thread
 + (BOOL)lazyPartsPresentIn:(NSData *)lowered;
+// An inline script too big for the document's rewrite is set aside (its text in Caches/transpiled) and the document
+// loads it from /__br_inline-<name>.js: its text (nil when gone), and NO when a rewritten document names such scripts
+// whose texts are gone (it must be rewritten again). Any thread.
++ (NSData *)inlineScriptNamed:(NSString *)name;
++ (BOOL)inlineScriptsPresentIn:(NSData *)doc;
 // The same data without the trailing manifest comment: what WebKit gets (the cache keeps it; GitHub's manifests are
 // 2.3 MB that the engine would otherwise keep and parse as stylesheet text).
 + (NSData *)dataWithoutManifest:(NSData *)data;

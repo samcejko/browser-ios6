@@ -4812,9 +4812,27 @@ var CSSFix = (function () {
         return weight;
     }
 
+    function tooBigInline(code) {
+        return code.length > 600000 && (code.length > 4000000 || codeWeight(code) > 400000);
+    }
+
+    // the inline scripts of this document set aside for the app ([name, text], see fixScripts); null: kept inline
+    var g_external = null;
+
+    // a file name for a script's text: two 32-bit hashes and the length
+    function scriptName(s) {
+        var a = 2166136261, b = 5381, i = 0, n = s.length, c;
+        for (; i < n; i++) {
+            c = s.charCodeAt(i);
+            a ^= c; a = (a * 16777619) >>> 0;
+            b = ((b * 33) ^ c) >>> 0;
+        }
+        return ('0000000' + a.toString(16)).slice(-8) + ('0000000' + b.toString(16)).slice(-8) + '-' + n.toString(16);
+    }
+
     function transpileInline(code) {
         if (typeof JSFix === 'undefined' || !code || !/[^\s]/.test(code)) return null;
-        if (code.length > 600000 && (code.length > 4000000 || codeWeight(code) > 400000)) return null;
+        if (tooBigInline(code)) return null;
         var key = hashString(code);
         if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
         var out = null;
@@ -4866,6 +4884,14 @@ var CSSFix = (function () {
             }
             if (!isJavaScriptType(type)) return all;
             if (src) return all;                                            // external scripts are lowered by the network layer
+            // too big to lower here: the app keeps the text and the page loads it as a script file, lowered by the
+            // network layer, which makes room for it and keeps the result (CNN's 2 MB of modules stayed ES2020)
+            if (g_external && tooBigInline(body)) {
+                var name = scriptName(body);
+                g_external.push([name, body]);
+                return '<script' + attrs.replace(/\s(?:async|defer|integrity|crossorigin|charset|onload|onerror)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '') +
+                       ' src="/__br_inline-' + name + '.js" charset="utf-8">' + close;
+            }
             var fixed = transpileInline(body);
             if (fixed === null) return all;
             return open + fixed + close;
@@ -5006,9 +5032,16 @@ var CSSFix = (function () {
         g_dpr = (opts && opts.devicePixelRatio > 0) ? opts.devicePixelRatio : 1;
         g_manifest = null;
         g_hostScope = opts && opts.hostScope ? String(opts.hostScope).replace(/[^\w-]/g, '') : null;
-        var out;
-        try { out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx); } finally { g_hostScope = null; }
+        g_external = kind === 'html' && opts && opts.transpile && opts.externalScripts ? [] : null;
+        var out, external;
+        try { out = kind === 'html' ? fixHTML(text, ctx, opts) : fixCSS(text, ctx); } finally { g_hostScope = null; external = g_external; g_external = null; }
         out = guardCalcTransitions(out, ctx, kind);
+        // the scripts set aside, named for the cache (a stored copy of the document needs their texts)
+        if (external && external.length) {
+            var names = [];
+            for (var xi = 0; xi < external.length; xi++) names.push(external[xi][0]);
+            out += '\n<!--br-inline:' + names.join(',') + '-->';
+        } else external = null;
         // this document's own calc and transition findings, for the page's later documents also when this one comes
         // from the cache (see guardCalcTransitions)
         var state = pageState(ctx);
@@ -5031,7 +5064,9 @@ var CSSFix = (function () {
         // the scoped custom properties, for the documents of the page rewritten after this one
         var scoped = [];
         if (ctx.rt) for (var sn in ctx.rt) if (ctx.rt.hasOwnProperty(sn)) scoped.push(sn);
-        return JSON.stringify({ out: out, vars: ctx.root, manifest: manifest, scoped: scoped });
+        var result = { out: out, vars: ctx.root, manifest: manifest, scoped: scoped };
+        if (external) result.external = external;
+        return JSON.stringify(result);
     }
 
     // the manifest comment of a rewritten document or stylesheet, parsed (used by the shim's dev harness and tests)

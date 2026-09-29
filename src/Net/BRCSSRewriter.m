@@ -115,6 +115,13 @@ static NSString *BRLazyPartPath(NSString *base, long n)
     return [BRTranspiledDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@s%ld-%@.js", base, n, BRTranspileTag()]];
 }
 
+// the text of a document's inline script set aside by the rewriter (see cssfix.js fixScripts), nil for a bad name
+static NSString *BRInlineScriptPath(NSString *name)
+{
+    if (!name.length || name.length > 40 || [name rangeOfString:@"^[0-9a-f]+-[0-9a-f]+$" options:NSRegularExpressionSearch].location == NSNotFound) return nil;
+    return [BRTranspiledDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"inline-%@-%@.js", name, BRTranspileTag()]];
+}
+
 @implementation BRCSSRewriter {
     NSMutableDictionary *_noRoom;       // script key -> when it did not fit in memory (not waited for again soon)
     BOOL _lastNoRoom;                   // (transpiler queue) the last transpiledScript: left as it was for lack of memory
@@ -578,6 +585,35 @@ static NSArray *BRManifestKinds(void)
     return YES;
 }
 
+// A document whose big inline scripts were set aside names them in <!--br-inline:a,b--> (before the page state and
+// manifest comments at its end): YES when their texts are all there (touched as recently used) or when it has none.
++ (BOOL)inlineScriptsPresentIn:(NSData *)doc
+{
+    static const char mark[] = "<!--br-inline:";
+    if (doc.length < sizeof(mark)) return YES;
+    NSRange m = [doc rangeOfData:[NSData dataWithBytesNoCopy:(void *)mark length:sizeof(mark) - 1 freeWhenDone:NO] options:NSDataSearchBackwards range:NSMakeRange(0, doc.length)];
+    if (m.location == NSNotFound) return YES;
+    NSUInteger from = m.location + m.length, room = MIN((NSUInteger)4096, doc.length - from);
+    NSRange close = [doc rangeOfData:[NSData dataWithBytesNoCopy:(void *)"-->" length:3 freeWhenDone:NO] options:0 range:NSMakeRange(from, room)];
+    if (close.location == NSNotFound) return NO;
+    NSString *list = [[NSString alloc] initWithBytes:(const char *)doc.bytes + from length:close.location - from encoding:NSASCIIStringEncoding];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *now = @{ NSFileModificationDate: [NSDate date] };
+    for (NSString *name in [list componentsSeparatedByString:@","]) {
+        NSString *path = BRInlineScriptPath(name);
+        if (!path || ![fm setAttributes:now ofItemAtPath:path error:NULL]) return NO;
+    }
+    return YES;
+}
+
++ (NSData *)inlineScriptNamed:(NSString *)name
+{
+    NSString *path = BRInlineScriptPath(name);
+    NSData *text = path ? [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL] : nil;
+    if (!text) BRLog(@"Inline script %@: its text is gone", name ?: @"?");
+    return text;
+}
+
 // the transpiler's queue: the texts of the kept factories ("[[start,end],...]" in UTF-16 units of text); how many
 - (NSUInteger)storeLazyParts:(NSString *)json ofText:(NSString *)text base:(NSString *)base
 {
@@ -926,8 +962,12 @@ static NSString *BRPageKey(NSURL *url)
         // iframes (mostly ads and widgets) do not get the 500 KB bundle: memory on a 512 MB device
         if ([kind isEqualToString:@"html"] && mainFrame && [BRSettings jsFixEnabled]) opts[@"polyfillURL"] = [BRCSSRewriter polyfillURLString];
         if ([kind isEqualToString:@"html"] && [BRSettings hideCookieBanners]) opts[@"hideCookieBanners"] = @YES;
-        // inline scripts in ES2015+ syntax: lowered by the transpiler in the same context
-        if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixIn:[BRJSEngine shared]]) opts[@"transpile"] = @YES;
+        // inline scripts in ES2015+ syntax: lowered by the transpiler in the same context (one too big for that goes
+        // to the network layer as a script file; its text is kept on disk, so not in private mode)
+        if ([kind isEqualToString:@"html"] && [BRSettings transpileEnabled] && [self ensureJSFixIn:[BRJSEngine shared]]) {
+            opts[@"transpile"] = @YES;
+            if (![BRSettings privateMode]) opts[@"externalScripts"] = @YES;
+        }
         NSData *oj = [NSJSONSerialization dataWithJSONObject:opts options:0 error:NULL];
         if (oj) optionsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     }
@@ -936,6 +976,18 @@ static NSString *BRPageKey(NSURL *url)
     NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[result dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;
     if (![out isKindOfClass:[NSString class]]) return nil;
+    // the inline scripts set aside: the page asks for them as /__br_inline-<name>.js (see BRURLProtocol)
+    NSArray *external = parsed[@"external"];
+    if ([external isKindOfClass:[NSArray class]] && external.count) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:BRTranspiledDirectory() withIntermediateDirectories:YES attributes:nil error:NULL];
+        for (NSArray *e in external) {
+            NSString *path = [e isKindOfClass:[NSArray class]] && e.count == 2 && [e[0] isKindOfClass:[NSString class]] ? BRInlineScriptPath(e[0]) : nil;
+            NSData *d = path && [e[1] isKindOfClass:[NSString class]] ? [e[1] dataUsingEncoding:NSUTF8StringEncoding] : nil;
+            if (!d || ![d writeToFile:path atomically:YES]) { BRLog(@"cssfix: an inline script could not be set aside, the document stays as it was"); return nil; }
+            BRLog(@"cssfix: inline script of %lu KB set aside as %@", (unsigned long)(d.length >> 10), e[0]);
+        }
+    }
+    external = nil;
     NSDictionary *newVars = parsed[@"vars"];
     NSArray *scoped = parsed[@"scoped"];
     @synchronized (self) {

@@ -68,6 +68,22 @@ function lazyCheck() {
     const want = JSON.stringify([6, 4, '[}{]`', 'small 2 }', 'a-b', ['11', '12', './x.js']]);
     if (got !== want) throw new Error('expected ' + want + ' got ' + got);
 }
+// A script the engine takes as it is keeps its text, except `delete el.dataset.x` (the old engine throws in strict code
+// when there is no such attribute): through the helper; one with such text inside a string stays as it is.
+function datasetCheck() {
+    const src = "'use strict';var el={dataset:{a:1,b:2,c:{r:1}}},k='b';delete el.dataset.a;var r=!delete el.dataset[k];" +
+        'delete el.dataset.c.r;var result=[Object.keys(el.dataset).join(),r,Object.keys(el.dataset.c).length];';
+    const out = JSFix.run(src, '{}');
+    if (!/__br_dsdel\(el,"a"\)/.test(out) || !/__br_dsdel\(el,\(k\)\)/.test(out) || !/delete el\.dataset\.c\.r/.test(out)) throw new Error('not through the helper: ' + JSFix.last() + ' ' + out);
+    acorn.parse(out, { ecmaVersion: 5 });
+    const g = vm.createContext({});
+    vm.runInContext(out, g);
+    const got = JSON.stringify(g.result), want = JSON.stringify(['c', false, 0]);
+    if (got !== want) throw new Error('expected ' + want + ' got ' + got);
+    const inString = JSFix.run("'use strict';var s=\"delete x.dataset.y\";delete el.dataset.a;", '{}');
+    if (inString !== '') throw new Error('a string was changed: ' + inString);
+    if (JSFix.run('var a={b:1};delete a.b;', '{}') !== '') throw new Error('an ES5 script without dataset was changed');
+}
 const settle = (v) => (v && typeof v.then === 'function')
     ? v.then((x) => JSON.stringify(x), (e) => 'rejected: ' + ((e && e.message) || e))
     : Promise.resolve(JSON.stringify(v));
@@ -92,5 +108,6 @@ const MODES = [['', {}], [' (early)', { early: 0 }]];
     }
     console.log(`jsfix: ${cases.length * MODES.length - failed}/${cases.length * MODES.length} cases pass (${JSFix.stats.early} functions lowered while parsing, ${JSFix.stats.fallbacks} fallbacks)`);
     try { lazyCheck(); console.log('jsfix: lazy factories pass'); } catch (e) { console.error('FAIL lazy factories: ' + (e.message || e)); failed++; }
+    try { datasetCheck(); console.log('jsfix: dataset deletes in ES5 scripts pass'); } catch (e) { console.error('FAIL dataset deletes: ' + (e.message || e)); failed++; }
     process.exit(failed ? 1 : 0);
 })();
