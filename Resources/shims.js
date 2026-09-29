@@ -762,32 +762,36 @@
                 fn(e);
             }
         };
-        // iterators: kind 0 keys, 1 values, 2 entries; below %IteratorPrototype% (core-js's), which has the iterator
-        // helpers (map, filter, toArray...)
-        var Iter = function (st, kind) { this.__st = st; this.__cur = null; this.__kind = kind; this.__done = false; };
+        // iterators: kind 0 keys, 1 values, 2 entries. Each kind's prototype holds next itself and sits right below
+        // %IteratorPrototype% (core-js's, with the iterator helpers map, filter, toArray...), as the native ones do: a
+        // page's own core-js sets the prototype of every Map/Set iterator prototype it finds to %IteratorPrototype%, so
+        // a shared level between the two lost next ("e.next is not a function" on seznam and duckduckgo)
         var IterProto = null;
         try { if (ITER !== null) IterProto = Object.getPrototypeOf(Object.getPrototypeOf([][ITER]())); } catch (eI) { IterProto = null; }
-        if (IterProto) Iter.prototype = Object.create(IterProto);
-        hide(Iter.prototype, 'next', function next() {
+        var next = function next() {
             if (this.__done) return { value: undefined, done: true };
             var e = this.__cur === null ? this.__st.first : this.__cur.next;
             while (e !== null && e.removed) e = e.next;
             if (e === null) { this.__done = true; this.__st = null; return { value: undefined, done: true }; }
             this.__cur = e;
             return { value: this.__kind === 0 ? e.k : this.__kind === 1 ? e.v : [e.k, e.v], done: false };
-        });
+        };
         var self = function () { return this; };
-        if (ITER !== null) hide(Iter.prototype, ITER, self);
-        hide(Iter.prototype, '@@iterator', self);
-        // (the tag each kind of iterator reads as: "[object Map Iterator]")
-        var MapIter = function (st, kind) { Iter.call(this, st, kind); };
-        MapIter.prototype = Object.create(Iter.prototype);
-        var SetIter = function (st, kind) { Iter.call(this, st, kind); };
-        SetIter.prototype = Object.create(Iter.prototype);
         var TAG = S && S.toStringTag;
         var tagged = function (o, name) { if (TAG) try { Object.defineProperty(o, TAG, { value: name, configurable: true }); } catch (e) {} };
-        tagged(MapIter.prototype, 'Map Iterator');
-        tagged(SetIter.prototype, 'Set Iterator');
+        // (the tag each kind of iterator reads as: "[object Map Iterator]")
+        var iterProto = function (tag) {
+            var p = IterProto ? Object.create(IterProto) : {};
+            hide(p, 'next', next);
+            if (ITER !== null) hide(p, ITER, self);
+            hide(p, '@@iterator', self);
+            tagged(p, tag);
+            return p;
+        };
+        var MapIter = function (st, kind) { this.__st = st; this.__cur = null; this.__kind = kind; this.__done = false; };
+        MapIter.prototype = iterProto('Map Iterator');
+        var SetIter = function (st, kind) { this.__st = st; this.__cur = null; this.__kind = kind; this.__done = false; };
+        SetIter.prototype = iterProto('Set Iterator');
         // fill from an iterable: arrays directly, others step by step (closed when adding throws)
         var fill = function (target, iterable, pairs) {
             if (iterable === null || iterable === undefined) return;

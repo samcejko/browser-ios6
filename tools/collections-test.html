@@ -12,7 +12,9 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 <div id="host"></div>
 <script>
 // The lean Map, Set, WeakMap and WeakSet of shims.js against the standard (Chrome passes natively). Timings at the end.
-setTimeout(function () {
+// ?corejs loads the whole core-js first, as a page's legacy bundle brings it: it runs its checks on our Map and Set
+// and sets the prototypes of their iterators' prototypes (lost next once, on seznam and duckduckgo).
+var run = function () {
   var res = [];
   var check = function (name, fn, expect) {
     var got;
@@ -80,6 +82,11 @@ setTimeout(function () {
     return [ts.call(new Map()), ts.call(new Set()), ts.call(new WeakMap()), ts.call(new WeakSet()), ts.call(new Map().keys()), ts.call(new Set().values()), new Map() instanceof Map, Map.name];
   }, ['[object Map]', '[object Set]', '[object WeakMap]', '[object WeakSet]', '[object Map Iterator]', '[object Set Iterator]', true, 'Map']);
   check('Map.groupBy', function () { if (!Map.groupBy) return 'none'; var g = Map.groupBy([1, 2, 3, 4], function (x) { return x % 2 ? 'odd' : 'even'; }); return [g.get('odd'), g.get('even')]; }, [[1, 3], [2, 4]]);
+  check('iterators: next of their own, right below %IteratorPrototype%', function () {
+    var m = new Map([[1, 'a']]), it = m.keys(), IP = Object.getPrototypeOf(Object.getPrototypeOf([][S.iterator]()));
+    return [typeof it.next, Array.from(m.keys()), Array.from(m.values()), Array.from(new Set([2]).values()), Object.getPrototypeOf(Object.getPrototypeOf(it)) === IP,
+      Object.getPrototypeOf(Object.getPrototypeOf(new Set().values())) === IP, it[S.iterator]() === it, Object.getPrototypeOf(m.keys()) === Object.getPrototypeOf(m.entries())];
+  }, ['function', [1], ['a'], [2], true, true, true, true]);
   var pass = 0, lines = [];
   for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
   var t0, n, x, N = 2000, times = [], mm = new Map([['a', 1]]), ok = {}, wm = new WeakMap(), st = new Set(['a']);
@@ -93,10 +100,18 @@ setTimeout(function () {
   time('new WeakMap', function () { return new WeakMap(); });
   time('weak.get', function () { return wm.get(ok); });
   time('weak.set new key', function () { return wm.set({}, 1); });
-  lines.push('us: ' + times.join(', '));
+  lines.push('us: ' + times.join(', ') + (withCoreJs ? ' (after core-js; lean Map kept: ' + !!Map.__brLean + ')' : ''));
   document.getElementById('out').textContent = lines.join('\n');
-  document.title = 'collections ' + pass + '/' + res.length;
-}, 300);
+  document.title = 'collections ' + pass + '/' + res.length + (withCoreJs ? ' corejs' : '');
+};
+var withCoreJs = /corejs/.test(location.search);
+if (withCoreJs) {
+  var cj = document.createElement('script');
+  cj.src = 'https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js';
+  cj.onload = function () { setTimeout(run, 300); };
+  cj.onerror = function () { document.title = 'core-js load failed'; };
+  document.head.appendChild(cj);
+} else setTimeout(run, 300);
 </script>
 </body>
 </html>

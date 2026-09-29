@@ -29,10 +29,13 @@ var report = function () {
   time('new Promise', function () { return new P(function (r) { r(1); }); });
   time('resolve', function () { return P.resolve(1); });
   time('then', function () { return p1.then(function (v) { return v; }); });
-  lines.push('us: ' + times.join(', '));
+  lines.push('us: ' + times.join(', ') + (withCoreJs ? ' (after core-js; Promise kept: ' + (Promise === P0) + ', then kept: ' + (Promise.prototype.then === then0) + ')' : ''));
   document.getElementById('out').textContent = lines.join('\n');
-  document.title = 'promise ' + pass + '/' + results.length;
+  document.title = 'promise ' + pass + '/' + results.length + (withCoreJs ? ' corejs' : '');
 };
+// ?corejs loads the whole core-js first, as a page's legacy bundle brings it, and checks what is left after it
+var withCoreJs = /corejs/.test(location.search), P0 = window.Promise, then0 = P0 && P0.prototype.then;
+var start = function () {
 check('order: sync, microtasks, then timers', function (done) {
   var log = [];
   setTimeout(function () { log.push('timeout'); done(log); }, 0);
@@ -115,6 +118,14 @@ check('async functions (as lowered) keep working', function (done) {
   var f = async function (x) { var a = await x; var b = await Promise.resolve(a + 1); return [a, b]; };
   f(1).then(done);
 }, [1, 2]);
+};
+if (withCoreJs) {
+  var cj = document.createElement('script');
+  cj.src = 'https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js';
+  cj.onload = function () { setTimeout(start, 300); };
+  cj.onerror = function () { document.title = 'core-js load failed'; };
+  document.head.appendChild(cj);
+} else start();
 </script>
 </body>
 </html>

@@ -12,7 +12,10 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 <script>
 // The Array methods shims.js wraps so that a page's own core-js keeps the engine's (Symbol.species,
 // Symbol.isConcatSpreadable, push/unshift/sort errors): what they give must not change. Chrome passes natively.
-setTimeout(function () {
+// ?corejs loads the whole core-js first, as a page's legacy bundle brings it, and names the wrappers it replaced.
+var names = ['concat', 'map', 'filter', 'slice', 'splice', 'push', 'unshift', 'sort'], before = {};
+for (var b = 0; b < names.length; b++) before[names[b]] = Array.prototype[names[b]];
+var run = function () {
   var res = [];
   var check = function (name, fn, expect) {
     var got;
@@ -48,9 +51,19 @@ setTimeout(function () {
   check('sort on null this throws', function () { Array.prototype.sort.call(null, function () { return 1; }); return 'no'; }, 'threw TypeError');
   var pass = 0, lines = [];
   for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  var lost = names.filter(function (n) { return Array.prototype[n] !== before[n]; });
+  if (withCoreJs) lines.push('after core-js; replaced: ' + (lost.join(' ') || 'none'));
   document.getElementById('out').textContent = lines.join('\n');
-  document.title = 'arrays ' + pass + '/' + res.length;
-}, 300);
+  document.title = 'arrays ' + pass + '/' + res.length + (withCoreJs ? ' corejs' : '');
+};
+var withCoreJs = /corejs/.test(location.search);
+if (withCoreJs) {
+  var cj = document.createElement('script');
+  cj.src = 'https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js';
+  cj.onload = function () { setTimeout(run, 300); };
+  cj.onerror = function () { document.title = 'core-js load failed'; };
+  document.head.appendChild(cj);
+} else setTimeout(run, 300);
 </script>
 </body>
 </html>

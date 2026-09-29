@@ -12,7 +12,14 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 <script>
 // The lean ES2015+ methods of shims.js (in place of core-js's slow ones) against the standard: Chrome passes natively,
 // the iPad must give the same. Timings at the end (microseconds per call on the iPad).
-setTimeout(function () {
+// ?corejs loads the whole core-js first, as a page's legacy bundle brings it, and names the lean ones it replaced.
+var watched = { 'String#startsWith': [String.prototype, 'startsWith'], 'String#includes': [String.prototype, 'includes'], 'String#padStart': [String.prototype, 'padStart'],
+  'String#replaceAll': [String.prototype, 'replaceAll'], 'String#at': [String.prototype, 'at'], 'Array.from': [Array, 'from'], 'Array.of': [Array, 'of'],
+  'Array#includes': [Array.prototype, 'includes'], 'Array#find': [Array.prototype, 'find'], 'Array#flat': [Array.prototype, 'flat'], 'Object.entries': [Object, 'entries'],
+  'Object.assign': [Object, 'assign'], 'Object.getOwnPropertyDescriptors': [Object, 'getOwnPropertyDescriptors'] };
+var before = {};
+for (var w in watched) before[w] = watched[w][0][watched[w][1]];
+var run = function () {
   var res = [];
   var check = function (name, fn, expect) {
     var got;
@@ -70,10 +77,20 @@ setTimeout(function () {
   time('str.at', function () { return 'abc'.at(-1); });
   time('Array.of', function () { return Array.of(1, 2, 3); });
   time('getOwnPropertyDescriptors', function () { return Object.getOwnPropertyDescriptors({ a: 1, b: 2 }); });
-  lines.push('us: ' + times.join(', '));
+  var lost = [];
+  for (var w in watched) if (watched[w][0][watched[w][1]] !== before[w]) lost.push(w);
+  lines.push('us: ' + times.join(', ') + (withCoreJs ? ' (after core-js; replaced: ' + (lost.join(' ') || 'none') + ')' : ''));
   document.getElementById('out').textContent = lines.join('\n');
-  document.title = 'lean ' + pass + '/' + res.length;
-}, 300);
+  document.title = 'lean ' + pass + '/' + res.length + (withCoreJs ? ' corejs' : '');
+};
+var withCoreJs = /corejs/.test(location.search);
+if (withCoreJs) {
+  var cj = document.createElement('script');
+  cj.src = 'https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js';
+  cj.onload = function () { setTimeout(run, 300); };
+  cj.onerror = function () { document.title = 'core-js load failed'; };
+  document.head.appendChild(cj);
+} else setTimeout(run, 300);
 </script>
 </body>
 </html>

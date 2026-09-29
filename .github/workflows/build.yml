@@ -185,8 +185,9 @@ jobs:
         run: |
           set -e
           npm install --no-save --silent acorn@8 terser@5
-          npx terser Resources/shims.js --compress --mangle --output Resources/js/shims.js
-          npx terser Resources/shims-extra.js --compress --mangle --output Resources/js/shims-extra.js
+          # function names stay: pages read Map.name, Promise.name and the like, as they do in native code
+          npx terser Resources/shims.js --compress --mangle --keep-fnames --output Resources/js/shims.js
+          npx terser Resources/shims-extra.js --compress --mangle --keep-fnames --output Resources/js/shims-extra.js
           node tools/gen-helpers.js > Resources/js/jsfix-helpers.js
           ls -la Resources/js/jsfix-helpers.js
           node tools/check-es5.js Resources/page-prelude.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/jsfix.js Resources/browserscore.js Resources/worker-shims.js Resources/regexp-shim.js Resources/js/*.js
