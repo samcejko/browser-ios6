@@ -11527,6 +11527,21 @@
         Lowering.__brLowering = true;
         Lowering.__brNative = NativeFunction;
         window.__brTranspiler = transpiler;
+        // a script's text lowered by the app's transpiler, which keeps what it lowered by the text and makes room for it
+        // (Alza inserts 600 KB of script text on every visit: 12 s of lowering in the page each time): the ES5 text, ''
+        // when it needs nothing, null when the app did not answer (then the page lowers it itself)
+        try {
+            Object.defineProperty(window, '__brLowerByApp', { configurable: true, writable: true, value: function (text) {
+                try {
+                    var x = new XMLHttpRequest();
+                    x.open('POST', 'https://ios6-browser.invalid/lower', false);
+                    x.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
+                    x.send(String(text));
+                    if (x.status === 200) return x.responseText;
+                } catch (e4) {}
+                return null;
+            } });
+        } catch (e5) {}
         try { window.Function = Lowering; } catch (e3) {}
     })();
 
@@ -11911,7 +11926,11 @@
             var text = n.text;
             if (!text || !/\S/.test(text)) return;
             var F = window.Function.__brNative || window.Function;
-            try { F(text); return; } catch (e) { if (!(e instanceof SyntaxError)) return; }
+            // (a big one goes straight to the app, which remembers which texts need nothing too)
+            if (text.length < 65536) try { F(text); return; } catch (e) { if (!(e instanceof SyntaxError)) return; }
+            var byApp = window.__brLowerByApp ? window.__brLowerByApp(text) : null;
+            if (byApp !== null) { if (byApp) n.text = byApp; return; }
+            if (text.length >= 65536) try { F(text); return; } catch (e1) { if (!(e1 instanceof SyntaxError)) return; }
             if (!window.__brTranspiler || !window.__brTranspiler()) return;
             var out = '';
             try { out = window.JSFix.run(text, '{}'); } catch (e2) { out = ''; }

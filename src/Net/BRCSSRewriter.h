@@ -56,6 +56,10 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 // now as a program that leaves it in __br_lazyValue (nil when its text is gone). Blocks; any thread but the
 // transpiler engine's.
 - (NSData *)lazyModuleForBase:(NSString *)base index:(NSInteger)index;
+// The text of a classic script a page inserts (shims-extra.js lowerClassic, through https://ios6-browser.invalid/lower):
+// its ES5 text, nil when it needs nothing or could not be lowered (*failed says which). Blocks; any thread but the
+// transpiler engine's.
+- (NSData *)loweredPageScript:(NSData *)text failed:(BOOL *)failed;
 // NO when a lowered chunk keeps factories for later whose texts are gone (it must be lowered again); any thread
 + (BOOL)lazyPartsPresentIn:(NSData *)lowered;
 // An inline script too big for the document's rewrite is set aside (its text in Caches/transpiled) and the document

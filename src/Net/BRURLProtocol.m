@@ -1211,6 +1211,15 @@ static BOOL BRIsFontDataURL(NSURL *url)
             [self finishRewrite];
             return;
         }
+    } else if ([path isEqualToString:@"/lower"]) {
+        // the text of a classic script a page inserts (shims-extra.js lowerClassic): lowered by the transpiler, which keeps
+        // it by the text; an empty body when it needs nothing, an error when it could not be lowered (the page tries itself)
+        NSData *src = self.request.HTTPBody ?: BRReadBodyStream(self.request.HTTPBodyStream);
+        BOOL failed = NO;
+        body = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
+        if (!body && !failed) body = [NSData data];
+        type = @"text/plain; charset=utf-8";
+        cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/lazy/"]) {
         // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request
         // of the page's stub, answered when it is lowered)

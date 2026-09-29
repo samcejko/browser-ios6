@@ -717,6 +717,34 @@ static NSArray *BRManifestKinds(void)
     return out ?: wrapped;
 }
 
+- (NSData *)loweredPageScript:(NSData *)text failed:(BOOL *)failed
+{
+    // (a host of its own for the log: not ios6-browser.invalid, whose lazy factories skip the plan and the pieces)
+    NSURL *url = [NSURL URLWithString:@"https://inserted-script.invalid/text.js"];
+    __block NSData *out = nil;
+    __block BOOL noRoom = NO, bad = NO;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    [[BRJSEngine transpiler] performAsync:^{
+        @autoreleasepool {
+            out = [self transpiledScript:text charset:@"utf-8" url:url module:NO];
+            noRoom = _lastNoRoom;
+            // (nothing back: the text needs nothing, or it failed, which the transpiler says when it just ran)
+            if (!out && _jsfixLoadedTranspiler) {
+                NSString *last = [[BRJSEngine transpiler] callFunction:@"JSFix.last" arguments:@[]] ?: @"";
+                bad = [last hasPrefix:@"failed"];
+            }
+        }
+        dispatch_semaphore_signal(done);
+    }];
+    BOOL finished = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_SEC))) == 0;
+    long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+    if (ms > 300) BRLog(@"Inserted script (%lu KB) lowered for the page: %@ after %ld ms", (unsigned long)(text.length >> 10),
+                        !finished ? @"still lowering" : noRoom ? @"no room" : bad ? @"failed" : out ? @"lowered" : @"needs nothing", ms);
+    if (failed) *failed = !finished || noRoom || bad;
+    return finished ? out : nil;
+}
+
 + (void)cancelPendingWork
 {
     g_workGeneration++;
