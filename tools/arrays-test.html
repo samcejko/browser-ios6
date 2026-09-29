@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>arrays test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// The Array methods shims.js wraps so that a page's own core-js keeps the engine's (Symbol.species,
+// Symbol.isConcatSpreadable, push/unshift/sort errors): what they give must not change. Chrome passes natively.
+setTimeout(function () {
+  var res = [];
+  var check = function (name, fn, expect) {
+    var got;
+    try { got = fn(); } catch (e) { got = 'threw ' + (e instanceof TypeError ? 'TypeError' : e.name); }
+    res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+  };
+  var S = window.Symbol;
+  check('concat of arrays and values', function () { return [1, 2].concat([3], [4, [5]], 6); }, [1, 2, 3, 4, [5], 6]);
+  check('concat keeps holes as holes', function () { var r = [1, , 3].concat([, 5]); return [r.length, 1 in r, 3 in r]; }, [5, false, false]);
+  check('concat of arguments and strings', function () { var args = (function () { return arguments; })(1, 2); var r = [].concat(args, 'ab'); return [r.length, typeof r[0], r[1]]; }, [2, 'object', 'ab']);
+  check('concat: isConcatSpreadable false on an array', function () { var a = [1, 2]; a[S.isConcatSpreadable] = false; var r = [0].concat(a); return [r.length, r[1] === a]; }, [2, true]);
+  check('concat: isConcatSpreadable true on an array-like', function () { var o = { length: 2, 0: 'x', 1: 'y' }; o[S.isConcatSpreadable] = true; return [].concat(o); }, ['x', 'y']);
+  check('species: the constructor makes the result', function () {
+    var a = [1, 2, 3], made = 0, Sp = function (n) { made++; this.n = n; };
+    a.constructor = {}; a.constructor[S.species] = Sp;
+    var m = a.map(function (x) { return x * 2; }), f = a.filter(function (x) { return x > 1; }), s = a.slice(1), c = a.concat([4]);
+    return [made, m instanceof Sp, m[2], f[1], s[0], s.length, c[3], c.length];
+  }, [4, true, 6, 3, 2, 2, 4, 4]);
+  check('species: splice returns one of them, the array loses the items', function () {
+    var a = [1, 2, 3, 4], Sp = function () {}; a.constructor = {}; a.constructor[S.species] = Sp;
+    var r = a.splice(1, 2); return [r instanceof Sp, r[0], r[1], r.length, a.join()];
+  }, [true, 2, 3, 2, '1,4']);
+  check('species null means Array', function () { var a = [1, 2]; a.constructor = {}; a.constructor[S.species] = null; var r = a.map(function (x) { return x; }); return [Array.isArray(r), r.join()]; }, [true, '1,2']);
+  check('core-js species test', function () { var array = []; var constructor = array.constructor = {}; constructor[S.species] = function () { return { foo: 1 }; }; return [array.concat(Boolean).foo, array.map(Boolean).foo, array.filter(Boolean).foo, array.slice(Boolean).foo, array.splice(Boolean).foo]; }, [1, 1, 1, 1, 1]);
+  check('core-js concat spreadable test', function () { var array = []; array[S.isConcatSpreadable] = false; return array.concat()[0] === array; }, true);
+  check('plain map, filter, slice, splice', function () { var a = [1, 2, 3, 4]; var r = [a.map(function (x) { return x + 1; }).join(), a.filter(function (x) { return x % 2; }).join(), a.slice(-2).join(), a.slice(1, 3).join()]; r.push(a.splice(1, 1, 'x', 'y').join(), a.join()); return r; }, ['2,3,4,5', '1,3', '3,4', '2,3', '2', '1,x,y,3,4']);
+  check('slice of array-likes and arguments', function () { var args = (function () { return Array.prototype.slice.call(arguments, 1); })(1, 2, 3); return [Array.prototype.slice.call({ length: 2, 0: 'a', 1: 'b' }).join(), args.join()]; }, ['a,b', '2,3']);
+  check('push returns the length, of arrays and array-likes', function () { var a = [1]; var o = { length: 1 }; return [a.push(2, 3), a.join(), Array.prototype.push.call(o, 'x'), o.length, o[1]]; }, [3, '1,2,3', 2, 2, 'x']);
+  check('push on an array-like past 2^32', function () { return [].push.call({ length: 0x100000000 }, 1); }, 4294967297);
+  check('push() on a read-only length throws', function () { Object.defineProperty([], 'length', { writable: false }).push(); return 'no'; }, 'threw TypeError');
+  check('unshift() on a read-only length throws, unshift works', function () { var a = [2]; var r = [a.unshift(0, 1), a.join()]; try { Object.defineProperty([], 'length', { writable: false }).unshift(); r.push('no'); } catch (e) { r.push(e instanceof TypeError); } return r; }, [3, '0,1,2', true]);
+  check('sort: null throws, undefined sorts, comparators', function () { var r = []; try { [].sort(null); r.push('no'); } catch (e) { r.push(e instanceof TypeError); } r.push([3, 1, 2].sort(undefined).join(), [3, 1, 2].sort().join(), [1, 3, 2].sort(function (a, b) { return b - a; }).join(), ['b', 'a'].sort().join()); return r; }, [true, '1,2,3', '1,2,3', '3,2,1', 'a,b']);
+  check('sort on null this throws', function () { Array.prototype.sort.call(null, function () { return 1; }); return 'no'; }, 'threw TypeError');
+  var pass = 0, lines = [];
+  for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'arrays ' + pass + '/' + res.length;
+}, 300);
+</script>
+</body>
+</html>

@@ -385,5 +385,16 @@
             return it;
         });
     }
+    // test through the expression's exec when a script put another one there, as ES2015 has it: a page's own core-js
+    // checks exactly that and, failing, put a test written in JS (an exec and a match array per call) on every
+    // regular expression of the page. Ordinary ones still take the engine's test.
+    var nativeTest = proto.test;
+    hidden(proto, 'test', function test(s) {
+        var ex = this.exec;
+        if (ex === nativeExec || typeof ex !== 'function') return nativeTest.call(this, s);
+        var r = ex.call(this, String(s));
+        if (r !== null && typeof r !== 'object') throw new TypeError('The result of exec must be an object or null');
+        return r !== null;
+    });
 })();
 })(typeof window !== 'undefined' ? window : this);

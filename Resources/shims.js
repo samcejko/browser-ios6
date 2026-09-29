@@ -426,16 +426,47 @@
         // (the checks written out, and the try in a function of its own: a call more costs a few microseconds here, and
         // a function with a try makes a scope object on every call)
         var fixedName = function (o, k, d) { try { return nativeDP(o, k, d); } catch (e) { return o; } };
+        // A non-enumerable data property under a core-js symbol (libraries mark their objects so: seznam.cz defined one
+        // on 150 000 arrays, 6.5 s at 42 us each through core-js, which turns the symbol into its key string four times
+        // over): what core-js does, written out - the key's string, the object's list of hidden (non-enumerable)
+        // symbols, the engine's defineProperty. The list's own key is found once on a probe.
+        var SymC = window.Symbol, HIDDEN = null, engineNames = N.getOwnPropertyNames, hasOwn = OP.hasOwnProperty;
+        if (engineDP && engineNames && typeof SymC === 'function') {
+            try {
+                var ps = SymC('br-probe'), pobj = {};
+                if (typeof ps === 'object') {
+                    nativeDP(pobj, ps, { value: 1, writable: true, configurable: true });
+                    var ptag = String(ps), pnames = engineNames(pobj);
+                    for (var pi = 0; pi < pnames.length; pi++) {
+                        var pv = pnames[pi] !== ptag ? pobj[pnames[pi]] : null;
+                        if (pv && typeof pv === 'object' && pv[ptag] === true) HIDDEN = pnames[pi];
+                    }
+                    if (HIDDEN && (pobj[ps] !== 1 || !hasOwn.call(pobj, ptag))) HIDDEN = null;
+                }
+            } catch (eP) { HIDDEN = null; }
+        }
+        var hiddenSymbol = function (o, k, d) {
+            var tag = String(k);
+            if (!hasOwn.call(o, HIDDEN)) engineDP(o, HIDDEN, { value: Object.create(null), writable: true, configurable: true, enumerable: false });
+            o[HIDDEN][tag] = true;
+            return engineDP(o, tag, d);
+        };
+        // (a number key, an array index, is never a symbol: core-js's own createProperty, which a site's copy of core-js
+        // uses for every item its concat/map/slice/splice replacements write, took the whole way round - seznam.cz: 140 000
+        // items at 50 us, 7 s)
         if (fixed || engineDP) Object.defineProperty = function (o, k, d) {
             if (typeof k === 'string') {
                 if (fixed && (k === 'name' || k === 'length') && typeof o === 'function') return fixedName(o, k, d);
                 if (engineDP && k.charCodeAt(0) !== 83 && o !== OP) return engineDP(o, k, d);
-            }
+            } else if (typeof k === 'number') {
+                if (engineDP && o !== OP) return engineDP(o, k, d);
+            } else if (HIDDEN && k instanceof SymC && o !== OP && o !== null && (typeof o === 'object' || typeof o === 'function') &&
+                       d !== null && typeof d === 'object' && !d.enumerable && !d.get && !d.set) return hiddenSymbol(o, k, d);
             return nativeDP(o, k, d);
         };
         var nativeGOPD = Object.getOwnPropertyDescriptor, engineGOPD = N.getOwnPropertyDescriptor !== nativeGOPD ? N.getOwnPropertyDescriptor : null;
         if (engineGOPD) Object.getOwnPropertyDescriptor = function getOwnPropertyDescriptor(o, k) {
-            if (typeof k === 'string' && k.charCodeAt(0) !== 83 && o !== OP && o !== null && (typeof o === 'object' || typeof o === 'function')) return engineGOPD(o, k);
+            if (((typeof k === 'string' && k.charCodeAt(0) !== 83) || typeof k === 'number') && o !== OP && o !== null && (typeof o === 'object' || typeof o === 'function')) return engineGOPD(o, k);
             return nativeGOPD(o, k);
         };
         var engineKeys = N.keys;
@@ -508,6 +539,131 @@
             for (k in props) if (own.call(props, k)) { if (k === 'name' || k === 'length') Object.defineProperty(o, k, props[k]); else rest[k] = props[k]; }
             return nativeDPs(o, rest);
         };
+    })();
+
+    // Array methods as a page's own core-js tests them, with the engine's own doing the work. Failing its tests, a legacy
+    // bundle's core-js replaced them with JS versions: push (core-js 3.26 on, in nearly every such bundle) wrote every
+    // item and asked for the length's descriptor on each call; concat, map, filter, slice and splice wrote every item
+    // through Object.defineProperty (seznam.cz: 140 000 of them, 7 s); sort became a merge sort in JS. The tests ask for
+    // the constructor's Symbol.species (the kind of array made), Symbol.isConcatSpreadable, an array-like's length past
+    // 2^32 - 1, a TypeError for push()/unshift() on a read-only length and for sort(null). An ordinary array takes the
+    // engine's own method after a check or two. (tools/babel-test/corejs-replace.html lists what core-js replaces.)
+    (function () {
+        var AP = Array.prototype, S = window.Symbol, N = window.__brNative || {}, isArray = Array.isArray;
+        if (!isArray || AP.push.__brAP) return;
+        var def = N.defineProperty || Object.defineProperty, gopd = N.getOwnPropertyDescriptor || Object.getOwnPropertyDescriptor;
+        var put = function (A, i, v) { def(A, i, { value: v, writable: true, enumerable: true, configurable: true }); };
+        var toLen = function (v) { v = +v; return v > 0 ? (v > 9007199254740991 ? 9007199254740991 : Math.floor(v)) : 0; };
+        var toInt = function (v) { v = +v; return v !== v ? 0 : v < 0 ? Math.ceil(v) : Math.floor(v); };
+        var rel = function (v, len) { var r = toInt(v); return r < 0 ? Math.max(len + r, 0) : Math.min(r, len); };
+        var readOnly = function (o) { var d = gopd(o, 'length'); return !!d && d.writable === false; };
+        var LENGTH_RO = 'Cannot assign to read only property \'length\' of object \'[object Array]\'';
+        var nPush = AP.push, nUnshift = AP.unshift, nSort = AP.sort;
+        AP.push = function push(item) {
+            var n = arguments.length;
+            if (isArray(this)) {
+                if (n === 0 && readOnly(this)) throw new TypeError(LENGTH_RO);
+                return n === 1 ? nPush.call(this, item) : nPush.apply(this, arguments);
+            }
+            // (the engine counts an array-like's length modulo 2^32)
+            var O = Object(this), len = toLen(O.length);
+            if (len + n < 4294967295) return nPush.apply(O, arguments);
+            for (var i = 0; i < n; i++) O[len + i] = arguments[i];
+            O.length = len + n;
+            return len + n;
+        };
+        AP.push.__brAP = true;
+        AP.unshift = function unshift(item) {
+            if (arguments.length === 0 && isArray(this) && readOnly(this)) throw new TypeError(LENGTH_RO);
+            return nUnshift.apply(this, arguments);
+        };
+        AP.sort = function sort(comparefn) {
+            if (this === null || this === undefined) throw new TypeError('Array.prototype.sort called on null or undefined');
+            if (comparefn !== undefined && typeof comparefn !== 'function') throw new TypeError('The comparison function must be either a function or undefined');
+            return comparefn === undefined ? nSort.call(this) : nSort.call(this, comparefn);
+        };
+        var SPECIES = S && S.species, SPREAD = S && S.isConcatSpreadable;
+        if (!SPECIES || !SPREAD) return;
+        // (their keys as strings: a lookup by a polyfilled symbol turns it into that string every time)
+        var SK = typeof SPECIES === 'symbol' ? SPECIES : String(SPECIES), CK = typeof SPREAD === 'symbol' ? SPREAD : String(SPREAD);
+        // the constructor ArraySpeciesCreate uses for an array whose constructor is not Array; undefined: a plain array
+        // (an Array of any realm: its prototype is an array itself)
+        var speciesOf = function (o) {
+            var C = o.constructor;
+            if (C !== null && (typeof C === 'object' || typeof C === 'function')) { C = C[SK]; if (C === null) C = undefined; }
+            return C === undefined || C === Array || (typeof C === 'function' && isArray(C.prototype)) ? undefined : C;
+        };
+        var special = function (o) { return o !== null && o !== undefined && o.constructor !== Array && isArray(o) ? speciesOf(o) : undefined; };
+        var spreadable = function (e) {
+            if (e === null || (typeof e !== 'object' && typeof e !== 'function')) return false;
+            var s = e[CK];
+            return s !== undefined ? !!s : isArray(e);
+        };
+        var nConcat = AP.concat, nMap = AP.map, nFilter = AP.filter, nSlice = AP.slice, nSplice = AP.splice;
+        AP.concat = function concat(a) {
+            var n = arguments.length, i, C = special(this), plain = C === undefined && (this === null || this === undefined || this[CK] === undefined);
+            for (i = 0; plain && i < n; i++) { var e = arguments[i]; if (e !== null && typeof e === 'object' && e[CK] !== undefined) plain = false; }
+            if (plain) return n === 1 ? nConcat.call(this, a) : nConcat.apply(this, arguments);
+            var O = Object(this), A = C === undefined ? [] : new C(0), k = 0, j, len, E;
+            for (i = -1; i < n; i++) {
+                E = i < 0 ? O : arguments[i];
+                if (spreadable(E)) { len = toLen(E.length); for (j = 0; j < len; j++, k++) if (j in E) put(A, k, E[j]); }
+                else put(A, k++, E);
+            }
+            A.length = k;
+            return A;
+        };
+        AP.map = function map(fn, thisArg) {
+            var C = special(this);
+            if (C === undefined) return nMap.call(this, fn, thisArg);
+            if (typeof fn !== 'function') throw new TypeError(fn + ' is not a function');
+            var len = toLen(this.length), A = new C(len);
+            for (var k = 0; k < len; k++) if (k in this) put(A, k, fn.call(thisArg, this[k], k, this));
+            return A;
+        };
+        AP.filter = function filter(fn, thisArg) {
+            var C = special(this);
+            if (C === undefined) return nFilter.call(this, fn, thisArg);
+            if (typeof fn !== 'function') throw new TypeError(fn + ' is not a function');
+            var len = toLen(this.length), A = new C(0), to = 0;
+            for (var k = 0; k < len; k++) if (k in this) { var v = this[k]; if (fn.call(thisArg, v, k, this)) put(A, to++, v); }
+            return A;
+        };
+        AP.slice = function slice(start, end) {
+            var C = special(this);
+            if (C === undefined) return nSlice.call(this, start, end);
+            var len = toLen(this.length), k = rel(start, len), fin = end === undefined ? len : rel(end, len), A = new C(Math.max(fin - k, 0)), n = 0;
+            for (; k < fin; k++, n++) if (k in this) put(A, n, this[k]);
+            A.length = n;
+            return A;
+        };
+        AP.splice = function splice(start, deleteCount) {
+            var C = special(this), removed = nSplice.apply(this, arguments);
+            if (C === undefined) return removed;
+            var A = new C(removed.length);
+            for (var i = 0; i < removed.length; i++) put(A, i, removed[i]);
+            A.length = removed.length;
+            return A;
+        };
+    })();
+    // parseInt / parseFloat of a symbol throw, as a string of one does: core-js checks that (with a polyfilled symbol,
+    // which turns into its key string) and, failing, put its own parseInt / parseFloat around the engine's (trim and a
+    // regular expression per call). Number.parseInt / parseFloat stay the same functions.
+    (function () {
+        var SymC = window.Symbol, nPI = window.parseInt, nPF = window.parseFloat;
+        if (typeof SymC !== 'function' || typeof SymC() !== 'object' || nPI.__brSym) return;
+        var SYM_TO_STRING = 'Cannot convert a Symbol value to a string';
+        window.parseInt = function parseInt(s, radix) {
+            if (s !== null && typeof s === 'object' && s instanceof SymC) throw new TypeError(SYM_TO_STRING);
+            return nPI(s, radix);
+        };
+        window.parseInt.__brSym = true;
+        window.parseFloat = function parseFloat(s) {
+            if (s !== null && typeof s === 'object' && s instanceof SymC) throw new TypeError(SYM_TO_STRING);
+            return nPF(s);
+        };
+        if (Number.parseInt === nPI || !Number.parseInt) Number.parseInt = window.parseInt;
+        if (Number.parseFloat === nPF || !Number.parseFloat) Number.parseFloat = window.parseFloat;
     })();
 
     // document.currentScript: the running script's URL is read from a stack trace (the first frame that is not this

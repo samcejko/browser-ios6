@@ -12067,6 +12067,7 @@
             if (typeof o !== 'object' || o === null || (o !== window && o !== document && o !== nav && o !== loc && o !== scr && o !== hist &&
                 o instanceof Object && !(Doc && o instanceof Doc))) {
                 if (engineDP && typeof k === 'string' && k.charCodeAt(0) !== 83 && o !== OP && !(typeof o === 'function' && (k === 'name' || k === 'length'))) return engineDP(o, k, d);
+                if (engineDP && typeof k === 'number' && o !== OP) return engineDP(o, k, d);   // (an array index, see shims.js)
                 return dp(o, k, d);
             }
             return guarded(o, k, d);
