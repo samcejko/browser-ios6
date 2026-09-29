@@ -1,6 +1,7 @@
 #import "BRBrowserViewController.h"
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 #include <dlfcn.h>
 #import "BRWebView.h"
 #import "BRSettingsViewController.h"
@@ -297,6 +298,7 @@ static NSString *BRQueryEscape(NSString *s)
     [self.refreshControl addTarget:self action:@selector(pullToRefresh) forControlEvents:UIControlEventValueChanged];
     [self.webView.scrollView addSubview:self.refreshControl];
     [self enableWebGL];
+    [self installScriptInterrupt];
     // (set either way: builds 120 and 121 left it saved in the defaults)
     self.compositingOff = [[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugNoCompositing"];
     [self setAcceleratedCompositing:!self.compositingOff reason:self.compositingOff ? @"BRDebugNoCompositing" : @"start"];
@@ -477,6 +479,32 @@ static NSString *BRQueryEscape(NSString *s)
 
 static void BRWebThreadLock(void);
 
+// A script that never stops (a loop without end: The Verge's page froze inside a mutation observer delivery) held the
+// page's thread for good, and the app with it: the main thread waits for the page's lock at the next touch, and only
+// killing the app helped. WebKit asks its UI delegate, every few seconds of a long script, whether to stop it
+// (webViewShouldInterruptJavaScript:), which the document view of UIWebView leaves unanswered: no. Answered here: yes
+// once one script has run BRScriptLimit seconds without a break (honest ones run up to 45 s on this iPad: the start of
+// seznam.cz). JavaScriptCore ends that script with an exception scripts cannot catch; the page's error reports where.
+static const NSTimeInterval BRScriptLimit = 100;
+static NSTimeInterval BRLongScriptSince = 0, BRLongScriptAsked = 0;
+static BOOL (*BRPreviousInterrupt)(id, SEL, id) = NULL;
+static BOOL BRShouldInterruptJavaScript(id self, SEL _cmd, id webView)
+{
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    // (a question long after the last one: another script)
+    if (now - BRLongScriptAsked > 30) BRLongScriptSince = now;
+    BRLongScriptAsked = now;
+    if (BRPreviousInterrupt && BRPreviousInterrupt(self, _cmd, webView)) return YES;
+    NSTimeInterval ran = now - BRLongScriptSince;
+    if (ran < BRScriptLimit) {
+        if (ran >= 20) BRLog(@"A script has run %.0f s without a break", ran);
+        return NO;
+    }
+    BRLog(@"A script ran %.0f s without a break: stopped", ran);
+    BRLongScriptSince = now;
+    return YES;
+}
+
 // Composited layers (3D transforms, animations, video, fixed and sticky boxes and everything overlapping them) get
 // their own graphics memory, outside the app's resident memory but counted against it by iOS; on a big page that
 // alone can get the app killed. Without them WebKit draws those boxes into the page tiles: slower animations, flat
@@ -520,6 +548,25 @@ static void BRWebThreadLock(void);
         if ([p respondsToSelector:getter]) [report appendFormat:@" %@=%d", [p class], (int)((BOOL (*)(id, SEL))objc_msgSend)(p, getter)];
     }
     BRLog(@"WebGL switch: %ld preference object(s) updated, document view %@,%@", (long)done, docViewClass ?: @"not found", report);
+}
+
+// (see BRShouldInterruptJavaScript: the class of the UI delegate of the WebView inside the document view, once)
+- (void)installScriptInterrupt
+{
+    static BOOL installed = NO;
+    if (installed) return;
+    id inner = nil;
+    [self webPreferenceObjects:&inner documentViewClass:NULL];
+    SEL uiSel = NSSelectorFromString(@"UIDelegate");
+    id delegate = (inner && [inner respondsToSelector:uiSel]) ? ((id (*)(id, SEL))objc_msgSend)(inner, uiSel) : nil;
+    if (!delegate) { BRLog(@"Script interrupt: no UI delegate"); return; }
+    installed = YES;
+    Class cls = [delegate class];
+    SEL sel = NSSelectorFromString(@"webViewShouldInterruptJavaScript:");
+    Method m = class_getInstanceMethod(cls, sel);
+    if (m) BRPreviousInterrupt = (BOOL (*)(id, SEL, id))method_setImplementation(m, (IMP)BRShouldInterruptJavaScript);
+    else class_addMethod(cls, sel, (IMP)BRShouldInterruptJavaScript, "c@:@");
+    BRLog(@"Script interrupt: %@ in %@", m ? @"replaced" : @"added", NSStringFromClass(cls));
 }
 
 - (void)themeChanged:(NSNotification *)note

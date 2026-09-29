@@ -9879,18 +9879,30 @@
     }
     // range.createContextualFragment(html) on a range in a document, a fragment or at the html element (a new Range
     // starts at the document): the standard parses in a body element then, the old engine refuses (NOT_SUPPORTED_ERR,
-    // as for SVG elements too): OneTrust's cookie banner, on thousands of sites, failed so (theverge.com)
+    // as for SVG elements too): OneTrust's cookie banner, on thousands of sites, failed so (theverge.com). And the
+    // scripts of such a fragment run once it is inserted, which the old engine's never did (as after innerHTML): they
+    // are made anew.
     (function () {
         var RP = window.Range && window.Range.prototype, ccf = RP && RP.createContextualFragment;
         if (typeof ccf !== 'function') return;
         var HTML_NS = 'http://www.w3.org/1999/xhtml';
+        var runnable = function (frag) {
+            var ss = frag && frag.querySelectorAll ? frag.querySelectorAll('script') : [];
+            for (var i = 0; i < ss.length; i++) {
+                var o = ss[i], n = (o.ownerDocument || document).createElement('script'), at = o.attributes;
+                for (var a = 0; a < at.length; a++) n.setAttribute(at[a].name, at[a].value);
+                n.text = o.text;
+                o.parentNode.replaceChild(n, o);
+            }
+            return frag;
+        };
         RP.createContextualFragment = function createContextualFragment(html) {
             var c = this.startContainer, el = c && (c.nodeType === 1 ? c : c.parentNode);
-            if (el && el.nodeType === 1 && el.nodeName !== 'HTML' && (!el.namespaceURI || el.namespaceURI === HTML_NS)) return ccf.call(this, html);
+            if (el && el.nodeType === 1 && el.nodeName !== 'HTML' && (!el.namespaceURI || el.namespaceURI === HTML_NS)) return runnable(ccf.call(this, html));
             var doc = c ? (c.nodeType === 9 ? c : c.ownerDocument) || document : document;
             var r = doc.createRange();
             r.selectNodeContents(doc.body || doc.createElement('body'));
-            return ccf.call(r, html);
+            return runnable(ccf.call(r, html));
         };
     })();
     if (window.DocumentFragment && !window.DocumentFragment.prototype.getElementById) {
