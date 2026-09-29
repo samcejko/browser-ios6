@@ -9851,6 +9851,35 @@
     if (window.HTMLElement && !('nonce' in document.createElement('script'))) {
         try { Object.defineProperty(window.HTMLElement.prototype, 'nonce', { get: function () { return this.getAttribute('nonce') || ''; }, set: function (v) { this.setAttribute('nonce', v); }, configurable: true }); } catch (eN) {}
     }
+    // setAttribute with a name today's DOM takes and the old engine refuses (INVALID_CHARACTER_ERR): the standard dropped
+    // the XML name rule in 2025 (only whitespace, / > = and NUL are out), and templates set names like @click, :class,
+    // #ref or [x] (eBay's header stopped on one). The HTML parser makes such an attribute, setAttributeNode moves it.
+    (function () {
+        var orig = Ep && Ep.setAttribute;
+        if (typeof orig !== 'function') return;
+        var PLAIN = /^[A-Za-z_][\w.:-]*$/, RELAXED = /^[^\s\/>=\0"'<&]+$/, box = null;
+        var viaParser = function (el, name, value) {
+            box = box || document.createElement('div');
+            box.innerHTML = '<i ' + name + '=""></i>';
+            var i = box.firstChild, a = i && i.attributes && i.attributes.length === 1 ? i.attributes[0] : null;
+            if (!a) return false;
+            i.removeAttributeNode(a);
+            box.innerHTML = '';
+            a.value = String(value);
+            el.setAttributeNode(a);
+            return true;
+        };
+        var slow = function (el, name, value) {
+            try { return orig.call(el, name, value); } catch (e) {
+                var n = String(name);
+                if (!e || e.code !== 5 || !RELAXED.test(n) || !viaParser(el, n, value)) throw e;
+            }
+        };
+        Ep.setAttribute = function setAttribute(name, value) {
+            if (typeof name === 'string' && PLAIN.test(name)) return orig.call(this, name, value);
+            return slow(this, name, value);
+        };
+    })();
     if (Ep && !Ep.insertAdjacentElement) {
         Ep.insertAdjacentElement = function (position, el) {
             var p = String(position).toLowerCase();

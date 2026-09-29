@@ -33,6 +33,12 @@ setTimeout(function () {
   check('document.contentType', function () { return document.contentType; }, 'text/html');
   check('fragment getElementById', function () { var t = document.createElement('template'); t.innerHTML = '<p><b id="q">b</b></p>'; var f = t.content || t; return f.getElementById('q') ? f.getElementById('q').textContent : null; }, 'b');
   check('nonce', function () { var s = document.createElement('script'); s.setAttribute('nonce', 'abc'); return s.nonce; }, 'abc');
+  check('setAttribute with names of templates (@click, :class, [x])', function () {
+    var d = document.createElement('div');
+    d.setAttribute('@click', 'go()'); d.setAttribute(':class', 'c'); d.setAttribute('[x]', '1'); d.setAttribute('data-ok', 'y'); d.setAttribute(':class', 'c2');
+    return [d.getAttribute('@click'), d.getAttribute(':class'), d.getAttribute('[x]'), d.getAttribute('data-ok'), d.attributes.length];
+  }, ['go()', 'c2', '1', 'y', 4]);
+  check('setAttribute still refuses a name with a space', function () { try { document.createElement('div').setAttribute('a b', '1'); return 'no'; } catch (e) { return e.code; } }, 5);
   var pass = 0, lines = [];
   for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
   document.getElementById('out').textContent = lines.join('\n');

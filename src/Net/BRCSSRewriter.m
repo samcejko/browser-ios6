@@ -37,6 +37,14 @@ static long BRScriptFloorMB(long bytes)
 {
     return bytes < 64 * 1024 ? 30 : BRRoomFloorMB;
 }
+// A script lowered a group of statements at a time (jsfix.js pieces) holds the tree of one group only (128 KB): its
+// text in and out, and a lower floor (jsfix.js gives up itself below 40 MB).
+static const NSUInteger BRPiecesMinBytes = 384 * 1024;
+static const long BRPiecesFloorMB = 40;
+static long BRScriptPiecesMB(long bytes)
+{
+    return 12 + (long)((long long)bytes * 6 / (1024 * 1024));
+}
 // bumped when a page load is stopped for lack of memory: queued work of that page is dropped
 static volatile NSUInteger g_workGeneration;
 static NSString *BRPageKey(NSURL *url);
@@ -484,6 +492,16 @@ static NSArray *BRManifestKinds(void)
             return nil;
         }
         if ([plan isEqualToString:@"islands"] || [plan isEqualToString:@"stand-in"]) { floorMB = BRRoomFloorMB; need = floorMB + BRScriptPlanMB(work); }
+    }
+    // no room for all of it at once: a big row of statements goes a group of them at a time (jsfix.js pieces), which
+    // takes little room (CNN's 2 MB of modules inline wanted 138 MB with 75 left beside the page, and stayed ES2020)
+    if (!module && !lazyPart && !lazyScan.length && data.length >= BRPiecesMinBytes && [BRMemory availableMB] < need && [self ensureJSFixIn:engine]) {
+        if (!text) { NSString *used = nil; text = BRDecode(data, charset.length ? charset : nil, &used); }
+        if (text && [[engine callFunction:@"JSFix.shape" arguments:@[text, optsJSON]] isEqualToString:@"pieces"]) {
+            BRLog(@"jsfix %@: no room for all of it (%ld MB available, %ld wanted), lowered a group of statements at a time", name, [BRMemory availableMB], need);
+            floorMB = BRPiecesFloorMB;
+            need = floorMB + BRScriptPiecesMB(work);
+        }
     }
     NSDate *noRoom = nil;
     @synchronized (self) { noRoom = _noRoom[key]; }

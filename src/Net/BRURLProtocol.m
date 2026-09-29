@@ -791,11 +791,14 @@ static BOOL BRIsFontDataURL(NSURL *url)
     // Stylesheets and documents are rewritten for the old engine before WebKit sees them.
     NSString *ctype = [r.responseHeaders[@"content-type"] lowercaseString] ?: @"";
     NSString *kind = nil;
+    // (a picture sent with another type is still a picture: DuckDuckGo's WebP illustrations come as text/html, which the
+    // document rewriter garbled; browsers go by the bytes there)
+    BOOL pictureRequest = self.request.mainDocumentURL && ![url isEqual:self.request.mainDocumentURL] && BRLooksLikeImageRequest(self.request);
     if (status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
         NSString *path = [url.path lowercaseString] ?: @"";
         NSString *accept = [BRHeader(self.request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
         if ([ctype hasPrefix:@"text/css"]) kind = @"css";
-        else if ([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]) kind = @"html";
+        else if (([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]) && !pictureRequest) kind = @"html";
         else if (!ctype.length && [accept hasPrefix:@"text/css"]) kind = @"css";
         (void)path;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
@@ -833,7 +836,9 @@ static BOOL BRIsFontDataURL(NSURL *url)
             // plain TrueType/OpenType: only variable fonts need work (variation tables are dropped)
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
             if (declared <= (long long)BRMaxFontRewriteBody) kind = @"sfnt";
-        } else if ([ctype hasPrefix:@"image/webp"] || [path hasSuffix:@".webp"] || [url.absoluteString rangeOfString:@".webp?"].location != NSNotFound) {
+        } else if ([ctype hasPrefix:@"image/webp"] || [path hasSuffix:@".webp"] || [url.absoluteString rangeOfString:@".webp?"].location != NSNotFound ||
+                   (pictureRequest && ![ctype hasPrefix:@"image/"] && ![ctype hasPrefix:@"video/"] && ![ctype hasPrefix:@"audio/"])) {
+            // (a picture of another declared type is converted only when its bytes are WebP)
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
             if (declared <= (long long)BRMaxImageRewriteBody) kind = @"webp";
         }

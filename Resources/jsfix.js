@@ -872,6 +872,11 @@
     var regexNeedsWork = function (r) {
         return /[uysdv]/.test(r.flags) || /\(\?<[=!]|\(\?<[A-Za-z_$]|\\k<|\\[pP]\{|\\u\{/.test(r.pattern);
     };
+    // a name the old engine cannot read: a character beyond the BMP (ES2015 took them into names: CNN's entity table has
+    // {𝒶:"ascr"}) or an escape in it (\u{...}); as a property it is written as a string
+    var ASTRAL = /[\uD800-\uDFFF]/;
+    var nameDirty = function (id) { return ASTRAL.test(id.name) || (typeof id.start === 'number' && id.end - id.start !== id.name.length); };
+    var dotName = function (id) { return nameDirty(id) ? '[' + quote(id.name) + ']' : '.' + id.name; };
     var literalDirty = function (n) {
         if (n.bigint !== undefined) return true;
         if (n.regex) return regexNeedsWork(n.regex);
@@ -1460,6 +1465,7 @@
                     }
                     if (pr.computed) { this.v(pr.key, pr, s); pd = true; }
                     else if (pr.key.type === 'Literal' && literalDirty(pr.key)) pd = true;
+                    else if (pr.key.type === 'Identifier' && nameDirty(pr.key)) pd = true;
                     if (pr.method || pr.shorthand) pd = true;
                     if (this.v(pr.value, pr, s)) pd = true;
                     if (pd) { pr.$d = true; d = true; }
@@ -1519,7 +1525,7 @@
             case 'MemberExpression':
                 if (n.object.type === 'Super') { d = true; n.object.$p = n; } else if (this.v(n.object, n, s)) d = true;
                 if (n.computed) { if (this.v(n.property, n, s)) d = true; }
-                else { n.property.$p = n; if (n.property.type === 'PrivateIdentifier') d = true; }
+                else { n.property.$p = n; if (n.property.type === 'PrivateIdentifier' || nameDirty(n.property)) d = true; }
                 if (n.optional) d = true;
                 // x.constructor read (a custom element's class, see __br_ctor)
                 if (!n.computed && n.property.name === 'constructor' && n.object.type !== 'Super' && ctorRead(n, p)) { n.$ctor = true; d = true; }
@@ -2104,7 +2110,7 @@
     };
     P.propKey = function (pr) {
         var k = pr.key;
-        if (k.type === 'Identifier') return k.name;
+        if (k.type === 'Identifier') return nameDirty(k) ? quote(k.name) : k.name;
         if (k.type === 'Literal') return literalDirty(k) ? quote(String(k.value)) : k.raw;
         return this.E(k, P_ASSIGN);
     };
@@ -2223,7 +2229,7 @@
     P.tail = function (n) {
         if (n.computed) return '[' + this.E(n.property, P_SEQ) + ']';
         if (n.property.type === 'PrivateIdentifier') return '.' + this.privName(n.property.name);
-        return '.' + n.property.name;
+        return dotName(n.property);
     };
     P.member = function (n) {
         var code;
@@ -2434,7 +2440,7 @@
                         if (rest && !isIdentCode(kc) && pr.key.type !== 'Literal') { var kt = this.temp(); out.push(kt + '=' + kc); kc = kt; }
                         access = src + '[' + kc + ']';
                         keys.push(kc);
-                    } else if (pr.key.type === 'Identifier') { access = src + '.' + pr.key.name; keys.push(quote(pr.key.name)); }
+                    } else if (pr.key.type === 'Identifier') { access = src + dotName(pr.key); keys.push(quote(pr.key.name)); }
                     else { access = src + '[' + quote(String(pr.key.value)) + ']'; keys.push(quote(String(pr.key.value))); }
                     this.destructure(pr.value, access, out, mode);
                 }
@@ -2594,7 +2600,7 @@
                 var f = { m: m };
                 if (m.key.type === 'PrivateIdentifier') f.priv = priv['$' + m.key.name];
                 else if (m.computed) { f.keyTemp = this.temp('_key'); keyPre += f.keyTemp + '=' + this.E(m.key, P_ASSIGN) + ';'; }
-                else f.access = m.key.type === 'Identifier' ? '.' + m.key.name : '[' + quote(String(m.key.value)) + ']';
+                else f.access = m.key.type === 'Identifier' ? dotName(m.key) : '[' + quote(String(m.key.value)) + ']';
                 (m.static ? statics : fields).push(f);
             } else if (m.type === 'StaticBlock') statics.push({ block: m });
         }
@@ -3715,6 +3721,8 @@
         // (stats.phases: parse with the early units / walk / resolve / print, ms of the last run)
         var t0 = new Date().getTime();
         var ast = parse(src, module, onFunction, onImport, isl);
+        // (a group of a script lowered on its own, see pieces)
+        if (opts.flatTop) for (var fi = 0; fi < ast.body.length; fi++) if (blockDecl(ast.body[fi])) throw new Unsupported('flat-top');
         roomCheck();
         var ps = new Scope('program', null, ast, module || hasUseStrict(ast.body)), v0 = w.visits, t1 = new Date().getTime();
         w.stmts(ast.body, ast, ps, false);
@@ -4190,6 +4198,100 @@
         var skip = islandSkips(isrc);
         return skip ? { src: isrc, skip: skip, standins: standins } : prep;
     };
+    // ---- Pieces. A big script that is a row of statements (webpack chunks pushed one after the other; CNN's 2 MB of
+    // modules inline) is lowered a group of them at a time when there is no room for all of it at once: the tree of
+    // 128 KB instead of megabytes (the whole of CNN's took 60 MB more than the iPad had left beside the page), and a
+    // group the engine takes as it is keeps its text. A group lowered on its own holds nothing at its top that becomes
+    // a new name there (a let in a block there, lowered to a var, could meet a name of another group).
+    var PIECES_SCRIPT = 384 * 1024, PIECE_SIZE = 128 * 1024;
+    // whether a statement at the top holds a declaration scoped to a block of it there (outside functions): a let,
+    // const, class or function in a block, a destructured catch parameter
+    var blockDecl = function (stmt) {
+        var found = false;
+        var walk = function (x, top) {
+            if (found || !x || typeof x.type !== 'string') return;
+            switch (x.type) {
+                case 'FunctionExpression': case 'ArrowFunctionExpression': case 'ClassExpression': return;
+                case 'FunctionDeclaration': case 'ClassDeclaration': if (!top) found = true; return;
+                case 'VariableDeclaration': if (x.kind !== 'var' && !top) { found = true; return; } break;
+                case 'CatchClause': if (x.param && x.param.type !== 'Identifier') { found = true; return; } break;
+            }
+            for (var key in x) {
+                if (key.charAt(0) === '$' || !x.hasOwnProperty(key)) continue;
+                var v = x[key];
+                if (!v || typeof v !== 'object') continue;
+                if (v instanceof Array) { for (var i = 0; i < v.length; i++) walk(v[i], false); }
+                else walk(v, false);
+            }
+        };
+        walk(stmt, true);
+        return found;
+    };
+    var pieceBounds = function (src) {
+        var fns = scanFunctions(src);
+        if (!fns) return null;
+        var semis = fns.semis, bounds = [], start = 0;
+        for (var i = 0; i < semis.length; i++) {
+            if (semis[i] + 1 - start >= PIECE_SIZE) { bounds.push([start, semis[i] + 1]); start = semis[i] + 1; }
+        }
+        if (start < src.length) bounds.push([start, src.length]);
+        return bounds.length > 1 ? bounds : null;
+    };
+    // For the app, when a big script does not fit at once: 'pieces' when it can go a group of statements at a time (the
+    // next run() of it does), else ''. Costs a lexer pass, no parse.
+    var shape = function (src, optsJSON) {
+        var opts = null;
+        try { opts = optsJSON ? JSON.parse(optsJSON) : {}; } catch (e) { opts = {}; }
+        // (what plan() found stays when this finds nothing)
+        if (opts.module || opts.force || src.length < PIECES_SCRIPT) return '';
+        if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
+        if ((needsProxy(src) || needsBigInt(src)) && STANDIN_OWN.test(src)) return '';
+        var bounds = null;
+        try { bounds = pieceBounds(src); } catch (e) { bounds = null; }
+        if (!bounds) return '';
+        memo = { src: src, pieces: bounds };
+        return 'pieces';
+    };
+    // the ES5 text of src a group at a time (null: nothing to change); throws Unsupported('memory') for a group that
+    // cannot go on its own (the app gives up for now, as without room)
+    var piecesRun = function (src, bounds, opts) {
+        // (a directive prologue of the whole script holds for every group; in sloppy code a group starting with a
+        // "use strict" of its own must not become strict: CNN starts every module so, in the middle of the script)
+        var prefix = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*(["'])use strict\1/.test(src.slice(0, 4096)) ? '"use strict";' : ';';
+        var out = [], used = [], seen = {}, lowered = 0, t0 = new Date().getTime(), popts = {}, k;
+        var use = function (name) { if (!seen[name]) { seen[name] = 1; used.push(name); } };
+        for (k in opts) if (opts.hasOwnProperty(k)) popts[k] = opts[k];
+        popts.flatTop = true;
+        for (var i = 0; i < bounds.length; i++) {
+            var piece = src.slice(bounds[i][0], bounds[i][1]), low = null;
+            // (with a direct eval it is lowered even when the engine takes it: what the eval runs is lowered then too)
+            var takes = engineTakes(prefix + piece), evals = DIRECT_EVAL.test(piece);
+            if (!takes || evals) {
+                try { low = transpile(prefix + piece, popts); } catch (e) {
+                    if (e instanceof Unsupported && e.what === 'flat-top') throw new Unsupported('memory');
+                    throw e;
+                }
+                if (low === null && !takes) throw new Unsupported('a group the engine refuses has nothing to lower');
+            }
+            if (low === null) {
+                // (the stand-ins by text, as for a whole script the engine takes)
+                if (needsProxy(piece)) { piece = piece.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2'); use('__br_Proxy'); }
+                if (needsBigInt(piece)) { piece = piece.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); use('__br_BigInt'); }
+                if (needsDsDelete(piece)) { var dp = dsDeletes(piece); if (engineTakes(prefix + dp)) { piece = dp; use('__br_dsdel'); } }
+                out.push(piece);
+                continue;
+            }
+            if (prefix && low.slice(0, prefix.length) === prefix) low = low.slice(prefix.length);
+            if (!engineTakes(prefix + low)) throw new Unsupported('a lowered group does not parse');
+            out.push(low);
+            lowered++;
+        }
+        stats.note = 'pieces: ' + lowered + ' of ' + bounds.length + ' groups lowered in ' + (new Date().getTime() - t0) + ' ms';
+        if (!lowered && !used.length) return null;
+        // (a group ends after a semicolon of the top; one lowered may end without one)
+        var text = out.join('\n;');
+        return used.length ? text + '\n;' + helperText(used) : text;
+    };
     // For the app, before it makes room for a lowering: what run() will do with the script — 'es5' (nothing), 'stand-in'
     // (a few names replaced), 'islands' (pieces of it, see islands: little memory) or 'full' (all of it). What it found
     // out is kept for run() of the same text.
@@ -4238,6 +4340,20 @@
         // (what plan() found out about this text)
         var planned = memo && memo.src === src ? memo : null;
         memo = null;
+        // no room for all of a big row of statements at once: a group at a time (see pieces)
+        if (planned && planned.pieces) {
+            var pt0 = new Date().getTime(), pout = null;
+            try { pout = piecesRun(src, planned.pieces, opts); } catch (ep) {
+                stats.failed++;
+                stats.last = 'failed: ' + ((ep && (ep.message || ep.what)) || String(ep));
+                return '';
+            }
+            stats.ms += new Date().getTime() - pt0;
+            if (pout === null) { stats.skipped++; stats.last = 'es5'; return ''; }
+            stats.lowered++;
+            stats.last = 'lowered';
+            return pout;
+        }
         var tc = new Date().getTime(), parsesAsIs = !opts.force && (planned ? planned.parses : engineParses(src)), evals = false;
         stats.checks = new Date().getTime() - tc;
         if (parsesAsIs) {
@@ -4326,7 +4442,7 @@
         return helperText(names);
     };
     // (note: how the last run went where it did something unusual, for the app's log: islands)
-    root.JSFix = { transpile: transpile, run: run, plan: plan, stats: stats, last: function () { return stats.last; }, note: function () { return stats.note; },
+    root.JSFix = { transpile: transpile, run: run, plan: plan, shape: shape, stats: stats, last: function () { return stats.last; }, note: function () { return stats.note; },
                    version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex, scanFunctions: scanFunctions, islandSkips: islandSkips,
                    lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts, helperSource: helperSource,
                    lazyScan: function (src) { var p = null; try { p = lazyParts(src); } catch (e) { p = null; } return p ? JSON.stringify(p) : ''; } };

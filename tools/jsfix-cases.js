@@ -117,4 +117,6 @@ var JSFIX_CASES = [
   ['finally around for-of with break', 'var log = [], st = 0; function f(xs) { for (const x of xs) { st++; try { if (x === 2) break; if (x === 9) return x; } finally { st--; log.push(x); } } return "done"; } return [f([1, 2, 3]), f(new Set([9, 1])), st, log];'],
   ['finally restores after a throw through arrows', 'var cur = null; function withOwner(o, fn) { var prev = cur; cur = o; try { return fn(); } finally { cur = prev; } } var out = []; try { withOwner("a", () => { withOwner("b", () => { throw new Error("x"); }); }); } catch (e) { out.push(e.message); } out.push(cur); out.push(withOwner("c", () => cur)); out.push(cur); return out;'],
   ['finally in a generator loop with let closures', 'var log = []; function* g() { for (let i = 0; i < 3; i++) { var f = () => i; try { yield f(); } finally { log.push("f" + i); } } } var it = g(); var a = it.next().value; var b = it.next().value; it.return(); return [a, b, log];'],
+  // names with characters beyond the BMP (an HTML entity table: {𝒶:"ascr"}), which ES5 names cannot hold
+  ['astral property names', 'var o = { 𝒶: "ascr", b: () => 1 }; o.𝔞 = "afr"; var { 𝒶: q } = o; class C { 𝕒() { return 3; } } return [o.𝒶, o.𝔞, q, new C().𝕒(), Object.keys(o).length];'],
 ];

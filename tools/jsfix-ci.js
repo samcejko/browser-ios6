@@ -84,6 +84,30 @@ function datasetCheck() {
     if (inString !== '') throw new Error('a string was changed: ' + inString);
     if (JSFix.run('var a={b:1};delete a.b;', '{}') !== '') throw new Error('an ES5 script without dataset was changed');
 }
+// A big row of statements with no room for all of it at once goes a group at a time (jsfix.js pieces): the same result
+// and ES5 text; a group with a let in a block at its top gives up (as without room). The engine's check is ES5 here.
+function piecesCheck() {
+    ctx.__brES5Parses = (code) => { try { acorn.parse(code, { ecmaVersion: 5 }); return true; } catch (e) { return false; } };
+    try {
+        const pad = 'x'.repeat(12 * 1024);
+        let src = 'var log = [];\n';
+        for (let i = 0; i < 40; i++) src += '(self.q = self.q || []).push([' + i + ', (a = ' + i + ') => ({ v: a * 2, s: `t' + i + '`, p: "' + pad + '".length })]);\n';
+        src += 'log.push(self.q.map(function (e) { return e[1]().v + e[1]().s; }).join());\n';
+        const shape = JSFix.shape(src, '{}');
+        if (shape !== 'pieces') throw new Error('shape ' + JSON.stringify(shape));
+        const out = JSFix.run(src, '{}');
+        if (!out || !/^pieces:/.test(JSFix.note())) throw new Error('not in pieces: ' + JSFix.last() + ' ' + JSFix.note());
+        acorn.parse(out, { ecmaVersion: 5 });
+        const a = vm.createContext({}), b = vm.createContext({});
+        a.self = a; b.self = b;
+        vm.runInContext(src, a);
+        vm.runInContext(out, b);
+        if (JSON.stringify(a.log) !== JSON.stringify(b.log)) throw new Error('expected ' + JSON.stringify(a.log) + ' got ' + JSON.stringify(b.log));
+        const bad = src + '{ let z = 1; log.push(() => z); }\n';
+        JSFix.shape(bad, '{}');
+        if (JSFix.run(bad, '{}') !== '' || !/memory/.test(JSFix.last())) throw new Error('a let in a block at the top went through: ' + JSFix.last());
+    } finally { delete ctx.__brES5Parses; }
+}
 const settle = (v) => (v && typeof v.then === 'function')
     ? v.then((x) => JSON.stringify(x), (e) => 'rejected: ' + ((e && e.message) || e))
     : Promise.resolve(JSON.stringify(v));
@@ -109,5 +133,6 @@ const MODES = [['', {}], [' (early)', { early: 0 }]];
     console.log(`jsfix: ${cases.length * MODES.length - failed}/${cases.length * MODES.length} cases pass (${JSFix.stats.early} functions lowered while parsing, ${JSFix.stats.fallbacks} fallbacks)`);
     try { lazyCheck(); console.log('jsfix: lazy factories pass'); } catch (e) { console.error('FAIL lazy factories: ' + (e.message || e)); failed++; }
     try { datasetCheck(); console.log('jsfix: dataset deletes in ES5 scripts pass'); } catch (e) { console.error('FAIL dataset deletes: ' + (e.message || e)); failed++; }
+    try { piecesCheck(); console.log('jsfix: pieces pass'); } catch (e) { console.error('FAIL pieces: ' + (e.message || e)); failed++; }
     process.exit(failed ? 1 : 0);
 })();

@@ -4884,13 +4884,18 @@ var CSSFix = (function () {
             }
             if (!isJavaScriptType(type)) return all;
             if (src) return all;                                            // external scripts are lowered by the network layer
-            // too big to lower here: the app keeps the text and the page loads it as a script file, lowered by the
-            // network layer, which makes room for it and keeps the result (CNN's 2 MB of modules stayed ES2020)
+            // too big to lower here: the app keeps the text and the network layer lowers it (it makes room for it and
+            // keeps the result; CNN's 2 MB of modules stayed ES2020). The script stays inline and fetches the lowered
+            // text synchronously, then runs it as an inline script right after itself: with a src, webpack's automatic
+            // publicPath would take that URL for the directory of the page's chunks.
             if (g_external && tooBigInline(body)) {
                 var name = scriptName(body);
                 g_external.push([name, body]);
-                return '<script' + attrs.replace(/\s(?:async|defer|integrity|crossorigin|charset|onload|onerror)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '') +
-                       ' src="/__br_inline-' + name + '.js" charset="utf-8">' + close;
+                return open + '(function(){var x=new XMLHttpRequest();x.open("GET","/__br_inline-' + name + '.js",false);x.send(null);' +
+                       'if(!(x.status===200||x.status===0&&x.responseText))return;' +
+                       'var all=document.getElementsByTagName("script"),me=all[all.length-1],s=document.createElement("script");' +
+                       's.__brClassic=true;s.text=x.responseText;x=null;me.parentNode.insertBefore(s,me.nextSibling);' +
+                       'if(s.parentNode)s.parentNode.removeChild(s);})();' + close;
             }
             var fixed = transpileInline(body);
             if (fixed === null) return all;
