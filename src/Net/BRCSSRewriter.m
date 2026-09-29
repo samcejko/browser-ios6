@@ -474,10 +474,34 @@ static NSArray *BRManifestKinds(void)
     if (lazyScan.length) o[@"lazy"] = base;
     NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
     if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
+    // a big row of statements goes a group of them at a time (jsfix.js pieces): the tree of one group only, groups the
+    // engine takes keep their text, and no plan (the engine's parse of all of it). First for the inline scripts set
+    // aside and for webpack chunks pushed one after the other (CNN's 2 MB of modules inline: with room at the start, the
+    // page took it back during the whole lowering, which gave up after 28 s); other scripts only when there is no room
+    // for them (below): the lexer pass costs about a second per MB.
+    BOOL pieces = NO;
+    if (!module && !lazyPart && !lazyScan.length && data.length >= BRPiecesMinBytes && [self ensureJSFixIn:engine]) {
+        BOOL likely = [url.path hasPrefix:@"/__br_inline-"];
+        if (!likely) {
+            static const char push[] = ").push([[";
+            const char *bytes = data.bytes, *end = bytes + data.length, *at = bytes;
+            int seen = 0;
+            while (seen < 2 && (at = memmem(at, (size_t)(end - at), push, sizeof(push) - 1))) { seen++; at += sizeof(push) - 1; }
+            likely = seen >= 2;
+        }
+        if (likely) {
+            if (!text) { NSString *used = nil; text = BRDecode(data, charset.length ? charset : nil, &used); }
+            if (text && [[engine callFunction:@"JSFix.shape" arguments:@[text, optsJSON]] isEqualToString:@"pieces"]) {
+                pieces = YES;
+                floorMB = BRPiecesFloorMB;
+                need = floorMB + BRScriptPiecesMB(work);
+            }
+        }
+    }
     // a big script: what its lowering takes first, when there is room to find out (JSFix.plan: nothing for one the
     // engine takes as it is, little for one lowered in pieces, see jsfix.js islands)
     NSString *plan = nil;
-    if (!module && !lazyPart && data.length >= BRPlanMinBytes && [BRMemory availableMB] >= BRRoomFloorMB + BRScriptPlanMB((long)data.length) && [self ensureJSFixIn:engine]) {
+    if (!pieces && !module && !lazyPart && data.length >= BRPlanMinBytes && [BRMemory availableMB] >= BRRoomFloorMB + BRScriptPlanMB((long)data.length) && [self ensureJSFixIn:engine]) {
         if (!text) { NSString *used = nil; text = BRDecode(data, charset.length ? charset : nil, &used); }
         if (text) plan = [engine callFunction:@"JSFix.plan" arguments:@[text, optsJSON]];
         if ([plan isEqualToString:@"es5"]) {
@@ -495,7 +519,7 @@ static NSArray *BRManifestKinds(void)
     }
     // no room for all of it at once: a big row of statements goes a group of them at a time (jsfix.js pieces), which
     // takes little room (CNN's 2 MB of modules inline wanted 138 MB with 75 left beside the page, and stayed ES2020)
-    if (!module && !lazyPart && !lazyScan.length && data.length >= BRPiecesMinBytes && [BRMemory availableMB] < need && [self ensureJSFixIn:engine]) {
+    if (!pieces && !module && !lazyPart && !lazyScan.length && data.length >= BRPiecesMinBytes && [BRMemory availableMB] < need && [self ensureJSFixIn:engine]) {
         if (!text) { NSString *used = nil; text = BRDecode(data, charset.length ? charset : nil, &used); }
         if (text && [[engine callFunction:@"JSFix.shape" arguments:@[text, optsJSON]] isEqualToString:@"pieces"]) {
             BRLog(@"jsfix %@: no room for all of it (%ld MB available, %ld wanted), lowered a group of statements at a time", name, [BRMemory availableMB], need);
