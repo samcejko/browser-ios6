@@ -7085,7 +7085,7 @@
     // value are set inline (on ::before/::after through generated rules), unless another rule wins that property.
     (function () {
         var rules = [], registered = {}, rootVars = {}, gen = 0, tracked = [], timer = null, busy = false, lastCost = 0, universal = {};
-        var watchStates = false, observer = null, classObserver = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
+        var watchStates = false, observer = null, classObserver = null, feedRecords = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
         var pseudoTracked = [], stats = { passes: 0, applied: 0, skipped: 0, rules: 0 };
         var trim = function (s) { return String(s).trim(); };
         var norm = function (s) { return trim(String(s)).replace(/\s+/g, ' ').replace(/\s*([,()\/])\s*/g, '$1').toLowerCase(); };
@@ -7306,6 +7306,19 @@
             try { el.style.__brOwner = el; } catch (e) {}   // style.getPropertyValue('--x') answers from the attribute
             return info;
         };
+        // a style attribute with custom properties, var() or inherit() that is new or changed since it was read (the
+        // engine writes an attribute out again without them once anything changes it: that is no change)
+        var INLINE_CV = /--|var\(|inherit\(/;
+        var inlineChanged = function () {
+            var list, i, el, attr;
+            try { list = document.querySelectorAll('[style*="--"], [style*="var("], [style*="inherit("]'); } catch (e) { return true; }
+            for (i = 0; i < list.length; i++) {
+                el = list[i];
+                attr = el.getAttribute('style') || '';
+                if (!el.__brCVi || (el.__brCVi.attr !== attr && INLINE_CV.test(attr))) return true;
+            }
+            return false;
+        };
         // ---- one pass over the page
         var lastPending = [];
         var run = function () {
@@ -7444,11 +7457,13 @@
             dirtyAll = false;
             dirtyRoots = [];
             dirtyWhy = '';
+            dirtyEls = false;
+            cpDirty = false;
             dirtyStamp++;
         };
         // ---- decisions of earlier passes stay while nothing that can change an element's rules happened around it
         // (a class or attribute of the element, an ancestor or a sibling, children added or removed)
-        var dirtyAll = true, dirtyRoots = [], dirtyWhy = 'start', stateEls = [], stateSub = [], dirtyStamp = 1;
+        var dirtyAll = true, dirtyRoots = [], dirtyWhy = 'start', stateEls = [], stateSub = [], dirtyStamp = 1, dirtyEls = false, cpDirty = false;
         var isDirty = function (el) {
             if (dirtyAll || el.__brCVdirty === dirtyStamp) return true;
             for (var i = 0; i < dirtyRoots.length; i++) { var r = dirtyRoots[i]; if (r === el || r.contains(el)) return true; }
@@ -7460,7 +7475,7 @@
             dirtyRoots.push(node);
         };
         // the element alone (a rule that only uses custom properties changes nothing its subtree inherits)
-        var markDirtyEl = function (el) { if (el && el.nodeType === 1) el.__brCVdirty = dirtyStamp; };
+        var markDirtyEl = function (el) { if (el && el.nodeType === 1) { el.__brCVdirty = dirtyStamp; dirtyEls = true; } };
         // ---- the rule's substituted value as the engine computes it, on a hidden probe (values that depend on the
         // element - em, %, currentColor, auto, line-height - are measured on the element itself instead)
         var probe = null, probeCache = {}, probeCacheSize = 0;
@@ -7939,7 +7954,9 @@
             // subtree of <body> is the whole page (an element a script appends there started every pass over)
             var isTop = function (n) { return n === document.body || n === document.documentElement; };
             var markSiblings = function (from) { for (var s = from; s; s = s.nextSibling) if (s.nodeType === 1) markDirty(s); };
-            var onRecords = function (records) {
+            // (own: the style pass of the page shims asks, see apply - the marker classes it set, :has() and container
+            // queries, count then)
+            var onRecords = function (records, own) {
                 if (busy) return;
                 var any = false;
                 for (var i = 0; i < records.length; i++) {
@@ -7947,7 +7964,7 @@
                     if (!t || t.id === 'br-cv-pseudo' || t === probe) continue;
                     if (r.type === 'attributes') {
                         // (the classes the page shims set, br-..., change no rule of the page: every pass started over for them)
-                        if (r.attributeName === 'class' && String(r.oldValue || '').replace(OWN_CLASSES, '').replace(/\s+/g, ' ').replace(/^ | $/g, '') ===
+                        if (!own && r.attributeName === 'class' && String(r.oldValue || '').replace(OWN_CLASSES, '').replace(/\s+/g, ' ').replace(/^ | $/g, '') ===
                             String(t.getAttribute('class') || '').replace(OWN_CLASSES, '').replace(/\s+/g, ' ').replace(/^ | $/g, '')) continue;
                         any = true;
                         // an attribute can change what its element, the descendants and the following siblings match
@@ -7964,7 +7981,11 @@
                     for (n = 0; n < r.addedNodes.length; n++) if (r.addedNodes[n].nodeType === 1) markDirty(r.addedNodes[n]);
                     markSiblings(r.nextSibling);
                 }
-                if (any) schedule();
+                if (any && !own) schedule();
+            };
+            feedRecords = function () {
+                if (observer && observer.takeRecords) { var a = observer.takeRecords(); if (a.length) onRecords(a, true); }
+                if (classObserver && classObserver.takeRecords) { var b = classObserver.takeRecords(); if (b.length) onRecords(b, true); }
             };
             // (the old value only of class, by an observer of its own: asked for with the style attribute among the
             // filter - a page with [style*=...] selectors - the engine wrote the whole attribute out on every change of it)
@@ -8024,6 +8045,7 @@
                     this.__brCP[name] = nv;
                     this.__brCPi[name] = ni;
                     cpUsed = true;
+                    cpDirty = true;
                     this.__brCPdirty = true;
                     if (!dirtyAll && !dirtyWhy) dirtyWhy = 'setProperty ' + name;
                     schedule();
@@ -8047,6 +8069,7 @@
                     if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
                     this.__brCP[name] = null;
                     cpUsed = true;
+                    cpDirty = true;
                     this.__brCPdirty = true;
                     if (!dirtyAll && !dirtyWhy) dirtyWhy = 'removeProperty ' + name;
                     schedule();
@@ -8125,7 +8148,16 @@
                 dirtyWhy = 'manifest';
                 if (rules.length) watch();
             },
-            apply: function () { if (rules.length) pass(); },
+            // the style pass of the page shims (see its apply): a pass only when something changed - the marker classes
+            // it just set, what the observers saw, a custom property of a script, a style attribute with custom
+            // properties (style.cssText cannot be seen otherwise); nextjs.org made a full pass of 1.3 s every time
+            apply: function () {
+                if (!rules.length) return;
+                if (feedRecords) feedRecords();
+                var due = !!timer;
+                if (timer) { clearTimeout(timer); timer = null; }   // (the pass it waited for is this one)
+                if (due || dirtyAll || dirtyRoots.length || dirtyEls || cpDirty || inlineChanged()) pass();
+            },
             resolve: function (el, name) { return computedVar(el, name); },
             state: function () { return { rules: rules.length, passes: stats.passes, applied: stats.applied, skipped: stats.skipped, matchedRules: stats.rules, cost: lastCost, collectMs: stats.tCollect, resolveMs: stats.tResolve, applyMs: stats.tApply, pending: stats.pending, dirty: stats.dirty, work: stats.applyParts ? stats.applyParts[stats.applyParts.length - 3] : null, rivalTop: stats.rivalTop, err: stats.err || null, rivalTopMax: stats.rivalTopMax || null,
                                         applyParts: stats.applyParts, resolveParts: stats.resolveParts, rivalParts: stats.rivalParts, log: stats.log || [] }; },
@@ -10481,12 +10513,21 @@
             if (p === 'filter') return '-webkit-filter';
             return camel(p) in probe && p.indexOf('--') !== 0 ? p : '';
         };
+        // (the answer kept per value while the page's calc properties stay: the custom properties runtime sets the same
+        // transition on thousands of elements, 0.2-0.5 ms each to take apart again)
+        var safeCache = {}, safeCacheSize = 0, safeCacheCalc = null;
         var safeTransition = function (value, list) {
             if (value === null || value === undefined) return value;
             var s = String(value);
             if (!/[a-z]/i.test(s) || /^\s*(none|inherit|initial|unset|revert)\s*$/i.test(s)) return value;
-            var calc = {};
-            try { calc = runtimeCSS.calcSet(); } catch (e) { calc = {}; }
+            var calc = runtimeCSS.calcSet() || {};   // (no try here: a function with one makes a scope object per call)
+            if (calc !== safeCacheCalc) { safeCache = {}; safeCacheSize = 0; safeCacheCalc = calc; }
+            var key = (list ? 'L' : 'S') + s;
+            if (safeCache.hasOwnProperty(key)) return safeCache[key];
+            if (safeCacheSize++ > 400) { safeCache = {}; safeCacheSize = 0; }
+            return (safeCache[key] = safeTransitionOf(s, list, calc, value));
+        };
+        var safeTransitionOf = function (s, list, calc, value) {
             var items = splitList(s), out = [], changed = false, allList = null;
             for (var k = 0; k < items.length; k++) {
                 var item = trim(items[k]), toks = item.split(/\s+/), at = -1, j;
