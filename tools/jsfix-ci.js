@@ -105,8 +105,22 @@ function piecesCheck() {
         if (JSON.stringify(a.log) !== JSON.stringify(b.log)) throw new Error('expected ' + JSON.stringify(a.log) + ' got ' + JSON.stringify(b.log));
         const bad = src + '{ let z = 1; log.push(() => z); }\n';
         JSFix.shape(bad, '{}');
-        if (JSFix.run(bad, '{}') !== '' || !/memory/.test(JSFix.last())) throw new Error('a let in a block at the top went through: ' + JSFix.last());
-    } finally { delete ctx.__brES5Parses; }
+        JSFix.run(bad, '{}');
+        if (/^pieces:/.test(JSFix.note())) throw new Error('a let in a block at the top went a group at a time');
+        // a run given up for lack of memory goes on from where it stopped once there is room
+        let calls = 0;
+        ctx.__brAvailableMB = () => (++calls > 5 ? 20 : 500);
+        JSFix.shape(src, '{}');
+        if (JSFix.run(src, '{}') !== '' || !/memory/.test(JSFix.last())) throw new Error('did not stop for lack of memory: ' + JSFix.last());
+        ctx.__brAvailableMB = () => 500;
+        const again = JSFix.run(src, '{}');
+        if (!again || !/waits for room/.test(JSFix.note())) throw new Error('did not go on: ' + JSFix.last() + ' ' + JSFix.note());
+        acorn.parse(again, { ecmaVersion: 5 });
+        const c = vm.createContext({});
+        c.self = c;
+        vm.runInContext(again, c);
+        if (JSON.stringify(a.log) !== JSON.stringify(c.log)) throw new Error('after the wait: expected ' + JSON.stringify(a.log) + ' got ' + JSON.stringify(c.log));
+    } finally { delete ctx.__brES5Parses; delete ctx.__brAvailableMB; }
 }
 const settle = (v) => (v && typeof v.then === 'function')
     ? v.then((x) => JSON.stringify(x), (e) => 'rejected: ' + ((e && e.message) || e))

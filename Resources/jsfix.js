@@ -3691,8 +3691,9 @@
         }
         // (the app's engines have __brAvailableMB: a lowering that would exhaust the iPad gives up, the script stays
         // as it is and the app survives)
+        var floor = opts.memoryFloor || MEMORY_FLOOR_MB;
         var roomCheck = function () {
-            if (typeof root.__brAvailableMB === 'function' && root.__brAvailableMB() < MEMORY_FLOOR_MB) throw new Unsupported('memory');
+            if (typeof root.__brAvailableMB === 'function' && root.__brAvailableMB() < floor) throw new Unsupported('memory');
         };
         if (early !== false) {
             var supers = null, hashes = null;
@@ -4252,23 +4253,33 @@
         memo = { src: src, pieces: bounds };
         return 'pieces';
     };
-    // the ES5 text of src a group at a time (null: nothing to change); throws Unsupported('memory') for a group that
-    // cannot go on its own (the app gives up for now, as without room)
+    // A group lowered on its own holds the tree of 128 KB only: it may go on closer to the iPad's limit than a whole
+    // lowering. A run given up for lack of memory keeps what it did (pieceState): the app waits for room and runs the
+    // same text again, which goes on from there (CNN took the room back while its 2 MB of modules were lowered).
+    var PIECES_FLOOR_MB = 32, pieceState = null;
+    // the ES5 text of src a group at a time (null: nothing to change); throws Unsupported('memory') when the room runs
+    // out, and Unsupported('flat-top') for a group that cannot go on its own
     var piecesRun = function (src, bounds, opts) {
-        // (a directive prologue of the whole script holds for every group; in sloppy code a group starting with a
-        // "use strict" of its own must not become strict: CNN starts every module so, in the middle of the script)
-        var prefix = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*(["'])use strict\1/.test(src.slice(0, 4096)) ? '"use strict";' : ';';
-        var out = [], used = [], seen = {}, lowered = 0, t0 = new Date().getTime(), popts = {}, k;
-        var use = function (name) { if (!seen[name]) { seen[name] = 1; used.push(name); } };
+        var st = pieceState && pieceState.src === src ? pieceState : null;
+        pieceState = null;
+        if (!st) {
+            // (a directive prologue of the whole script holds for every group; in sloppy code a group starting with a
+            // "use strict" of its own must not become strict: CNN starts every module so, in the middle of the script)
+            st = { src: src, bounds: bounds, i: 0, out: [], used: [], seen: {}, lowered: 0, ms: 0, waits: 0,
+                   prefix: /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*(["'])use strict\1/.test(src.slice(0, 4096)) ? '"use strict";' : ';' };
+        } else st.waits++;
+        var prefix = st.prefix, t0 = new Date().getTime(), popts = {}, k;
+        var use = function (name) { if (!st.seen[name]) { st.seen[name] = 1; st.used.push(name); } };
         for (k in opts) if (opts.hasOwnProperty(k)) popts[k] = opts[k];
         popts.flatTop = true;
-        for (var i = 0; i < bounds.length; i++) {
-            var piece = src.slice(bounds[i][0], bounds[i][1]), low = null;
+        popts.memoryFloor = PIECES_FLOOR_MB;
+        for (; st.i < st.bounds.length; st.i++) {
+            var piece = src.slice(st.bounds[st.i][0], st.bounds[st.i][1]), low = null;
             // (with a direct eval it is lowered even when the engine takes it: what the eval runs is lowered then too)
             var takes = engineTakes(prefix + piece), evals = DIRECT_EVAL.test(piece);
             if (!takes || evals) {
                 try { low = transpile(prefix + piece, popts); } catch (e) {
-                    if (e instanceof Unsupported && e.what === 'flat-top') throw new Unsupported('memory');
+                    if (e instanceof Unsupported && e.what === 'memory') { st.ms += new Date().getTime() - t0; pieceState = st; }
                     throw e;
                 }
                 if (low === null && !takes) throw new Unsupported('a group the engine refuses has nothing to lower');
@@ -4278,19 +4289,20 @@
                 if (needsProxy(piece)) { piece = piece.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2'); use('__br_Proxy'); }
                 if (needsBigInt(piece)) { piece = piece.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); use('__br_BigInt'); }
                 if (needsDsDelete(piece)) { var dp = dsDeletes(piece); if (engineTakes(prefix + dp)) { piece = dp; use('__br_dsdel'); } }
-                out.push(piece);
+                st.out.push(piece);
                 continue;
             }
             if (prefix && low.slice(0, prefix.length) === prefix) low = low.slice(prefix.length);
             if (!engineTakes(prefix + low)) throw new Unsupported('a lowered group does not parse');
-            out.push(low);
-            lowered++;
+            st.out.push(low);
+            st.lowered++;
         }
-        stats.note = 'pieces: ' + lowered + ' of ' + bounds.length + ' groups lowered in ' + (new Date().getTime() - t0) + ' ms';
-        if (!lowered && !used.length) return null;
+        st.ms += new Date().getTime() - t0;
+        stats.note = 'pieces: ' + st.lowered + ' of ' + st.bounds.length + ' groups lowered in ' + st.ms + ' ms' + (st.waits ? ', ' + st.waits + ' waits for room' : '');
+        if (!st.lowered && !st.used.length) return null;
         // (a group ends after a semicolon of the top; one lowered may end without one)
-        var text = out.join('\n;');
-        return used.length ? text + '\n;' + helperText(used) : text;
+        var text = st.out.join('\n;');
+        return st.used.length ? text + '\n;' + helperText(st.used) : text;
     };
     // For the app, before it makes room for a lowering: what run() will do with the script — 'es5' (nothing), 'stand-in'
     // (a few names replaced), 'islands' (pieces of it, see islands: little memory) or 'full' (all of it). What it found
@@ -4340,19 +4352,26 @@
         // (what plan() found out about this text)
         var planned = memo && memo.src === src ? memo : null;
         memo = null;
-        // no room for all of a big row of statements at once: a group at a time (see pieces)
-        if (planned && planned.pieces) {
-            var pt0 = new Date().getTime(), pout = null;
-            try { pout = piecesRun(src, planned.pieces, opts); } catch (ep) {
-                stats.failed++;
-                stats.last = 'failed: ' + ((ep && (ep.message || ep.what)) || String(ep));
-                return '';
+        // a big row of statements a group at a time (see pieces), or going on with one that waited for room
+        var resume = pieceState && pieceState.src === src ? pieceState : null;
+        if ((planned && planned.pieces) || resume) {
+            var pt0 = new Date().getTime(), pout;
+            try { pout = piecesRun(src, resume ? resume.bounds : planned.pieces, opts); } catch (ep) {
+                // (a group with a new name at its top cannot go on its own: the whole script as usual)
+                if (ep instanceof Unsupported && ep.what === 'flat-top') { planned = null; pout = undefined; }
+                else {
+                    stats.failed++;
+                    stats.last = 'failed: ' + ((ep && (ep.message || ep.what)) || String(ep));
+                    return '';
+                }
             }
             stats.ms += new Date().getTime() - pt0;
             if (pout === null) { stats.skipped++; stats.last = 'es5'; return ''; }
-            stats.lowered++;
-            stats.last = 'lowered';
-            return pout;
+            if (pout !== undefined) {
+                stats.lowered++;
+                stats.last = 'lowered';
+                return pout;
+            }
         }
         var tc = new Date().getTime(), parsesAsIs = !opts.force && (planned ? planned.parses : engineParses(src)), evals = false;
         stats.checks = new Date().getTime() - tc;

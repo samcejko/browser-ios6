@@ -38,9 +38,10 @@ static long BRScriptFloorMB(long bytes)
     return bytes < 64 * 1024 ? 30 : BRRoomFloorMB;
 }
 // A script lowered a group of statements at a time (jsfix.js pieces) holds the tree of one group only (128 KB): its
-// text in and out, and a lower floor (jsfix.js gives up itself below 40 MB).
+// text in and out, and a lower floor (jsfix.js PIECES_FLOOR_MB: it stops below 32 MB, and goes on from there when the
+// app has waited for BRPiecesResumeMB).
 static const NSUInteger BRPiecesMinBytes = 384 * 1024;
-static const long BRPiecesFloorMB = 40;
+static const long BRPiecesFloorMB = 32, BRPiecesResumeMB = 44;
 static long BRScriptPiecesMB(long bytes)
 {
     return 12 + (long)((long long)bytes * 6 / (1024 * 1024));
@@ -523,6 +524,7 @@ static NSArray *BRManifestKinds(void)
         if (!text) { NSString *used = nil; text = BRDecode(data, charset.length ? charset : nil, &used); }
         if (text && [[engine callFunction:@"JSFix.shape" arguments:@[text, optsJSON]] isEqualToString:@"pieces"]) {
             BRLog(@"jsfix %@: no room for all of it (%ld MB available, %ld wanted), lowered a group of statements at a time", name, [BRMemory availableMB], need);
+            pieces = YES;
             floorMB = BRPiecesFloorMB;
             need = floorMB + BRScriptPiecesMB(work);
         }
@@ -554,6 +556,16 @@ static NSArray *BRManifestKinds(void)
     long mb0 = (long)BRResidentMemoryMB();
     [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(work >> 10)] forKey:@"js"];
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
+    // a row of statements given up for lack of memory keeps the groups it did: once there is room again it goes on from
+    // there (the page waits for this script anyway, and a page like CNN's takes the room back while it is lowered)
+    for (int wait = 0; pieces && !result.length && wait < 4; wait++) {
+        NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
+        if ([why rangeOfString:@"memory"].location == NSNotFound) break;
+        [engine collectGarbage];
+        if (![BRMemory waitForAvailableMB:BRPiecesResumeMB timeout:30 reason:[NSString stringWithFormat:@"going on with %@", name] engine:engine]) continue;
+        BRLog(@"jsfix %@: going on after a wait for room (%ld MB available)", name, [BRMemory availableMB]);
+        result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
+    }
     // the factories kept for later go next to the lowered chunk, where the page's stubs ask for them
     NSUInteger kept = 0;
     if (lazyScan.length && [result hasPrefix:@"/*br-lazy:"]) {
