@@ -1290,9 +1290,19 @@
         };
     }
     if (window.HTMLSourceElement) { defineAttrProp(window.HTMLSourceElement.prototype, 'srcset'); defineAttrProp(window.HTMLSourceElement.prototype, 'sizes'); }
+    // (object-fit-images: the first call takes every picture and starts its own load listener, which redoes a picture
+    // whose address changed; later calls hand it only the pictures it has not seen - it wrote five styles into every
+    // picture it knew at every settle of the page, each a change of the style attribute for every MutationObserver)
+    var ofiStarted = false;
     function runResponsiveImages() {
         try { if (window.picturefill) window.picturefill(); } catch (e) {}
-        try { if (window.objectFitImages) window.objectFitImages(null, { watchMQ: false }); } catch (e2) {}
+        try {
+            if (!window.objectFitImages) return;
+            if (!ofiStarted) { ofiStarted = true; window.objectFitImages(null, { watchMQ: false }); return; }
+            var imgs = document.getElementsByTagName('img'), fresh = [];
+            for (var i = 0; i < imgs.length; i++) if (!imgs[i]['bfred-it:object-fit-images']) fresh.push(imgs[i]);
+            if (fresh.length) window.objectFitImages(fresh, { watchMQ: false });
+        } catch (e2) {}
     }
     onReady(runResponsiveImages);
     onSettled(runResponsiveImages);
@@ -6538,9 +6548,11 @@
                 touched.push(el);
             }
             el.__brGridGen = gen;
-            // (null: the page's own inline value again)
-            if (v === null) { if (saved[p] && saved[p][0]) el.style.setProperty(p, saved[p][0], saved[p][1]); else el.style.removeProperty(p); }
-            else el.style.setProperty(p, v, 'important');
+            // (null: the page's own inline value again. A value already there is not written again: every write of a
+            // style is a change of the style attribute for every MutationObserver of the page - rohlik.cz got 700
+            // "width: 158px !important" a minute, handed on to its observers, which checked the layout each time.)
+            if (v === null) { if (saved[p] && saved[p][0]) el.style.setProperty(p, saved[p][0], saved[p][1]); else if (el.style.getPropertyValue(p)) el.style.removeProperty(p); }
+            else if (el.style.getPropertyValue(p) !== v || el.style.getPropertyPriority(p) !== 'important') el.style.setProperty(p, v, 'important');
         };
         // (a width of the page's own: in the style attribute before the layout wrote there, or from a rule)
         var ownWidth = function (el) {
@@ -9242,6 +9254,14 @@
     // every ancestor of every target, per observer: 4-6 s a check, again after each change of the page.)
     (function () {
         var IO = window.IntersectionObserver, IOp = IO && IO.prototype;
+        // (the polyfill's entries carry their fields as own properties; a page's own copy of the same polyfill takes the
+        // observer for a native one only when IntersectionObserverEntry.prototype has intersectionRatio - else it put
+        // itself in place, one MutationObserver on the whole document per observer, without the shared watcher below:
+        // rohlik.cz had about 20 of them, each handed every style change)
+        var IOE = window.IntersectionObserverEntry;
+        if (IOE && IOE.prototype && !('intersectionRatio' in IOE.prototype)) {
+            try { IOE.prototype.intersectionRatio = 0; IOE.prototype.isIntersecting = false; } catch (eIOE) {}
+        }
         if (!IOp || !IOp._checkForIntersections || !IOp._monitorIntersections || !IOp._computeTargetAndRootIntersection || !IOp._unmonitorAllIntersections) return;
         var check = IOp._checkForIntersections, compute = IOp._computeTargetAndRootIntersection;
         var monitor = IOp._monitorIntersections, unmonitor = IOp._unmonitorIntersections, unmonitorAll = IOp._unmonitorAllIntersections;
