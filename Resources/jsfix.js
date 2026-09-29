@@ -24,7 +24,8 @@
             if (x == null) throw new TypeError(x + ' is not iterable');
             var i = 0, step = { done: false, value: undefined }, it, S = typeof Symbol === 'function' ? Symbol.iterator : null;
             var list = function () { if (i < x.length) { step.value = x[i++]; return step; } step.done = true; step.value = undefined; return step; };
-            if (Object.prototype.toString.call(x) === '[object Array]') return list;
+            // (Array.isArray: the engine's own, where Object.prototype.toString is the shim's that reads Symbol.toStringTag)
+            if (Array.isArray(x)) return list;
             if (S && x[S] != null) { it = x[S](); return function () { return it.next(); }; }
             if (typeof x['@@iterator'] === 'function') { it = x['@@iterator'](); return function () { return it.next(); }; }
             if (typeof x === 'string') { x = x.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]/g) || []; return list; }
@@ -36,7 +37,7 @@
         // cards, and React threw the server's page away as not matching)
         __br_spread: function (x) {
             var a, i, n, s, next;
-            if (Object.prototype.toString.call(x) === '[object Array]') {
+            if (Array.isArray(x)) {
                 a = Array.prototype.slice.call(x);
                 for (i = 0, n = a.length; i < n; i++) if (!(i in a)) a[i] = undefined;
                 return a;
@@ -63,7 +64,7 @@
         // array destructuring: arrays as they are (with a rest element, holes read as undefined as in a spread), other
         // iterables read up to n items (all when n < 0)
         __br_arr: function (x, n) {
-            if (Object.prototype.toString.call(x) === '[object Array]') return n < 0 ? __br_spread(x) : x;
+            if (Array.isArray(x)) return n < 0 ? __br_spread(x) : x;
             var next = __br_iter(x), a = [], s;
             while ((n < 0 || a.length < n) && !(s = next()).done) a.push(s.value);
             return a;
@@ -1794,9 +1795,9 @@
     };
     // The names the code the parser skipped takes from the code around it, as references: only names a rename or a loop
     // can concern (block-scoped declarations, renamed parameters) wherever its text has them but after a dot. That is
-    // more than it really uses: a rename then has a skipped function parsed and analysed after all (see W.redo), and a
-    // skipped statement lowered as a whole (it has no function of its own to parse again). Every name this lowering
-    // adds has a $ in it, and those of the skipped text are taken beforehand (see lower).
+    // more than it really uses: a rename then has a skipped function parsed and analysed after all (see W.redo). A
+    // skipped statement whose text has one is parsed and analysed in its place right away (see W.stmtAgain). Every
+    // name this lowering adds has a $ in it, and those of the skipped text are taken beforehand (see lower).
     W.skippedRefs = function () {
         var all = this.skippedNodes.concat(this.skippedStmts), names = [], seen = {}, i, b, x;
         this.skippedNodes = [];
@@ -1820,15 +1821,33 @@
             if (!near) continue;
             var text = this.src.slice(n.start, n.end), found = {}, count = 0;
             re.lastIndex = 0;
+            if (!raw) { if (re.exec(text) !== null) this.stmtAgain(n); continue; }
             while (count < names.length && (m = re.exec(text)) !== null) {
                 if (hasOwn.call(found, '$' + m[2])) continue;
                 found['$' + m[2]] = 1;
                 count++;
-                var id = { type: 'Identifier', name: m[2], $w: true, start: n.start, end: n.end };
-                // (a statement's names are its function's own: no closure)
-                if (raw) { id.$raw = raw; this.ref(id, raw.rs, false); } else { id.$rawStmt = n; this.ref(id, n.$scope, false); }
+                var id = { type: 'Identifier', name: m[2], $w: true, start: n.start, end: n.end, $raw: raw };
+                this.ref(id, raw.rs, false);
             }
         }
+    };
+    // A statement the parser skipped whose text has a name a rename may concern (minified code: a `let e` in a block,
+    // an `e` in half the statements around it): parsed now and analysed in its place, as it was never skipped. Its
+    // text stays unless something in it changes (P.S prints it again then). Its var declarations count now too.
+    W.stmtAgain = function (n) {
+        var s = n.$scope, acorn = root.acorn;
+        var p = new acorn.Parser({ ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowReserved: true, locations: false }, this.src);
+        p.pos = p.lastTokEnd = p.lastTokStart = n.start;
+        p.strict = s.strict;
+        p.nextToken();
+        var fresh = p.parseStatement(null, false);
+        if (fresh.start !== n.start || fresh.end !== n.end) throw new Unsupported('island-statement');
+        stats.stmtAgain++;
+        n.$fresh = fresh;
+        // (the functions around it as the walk had them: a statement the parser skips is never in an arrow's body)
+        var fns = this.fns;
+        this.fns = s.fn && s.fn.node ? [s.fn.node] : [];
+        try { if (this.v(fresh, n, s)) markDirty(n); } finally { this.fns = fns; }
     };
     // A function the parser just completed, lowered on its own: analysed below a stand-in for the scopes around it
     // (not parsed completely yet), printed, and emptied. It keeps its text (null: unchanged), the free names with
@@ -2692,6 +2711,8 @@
             case 'SwitchStatement': return this.switchStmt(n);
             case 'WithStatement': return 'with(' + this.E(n.object, P_SEQ) + ')' + this.sub(n.body);
             case 'DebuggerStatement': return 'debugger;';
+            // (a skipped statement parsed again: see W.stmtAgain)
+            case 'BrRawStatement': if (n.$fresh) return this.S(n.$fresh); break;
             case 'ImportDeclaration': case 'ExportNamedDeclaration': case 'ExportDefaultDeclaration': case 'ExportAllDeclaration': throw new Unsupported('module');
         }
         throw new Unsupported(n.type);
@@ -3778,7 +3799,12 @@
         if (early !== false && (STANDIN_OWN.test(src) || !root.acorn || !root.acorn.Parser)) early = false;
         if (early === false) return lower(src, opts, false);
         if (skip) {
-            try { return lower(src, opts, early, skip); } catch (ei) {
+            var again = stats.stmtAgain;
+            try {
+                var isl = lower(src, opts, early, skip);
+                if (stats.stmtAgain > again) stats.note += ', ' + (stats.stmtAgain - again) + ' statements parsed again';
+                return isl;
+            } catch (ei) {
                 // (the scanner went wrong somewhere, or what went wrong has nothing to do with islands: as usual)
                 if (ei instanceof Unsupported && ei.what === 'memory') throw ei;
                 stats.islandFallbacks++;
@@ -4216,7 +4242,7 @@
         return directive ? directive[0] + '\n' + LAZY_RUNTIME + body.slice(directive[0].length) : LAZY_RUNTIME + body;
     };
     var stats = { runs: 0, skipped: 0, lowered: 0, failed: 0, ms: 0, last: '', early: 0, fallbacks: 0, redos: 0, maxUnit: 0, outer: 0, flat: 0,
-                  checks: 0, phases: '', lazy: null, note: '', islandFallbacks: 0, islandChecks: 0 };
+                  checks: 0, phases: '', lazy: null, note: '', islandFallbacks: 0, islandChecks: 0, stmtAgain: 0 };
     // Islands for run(): {src: the text with the stand-ins in (they go in by text, the skipped functions keep theirs),
     // skip: see islandSkips (null: none), standins: their helpers}
     var islandPrep = function (src, opts, planned) {

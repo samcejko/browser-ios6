@@ -122,6 +122,34 @@ function piecesCheck() {
         if (JSON.stringify(a.log) !== JSON.stringify(c.log)) throw new Error('after the wait: expected ' + JSON.stringify(a.log) + ' got ' + JSON.stringify(c.log));
     } finally { delete ctx.__brES5Parses; delete ctx.__brAvailableMB; }
 }
+// A big "ES5" script with a few pieces of newer syntax is lowered only there (jsfix.js islands). A rename that reaches a
+// statement the parser skipped has that statement parsed again (W.stmtAgain) instead of the whole script lowered; the
+// engine's check is ES5 here. (tools/islands-test.html has more cases, for a desktop browser.)
+function islandsCheck() {
+    ctx.__brES5Parses = (code) => { try { acorn.parse(code, { ecmaVersion: 5, allowReturnOutsideFunction: true }); return true; } catch (e) { return false; } };
+    try {
+        let pad = '';
+        // (over ISLAND_SCRIPT, 192 KB, with the pad twice)
+        for (let i = 0; i < 600; i++) pad += 'var __v' + i + ' = { n: ' + i + ', s: "text ' + i + ' / not a regex /", f: function (x) { return x + ' + i + ' / 2; } };\n';
+        for (let j = 0; j < 600; j++) pad += 'function __f' + j + '(a, b) { var s = 0; for (var k = 0; k < a; k++) { s += k * b; } return s + "|" + ' + j + '; }\n';
+        const long = '"' + '.'.repeat(80) + '"';
+        const cases = [
+            ['a parameter named like its function', "var kF = function e(e) { const z = e + 1;\nvar bigF = { first: e, second: e * 2, pad: " + long + " };\nreturn bigF.first + bigF.second + z; };\nout.push(kF(5));"],
+            ['a renamed block let used by a skipped statement', "var resY = [];\nif (true) { let e = 'blockE'; var gY = function () { var arrowY = () => 1;\nvar holderY = { v: e, n: arrowY(), pad: " + long + " };\nreturn holderY.v + holderY.n; }; resY.push(gY()); }\nvar e = 'outerE';\nresY.push(e);\nout.push(resY);"],
+            ['functions of a skipped statement with names of their own', "var resZ = [];\nif (true) { let e = 'blockZ'; resZ.push(e); }\nvar e = 'outerZ';\nvar hZ = function () { var arrowZ = () => 2;\nvar listZ = [1, 2].map(function (e) { return e * 10 + " + long + ".length; });\nreturn listZ.concat(arrowZ()); };\nresZ.push(hZ(), e);\nout.push(resZ);"],
+            ['a var of a skipped statement read by a parsed closure', "function fAC() { var getAC = () => w;\nif (true) { let w = 'blockW'; getAC.b = w; };\nvar w = 'fnW' + { pad: " + long + " }.pad.length;\nreturn [getAC(), getAC.b]; }\nout.push(fAC());"]
+        ];
+        for (const [name, body] of cases) {
+            const src = 'var out = [];\n!function () {\n' + pad + body + '\n' + pad + '}();';
+            const want = JSON.stringify(vm.runInContext(src + '\nout;', vm.createContext({})));
+            const out = JSFix.run(src, '{"force":true}');
+            if (!out || !/^islands: \d+ %/.test(JSFix.note())) throw new Error(name + ': islands not used: ' + JSFix.last() + ' / ' + JSFix.note());
+            acorn.parse(out, { ecmaVersion: 5, allowReturnOutsideFunction: true });
+            const got = JSON.stringify(vm.runInContext(out + '\nout;', vm.createContext({})));
+            if (got !== want) throw new Error(name + ': expected ' + want + ' got ' + got);
+        }
+    } finally { delete ctx.__brES5Parses; }
+}
 const settle = (v) => (v && typeof v.then === 'function')
     ? v.then((x) => JSON.stringify(x), (e) => 'rejected: ' + ((e && e.message) || e))
     : Promise.resolve(JSON.stringify(v));
@@ -148,5 +176,6 @@ const MODES = [['', {}], [' (early)', { early: 0 }]];
     try { lazyCheck(); console.log('jsfix: lazy factories pass'); } catch (e) { console.error('FAIL lazy factories: ' + (e.message || e)); failed++; }
     try { datasetCheck(); console.log('jsfix: dataset deletes in ES5 scripts pass'); } catch (e) { console.error('FAIL dataset deletes: ' + (e.message || e)); failed++; }
     try { piecesCheck(); console.log('jsfix: pieces pass'); } catch (e) { console.error('FAIL pieces: ' + (e.message || e)); failed++; }
+    try { islandsCheck(); console.log('jsfix: islands with statements parsed again pass'); } catch (e) { console.error('FAIL islands: ' + (e.message || e)); failed++; }
     process.exit(failed ? 1 : 0);
 })();
