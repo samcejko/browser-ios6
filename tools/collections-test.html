@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>collections test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+<div id="host"></div>
+<script>
+// The lean Map, Set, WeakMap and WeakSet of shims.js against the standard (Chrome passes natively). Timings at the end.
+setTimeout(function () {
+  var res = [];
+  var check = function (name, fn, expect) {
+    var got;
+    try { got = fn(); } catch (e) { got = 'threw ' + (e instanceof TypeError ? 'TypeError' : e.name) + ' ' + e.message; }
+    res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+  };
+  var S = window.Symbol;
+  check('Map: kinds of keys', function () {
+    var o = {}, f = function () {}, s = S('k'), m = new Map();
+    m.set('1', 'str').set(1, 'num').set(true, 'bool').set(null, 'null').set(undefined, 'undef').set(o, 'obj').set(f, 'fn').set(s, 'sym').set(NaN, 'nan').set(-0, 'zero');
+    return [m.size, m.get('1'), m.get(1), m.get(true), m.get(null), m.get(undefined), m.get(o), m.get(f), m.get(s), m.get(NaN), m.get(0), m.get(+0), m.has({}), m.get('true'), m.get('null')];
+  }, [10, 'str', 'num', 'bool', 'null', 'undef', 'obj', 'fn', 'sym', 'nan', 'zero', 'zero', false, undefined, undefined]);
+  check('Map: order, update, delete, clear', function () {
+    var m = new Map([['a', 1], ['b', 2], ['c', 3]]);
+    m.set('a', 9); m['delete']('b'); m.set('b', 4);
+    var r = [Array.from(m.keys()).join(), Array.from(m.values()).join(), m['delete']('x'), m.size];
+    m.clear(); r.push(m.size, m.has('a'));
+    return r;
+  }, ['a,c,b', '9,3,4', false, 3, 0, false]);
+  check('Map: iteration sees deletions and additions', function () {
+    var m = new Map([[1, 'a'], [2, 'b'], [3, 'c']]), seen = [];
+    m.forEach(function (v, k, map) { seen.push(k); if (k === 1) { map['delete'](2); map.set(4, 'd'); } });
+    var it = m.entries(), first = it.next().value; m['delete'](3); m.set(5, 'e');
+    var rest = []; for (var st = it.next(); !st.done; st = it.next()) rest.push(st.value[0]);
+    return [seen, first, rest];
+  }, [[1, 3, 4], [1, 'a'], [4, 5]]);
+  check('Map: for-of, spread, entries default', function () {
+    var m = new Map([['x', 1], ['y', 2]]), out = [];
+    for (var e of m) out.push(e[0] + e[1]);
+    return [out.join(), [...m.keys()].join(), m[S.iterator] === m.entries, Array.from(new Map(m)).length];
+  }, ['x1,y2', 'x,y', true, 2]);
+  check('Map: bad entries and receivers throw', function () {
+    var r = [];
+    try { new Map([1]); r.push('no'); } catch (e) { r.push(e instanceof TypeError); }
+    try { Map.prototype.get.call({}, 1); r.push('no'); } catch (e2) { r.push(e2 instanceof TypeError); }
+    try { Map(); r.push('no'); } catch (e3) { r.push(e3 instanceof TypeError); }
+    return r;
+  }, [true, true, true]);
+  check('Set: basics, -0, NaN, order, iteration', function () {
+    var s = new Set([3, 1, 3, NaN, NaN, -0, 0]);
+    s.add(2); s['delete'](1);
+    var vals = []; s.forEach(function (v, v2, set) { vals.push((v === v2 || (v !== v && v2 !== v2)) && set === s ? v : 'x'); });
+    return [s.size, s.has(NaN), s.has(0), vals.map(String).join(), Array.from(s.entries())[0], Object.is(Array.from(s)[2], 0)];
+  }, [4, true, true, '3,NaN,0,2', [3, 3], true]);
+  check('Set methods', function () {
+    var a = new Set([1, 2, 3]), b = new Set([2, 3, 4]);
+    if (!a.union) return 'no set methods';
+    return [Array.from(a.union(b)), Array.from(a.intersection(b)), Array.from(a.difference(b)), Array.from(a.symmetricDifference(b)), new Set([2]).isSubsetOf(a), a.isSupersetOf(new Set([1, 3])), a.isDisjointFrom(new Set([9]))];
+  }, [[1, 2, 3, 4], [2, 3], [1], [1, 4], true, true, true]);
+  check('WeakMap / WeakSet: objects, several maps, frozen keys, DOM nodes, primitives refused', function () {
+    var k = {}, f = Object.freeze({}), node = document.getElementById('host'), w1 = new WeakMap(), w2 = new WeakMap(), ws = new WeakSet();
+    w1.set(k, 1).set(f, 'frozen').set(node, 'node'); w2.set(k, 2); ws.add(k);
+    var r = [w1.get(k), w2.get(k), w1.get(f), w1.get(node), w1.has({}), ws.has(k), ws.has(f), w1['delete'](k), w1.has(k), w2.get(k)];
+    try { w1.set(1, 1); r.push('no'); } catch (e) { r.push(e instanceof TypeError); }
+    try { ws.add('s'); r.push('no'); } catch (e2) { r.push(e2 instanceof TypeError); }
+    r.push(w1.get(1), w1.has('x'), w1['delete'](null));
+    return r;
+  }, [1, 2, 'frozen', 'node', false, true, false, true, false, 2, true, true, null, false, false]);
+  check('WeakMap from entries; keys stay clean', function () {
+    var k = { a: 1 }, w = new WeakMap([[k, 'v']]), m = new Map([[k, 1]]);
+    return [w.get(k), Object.keys(k).join(), Object.getOwnPropertyNames(k).join(), JSON.stringify(k), JSON.stringify(m), JSON.stringify(Object.getOwnPropertyDescriptors ? Object.keys(Object.getOwnPropertyDescriptors(k)) : ['a'])];
+  }, ['v', 'a', 'a', '{"a":1}', '{}', '["a"]']);
+  check('tags and prototypes', function () {
+    var ts = Object.prototype.toString;
+    return [ts.call(new Map()), ts.call(new Set()), ts.call(new WeakMap()), ts.call(new WeakSet()), ts.call(new Map().keys()), ts.call(new Set().values()), new Map() instanceof Map, Map.name];
+  }, ['[object Map]', '[object Set]', '[object WeakMap]', '[object WeakSet]', '[object Map Iterator]', '[object Set Iterator]', true, 'Map']);
+  check('Map.groupBy', function () { if (!Map.groupBy) return 'none'; var g = Map.groupBy([1, 2, 3, 4], function (x) { return x % 2 ? 'odd' : 'even'; }); return [g.get('odd'), g.get('even')]; }, [[1, 3], [2, 4]]);
+  var pass = 0, lines = [];
+  for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  var t0, n, x, N = 2000, times = [], mm = new Map([['a', 1]]), ok = {}, wm = new WeakMap(), st = new Set(['a']);
+  wm.set(ok, 1);
+  var time = function (label, f) { t0 = Date.now(); for (n = 0; n < N; n++) x = f(); times.push(label + ' ' + ((Date.now() - t0) * 1000 / N).toFixed(1)); };
+  time('new Map', function () { return new Map(); });
+  time('map.get', function () { return mm.get('a'); });
+  time('map.set', function () { return mm.set('b', 2); });
+  time('map.has obj', function () { return mm.has(ok); });
+  time('set.has', function () { return st.has('a'); });
+  time('new WeakMap', function () { return new WeakMap(); });
+  time('weak.get', function () { return wm.get(ok); });
+  time('weak.set new key', function () { return wm.set({}, 1); });
+  lines.push('us: ' + times.join(', '));
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'collections ' + pass + '/' + res.length;
+}, 300);
+</script>
+</body>
+</html>
