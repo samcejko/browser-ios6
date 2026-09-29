@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>dom gaps test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// Small DOM members the old engine lacks (shims-extra.js): event.isTrusted / composed, window.origin (replaceable),
+// document.contentType, DocumentFragment#getElementById, nonce. Chrome passes natively.
+setTimeout(function () {
+  var res = [];
+  var check = function (name, fn, expect) {
+    var got;
+    try { got = fn(); } catch (e) { got = 'threw ' + e.message; }
+    res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+  };
+  check('script-made events are not trusted', function () {
+    var e = document.createEvent('Event'); e.initEvent('x', true, true);
+    var c = new CustomEvent('y'), z = new Event('z'), seen = null;
+    document.body.addEventListener('z', function (ev) { seen = ev.isTrusted; });
+    document.dispatchEvent(c); document.body.dispatchEvent(z);
+    return [e.isTrusted, c.isTrusted, z.isTrusted, seen];
+  }, [false, false, false, false]);
+  check('composed of a script-made event', function () { var e = document.createEvent('Event'); e.initEvent('click', true, true); return e.composed; }, false);
+  check('window.origin', function () { return window.origin === location.protocol + '//' + location.host; }, true);
+  check('window.origin is replaceable', function () { var o = window.origin; window.origin = 'mine'; var r = window.origin; window.origin = o; return r; }, 'mine');
+  check('document.contentType', function () { return document.contentType; }, 'text/html');
+  check('fragment getElementById', function () { var t = document.createElement('template'); t.innerHTML = '<p><b id="q">b</b></p>'; var f = t.content || t; return f.getElementById('q') ? f.getElementById('q').textContent : null; }, 'b');
+  check('nonce', function () { var s = document.createElement('script'); s.setAttribute('nonce', 'abc'); return s.nonce; }, 'abc');
+  var pass = 0, lines = [];
+  for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'domgaps ' + pass + '/' + res.length;
+}, 300);
+</script>
+</body>
+</html>

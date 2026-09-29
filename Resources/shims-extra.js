@@ -9761,6 +9761,58 @@
     if (window.Event && window.Event.prototype && !window.Event.prototype.composedPath) {
         window.Event.prototype.composedPath = function () { var path = [], n = this.target; while (n) { path.push(n); n = n.parentNode || (n === document ? window : null); } if (path[path.length - 1] !== window) path.push(window); return path; };
     }
+    // event.isTrusted and event.composed, which the old engine lacks (a handler that skips events with !e.isTrusted
+    // skipped every tap): the events scripts make (document.createEvent, and so the shims' Event and CustomEvent
+    // constructors) are marked, the others come from the engine
+    (function () {
+        var EP = window.Event && window.Event.prototype, probe = null;
+        try { probe = document.createEvent('Event'); } catch (e) { probe = null; }
+        if (!EP || !probe || probe.isTrusted !== undefined) return;
+        var owner = document;
+        while (owner && !Object.prototype.hasOwnProperty.call(owner, 'createEvent')) owner = Object.getPrototypeOf(owner);
+        var create = owner && owner.createEvent;
+        if (typeof create !== 'function') return;
+        owner.createEvent = function createEvent(kind) {
+            var e = create.apply(this, arguments);
+            try { Object.defineProperty(e, '__brMade', { value: true }); } catch (x) {}
+            return e;
+        };
+        // (and every event a script dispatches: the engine's own Event constructors make them without createEvent; all
+        // dispatchEvent calls come through EventTarget.prototype, see above)
+        var ETp = window.EventTarget && window.EventTarget.prototype, dispatch = ETp && ETp.dispatchEvent;
+        if (typeof dispatch === 'function') ETp.dispatchEvent = function dispatchEvent(ev) {
+            if (ev && typeof ev === 'object' && !ev.__brMade) { try { Object.defineProperty(ev, '__brMade', { value: true }); } catch (x) {} }
+            return dispatch.apply(this, arguments);
+        };
+        var UI = /^(click|dblclick|auxclick|contextmenu|mouse|pointer|touch|key|focus|blur|input|beforeinput|wheel|composition)/;
+        try {
+            Object.defineProperty(EP, 'isTrusted', { get: function () { return !this.__brMade; }, configurable: true });
+            Object.defineProperty(EP, 'composed', { get: function () { return !this.__brMade && UI.test(this.type); }, configurable: true });
+        } catch (e2) {}
+    })();
+    // window.origin (replaceable, as a script's own global `origin` must keep working), document.contentType, a
+    // fragment's getElementById, the nonce of elements
+    if (!('origin' in window)) {
+        try {
+            Object.defineProperty(window, 'origin', { configurable: true, enumerable: true,
+                get: function () { return location.protocol + '//' + location.host; },
+                set: function (v) { Object.defineProperty(window, 'origin', { value: v, writable: true, configurable: true, enumerable: true }); } });
+        } catch (eO) {}
+    }
+    if (window.Document && !('contentType' in document)) {
+        try { Object.defineProperty(window.Document.prototype, 'contentType', { get: function () { return this.xmlVersion ? 'application/xml' : 'text/html'; }, configurable: true }); } catch (eC) {}
+    }
+    if (window.DocumentFragment && !window.DocumentFragment.prototype.getElementById) {
+        window.DocumentFragment.prototype.getElementById = function (id) {
+            id = String(id);
+            var all = this.querySelectorAll('[id]');
+            for (var i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
+            return null;
+        };
+    }
+    if (window.HTMLElement && !('nonce' in document.createElement('script'))) {
+        try { Object.defineProperty(window.HTMLElement.prototype, 'nonce', { get: function () { return this.getAttribute('nonce') || ''; }, set: function (v) { this.setAttribute('nonce', v); }, configurable: true }); } catch (eN) {}
+    }
     if (Ep && !Ep.insertAdjacentElement) {
         Ep.insertAdjacentElement = function (position, el) {
             var p = String(position).toLowerCase();
