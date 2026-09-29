@@ -794,12 +794,15 @@ static BOOL BRIsFontDataURL(NSURL *url)
     // (a picture sent with another type is still a picture: DuckDuckGo's WebP illustrations come as text/html, which the
     // document rewriter garbled; browsers go by the bytes there)
     BOOL pictureRequest = self.request.mainDocumentURL && ![url isEqual:self.request.mainDocumentURL] && BRLooksLikeImageRequest(self.request);
-    if (status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
+    // (a document sent with an error status is a page all the same: a site's own 404 page, and weather.com's pages for
+    // a locale it has no route for, the whole app with a 404; without the rewrite they had no polyfills: no globalThis)
+    BOOL okStatus = status >= 200 && status < 300, errorPage = status >= 400 && status < 600;
+    if ((okStatus || errorPage) && ![method isEqualToString:@"HEAD"] && [BRSettings cssFixEnabled] && [BRCSSRewriter shared].available) {
         NSString *path = [url.path lowercaseString] ?: @"";
         NSString *accept = [BRHeader(self.request.allHTTPHeaderFields, @"Accept") lowercaseString] ?: @"";
-        if ([ctype hasPrefix:@"text/css"]) kind = @"css";
+        if ([ctype hasPrefix:@"text/css"]) kind = okStatus ? @"css" : nil;
         else if (([ctype hasPrefix:@"text/html"] || [ctype hasPrefix:@"application/xhtml+xml"]) && !pictureRequest) kind = @"html";
-        else if (!ctype.length && [accept hasPrefix:@"text/css"]) kind = @"css";
+        else if (!ctype.length && [accept hasPrefix:@"text/css"] && okStatus) kind = @"css";
         (void)path;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (kind && declared > (long long)BRRewriteLimit(kind)) kind = nil;
