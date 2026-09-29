@@ -665,6 +665,482 @@
         if (Number.parseInt === nPI || !Number.parseInt) Number.parseInt = window.parseInt;
         if (Number.parseFloat === nPF || !Number.parseFloat) Number.parseFloat = window.parseFloat;
     })();
+    // Lean versions of the ES2015+ methods pages call all the time, in place of core-js's: its general helpers cost
+    // microseconds each here (ToString asks every value's class, a bound call per string function), so that
+    // 'abc'.startsWith('a') took 30 us, includes 24 us, padStart 48 us, Object.entries 36 us and Array.from of eight
+    // items 180 us (YouTube: 33 000 startsWith, 1.5 s). They keep what core-js's feature tests ask (IsRegExp through
+    // Symbol.match, holes read as undefined, iterators closed, fromCodePoint.length 1, assign reading enumerability as
+    // it goes), so a page's own copy of core-js keeps them.
+    (function () {
+        var SP = String.prototype, AP = Array.prototype, S = window.Symbol, N = window.__brNative || {};
+        if (SP.startsWith && SP.startsWith.__brLean) return;
+        var isArray = Array.isArray, toStr0 = Object.prototype.toString, nIndexOf = AP.indexOf, SymC = typeof S === 'function' ? S : null;
+        var keyOf = function (sym) { return !sym ? null : typeof sym === 'symbol' ? sym : String(sym); };
+        var MATCH = keyOf(S && S.match), ITER = keyOf(S && S.iterator);
+        var def = N.defineProperty || Object.defineProperty, pie = N.propertyIsEnumerable || Object.prototype.propertyIsEnumerable;
+        var hidden = function (o, k, fn) { fn.__brLean = true; def(o, k, { value: fn, writable: true, configurable: true, enumerable: false }); };
+        var toInt = function (v) { v = +v; return v !== v ? 0 : v === Infinity || v === -Infinity ? v : v < 0 ? Math.ceil(v) : Math.floor(v); };
+        var toLen = function (v) { v = toInt(v); return v > 0 ? (v > 9007199254740991 ? 9007199254740991 : v) : 0; };
+        var thisStr = function (v, name) {
+            if (v === null || v === undefined) throw new TypeError('String.prototype.' + name + ' called on null or undefined');
+            return typeof v === 'string' ? v : String(v);
+        };
+        // ToString of an argument: a (polyfilled) symbol throws
+        var argStr = function (v) {
+            if (typeof v === 'string') return v;
+            if (SymC && v !== null && typeof v === 'object' && v instanceof SymC) throw new TypeError('Cannot convert a Symbol value to a string');
+            return String(v);
+        };
+        var notRegExp = function (v, name) {
+            if (v === null || (typeof v !== 'object' && typeof v !== 'function')) return;
+            var m = MATCH !== null ? v[MATCH] : undefined;
+            if (m !== undefined ? !!m : toStr0.call(v) === '[object RegExp]') throw new TypeError('First argument to String.prototype.' + name + ' must not be a regular expression');
+        };
+        var thisObj = function (v, name) {
+            if (v === null || v === undefined) throw new TypeError('Array.prototype.' + name + ' called on null or undefined');
+            return Object(v);
+        };
+        var callable = function (fn) { if (typeof fn !== 'function') throw new TypeError(fn + ' is not a function'); };
+        // (the common call first, a string with a string and nothing else, written out: every call and every read of
+        // arguments[i] costs here)
+        hidden(SP, 'startsWith', function startsWith(search) {
+            var s = this, t = search, p = 0;
+            if (typeof s !== 'string') s = thisStr(s, 'startsWith');
+            if (typeof t !== 'string') { notRegExp(t, 'startsWith'); t = argStr(t); }
+            if (arguments.length > 1) { p = toInt(arguments[1]); if (p < 0) p = 0; else if (p > s.length) p = s.length; }
+            return s.length - p >= t.length && (p === 0 && t.length === 1 ? s.charAt(0) === t : s.substr(p, t.length) === t);
+        });
+        hidden(SP, 'endsWith', function endsWith(search) {
+            var s = this, t = search, end;
+            if (typeof s !== 'string') s = thisStr(s, 'endsWith');
+            if (typeof t !== 'string') { notRegExp(t, 'endsWith'); t = argStr(t); }
+            end = s.length;
+            if (arguments.length > 1 && arguments[1] !== undefined) { end = toInt(arguments[1]); if (end < 0) end = 0; else if (end > s.length) end = s.length; }
+            return end >= t.length && s.substr(end - t.length, t.length) === t;
+        });
+        hidden(SP, 'includes', function includes(search) {
+            var s = this, t = search;
+            if (typeof s !== 'string') s = thisStr(s, 'includes');
+            if (typeof t !== 'string') { notRegExp(t, 'includes'); t = argStr(t); }
+            return (arguments.length > 1 ? s.indexOf(t, toInt(arguments[1])) : s.indexOf(t)) !== -1;
+        });
+        var pad = function (self, name, maxLength, fill, atStart) {
+            var s = thisStr(self, name), len = toLen(maxLength);
+            if (len <= s.length) return s;
+            var f = fill === undefined ? ' ' : argStr(fill);
+            if (f === '') return s;
+            var need = len - s.length;
+            while (f.length < need) f += f;
+            f = f.length > need ? f.slice(0, need) : f;
+            return atStart ? f + s : s + f;
+        };
+        hidden(SP, 'padStart', function padStart(maxLength) { return pad(this, 'padStart', maxLength, arguments[1], true); });
+        hidden(SP, 'padEnd', function padEnd(maxLength) { return pad(this, 'padEnd', maxLength, arguments[1], false); });
+        hidden(SP, 'repeat', function repeat(count) {
+            var s = thisStr(this, 'repeat'), n = toInt(count), out = '';
+            if (n < 0 || n === Infinity) throw new RangeError('Invalid count value: ' + n);
+            while (n > 0) { if (n % 2 === 1) out += s; n = Math.floor(n / 2); if (n) s += s; }
+            return out;
+        });
+        hidden(SP, 'codePointAt', function codePointAt(pos) {
+            var s = thisStr(this, 'codePointAt'), i = toInt(pos);
+            if (i < 0 || i >= s.length) return undefined;
+            var a = s.charCodeAt(i);
+            if (a < 0xD800 || a > 0xDBFF || i + 1 === s.length) return a;
+            var b = s.charCodeAt(i + 1);
+            return b < 0xDC00 || b > 0xDFFF ? a : (a - 0xD800) * 0x400 + b - 0xDC00 + 0x10000;
+        });
+        hidden(String, 'fromCodePoint', function fromCodePoint(x) {
+            var out = '', fcc = String.fromCharCode;
+            for (var i = 0; i < arguments.length; i++) {
+                var c = +arguments[i];
+                if (c !== toInt(c) || c < 0 || c > 0x10FFFF) throw new RangeError(arguments[i] + ' is not a valid code point');
+                out += c < 0x10000 ? fcc(c) : fcc(Math.floor((c - 0x10000) / 0x400) + 0xD800, (c - 0x10000) % 0x400 + 0xDC00);
+            }
+            return out;
+        });
+        hidden(AP, 'includes', function includes(el) {
+            // (an array, one value that is neither NaN nor undefined: the engine's indexOf)
+            if (arguments.length === 1 && el === el && el !== undefined && isArray(this)) return nIndexOf.call(this, el) !== -1;
+            var O = thisObj(this, 'includes'), len = toLen(O.length);
+            if (!len) return false;
+            var k = arguments.length > 1 ? toInt(arguments[1]) : 0;
+            if (k < 0) { k += len; if (k < 0) k = 0; }
+            if (el !== el) { for (; k < len; k++) { var v = O[k]; if (v !== v) return true; } return false; }
+            if (el !== undefined) return nIndexOf.call(O, el, k) !== -1;
+            for (; k < len; k++) if (O[k] === undefined) return true;   // (holes read as undefined)
+            return false;
+        });
+        var findIn = function (self, name, fn, thisArg, last, wantIndex) {
+            var O = thisObj(self, name), len = toLen(O.length);
+            callable(fn);
+            for (var n = 0; n < len; n++) {
+                var k = last ? len - 1 - n : n, v = O[k];
+                if (fn.call(thisArg, v, k, O)) return wantIndex ? k : v;
+            }
+            return wantIndex ? -1 : undefined;
+        };
+        hidden(AP, 'find', function find(fn) { return findIn(this, 'find', fn, arguments[1], false, false); });
+        hidden(AP, 'findIndex', function findIndex(fn) { return findIn(this, 'findIndex', fn, arguments[1], false, true); });
+        hidden(AP, 'findLast', function findLast(fn) { return findIn(this, 'findLast', fn, arguments[1], true, false); });
+        hidden(AP, 'findLastIndex', function findLastIndex(fn) { return findIn(this, 'findLastIndex', fn, arguments[1], true, true); });
+        var flatInto = function (out, src, depth) {
+            var len = toLen(src.length);
+            for (var i = 0; i < len; i++) {
+                if (!(i in src)) continue;
+                var v = src[i];
+                if (depth > 0 && isArray(v)) flatInto(out, v, depth - 1); else out.push(v);
+            }
+            return out;
+        };
+        hidden(AP, 'flat', function flat() {
+            var O = thisObj(this, 'flat'), d = arguments.length && arguments[0] !== undefined ? toInt(arguments[0]) : 1;
+            return flatInto([], O, d);
+        });
+        hidden(AP, 'flatMap', function flatMap(fn) {
+            var O = thisObj(this, 'flatMap'), len = toLen(O.length), out = [], thisArg = arguments[1];
+            callable(fn);
+            for (var i = 0; i < len; i++) {
+                if (!(i in O)) continue;
+                var v = fn.call(thisArg, O[i], i, O);
+                if (isArray(v)) flatInto(out, v, 0); else out.push(v);
+            }
+            return out;
+        });
+        // Array.from: arrays, strings, array-likes and core-js's Set and Map directly; other iterables step by step,
+        // closed (their return()) when the map function throws; another constructor than Array: core-js's
+        var nFrom = Array.from, CSet = window.Set, CMap = window.Map;
+        var fromIterator = function (it, mapFn, thisArg) {
+            var out = [], step, i = 0;
+            while (!(step = it.next()).done) {
+                if (mapFn) {
+                    try { out.push(mapFn.call(thisArg, step.value, i++)); } catch (e) {
+                        var ret = it['return'];
+                        if (typeof ret === 'function') { try { ret.call(it); } catch (e2) {} }
+                        throw e;
+                    }
+                } else out.push(step.value);
+            }
+            return out;
+        };
+        Array.from = function from(items) {
+            var i, len, out;
+            // (an array alone into an array: a copy, holes read as undefined)
+            if (arguments.length === 1 && (this === Array || this === undefined) && isArray(items)) {
+                len = items.length; out = new Array(len);
+                for (i = 0; i < len; i++) out[i] = items[i];
+                return out;
+            }
+            var mapFn = arguments.length > 1 ? arguments[1] : undefined, thisArg = arguments[2];
+            if (this !== Array && this !== undefined && this !== null && this !== window && typeof this === 'function' && nFrom) return nFrom.apply(this, arguments);
+            if (mapFn !== undefined) callable(mapFn); else mapFn = null;
+            if (items === null || items === undefined) throw new TypeError(items + ' is not iterable');
+            if (isArray(items)) {
+                len = items.length; out = new Array(len);
+                for (i = 0; i < len; i++) out[i] = mapFn ? mapFn.call(thisArg, items[i], i) : items[i];
+                return out;
+            }
+            if (typeof items === 'string') {
+                out = items.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]/g) || [];
+                if (mapFn) for (i = 0; i < out.length; i++) out[i] = mapFn.call(thisArg, out[i], i);
+                return out;
+            }
+            if (CSet && items instanceof CSet) {
+                out = []; items.forEach(function (v) { out.push(v); });
+            } else if (CMap && items instanceof CMap) {
+                out = []; items.forEach(function (v, k) { out.push([k, v]); });
+            } else {
+                var getIt = ITER !== null ? items[ITER] : undefined;
+                if (getIt === undefined && typeof items['@@iterator'] === 'function') getIt = items['@@iterator'];
+                // (a NodeList, arguments...: the array iterator reads index by index, as the loop below does)
+                if (getIt !== undefined && getIt !== null && !(ITER !== null && getIt === AP[ITER])) {
+                    callable(getIt);
+                    return fromIterator(getIt.call(items), mapFn, thisArg);
+                }
+                var O = Object(items);
+                len = toLen(O.length); out = new Array(len);
+                for (i = 0; i < len; i++) out[i] = O[i];
+            }
+            if (mapFn) for (i = 0; i < out.length; i++) out[i] = mapFn.call(thisArg, out[i], i);
+            return out;
+        };
+        Array.from.__brLean = true;
+        var ownEntries = function (o, values) {
+            if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
+            var O = Object(o), keys = Object.keys(O), out = [];
+            for (var i = 0; i < keys.length; i++) {
+                var k = keys[i];
+                if (!pie.call(O, k)) continue;   // (made non-enumerable by a getter meanwhile)
+                out.push(values ? O[k] : [k, O[k]]);
+            }
+            return out;
+        };
+        hidden(Object, 'entries', function entries(o) { return ownEntries(o, false); });
+        hidden(Object, 'values', function values(o) { return ownEntries(o, true); });
+        hidden(Object, 'fromEntries', function fromEntries(iterable) {
+            if (iterable === null || iterable === undefined) throw new TypeError(iterable + ' is not iterable');
+            var out = {}, list = isArray(iterable) ? iterable : Array.from(iterable);
+            for (var i = 0; i < list.length; i++) {
+                var e = list[i];
+                if (e === null || (typeof e !== 'object' && typeof e !== 'function')) throw new TypeError('Iterator value ' + e + ' is not an entry object');
+                var k = e[0];
+                if (!(SymC && k instanceof SymC)) k = String(k);
+                // (an own property even for __proto__; a symbol through core-js, which keeps its own books on them)
+                if (k === '__proto__') def(out, k, { value: e[1], writable: true, enumerable: true, configurable: true });
+                else out[k] = e[1];
+            }
+            return out;
+        });
+        var gops = Object.getOwnPropertySymbols;
+        hidden(Object, 'assign', function assign(target, source) {
+            if (target === null || target === undefined) throw new TypeError('Cannot convert undefined or null to object');
+            var T = Object(target);
+            for (var i = 1; i < arguments.length; i++) {
+                var src = arguments[i];
+                if (src === null || src === undefined) continue;
+                var Sx = Object(src), keys = Object.keys(Sx), j, k;
+                for (j = 0; j < keys.length; j++) { k = keys[j]; if (pie.call(Sx, k)) T[k] = Sx[k]; }
+                if (gops && typeof Sx === 'object') {
+                    var syms = gops(Sx);
+                    for (j = 0; j < syms.length; j++) if (Object.prototype.propertyIsEnumerable.call(Sx, syms[j])) T[syms[j]] = Sx[syms[j]];
+                }
+            }
+            return T;
+        });
+    })();
+
+    // Promise, lean, in place of core-js's: its general machinery made every step cost 50-100 us here (new Promise 46-68,
+    // Promise.resolve 81, then 98), and async functions take several per await. The standard's algorithms as they are
+    // (reactions as microtasks through queueMicrotask, thenables adopted in a job of their own, species for subclasses,
+    // unhandledrejection / rejectionhandled events on window), the state in one hidden property. Subclasses the ES5 way
+    // (Promise.call(this, executor), as lowered classes do) work, as with core-js.
+    (function () {
+        var N = window.__brNative || {}, Old = window.Promise, qm = N.queueMicrotask || window.queueMicrotask;
+        // (queueMicrotask itself without core-js's wrapper in front: 27 us a call there, React's scheduler calls it too)
+        if (N.queueMicrotask && window.queueMicrotask !== N.queueMicrotask) try { window.queueMicrotask = N.queueMicrotask; } catch (eQ) {}
+        if (!Old || Old.__brLean || typeof qm !== 'function') return;
+        var def = N.defineProperty || Object.defineProperty, S = window.Symbol;
+        var keyOf = function (sym) { return !sym ? null : typeof sym === 'symbol' ? sym : String(sym); };
+        var SPECIES = keyOf(S && S.species), ITER = keyOf(S && S.iterator), TAG = S && S.toStringTag;
+        var PENDING = 0, FULFILLED = 1, REJECTED = 2, ERR = {}, lastError = null, NOOP = function () {};
+        var hide = function (o, k, v) { def(o, k, { value: v, writable: true, configurable: true, enumerable: false }); };
+        // (the tries in small functions of their own: a function with a try makes a scope object on every call here)
+        var try0 = function (fn) { try { return fn(); } catch (e) { lastError = e; return ERR; } };
+        var try1 = function (fn, a) { try { return fn(a); } catch (e) { lastError = e; return ERR; } };
+        var tryCall2 = function (fn, self, a, b) { try { return fn.call(self, a, b); } catch (e) { lastError = e; return ERR; } };
+        var getThen = function (x) { try { return x.then; } catch (e) { lastError = e; return ERR; } };
+        // (its own state: the record names the promise, so one inherited through Object.create does not count)
+        var stateOf = function (p) {
+            if (p === null || typeof p !== 'object') return null;
+            var st = p.__brP;
+            return st !== undefined && st !== null && st.p === p ? st : null;
+        };
+        var P = function Promise(executor) {
+            if (!(this instanceof P) || stateOf(this)) throw new TypeError("Promise constructor cannot be invoked without 'new'");
+            if (typeof executor !== 'function') throw new TypeError('Promise resolver ' + executor + ' is not a function');
+            var st = init(this), fns = resolvers(st);
+            if (tryCall2(executor, undefined, fns[0], fns[1]) === ERR) fns[1](lastError);
+        };
+        var init = function (p) {
+            var st = { s: PENDING, v: undefined, r: null, h: false, p: p, reported: false };
+            hide(p, '__brP', st);
+            return st;
+        };
+        // a promise of ours made without an executor (then, resolve, all...)
+        var Internal = function () { init(this); };
+        Internal.prototype = P.prototype;
+        // the resolving functions of a promise: the first call wins
+        var resolvers = function (st) {
+            var done = false;
+            return [function (v) { if (!done) { done = true; resolveWith(st, v); } }, function (e) { if (!done) { done = true; settle(st, REJECTED, e); } }];
+        };
+        var resolveWith = function (st, x) {
+            if (x === st.p) return settle(st, REJECTED, new TypeError('Chaining cycle detected for promise #<Promise>'));
+            if (x !== null && (typeof x === 'object' || typeof x === 'function')) {
+                var then = getThen(x);
+                if (then === ERR) return settle(st, REJECTED, lastError);
+                if (typeof then === 'function') {
+                    // (NewPromiseResolveThenableJob)
+                    qm(function () {
+                        var fns = resolvers(st);
+                        if (tryCall2(then, x, fns[0], fns[1]) === ERR) fns[1](lastError);
+                    });
+                    return;
+                }
+            }
+            settle(st, FULFILLED, x);
+        };
+        var unhandled = [], checking = false;
+        var settle = function (st, state, v) {
+            if (st.s !== PENDING) return;
+            st.s = state;
+            st.v = v;
+            var r = st.r;
+            st.r = null;
+            if (r !== null) {
+                if (r.length === undefined) queueReaction(r, state, v);
+                else for (var i = 0; i < r.length; i++) queueReaction(r[i], state, v);
+            }
+            if (state === REJECTED && !st.h) {
+                unhandled.push(st);
+                if (!checking) { checking = true; setTimeout(checkUnhandled, 0); }
+            }
+        };
+        var fire = function (type, st) {
+            var ev;
+            try { ev = document.createEvent('Event'); ev.initEvent(type, false, true); } catch (e) { return true; }
+            ev.promise = st.p;
+            ev.reason = st.v;
+            var go = window.dispatchEvent(ev);
+            var h = window['on' + type];
+            if (typeof h === 'function') { try { if (h.call(window, ev) === false) go = false; } catch (e2) {} }
+            return go && !ev.defaultPrevented;
+        };
+        var checkUnhandled = function () {
+            checking = false;
+            var list = unhandled;
+            unhandled = [];
+            for (var i = 0; i < list.length; i++) {
+                var st = list[i];
+                if (st.h) continue;
+                st.reported = true;
+                if (fire('unhandledrejection', st) && window.console && console.error) {
+                    try { console.error('Unhandled Promise Rejection:', st.v); } catch (e) {}
+                }
+            }
+        };
+        var queueReaction = function (re, state, v) {
+            qm(function () {
+                var handler = state === FULFILLED ? re.f : re.r, out;
+                if (handler === null) { if (state === FULFILLED) capResolve(re.c, v); else capReject(re.c, v); return; }
+                out = try1(handler, v);
+                if (out === ERR) capReject(re.c, lastError); else capResolve(re.c, out);
+            });
+        };
+        // a capability: {st} for ours, {resolve, reject, promise} for another constructor's
+        var capResolve = function (c, v) { if (c.st) resolveWith(c.st, v); else c.resolve(v); };
+        var capReject = function (c, e) { if (c.st) settle(c.st, REJECTED, e); else c.reject(e); };
+        var newCap = function (C) {
+            if (C === P) { var p = new Internal(); return { st: p.__brP, promise: p }; }
+            if (typeof C !== 'function') throw new TypeError('Promise resolve or reject function is not callable');
+            var c = { resolve: undefined, reject: undefined, promise: undefined };
+            c.promise = new C(function (res, rej) {
+                if (c.resolve !== undefined || c.reject !== undefined) throw new TypeError('Promise executor has already been invoked with non-undefined arguments');
+                c.resolve = res; c.reject = rej;
+            });
+            if (typeof c.resolve !== 'function' || typeof c.reject !== 'function') throw new TypeError('Promise resolve or reject function is not callable');
+            return c;
+        };
+        var speciesOf = function (o) {
+            var C = o.constructor;
+            if (C === P || C === undefined) return P;
+            if (C === null || (typeof C !== 'object' && typeof C !== 'function')) throw new TypeError('object.constructor is not an object');
+            var Sp = SPECIES !== null ? C[SPECIES] : undefined;
+            return Sp === undefined || Sp === null ? P : Sp;
+        };
+        var proto = P.prototype;
+        hide(proto, 'then', function then(onFulfilled, onRejected) {
+            var st = stateOf(this);
+            if (!st) throw new TypeError('Method Promise.prototype.then called on incompatible receiver ' + this);
+            var c = newCap(speciesOf(this));
+            var re = { c: c, f: typeof onFulfilled === 'function' ? onFulfilled : null, r: typeof onRejected === 'function' ? onRejected : null };
+            if (st.s === PENDING) {
+                if (st.r === null) st.r = re;
+                else if (st.r.length === undefined) st.r = [st.r, re];
+                else st.r.push(re);
+            } else {
+                if (st.s === REJECTED && !st.h && st.reported) fire('rejectionhandled', st);
+                queueReaction(re, st.s, st.v);
+            }
+            st.h = true;
+            return c.promise;
+        });
+        hide(proto, 'catch', function (onRejected) { return this.then(undefined, onRejected); });
+        hide(proto, 'finally', function (onFinally) {
+            if (this === null || (typeof this !== 'object' && typeof this !== 'function')) throw new TypeError('Promise.prototype.finally called on a non-object');
+            var C = speciesOf(this);
+            if (typeof onFinally !== 'function') return this.then(onFinally, onFinally);
+            return this.then(function (v) {
+                return resolveBy(C, onFinally()).then(function () { return v; });
+            }, function (e) {
+                return resolveBy(C, onFinally()).then(function () { throw e; });
+            });
+        });
+        proto.constructor = P;
+        hide(proto, 'constructor', P);
+        if (TAG) try { Object.defineProperty(proto, TAG, { value: 'Promise', configurable: true }); } catch (eT) {}
+        // PromiseResolve(C, x)
+        var resolveBy = function (C, x) {
+            var st = stateOf(x);
+            if (st && x.constructor === C) return x;
+            var c = newCap(C);
+            capResolve(c, x);
+            return c.promise;
+        };
+        hide(P, 'resolve', function resolve(x) {
+            if (this === null || (typeof this !== 'object' && typeof this !== 'function')) throw new TypeError('PromiseResolve called on non-object');
+            return resolveBy(this, x);
+        });
+        hide(P, 'reject', function reject(e) { var c = newCap(this); capReject(c, e); return c.promise; });
+        hide(P, 'withResolvers', function withResolvers() { var c = newCap(this); if (c.st) { var f = resolvers(c.st); return { promise: c.promise, resolve: f[0], reject: f[1] }; } return { promise: c.promise, resolve: c.resolve, reject: c.reject }; });
+        hide(P, 'try', function (fn) {
+            var c = newCap(this), args = Array.prototype.slice.call(arguments, 1);
+            var out = try0(function () { return fn.apply(undefined, args); });
+            if (out === ERR) capReject(c, lastError); else capResolve(c, out);
+            return c.promise;
+        });
+        // the items of an iterable: an array as it is, anything else through Array.from (iterators closed there)
+        var itemsOf = function (it) {
+            if (Array.isArray(it)) return it;
+            if (it === null || it === undefined || (ITER !== null && typeof it[ITER] !== 'function' && typeof it !== 'string')) throw new TypeError(it + ' is not iterable');
+            return Array.from(it);
+        };
+        var combine = function (C, iterable, kind) {
+            var c = newCap(C), list, i, remaining = 1, values = [];
+            var fail = function (e) { capReject(c, e); };
+            var got = try0(function () { list = itemsOf(iterable); return 0; });
+            if (got === ERR) { fail(lastError); return c.promise; }
+            var resolveItem = C === P ? function (x) { return resolveBy(P, x); } : function (x) { return C.resolve(x); };
+            var each = function (index, item) {
+                var p = resolveItem(item), called = false;
+                if (kind === 'race') { p.then(function (v) { capResolve(c, v); }, fail); return; }
+                values[index] = undefined;
+                remaining++;
+                var ok = function (v) {
+                    if (called) return; called = true;
+                    values[index] = kind === 'allSettled' ? { status: 'fulfilled', value: v } : v;
+                    if (--remaining === 0) { if (kind === 'any') fail(anyError(values)); else capResolve(c, values); }
+                };
+                var bad = function (e) {
+                    if (called) return; called = true;
+                    if (kind === 'all') { fail(e); return; }
+                    values[index] = kind === 'allSettled' ? { status: 'rejected', reason: e } : e;
+                    if (--remaining === 0) { if (kind === 'any') fail(anyError(values)); else capResolve(c, values); }
+                };
+                if (kind === 'any') p.then(function (v) { if (!called) { called = true; capResolve(c, v); } }, bad);
+                else p.then(ok, bad);
+            };
+            for (i = 0; i < list.length; i++) {
+                var r = try0((function (idx, item) { return function () { each(idx, item); return 0; }; })(i, list[i]));
+                if (r === ERR) { fail(lastError); return c.promise; }
+            }
+            if (kind !== 'race' && --remaining === 0) { if (kind === 'any') fail(anyError(values)); else capResolve(c, values); }
+            return c.promise;
+        };
+        var anyError = function (errors) {
+            var AE = window.AggregateError;
+            if (typeof AE === 'function') return new AE(errors, 'All promises were rejected');
+            var e = new Error('All promises were rejected'); e.name = 'AggregateError'; e.errors = errors; return e;
+        };
+        hide(P, 'all', function all(iterable) { return combine(this, iterable, 'all'); });
+        hide(P, 'allSettled', function allSettled(iterable) { return combine(this, iterable, 'allSettled'); });
+        hide(P, 'any', function any(iterable) { return combine(this, iterable, 'any'); });
+        hide(P, 'race', function race(iterable) { return combine(this, iterable, 'race'); });
+        if (SPECIES !== null) try { Object.defineProperty(P, S.species, { get: function () { return this; }, configurable: true }); } catch (eS) {}
+        hide(P, 'toString', function toString() { return 'function Promise() { [native code] }'; });
+        P.__brLean = true;
+        try { window.Promise = P; } catch (eP) {}
+    })();
 
     // document.currentScript: the running script's URL is read from a stack trace (the first frame that is not this
     // bundle's) and matched with the script elements; inline and eval'd code, or no stack, get the last script element
@@ -1250,16 +1726,23 @@
         };
         // (a source whose own properties are all enumerable has no core-js symbol, which are never enumerable: its keys
         // are copied here, core-js's assign checked every key of it for one)
-        var N = window.__brNative || {}, engineKeys = N.keys, engineNames = N.getOwnPropertyNames;
+        // (each key still enumerable when its turn comes, as the standard reads it: a getter may hide the ones after it,
+        // and a page's own core-js checks exactly that - failing, it put its own assign in, 9 us a call here)
+        var N = window.__brNative || {}, engineKeys = N.keys, engineNames = N.getOwnPropertyNames, pie = N.propertyIsEnumerable;
         var copy = function (target, args) {
-            if (!engineKeys || !engineNames || target === null || target === undefined) return nativeAssign.apply(Object, args);
+            if (!engineKeys || !engineNames || !pie || target === null || target === undefined) return nativeAssign.apply(Object, args);
             var to = Object(target);
             for (var i = 1; i < args.length; i++) {
                 var s = args[i];
                 if (s === null || s === undefined) continue;
-                var from = Object(s), keys = engineKeys(from);
-                if (engineNames(from).length !== keys.length) { nativeAssign(to, from); continue; }
-                for (var k = 0; k < keys.length; k++) to[keys[k]] = from[keys[k]];
+                var from = Object(s), keys = engineKeys(from), n = keys.length, k;
+                if (engineNames(from).length !== n) { nativeAssign(to, from); continue; }
+                // (the values read first; only when reading them changed the keys - a getter - each key's enumerability
+                // is asked for, a call per key)
+                var vals = new Array(n);
+                for (k = 0; k < n; k++) vals[k] = from[keys[k]];
+                if (engineKeys(from).length === n) { for (k = 0; k < n; k++) to[keys[k]] = vals[k]; }
+                else { for (k = 0; k < n; k++) if (pie.call(from, keys[k])) to[keys[k]] = vals[k]; }
             }
             return to;
         };

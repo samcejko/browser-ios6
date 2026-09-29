@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>lean test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// The lean ES2015+ methods of shims.js (in place of core-js's slow ones) against the standard: Chrome passes natively,
+// the iPad must give the same. Timings at the end (microseconds per call on the iPad).
+setTimeout(function () {
+  var res = [];
+  var check = function (name, fn, expect) {
+    var got;
+    try { got = fn(); } catch (e) { got = 'threw ' + (e instanceof TypeError ? 'TypeError' : e instanceof RangeError ? 'RangeError' : e.name); }
+    res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+  };
+  var S = window.Symbol;
+  check('startsWith', function () { return ['abc'.startsWith('ab'), 'abc'.startsWith('bc'), 'abc'.startsWith('bc', 1), 'abc'.startsWith(''), 'abc'.startsWith('abcd'), 'abc'.startsWith('a', -5), 'abc'.startsWith('c', 2.9), 'abc'.startsWith(undefined), 'undefinedx'.startsWith(undefined)]; }, [true, false, true, true, false, true, true, false, true]);
+  check('endsWith', function () { return ['abc'.endsWith('bc'), 'abc'.endsWith('ab'), 'abc'.endsWith('ab', 2), 'abc'.endsWith(''), 'abc'.endsWith('c', 99), 'abc'.endsWith('a', 1), 'abc'.endsWith('abc', undefined)]; }, [true, false, true, true, true, true, true]);
+  check('String includes', function () { return ['abc'.includes('b'), 'abc'.includes('d'), 'abc'.includes('a', 1), 'abc'.includes(''), 'abc'.includes('c', -9)]; }, [true, false, false, true, true]);
+  check('regular expressions refused, unless Symbol.match says no', function () { var r = []; try { 'a/./'.startsWith(/./); r.push('no'); } catch (e) { r.push(e instanceof TypeError); } var re = /./; re[S.match] = false; r.push('/./'.startsWith(re), '/./'.includes(re), '/./'.endsWith(re)); return r; }, [true, true, true, true]);
+  check('null this throws', function () { var r = []; try { String.prototype.startsWith.call(null, 'a'); r.push('no'); } catch (e) { r.push(e instanceof TypeError); } try { Array.prototype.includes.call(undefined, 1); r.push('no'); } catch (e2) { r.push(e2 instanceof TypeError); } return r; }, [true, true]);
+  check('padStart / padEnd', function () { return ['5'.padStart(3, '0'), 'abc'.padStart(2), 'x'.padStart(5, 'ab'), 'x'.padEnd(4, '12'), 'x'.padEnd(3), 'x'.padStart(3, ''), '12'.padStart(5, undefined)]; }, ['005', 'abc', 'ababx', 'x121', 'x  ', 'x', '   12']);
+  check('repeat', function () { var r = ['ab'.repeat(3), 'x'.repeat(0), ''.repeat(5), 'a'.repeat(2.9)]; try { 'a'.repeat(-1); r.push('no'); } catch (e) { r.push(e instanceof RangeError); } return r; }, ['ababab', '', '', 'aa', true]);
+  check('codePointAt / fromCodePoint', function () { var s = 'a😀b'; return [s.codePointAt(0), s.codePointAt(1), s.codePointAt(2), s.codePointAt(3), s.codePointAt(9), String.fromCodePoint(97, 0x1F600, 98) === s, String.fromCodePoint.length, (function () { try { String.fromCodePoint(-1); return 'no'; } catch (e) { return e instanceof RangeError; } })()]; }, [97, 128512, 56832, 98, null, true, 1, true]);
+  check('Array includes', function () { var a = [1, 2, NaN, , 'x']; return [a.includes(2), a.includes(3), a.includes(NaN), a.includes(undefined), a.includes(1, 1), a.includes('x', -1), Array(1).includes(), [-0].includes(0), Array.prototype.includes.call({ length: 2, 0: 'a', 1: 'b' }, 'b'), [1].includes(1, 5)]; }, [true, false, true, true, false, true, true, true, true, false]);
+  check('find / findIndex / findLast / findLastIndex (holes visited)', function () { var a = [5, , 12, 8, 130], seen = 0; var f = a.find(function (v) { seen++; return v > 10; }); return [f, seen, a.findIndex(function (v) { return v > 10; }), a.findLast(function (v) { return v > 10; }), a.findLastIndex(function (v) { return v > 1000; }), [, 1].find(function (v) { return v === undefined; }), (function () { var holes = 0; Array(3).find(function () { holes++; }); return holes; })()]; }, [12, 3, 2, 130, -1, null, 3]);
+  check('flat / flatMap', function () { return [[1, [2, [3, [4]]], , 5].flat(), [1, [2, [3, [4]]]].flat(2), [1, [2, [3, [4]]]].flat(Infinity), [1, 2].flatMap(function (x) { return [x, x * 2]; }), [1, 2].flatMap(function (x) { return [[x]]; }), [[1, , 2]].flat()]; }, [[1, 2, [3, [4]], 5], [1, 2, 3, [4]], [1, 2, 3, 4], [1, 2, 2, 4], [[1], [2]], [1, 2]]);
+  check('Array.from: arrays, strings, array-likes, iterables, map function', function () { return [Array.from([1, , 3]), Array.from('a😀b').length, Array.from({ length: 2, 0: 'x' }), Array.from(new Set([1, 2, 2])), Array.from(new Map([[1, 'a']])), Array.from([1, 2], function (x, i) { return x * 10 + i; }), Array.from(new Set([3]).values()), Array.from(document.createElement('div').childNodes).length]; }, [[1, null, 3], 3, ['x', null], [1, 2], [[1, 'a']], [10, 21], [3], 0]);
+  check('Array.from closes the iterator when the map function throws', function () { var closed = false, it = { next: function () { return { done: false, value: 1 }; }, 'return': function () { closed = true; return {}; } }; var iterable = {}; iterable[S.iterator] = function () { return it; }; try { Array.from(iterable, function () { throw new Error('x'); }); } catch (e) {} return closed; }, true);
+  check('Array.from of a subclass-like constructor', function () { var C = function () { this.made = true; }; var r = Array.from.call(C, [1, 2]); return [r.made, r[1], r.length]; }, [true, 2, 2]);
+  check('Object.entries / values / fromEntries', function () { var o = { a: 1, b: 'x' }; Object.defineProperty(o, 'h', { value: 3, enumerable: false }); return [Object.entries(o), Object.values(o), Object.entries('ab'), Object.fromEntries([['a', 1], ['b', 2]]), Object.fromEntries(new Map([['k', 'v']])), Object.keys(Object.fromEntries([['__proto__', 1]]))]; }, [[['a', 1], ['b', 'x']], [1, 'x'], [['0', 'a'], ['1', 'b']], { a: 1, b: 2 }, { k: 'v' }, ['__proto__']]);
+  check('Object.assign: order, symbols, getters that hide later keys, strings', function () {
+    var s = S('as'), src = { a: 1, b: 2 }; src[s] = 3;
+    var r = Object.assign({ z: 0 }, src, null, { c: 4 });
+    var getterDone = Object.assign({ b: 1 }, Object.assign(Object.defineProperty({}, 'a', { enumerable: true, get: function () { Object.defineProperty(this, 'b', { value: 3, enumerable: false }); } }), { b: 2 })).b;
+    return [Object.keys(r).join(), r[s], getterDone, Object.assign({}, 'ab')[1]];
+  }, ['z,a,b,c', 3, 1, 'b']);
+  var pass = 0, lines = [];
+  for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  // timings (microseconds per call)
+  var t0, n, x, N = 2000, a8 = [1, 2, 3, 4, 5, 6, 7, 8], times = [];
+  var time = function (name, f) { t0 = Date.now(); for (n = 0; n < N; n++) x = f(); times.push(name + ' ' + ((Date.now() - t0) * 1000 / N).toFixed(1)); };
+  time('startsWith', function () { return 'abcdefghij'.startsWith('abc'); });
+  time('includes', function () { return 'abcdefghij'.includes('def'); });
+  time('padStart', function () { return '5'.padStart(3, '0'); });
+  time('Array.from', function () { return Array.from(a8); });
+  time('entries', function () { return Object.entries({ a: 1, b: 2 }); });
+  time('assign', function () { return Object.assign({}, { a: 1, b: 2 }); });
+  time('arr.includes', function () { return a8.includes(5); });
+  time('find', function () { return a8.find(function (v) { return v === 5; }); });
+  lines.push('us: ' + times.join(', '));
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'lean ' + pass + '/' + res.length;
+}, 300);
+</script>
+</body>
+</html>

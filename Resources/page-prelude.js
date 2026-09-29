@@ -8,7 +8,8 @@
 (function () {
     try {
         Object.defineProperty(window, '__brNative', { value: { defineProperty: Object.defineProperty, getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
-            keys: Object.keys, getOwnPropertyNames: Object.getOwnPropertyNames, stringify: window.JSON && JSON.stringify }, writable: true, configurable: true });
+            keys: Object.keys, getOwnPropertyNames: Object.getOwnPropertyNames, stringify: window.JSON && JSON.stringify,
+            propertyIsEnumerable: Object.prototype.propertyIsEnumerable }, writable: true, configurable: true });
     } catch (e) {}
 })();
 (function () {
@@ -109,6 +110,9 @@
             if (!queue.length) node.data = (toggle = !toggle) ? '1' : '0';
             queue.push(callback);
         };
+        // (core-js puts a wrapper of its own in front, 27 us a call here: shims.js puts this one back, and its Promise
+        // uses it)
+        if (window.__brNative) window.__brNative.queueMicrotask = window.queueMicrotask;
     })();
 
     // matchMedia listeners are such roots too (until the document is destroyed - never, while they keep it): they are

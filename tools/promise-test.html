@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>promise test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// The lean Promise of shims.js against the standard (Chrome passes natively): the order of callbacks, thenables,
+// chaining, errors, finally, the combinators, species, unhandled rejections. Timings at the end on the iPad.
+var results = [], pending = 0;
+var check = function (name, run, expect) {
+  pending++;
+  var finish = function (got) {
+    results.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+    if (--pending === 0) report();
+  };
+  try { run(finish); } catch (e) { finish('threw ' + e.message); }
+};
+var report = function () {
+  var pass = 0, lines = [];
+  for (var i = 0; i < results.length; i++) { if (results[i][1]) pass++; lines.push((results[i][1] ? 'OK   ' : 'FAIL ') + results[i][0] + (results[i][1] ? '' : ' -> ' + results[i][2])); }
+  var t0, n, N = 1000, times = [], P = Promise, p1 = P.resolve(1);
+  var time = function (label, f) { t0 = Date.now(); for (n = 0; n < N; n++) f(); times.push(label + ' ' + ((Date.now() - t0) * 1000 / N).toFixed(1)); };
+  time('new Promise', function () { return new P(function (r) { r(1); }); });
+  time('resolve', function () { return P.resolve(1); });
+  time('then', function () { return p1.then(function (v) { return v; }); });
+  lines.push('us: ' + times.join(', '));
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'promise ' + pass + '/' + results.length;
+};
+check('order: sync, microtasks, then timers', function (done) {
+  var log = [];
+  setTimeout(function () { log.push('timeout'); done(log); }, 0);
+  Promise.resolve().then(function () { log.push('then1'); }).then(function () { log.push('then2'); });
+  queueMicrotask(function () { log.push('micro'); });
+  log.push('sync');
+}, ['sync', 'then1', 'micro', 'then2', 'timeout']);
+check('executor runs at once, resolve once, errors reject', function (done) {
+  var log = [];
+  var p = new Promise(function (res, rej) { log.push('exec'); res(1); res(2); rej(3); });
+  var q = new Promise(function () { throw new Error('boom'); });
+  log.push('after');
+  Promise.all([p, q.catch(function (e) { return e.message; })]).then(function (v) { done(log.concat(v)); });
+}, ['exec', 'after', 1, 'boom']);
+check('thenables adopted a tick later; promise resolve identity', function (done) {
+  var log = [], p = Promise.resolve(5);
+  var thenable = { then: function (r) { log.push('then called'); r('t'); } };
+  Promise.resolve(thenable).then(function (v) { log.push(v); done(log.concat([Promise.resolve(p) === p, new Promise(function (r) { r(p); }) === p])); });
+  log.push('sync');
+}, ['sync', 'then called', 't', true, false]);
+check('chaining values, returned promises, errors and recovery', function (done) {
+  Promise.resolve(1).then(function (v) { return v + 1; }).then(function (v) { return Promise.resolve(v * 10); })
+    .then(function (v) { throw new Error('e' + v); }).then(function () { return 'skipped'; }, function (e) { return e.message; })
+    .then(function (v) { done(v); });
+}, 'e20');
+check('a cycle rejects with TypeError', function (done) {
+  var p = Promise.resolve().then(function () { return p; });
+  p.then(null, function (e) { done(e instanceof TypeError); });
+}, true);
+check('finally keeps the value / reason, its own throw wins', function (done) {
+  var log = [];
+  Promise.resolve('v').finally(function () { log.push('f1'); return 'ignored'; }).then(function (v) {
+    log.push(v);
+    return Promise.reject('r').finally(function () { log.push('f2'); });
+  }).then(null, function (r) {
+    log.push(r);
+    return Promise.resolve(1).finally(function () { throw 'thrown'; });
+  }).then(null, function (r) { log.push(r); done(log); });
+}, ['f1', 'v', 'f2', 'r', 'thrown']);
+check('all / allSettled / any / race', function (done) {
+  var a = Promise.all([1, Promise.resolve(2), { then: function (r) { r(3); } }]);
+  var b = Promise.allSettled([Promise.resolve('ok'), Promise.reject('no')]);
+  var c = Promise.any([Promise.reject(1), Promise.resolve('any')]);
+  var d = Promise.race([new Promise(function () {}), Promise.resolve('race')]);
+  var e = Promise.any([Promise.reject('x')]).catch(function (err) { return [err instanceof Error, err.errors]; });
+  var f = Promise.all([]);
+  Promise.all([a, b, c, d, e, f, Promise.all(new Set([7]))]).then(done);
+}, [[1, 2, 3], [{ status: 'fulfilled', value: 'ok' }, { status: 'rejected', reason: 'no' }], 'any', 'race', [true, ['x']], [], [7]]);
+check('all rejects with the first rejection', function (done) {
+  Promise.all([Promise.resolve(1), Promise.reject('first'), Promise.reject('second')]).then(null, done);
+}, 'first');
+check('withResolvers, try, toString tag, instanceof', function (done) {
+  var wr = Promise.withResolvers ? Promise.withResolvers() : null;
+  if (!wr) { done('no withResolvers'); return; }
+  wr.resolve('w');
+  var t = Promise.try ? Promise.try(function (a, b) { return a + b; }, 2, 3) : Promise.resolve(5);
+  Promise.all([wr.promise, t]).then(function (v) { done(v.concat([Object.prototype.toString.call(wr.promise), wr.promise instanceof Promise])); });
+}, ['w', 5, '[object Promise]', true]);
+check('subclass (ES5 style) keeps its species', function (done) {
+  function MyP(exec) { var p = new Promise(exec); Object.setPrototypeOf ? Object.setPrototypeOf(p, MyP.prototype) : (p.__proto__ = MyP.prototype); return p; }
+  MyP.prototype = Object.create(Promise.prototype, { constructor: { value: MyP, writable: true, configurable: true } });
+  MyP.prototype.tag = 'mine';
+  if (window.Symbol && Symbol.species) Object.defineProperty(MyP, Symbol.species, { get: function () { return MyP; } });
+  var m = new MyP(function (r) { r(1); });
+  var t = m.then(function (v) { return v + 1; });
+  t.then(function (v) { done([t instanceof MyP, t.tag, v]); });
+}, [true, 'mine', 2]);
+check('unhandledrejection event, and none once handled', function (done) {
+  var seen = [];
+  var h = function (e) { seen.push(e.reason); e.preventDefault(); };
+  window.addEventListener('unhandledrejection', h);
+  Promise.reject('lonely');
+  var handled = Promise.reject('handled'); handled.catch(function () {});
+  setTimeout(function () { window.removeEventListener('unhandledrejection', h); done(seen); }, 300);
+}, ['lonely']);
+check('then on a foreign thenable-like object throws', function (done) {
+  try { Promise.prototype.then.call({}, function () {}); done('no'); } catch (e) { done(e instanceof TypeError); }
+}, true);
+check('async functions (as lowered) keep working', function (done) {
+  var f = async function (x) { var a = await x; var b = await Promise.resolve(a + 1); return [a, b]; };
+  f(1).then(done);
+}, [1, 2]);
+</script>
+</body>
+</html>
