@@ -50,6 +50,7 @@ var CASES = [
   ['JSON.stringify well-formed', function () { return [JSON.stringify('\uDEAD'), JSON.stringify('𝌆').length, JSON.stringify('a\uD800b')]; }, ['"\\udead"', 4, '"a\\ud800b"']],
   ['JSON.stringify replacer and space', function () { var keys = []; var s = JSON.stringify([5, { b: 2 }], function (k, v) { keys.push(typeof k); return v; }, 1); return [s.split('\n').length, keys.join()]; }, [6, 'string,string,string,string']],
   ['JSON.stringify is the engine\'s', function () { return JSON.stringify !== window.__brNative.stringify && JSON.stringify({ x: [1, 'a', null, true] }); }, '{"x":[1,"a",null,true]}'],
+  ['getOwnPropertyNames of a strict function can all be read', function () { var C = (function () { 'use strict'; return function Foo() {}; })(); C.bar = function () {}; var names = Object.getOwnPropertyNames(C), bad = []; for (var i = 0; i < names.length; i++) { try { void C[names[i]]; } catch (e) { bad.push(names[i]); } } return [bad.join(), names.indexOf('bar') >= 0, names.indexOf('prototype') >= 0]; }, ['', true, true]],
   ['toStringTag', function () { var o = {}; o[Symbol.toStringTag] = 'Custom'; return Object.prototype.toString.call(o); }, '[object Custom]'],
   ['function name stays when fixed', function () { var f = function g() {}; Object.defineProperty(f, 'name', { value: 'h', configurable: true }); return typeof f.name; }, 'string']
 ];

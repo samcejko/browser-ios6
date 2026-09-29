@@ -443,6 +443,23 @@
             if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
             return engineKeys(Object(o));
         };
+        // A strict function's arguments and caller are its own properties here that throw "Type error" when read;
+        // current engines have none on such functions (classes, strict and arrow functions). lidl.cz wrapped every
+        // method of a class it found through Object.getOwnPropertyNames and read e[o] for each name.
+        var namesOf = Object.getOwnPropertyNames, engineDesc = N.getOwnPropertyDescriptor || Object.getOwnPropertyDescriptor;
+        if (namesOf) Object.getOwnPropertyNames = function getOwnPropertyNames(o) {
+            var names = namesOf(o);
+            if (typeof o !== 'function') return names;
+            var out = [];
+            for (var i = 0; i < names.length; i++) {
+                if (names[i] === 'arguments' || names[i] === 'caller') {
+                    var d = engineDesc(o, names[i]);
+                    if (d && d.get) continue;
+                }
+                out.push(names[i]);
+            }
+            return out;
+        };
         // (Babel's object spread asks every object for its symbols: an object without a property named "Symbol(...",
         // as core-js names them, has none, which core-js found out calling two functions per property)
         var nativeGOPS = Object.getOwnPropertySymbols, engineNames = N.getOwnPropertyNames;
