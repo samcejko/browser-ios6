@@ -9,6 +9,30 @@
     var Np = window.Node && window.Node.prototype;
     var P = window.Promise;
     function noop() {}
+    // CSS property names in lower case, remembered: the style wrappers below each lower-cased every name they got (a
+    // string made per call; style.setProperty cost 30 us here, the engine's 5). Custom property names stay as given.
+    // The query methods as they are before the wrappers below (:scope, :read-only, the selector cache): a selector
+    // without ':' that the engine took once goes straight to them (three wrappers made querySelectorAll 25 us, the
+    // engine's 15). Per owner: an element's method does not take a document.
+    var QUERY_BEFORE = [];
+    (function () {
+        var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
+        for (var i = 0; i < owners.length; i++) if (owners[i]) QUERY_BEFORE.push({ owner: owners[i], one: owners[i].querySelector, all: owners[i].querySelectorAll,
+            is: owners[i].matches || owners[i].webkitMatchesSelector, up: owners[i].closest });
+    })();
+    function queryBefore(owner, kind) {
+        for (var i = 0; i < QUERY_BEFORE.length; i++) if (QUERY_BEFORE[i].owner === owner) return QUERY_BEFORE[i][kind];
+        return undefined;
+    }
+    var LOWER_NAMES = Object.create(null), lowerNames = 0;
+    function lowerName(n) {
+        var l = LOWER_NAMES[n];
+        if (l === undefined) {
+            l = n.toLowerCase();
+            if (lowerNames < 2000) { LOWER_NAMES[n] = l; lowerNames++; }
+        }
+        return l;
+    }
     function resolved(v) { return P ? P.resolve(v) : null; }
     function domException(name, message) {
         var e = new Error(message || name);
@@ -8058,7 +8082,7 @@
             CSDp.__brCVWrapped = true;
             var origSet = CSDp.setProperty, origGet = CSDp.getPropertyValue, origRemove = CSDp.removeProperty;
             CSDp.setProperty = function (name, value, priority) {
-                if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
+                if (typeof name === 'string' && name.charCodeAt(0) === 45 && name.charCodeAt(1) === 45) {
                     if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
                     // an empty value removes the declaration (null: removed, the attribute's value no longer counts)
                     var nv = value === null || value === undefined || String(value) === '' ? null : String(value);
@@ -8076,7 +8100,7 @@
                 return origSet.call(this, name, value, priority || '');
             };
             CSDp.getPropertyValue = function (name) {
-                if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
+                if (typeof name === 'string' && name.charCodeAt(0) === 45 && name.charCodeAt(1) === 45) {
                     if (this.__brCP && this.__brCP.hasOwnProperty(name)) return this.__brCP[name] === null ? '' : this.__brCP[name];
                     if (this.__brEl) { var v = computedVar(this.__brEl, name); return v === null ? '' : v; }
                     var owner = this.__brOwner;
@@ -8086,7 +8110,7 @@
                 return origGet.call(this, name);
             };
             CSDp.removeProperty = function (name) {
-                if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
+                if (typeof name === 'string' && name.charCodeAt(0) === 45 && name.charCodeAt(1) === 45) {
                     var old = this.getPropertyValue(name);
                     if (!this.__brCP) { this.__brCP = {}; this.__brCPi = {}; }
                     this.__brCP[name] = null;
@@ -9818,11 +9842,14 @@
         };
         // kind: 'one' querySelector, 'all' querySelectorAll, 'is' matches, 'up' closest; qsa: the owner's own querySelectorAll
         // (the selector alone: no arguments object - every query of a page comes through here)
-        var wrap = function (orig, kind, qsa) {
+        // (before: the method as it was before the :scope and :read-only wrappers, which leave a selector without ':'
+        // as it is - such a selector, known to be taken, goes straight there)
+        var wrap = function (orig, kind, qsa, before) {
             var family = kind === 'one' || kind === 'all' ? 'q' : kind === 'is' ? 'm' : 'u';
+            var direct = typeof before === 'function' && before !== orig ? before : null;
             return function (sel) {
                 var k = typeof sel === 'string' ? known[family][sel] : undefined;
-                if (k === true) return orig.call(this, sel);
+                if (k === true) return (direct !== null && sel.indexOf(':') < 0 ? direct : orig).call(this, sel);
                 if (k) return retry(this, orig, kind, qsa, sel, k, null);
                 return first(this, orig, kind, qsa, sel, typeof sel === 'string' ? family : null);
             };
@@ -9832,12 +9859,12 @@
             var owner = owners[o];
             if (!owner || !owner.querySelectorAll) continue;
             var ownQSA = owner.querySelectorAll;
-            if (owner.querySelector) owner.querySelector = wrap(owner.querySelector, 'one', ownQSA);
-            owner.querySelectorAll = wrap(ownQSA, 'all', ownQSA);
+            if (owner.querySelector) owner.querySelector = wrap(owner.querySelector, 'one', ownQSA, queryBefore(owner, 'one'));
+            owner.querySelectorAll = wrap(ownQSA, 'all', ownQSA, queryBefore(owner, 'all'));
         }
-        if (Ep.matches) Ep.matches = wrap(Ep.matches, 'is');
-        if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector, 'is');
-        if (Ep.closest) Ep.closest = wrap(Ep.closest, 'up');
+        if (Ep.matches) Ep.matches = wrap(Ep.matches, 'is', undefined, queryBefore(Ep, 'is'));
+        if (Ep.webkitMatchesSelector) Ep.webkitMatchesSelector = wrap(Ep.webkitMatchesSelector, 'is', undefined, queryBefore(Ep, 'is'));
+        if (Ep.closest) Ep.closest = wrap(Ep.closest, 'up', undefined, queryBefore(Ep, 'up'));
     })();
     // KeyboardEvent.key from keyCode
     if (window.KeyboardEvent && window.KeyboardEvent.prototype && !('key' in window.KeyboardEvent.prototype)) {
@@ -10692,11 +10719,15 @@
             })(camel(name), camel(DASHED[name]));
         }
         var origSet = CSDp.setProperty, origGet = CSDp.getPropertyValue, origRemove = CSDp.removeProperty, origPriority = CSDp.getPropertyPriority;
-        var mapName = function (n) { return typeof n === 'string' ? DASHED[n.toLowerCase()] || null : null; };
+        // (DASHED without a prototype: a plain lookup, no hasOwnProperty call)
+        var DASHED_N = Object.create(null);
+        for (name in DASHED) if (DASHED.hasOwnProperty(name)) DASHED_N[name] = DASHED[name];
+        var mapName = function (n) { return typeof n === 'string' ? DASHED_N[lowerName(n)] || null : null; };
         CSDp.setProperty = function (n, value, priority) {
             var m = mapName(n);
             if (!m) {
-                if (typeof n === 'string' && /^-webkit-transition(-property)?$/i.test(n)) return origSet.call(this, n, safeTransition(value, /property$/i.test(n)), priority || '');
+                // (only a name starting with a dash can be -webkit-transition: no regular expression for the rest)
+                if (typeof n === 'string' && n.charCodeAt(0) === 45 && /^-webkit-transition(-property)?$/i.test(n)) return origSet.call(this, n, safeTransition(value, /property$/i.test(n)), priority || '');
                 return origSet.call(this, n, value, priority || '');
             }
             if (m === '-webkit-transition' || m === '-webkit-transition-property') value = safeTransition(value, m === '-webkit-transition-property');
@@ -10867,19 +10898,22 @@
             for (var k = 0; k < decls.length; k++) origSet.call(style, decls[k][0], decls[k][1], priority || '');
             return true;
         };
+        // (the flex names without a prototype: a plain lookup; names lower-cased once, see lowerName)
+        var FLEX_N = Object.create(null);
+        for (var fn0 in NAMES) if (NAMES.hasOwnProperty(fn0)) FLEX_N[fn0] = NAMES[fn0];
         CSDp.setProperty = function (n, value, priority) {
-            var name = typeof n === 'string' ? n.toLowerCase() : '';
-            if ((name === 'display' || NAMES.hasOwnProperty(name)) && put(this, name, value, priority)) return;
+            var name = typeof n === 'string' ? lowerName(n) : '';
+            if ((name === 'display' || FLEX_N[name] !== undefined) && put(this, name, value, priority)) return;
             return origSet.call(this, n, value, priority || '');
         };
         CSDp.getPropertyValue = function (n) {
-            var name = typeof n === 'string' ? n.toLowerCase() : '';
-            if (NAMES.hasOwnProperty(name)) { var vals = this.__brFlexVals; return vals && vals[name] ? vals[name] : ''; }
+            var name = typeof n === 'string' ? lowerName(n) : '';
+            if (FLEX_N[name] !== undefined) { var vals = this.__brFlexVals; return vals && vals[name] ? vals[name] : ''; }
             return origGet.call(this, n);
         };
         CSDp.removeProperty = function (n) {
-            var name = typeof n === 'string' ? n.toLowerCase() : '';
-            if (NAMES.hasOwnProperty(name)) { var old = this.getPropertyValue(name); put(this, name, '', ''); return old; }
+            var name = typeof n === 'string' ? lowerName(n) : '';
+            if (FLEX_N[name] !== undefined) { var old = this.getPropertyValue(name); put(this, name, '', ''); return old; }
             return origRemove.call(this, n);
         };
         var accessor = function (name) {
