@@ -39,6 +39,7 @@ var CASES = [
   ['keys', function () { var o = { a: 1, b: 2 }; o[S] = 3; return [Object.keys(o).join(), Object.keys('xy').join()]; }, ['a,b', '0,1']],
   ['keys of null throws', function () { try { Object.keys(null); return 'no'; } catch (e) { return e instanceof TypeError; } }, true],
   ['getOwnPropertySymbols', function () { var o = { a: 1, Sx: 2 }; var p = { b: 1 }; p[S] = 1; var g = Object.getOwnPropertySymbols; return [g(o).length, g(p).length, g(p)[0] === S, g('ab').length, Array.isArray(g(Object.prototype))]; }, [0, 1, true, 0, true]],
+  ['getOwnPropertySymbols among other names', function () { var q = { Sa: 1 }; q[S] = 1; q.x = 2; Object.defineProperty(q, T, { value: 3 }); var r = Object.getOwnPropertySymbols(q); return [r.length, r[0] === S, r[1] === T]; }, [2, true, true]],
   ['object spread as Babel does it', function () {
     var ownKeys = function (object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; };
     var src = { a: 1, b: 2 }; src[S] = 3; Object.defineProperty(src, T, { value: 4, enumerable: false });

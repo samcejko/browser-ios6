@@ -378,11 +378,17 @@
         // (Babel's object spread asks every object for its symbols: an object without a property named "Symbol(...",
         // as core-js names them, has none, which core-js found out calling two functions per property)
         var nativeGOPS = Object.getOwnPropertySymbols, engineNames = N.getOwnPropertyNames;
-        if (nativeGOPS && engineNames && engineNames !== Object.getOwnPropertyNames) Object.getOwnPropertySymbols = function getOwnPropertySymbols(o) {
+        // (one that has such properties - webpack gives every module's exports a Symbol.toStringTag - hands core-js a
+        // stand-in with just those names, in their order, to find the symbols of)
+        if (nativeGOPS && engineNames && engineNames !== Object.getOwnPropertyNames && engineDP) Object.getOwnPropertySymbols = function getOwnPropertySymbols(o) {
             if (o === OP || o === null || o === undefined) return nativeGOPS(o);
-            var names = engineNames(Object(o));
-            for (var i = 0; i < names.length; i++) if (names[i].charCodeAt(0) === 83) return nativeGOPS(o);
-            return [];
+            var names = engineNames(Object(o)), some = null;
+            for (var i = 0; i < names.length; i++) {
+                if (names[i].charCodeAt(0) !== 83) continue;
+                if (!some) some = {};
+                engineDP(some, names[i], { value: true, configurable: true });
+            }
+            return some ? nativeGOPS(some) : [];
         };
         // JSON.stringify: core-js's (which its Symbol brings along) calls a replacer of its own for every value to leave
         // its symbols out, six times slower here. A symbol gets a toJSON that gives undefined instead, which the engine's

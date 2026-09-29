@@ -23,6 +23,32 @@
         if (window.Symbol && window.Symbol.iterator) it[window.Symbol.iterator] = function () { return this; };
         return it;
     }
+    // Style methods for the shims' own values: the engine's own for a property it knows by that name, the page's
+    // (wrapped) ones otherwise. The wrappers further down (custom properties, standard names of prefixed properties,
+    // flexbox forms, the transition crash guard) are there for the page's calls; they cost 20-40 us a call here, and the
+    // custom properties runtime makes thousands a pass (nextjs.org). Transition lists and display always take them.
+    var ENGINE_STYLE = window.CSSStyleDeclaration && window.CSSStyleDeclaration.prototype;
+    var esGet = ENGINE_STYLE && ENGINE_STYLE.getPropertyValue, esSet = ENGINE_STYLE && ENGINE_STYLE.setProperty,
+        esPri = ENGINE_STYLE && ENGINE_STYLE.getPropertyPriority, esRemove = ENGINE_STYLE && ENGINE_STYLE.removeProperty;
+    var engineProps = {}, engineProbe = null;
+    function engineProp(p) {
+        var key = '$' + p, r = engineProps[key];
+        if (r !== undefined) return r;
+        r = false;
+        if (esGet && typeof p === 'string' && !/^--|transition|^display$/i.test(p)) {
+            try {
+                if (!engineProbe) engineProbe = document.createElement('div').style;
+                esSet.call(engineProbe, p, 'inherit', '');
+                r = esGet.call(engineProbe, p) === 'inherit';
+                esRemove.call(engineProbe, p);
+            } catch (e) { r = false; }
+        }
+        return (engineProps[key] = r);
+    }
+    function styleGet(st, p) { return engineProp(p) ? esGet.call(st, p) : st.getPropertyValue(p); }
+    function stylePriority(st, p) { return engineProp(p) ? esPri.call(st, p) : st.getPropertyPriority(p); }
+    function styleSet(st, p, v, pr) { if (engineProp(p)) esSet.call(st, p, v, pr || ''); else st.setProperty(p, v, pr || ''); }
+    function styleRemove(st, p) { if (engineProp(p)) esRemove.call(st, p); else st.removeProperty(p); }
     // -webkit-calc() values in the engine's Length properties crash WebKit 536 once the element restyles while such a
     // property is transitioned (see guardCalcTransitions in cssfix.js; nextjs.org: a custom property made a height a
     // calc at run time next to `transition-property: height`). Values the shims set go in as px then: calcRisk() says
@@ -7059,7 +7085,7 @@
     // value are set inline (on ::before/::after through generated rules), unless another rule wins that property.
     (function () {
         var rules = [], registered = {}, rootVars = {}, gen = 0, tracked = [], timer = null, busy = false, lastCost = 0, universal = {};
-        var watchStates = false, observer = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
+        var watchStates = false, observer = null, classObserver = null, fixCache = {}, fixCacheSize = 0, pseudoStyle = null, pseudoText = '', pseudoSeq = 0;
         var pseudoTracked = [], stats = { passes: 0, applied: 0, skipped: 0, rules: 0 };
         var trim = function (s) { return String(s).trim(); };
         var norm = function (s) { return trim(String(s)).replace(/\s+/g, ' ').replace(/\s*([,()\/])\s*/g, '$1').toLowerCase(); };
@@ -7227,16 +7253,17 @@
                 return;
             }
             if (!el.__brCVOrig) { el.__brCVOrig = {}; el.__brCVSet = {}; el.__brCVVal = {}; tracked.push(el); }
-            if (!el.__brCVOrig.hasOwnProperty(p)) el.__brCVOrig[p] = [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)];
+            // (through styleGet & co., see there; the page's value read once when it is kept)
+            var st = el.style, pr = imp ? 'important' : '', kept = el.__brCVOrig.hasOwnProperty(p) ? null : (el.__brCVOrig[p] = [styleGet(st, p), stylePriority(st, p)]);
             el.__brCVSet[p] = gen;
-            if (el.style.getPropertyValue(p) !== v || el.style.getPropertyPriority(p) !== (imp ? 'important' : '')) el.style.setProperty(p, v, imp ? 'important' : '');
-            el.__brCVVal[p] = el.style.getPropertyValue(p);   // as the engine serialises it
+            if ((kept ? kept[0] : styleGet(st, p)) !== v || (kept ? kept[1] : stylePriority(st, p)) !== pr) styleSet(st, p, v, pr);
+            el.__brCVVal[p] = styleGet(st, p);   // as the engine serialises it
         };
         var restoreInline = function (el, p) {
             if (!el.__brCVSet || !el.__brCVSet.hasOwnProperty(p)) return;
-            var o = el.__brCVOrig[p];
+            var o = el.__brCVOrig[p], st = el.style;
             // a script set its own value over ours meanwhile: that one stays
-            if (el.style.getPropertyValue(p) === el.__brCVVal[p]) { if (o && o[0]) el.style.setProperty(p, o[0], o[1]); else el.style.removeProperty(p); }
+            if (styleGet(st, p) === el.__brCVVal[p]) { if (o && o[0]) styleSet(st, p, o[0], o[1]); else styleRemove(st, p); }
             delete el.__brCVSet[p];
             delete el.__brCVOrig[p];
             delete el.__brCVVal[p];
@@ -7464,10 +7491,12 @@
         // (Any style change like this one crashed WebKit on seznam.cz until cssfix kept -webkit-calc lengths out of the
         // transition lists, see guardCalcTransitions.)
         var frozen = [];
+        // (the engine's own style methods: 'none' and the engine's own serialisation need no transition guard)
         var freeze = function (el) {
             if (el.__brCVfz) return;
-            el.__brCVfz = [el.style.getPropertyValue('-webkit-transition-property'), el.style.getPropertyPriority('-webkit-transition-property')];
-            el.style.setProperty('-webkit-transition-property', 'none', 'important');
+            var st = el.style;
+            el.__brCVfz = [esGet.call(st, '-webkit-transition-property'), esPri.call(st, '-webkit-transition-property')];
+            esSet.call(st, '-webkit-transition-property', 'none', 'important');
             frozen.push(el);
         };
         var thaw = function () {
@@ -7475,7 +7504,7 @@
             for (var k = 0; k < frozen.length; k++) {
                 var el = frozen[k], o = el.__brCVfz;
                 el.__brCVfz = null;
-                if (o && o[0]) el.style.setProperty('-webkit-transition-property', o[0], o[1]); else el.style.removeProperty('-webkit-transition-property');
+                if (o && o[0]) esSet.call(el.style, '-webkit-transition-property', o[0], o[1]); else esRemove.call(el.style, '-webkit-transition-property');
             }
             frozen = [];
         };
@@ -7486,8 +7515,8 @@
             if (!scratch) scratch = document.createElement('div');
             var st = scratch.style, out = [], k;
             st.cssText = '';
-            for (k = 0; k < decls.length; k++) st.setProperty(decls[k][0], decls[k][1], '');
-            for (k = 0; k < props.length; k++) { var v = st.getPropertyValue(props[k]); if (v) out.push([props[k], v]); }
+            for (k = 0; k < decls.length; k++) styleSet(st, decls[k][0], decls[k][1], '');
+            for (k = 0; k < props.length; k++) { var v = styleGet(st, props[k]); if (v) out.push([props[k], v]); }
             return out;
         };
         // what the element computes against what the rule's static value gives: every longhand the same (the rule wins),
@@ -7533,7 +7562,7 @@
                 for (k = 0; k < it.props.length; k++) it.before.push(cs.getPropertyValue(it.props[k]));
                 // the page's own inline value wins over any rule (unless the rule is !important)
                 it.own = false;
-                for (k = 0; k < it.fb.length; k++) if (it.el.style.getPropertyValue(it.fb[k][0]) && !it.use.i) it.own = true;
+                for (k = 0; k < it.fb.length; k++) if (styleGet(it.el.style, it.fb[k][0]) && !it.use.i) it.own = true;
             }
             tm.push(Date.now());
             for (i = 0; i < work.length; i++) {
@@ -7891,6 +7920,7 @@
                                                         ' [fix freeze before probe slow rival set keep thaw / work keep slow: ' + (stats.applyParts || []).join(' ') + '], pending ' + stats.pending +
                                                         ', rival [key index match / matches rules: ' + (stats.rivalParts || []).join(' ') + '] top ' + (stats.rivalTop || ''));
             if (observer && observer.takeRecords) observer.takeRecords();   // our own style changes
+            if (classObserver && classObserver.takeRecords) classObserver.takeRecords();
         };
         var schedule = function (soon) {
             if (timer || !rules.length) return;
@@ -7909,7 +7939,7 @@
             // subtree of <body> is the whole page (an element a script appends there started every pass over)
             var isTop = function (n) { return n === document.body || n === document.documentElement; };
             var markSiblings = function (from) { for (var s = from; s; s = s.nextSibling) if (s.nodeType === 1) markDirty(s); };
-            observer = new MutationObserver(function (records) {
+            var onRecords = function (records) {
                 if (busy) return;
                 var any = false;
                 for (var i = 0; i < records.length; i++) {
@@ -7935,8 +7965,17 @@
                     markSiblings(r.nextSibling);
                 }
                 if (any) schedule();
-            });
-            try { observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: filter }); } catch (e) { observer = null; }
+            };
+            // (the old value only of class, by an observer of its own: asked for with the style attribute among the
+            // filter - a page with [style*=...] selectors - the engine wrote the whole attribute out on every change of it)
+            var others = [];
+            for (var f = 0; f < filter.length; f++) if (filter[f] !== 'class') others.push(filter[f]);
+            try {
+                observer = new MutationObserver(onRecords);
+                classObserver = new MutationObserver(onRecords);
+                observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: others.length ? others : ['data-br-none'] });
+                classObserver.observe(document.documentElement, { subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['class'] });
+            } catch (e) { observer = null; classObserver = null; }
             var everything = function (e) { dirtyAll = true; dirtyWhy = e && e.type || 'event'; schedule(); };
             // a hover, tap or focus changes only what the rules with state pseudo-classes match: the elements they
             // matched before and match now (with their subtrees, which inherit) are redone, not the page (nextjs.org:
@@ -9194,9 +9233,21 @@
             window.addEventListener('resize', schedule, true);
             document.addEventListener('scroll', schedule, true);
             var MO = window.MutationObserver || window.WebKitMutationObserver;
-            if (MO) new MO(function (records) {
+            if (!MO) return;
+            // (the old value only of class, to tell the shims' own classes: asked for every attribute, the engine wrote
+            // out the whole style attribute before each change of it - 0.4 ms a style change on nextjs.org, where the
+            // custom properties runtime makes thousands and the page's scripts more)
+            new MO(function (records) {
                 for (var i = 0; i < records.length; i++) if (!ownChange(records[i])) { schedule(); return; }
-            }).observe(document, { attributes: true, attributeOldValue: true, childList: true, characterData: true, subtree: true });
+            }).observe(document, { attributes: true, attributeOldValue: true, attributeFilter: ['class'], subtree: true });
+            new MO(function (records) {
+                for (var i = 0; i < records.length; i++) {
+                    var r = records[i];
+                    if (r.type === 'attributes' && (r.attributeName === 'class' || ownChange(r))) continue;
+                    schedule();
+                    return;
+                }
+            }).observe(document, { attributes: true, childList: true, characterData: true, subtree: true });
         };
         var drop = function (o) { var i = observers.indexOf(o); if (i >= 0) observers.splice(i, 1); };
         IOp._monitorIntersections = function (doc) {
