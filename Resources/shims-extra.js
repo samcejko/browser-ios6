@@ -2644,22 +2644,20 @@
             if (soundWithoutTap(m)) m.pause();
         }, true);
         var origPlay = MEp.play;
-        if (origPlay) {
-            try {
-                var probe = document.createElement('audio');
-                if (!(probe.play() && typeof probe.play().then === 'function')) {
-                    MEp.play = function () {
-                        mutedByAttr(this);
-                        if (soundWithoutTap(this)) return P ? P.reject(domException('NotAllowedError', "play() failed because the user didn't interact with the document first.")) : undefined;
-                        this.__brWantPlay = true;   // (kept for a switch to the media proxy, below)
-                        var r;
-                        try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; }
-                        if (r && r.then) return r;
-                        if (this.paused && P) return P.reject(domException('NotAllowedError', 'play() can only be started by a tap'));
-                        return resolved();
-                    };
-                }
-            } catch (e3) {}
+        // (whether play() gives a promise, without calling it: play() on a probe element started the engine's media
+        // machinery on every page, 177 ms here. Engines whose play() gives one have srcObject too - Safari 11, Chrome 52 -
+        // and none of the shims adds it.)
+        if (origPlay && !('srcObject' in MEp)) {
+            MEp.play = function () {
+                mutedByAttr(this);
+                if (soundWithoutTap(this)) return P ? P.reject(domException('NotAllowedError', "play() failed because the user didn't interact with the document first.")) : undefined;
+                this.__brWantPlay = true;   // (kept for a switch to the media proxy, below)
+                var r;
+                try { r = origPlay.apply(this, arguments); } catch (e) { return P ? P.reject(e) : undefined; }
+                if (r && r.then) return r;
+                if (this.paused && P) return P.reject(domException('NotAllowedError', 'play() can only be started by a tap'));
+                return resolved();
+            };
         }
         // Media the system's player cannot load (it has a network stack of its own, without the current TLS ciphers many
         // servers insist on: developer.mozilla.org's videos gave error 4): the same file through the app's local proxy

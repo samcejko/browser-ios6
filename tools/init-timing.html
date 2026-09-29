@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>init timing</title>
+<style>
+body { font: 12px/1.4 ui-monospace, Consolas, monospace; margin: 16px; }
+</style>
+</head>
+<body>
+<p>Makes a copy of a page script with a time mark before every statement of its outer function (the blocks of
+shims.js / shims-extra.js), saved through the static server as tools/babel-test/real/&lt;name&gt;-timed.js, to be
+swapped onto the iPad (shim-swap.ps1): window.__brM then holds [label, Date.now()] pairs, and __brInitReport()
+lists the slowest blocks. ?f=Resources/shims-extra.js&amp;name=shims-extra (the first file of the bundle should start
+the list: ?first=1).</p>
+<pre id="out">working</pre>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.12.1/dist/acorn.js"></script>
+<script>
+var q = function (k) { var m = new RegExp('[?&]' + k + '=([^&]+)').exec(location.search); return m ? decodeURIComponent(m[1]) : null; };
+var file = q('f') || 'Resources/shims-extra.js', name = q('name') || file.replace(/^.*\//, '').replace(/\.js$/, ''), first = q('first') === '1';
+fetch('/' + file).then(function (r) { return r.text(); }).then(function (src) {
+  var ast = acorn.parse(src, { ecmaVersion: 5, locations: true });
+  // the outer function: (function (...) { ... })(...)
+  var body = null;
+  for (var i = 0; i < ast.body.length && !body; i++) {
+    var st = ast.body[i], ex = st.type === 'ExpressionStatement' ? st.expression : null;
+    if (ex && ex.type === 'UnaryExpression') ex = ex.argument;
+    if (ex && ex.type === 'CallExpression' && ex.callee.type === 'FunctionExpression') body = ex.callee.body.body;
+  }
+  if (!body) throw new Error('no outer function found');
+  var inserts = [];
+  for (var j = 0; j < body.length; j++) {
+    var s = body[j];
+    if (s.type === 'FunctionDeclaration' || (s.type === 'ExpressionStatement' && s.directive)) continue;
+    inserts.push({ at: s.start, text: 'window.__brM&&window.__brM.push(["' + name + ':' + s.loc.start.line + '",Date.now()]);' });
+  }
+  var endAt = body[body.length - 1].end;
+  inserts.push({ at: endAt, text: 'window.__brM&&window.__brM.push(["' + name + ':end",Date.now()]);' });
+  var out = src;
+  for (var k = inserts.length - 1; k >= 0; k--) out = out.slice(0, inserts[k].at) + inserts[k].text + out.slice(inserts[k].at);
+  var head = first ? 'window.__brM=[["start",Date.now()]];\n' : 'window.__brM&&window.__brM.push(["' + name + ':start",Date.now()]);\n';
+  var report = '\nwindow.__brInitReport=function(top){var m=window.__brM||[],r=[];for(var i=1;i<m.length;i++)r.push([m[i-1][0],m[i][1]-m[i-1][1]]);r.sort(function(a,b){return b[1]-a[1];});var t=m.length?m[m.length-1][1]-m[0][1]:0;return "total "+t+" ms | "+r.slice(0,top||25).map(function(x){return x[0]+" "+x[1];}).join(", ");};\n';
+  out = head + out + report;
+  return fetch('/save?name=' + encodeURIComponent(name + '-timed.js'), { method: 'POST', body: out }).then(function (r) {
+    document.getElementById('out').textContent = 'saved ' + name + '-timed.js: ' + inserts.length + ' marks, ' + out.length + ' bytes (' + r.status + ')';
+    document.title = 'init timing done';
+  });
+}).catch(function (e) { document.getElementById('out').textContent = 'error: ' + e.message; document.title = 'init timing error'; });
+</script>
+</body>
+</html>
