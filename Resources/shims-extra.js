@@ -9784,9 +9784,15 @@
             if (ev && typeof ev === 'object' && !ev.__brMade) { try { Object.defineProperty(ev, '__brMade', { value: true }); } catch (x) {} }
             return dispatch.apply(this, arguments);
         };
+        // (the click a script's element.click() makes is the engine's own too: untrusted while such a call runs)
+        var HP = window.HTMLElement && window.HTMLElement.prototype, nativeClick = HP && HP.click, scriptClicks = 0;
+        if (typeof nativeClick === 'function') HP.click = function click() {
+            scriptClicks++;
+            try { return nativeClick.apply(this, arguments); } finally { scriptClicks--; }
+        };
         var UI = /^(click|dblclick|auxclick|contextmenu|mouse|pointer|touch|key|focus|blur|input|beforeinput|wheel|composition)/;
         try {
-            Object.defineProperty(EP, 'isTrusted', { get: function () { return !this.__brMade; }, configurable: true });
+            Object.defineProperty(EP, 'isTrusted', { get: function () { return !this.__brMade && !(scriptClicks && this.type === 'click'); }, configurable: true });
             Object.defineProperty(EP, 'composed', { get: function () { return !this.__brMade && UI.test(this.type); }, configurable: true });
         } catch (e2) {}
     })();

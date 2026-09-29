@@ -26,6 +26,7 @@ setTimeout(function () {
     document.dispatchEvent(c); document.body.dispatchEvent(z);
     return [e.isTrusted, c.isTrusted, z.isTrusted, seen];
   }, [false, false, false, false]);
+  check('element.click() of a script is not trusted', function () { var b = document.createElement('button'), seen = null; document.body.appendChild(b); b.addEventListener('click', function (e) { seen = e.isTrusted; }); b.click(); document.body.removeChild(b); return seen; }, false);
   check('composed of a script-made event', function () { var e = document.createEvent('Event'); e.initEvent('click', true, true); return e.composed; }, false);
   check('window.origin', function () { return window.origin === location.protocol + '//' + location.host; }, true);
   check('window.origin is replaceable', function () { var o = window.origin; window.origin = 'mine'; var r = window.origin; window.origin = o; return r; }, 'mine');
