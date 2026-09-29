@@ -11,7 +11,16 @@ body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
 <pre id="out">running</pre>
 <script>
 // Small DOM members the old engine lacks (shims-extra.js): event.isTrusted / composed, window.origin (replaceable),
-// document.contentType, DocumentFragment#getElementById, nonce. Chrome passes natively.
+// document.contentType, DocumentFragment#getElementById, nonce, Range#createContextualFragment at the document, the load
+// event of <link rel=preload>. Chrome passes natively.
+var preloadSeen = [];
+(function () {
+  var l = document.createElement('link');
+  l.rel = 'preload'; l.as = 'style'; l.href = 'data:text/css,.preloaded%7Bcolor:red%7D';
+  l.onload = function () { preloadSeen.push('onload'); this.onload = null; this.rel = 'stylesheet'; };
+  l.addEventListener('load', function () { preloadSeen.push('listener'); }, false);
+  document.head.appendChild(l);
+})();
 setTimeout(function () {
   var res = [];
   var check = function (name, fn, expect) {
@@ -39,6 +48,20 @@ setTimeout(function () {
     return [d.getAttribute('@click'), d.getAttribute(':class'), d.getAttribute('[x]'), d.getAttribute('data-ok'), d.attributes.length];
   }, ['go()', 'c2', '1', 'y', 4]);
   check('setAttribute still refuses a name with a space', function () { try { document.createElement('div').setAttribute('a b', '1'); return 'no'; } catch (e) { return e.code; } }, 5);
+  check('createContextualFragment of a new range (at the document)', function () {
+    var f = document.createRange().createContextualFragment('<div class="cf"><b>x</b></div><p>y</p>');
+    return [f.childNodes.length, f.firstChild.className, f.firstChild.firstChild.nodeName, f.lastChild.textContent];
+  }, [2, 'cf', 'B', 'y']);
+  check('createContextualFragment in an element, and its script runs when inserted', function () {
+    var host = document.createElement('div'); document.body.appendChild(host);
+    var r = document.createRange(); r.selectNodeContents(host);
+    window.__cfRan = 0;
+    host.appendChild(r.createContextualFragment('<span>s</span><script>window.__cfRan++;<\/script>'));
+    var out = [host.firstChild.nodeName, window.__cfRan];
+    document.body.removeChild(host);
+    return out;
+  }, ['SPAN', 1]);
+  check('a preload link gets its load event (the loadCSS way)', function () { return preloadSeen.slice(0, 2).sort(); }, ['listener', 'onload']);
   var pass = 0, lines = [];
   for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
   document.getElementById('out').textContent = lines.join('\n');

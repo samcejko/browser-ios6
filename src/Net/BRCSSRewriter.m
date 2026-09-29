@@ -567,6 +567,24 @@ static NSArray *BRManifestKinds(void)
         BRLog(@"jsfix %@: going on after a wait for room (%ld MB available)", name, [BRMemory availableMB]);
         result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
     }
+    // a whole lowering given up for lack of memory: left as it is the script breaks the page (a SyntaxError where the old
+    // engine meets the newer syntax), and the page waits for it anyway. Once there is room again (the transpiler's heap
+    // let go first) it is lowered again, twice at most. (The Verge's 333 KB turbopack chunk, one big factory, gave up at
+    // 42 MB available while the page grew beside it.)
+    for (int again = 0; !pieces && !lazyPart && !result.length && again < 2; again++) {
+        NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
+        if ([why rangeOfString:@"memory"].location == NSNotFound) break;
+        [engine releaseContextNow];
+        BOOL room = [BRMemory waitForAvailableMB:need timeout:45 reason:[NSString stringWithFormat:@"lowering %@ again", name] engine:nil];
+        if (!room || ![self ensureJSFixIn:engine]) {
+            BRLog(@"jsfix %@: gave up, the iPad is short of memory (%ld MB available)", name, [BRMemory availableMB]);
+            [BRMemory setActivity:nil forKey:@"js"];
+            _lastNoRoom = YES;
+            return nil;
+        }
+        BRLog(@"jsfix %@: lowered again after a wait for room (%ld MB available)", name, [BRMemory availableMB]);
+        result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
+    }
     // the factories kept for later go next to the lowered chunk, where the page's stubs ask for them
     NSUInteger kept = 0;
     if (lazyScan.length && [result hasPrefix:@"/*br-lazy:"]) {

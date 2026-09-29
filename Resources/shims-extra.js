@@ -9072,6 +9072,30 @@
         try { Object.defineProperty(list, 'value', { get: function () { return el.getAttribute(attr) || ''; }, set: function (v) { el.setAttribute(attr, v); } }); } catch (e) {}
         return list;
     };
+    // <link rel=preload> (and modulepreload) does nothing in the old engine: no request, no load event (tools/babel-test
+    // linkload.html). The usual way of loading a stylesheet late, <link rel=preload as=style onload="this.rel=
+    // 'stylesheet'">, never applied it, and a loader waiting for such a link waited for ever. The link gets its load
+    // event here, a moment after it is added (the stylesheet the handler asks for then loads as usual); an image to
+    // preload is fetched meanwhile.
+    (function () {
+        var PRELOAD = /(^|\s)(preload|modulepreload)(\s|$)/i;
+        var isPreload = function (l) { return PRELOAD.test(l.getAttribute('rel') || '') && !!l.getAttribute('href'); };
+        var fire = function (l) {
+            if (l.__brPreload) return;
+            l.__brPreload = true;
+            if ((l.getAttribute('as') || '').toLowerCase() === 'image') { try { new Image().src = l.href; } catch (e) {} }
+            setTimeout(function () {
+                if (!isPreload(l)) return;   // (made something else meanwhile: that loads for real)
+                var e = document.createEvent('Event');
+                e.initEvent('load', false, false);
+                l.dispatchEvent(e);
+            }, 30);
+        };
+        observeAdded(function (el) { if (el.tagName === 'LINK' && isPreload(el)) fire(el); });
+        var scan = function () { var ls = document.getElementsByTagName('link'); for (var i = 0; i < ls.length; i++) if (isPreload(ls[i])) fire(ls[i]); };
+        scan();
+        document.addEventListener('DOMContentLoaded', scan, false);
+    })();
     var relOwners = [window.HTMLAnchorElement, window.HTMLLinkElement, window.HTMLAreaElement];
     for (var ro = 0; ro < relOwners.length; ro++) {
         if (!relOwners[ro] || !relOwners[ro].prototype || ('relList' in relOwners[ro].prototype)) continue;
@@ -9853,6 +9877,22 @@
     if (window.Document && !('contentType' in document)) {
         try { Object.defineProperty(window.Document.prototype, 'contentType', { get: function () { return this.xmlVersion ? 'application/xml' : 'text/html'; }, configurable: true }); } catch (eC) {}
     }
+    // range.createContextualFragment(html) on a range in a document, a fragment or at the html element (a new Range
+    // starts at the document): the standard parses in a body element then, the old engine refuses (NOT_SUPPORTED_ERR,
+    // as for SVG elements too): OneTrust's cookie banner, on thousands of sites, failed so (theverge.com)
+    (function () {
+        var RP = window.Range && window.Range.prototype, ccf = RP && RP.createContextualFragment;
+        if (typeof ccf !== 'function') return;
+        var HTML_NS = 'http://www.w3.org/1999/xhtml';
+        RP.createContextualFragment = function createContextualFragment(html) {
+            var c = this.startContainer, el = c && (c.nodeType === 1 ? c : c.parentNode);
+            if (el && el.nodeType === 1 && el.nodeName !== 'HTML' && (!el.namespaceURI || el.namespaceURI === HTML_NS)) return ccf.call(this, html);
+            var doc = c ? (c.nodeType === 9 ? c : c.ownerDocument) || document : document;
+            var r = doc.createRange();
+            r.selectNodeContents(doc.body || doc.createElement('body'));
+            return ccf.call(r, html);
+        };
+    })();
     if (window.DocumentFragment && !window.DocumentFragment.prototype.getElementById) {
         window.DocumentFragment.prototype.getElementById = function (id) {
             id = String(id);
