@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>desktop tests</title>
+<style>
+body { font: 12px/1.4 ui-monospace, Consolas, monospace; margin: 16px; }
+iframe { width: 800px; height: 300px; border: 1px solid #999; }
+</style>
+</head>
+<body>
+<p>Runs the tests that load the page scripts from ../Resources (the old engine emulated in a desktop browser) one after
+another and lists what each title says. ?t=a,b,c runs only those (names without -test.html).</p>
+<pre id="out">running</pre>
+<iframe id="f"></iframe>
+<script>
+var ALL = ['ce', 'contents', 'cv', 'dv', 'function', 'immer', 'io', 'proxy', 'selector', 'shims', 'slot', 'svg', 'vue', 'xhr', 'ctor',
+  'crypto', 'alpine', 'module', 'manifest', 'ssr-style', 'text', 'scroll', 'shrink', 'fitscroll', 'touchscroll', 'grid', 'adslot',
+  'autoplay', 'worker', 'regexp', 'objfast', 'cssfix', 'islands'];
+var m = /[?&]t=([^&]+)/.exec(location.search), list = m ? decodeURIComponent(m[1]).split(',') : ALL, i = 0, lines = [];
+var f = document.getElementById('f');
+var next = function () {
+  if (i >= list.length) { document.getElementById('out').textContent = lines.join('\n'); document.title = 'desktop tests done'; return; }
+  var name = list[i++], t0 = Date.now();
+  f.src = name + '-test.html?' + Date.now();
+  var poll = setInterval(function () {
+    var title = '';
+    try { title = f.contentDocument.title; } catch (e) {}
+    var done = /\d+\s*\/\s*\d+/.test(title) || /done|fail|error/i.test(title);
+    if (done || Date.now() - t0 > 12000) {
+      clearInterval(poll);
+      lines.push(name + ': ' + (title || '(no title)') + (done ? '' : ' [timeout]'));
+      document.getElementById('out').textContent = lines.join('\n');
+      setTimeout(next, 100);
+    }
+  }, 250);
+};
+next();
+</script>
+</body>
+</html>

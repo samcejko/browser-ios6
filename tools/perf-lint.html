@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>perf lint</title>
+<style>
+body { font: 12px/1.4 ui-monospace, Consolas, monospace; margin: 16px; }
+td { padding: 1px 8px; vertical-align: top; }
+</style>
+</head>
+<body>
+<p>Functions of the page scripts that cost extra on every call in the iPad's engine (measured on iOS 6: a try/catch
++2.3 us, reading arguments +1 us, an inner function that uses the function's variables +1 us - it gets a scope object
+- even when that inner function is never made). Run in a desktop browser from the static server (tools/perf-lint.html).</p>
+<pre id="out">running</pre>
+<script src="https://cdn.jsdelivr.net/npm/acorn@8.12.1/dist/acorn.js"></script>
+<script>
+var FILES = ['Resources/page-prelude.js', 'Resources/shims.js', 'Resources/regexp-shim.js', 'Resources/shims-extra.js'];
+var isFn = function (n) { return n && (n.type === 'FunctionExpression' || n.type === 'FunctionDeclaration' || n.type === 'ArrowFunctionExpression'); };
+// children of a node (all object-valued properties)
+var kids = function (n) {
+  var out = [];
+  for (var k in n) {
+    if (k === 'loc' || k === 'start' || k === 'end' || k === 'type') continue;
+    var v = n[k];
+    if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) if (v[i] && typeof v[i].type === 'string') out.push(v[i]); }
+    else if (v && typeof v.type === 'string') out.push(v);
+  }
+  return out;
+};
+// names a function declares itself (params, vars, function declarations), not those of inner functions
+var declared = function (fn) {
+  var names = {};
+  fn.params.forEach(function (p) { if (p.type === 'Identifier') names[p.name] = true; });
+  var walk = function (n) {
+    if (n !== fn.body && isFn(n)) { if (n.type === 'FunctionDeclaration' && n.id) names[n.id.name] = true; return; }
+    if (n.type === 'VariableDeclarator' && n.id.type === 'Identifier') names[n.id.name] = true;
+    kids(n).forEach(walk);
+  };
+  walk(fn.body);
+  return names;
+};
+// identifiers read inside a node (skips property names)
+var refs = function (n, out) {
+  if (n.type === 'Identifier') { out[n.name] = true; return out; }
+  if (n.type === 'MemberExpression') { refs(n.object, out); if (n.computed) refs(n.property, out); return out; }
+  if (n.type === 'Property') { if (n.computed) refs(n.key, out); refs(n.value, out); return out; }
+  kids(n).forEach(function (c) { refs(c, out); });
+  return out;
+};
+var nameOf = function (fn, parent, grand) {
+  if (fn.id) return fn.id.name;
+  if (parent && parent.type === 'VariableDeclarator') return parent.id.name;
+  if (parent && parent.type === 'AssignmentExpression') return src.slice(parent.left.start, parent.left.end);
+  if (parent && parent.type === 'Property') return parent.key.name || parent.key.value;
+  if (parent && parent.type === 'CallExpression') {
+    var a = parent.arguments, i = a.indexOf(fn);
+    if (i > 0 && a[i - 1].type === 'Literal') return src.slice(parent.callee.start, parent.callee.end) + '(' + a[i - 1].raw + ')';
+  }
+  return '(anonymous)';
+};
+var src = '', rows = [];
+var analyze = function (file, text) {
+  src = text;
+  var ast = acorn.parse(text, { ecmaVersion: 5, locations: true });
+  var visit = function (n, parent, grand) {
+    if (isFn(n)) {
+      var own = declared(n), hasTry = false, usesArgs = false, captures = [];
+      var inner = function (m) {
+        if (m !== n.body && isFn(m)) {
+          var r = refs(m.body, {});
+          m.params.forEach(function (p) { if (p.type === 'Identifier') delete r[p.name]; });
+          for (var k in r) if (own[k] && captures.indexOf(k) < 0) captures.push(k);
+          return;
+        }
+        if (m.type === 'TryStatement' && m.handler) hasTry = true;
+        if (m.type === 'Identifier' && m.name === 'arguments') usesArgs = true;
+        if (m.type === 'MemberExpression') { inner(m.object); if (m.computed) inner(m.property); return; }
+        kids(m).forEach(inner);
+      };
+      inner(n.body);
+      if (hasTry || usesArgs || captures.length) rows.push({ file: file, line: n.loc.start.line, name: nameOf(n, parent, grand), size: n.end - n.start,
+        what: (hasTry ? 'try ' : '') + (usesArgs ? 'arguments ' : '') + (captures.length ? 'captures(' + captures.slice(0, 4).join(',') + (captures.length > 4 ? ',...' : '') + ')' : '') });
+    }
+    kids(n).forEach(function (c) { visit(c, n, parent); });
+  };
+  visit(ast, null, null);
+};
+var done = 0;
+FILES.forEach(function (f) {
+  fetch('/' + f).then(function (r) { return r.text(); }).then(function (t) {
+    try { analyze(f, t); } catch (e) { rows.push({ file: f, line: 0, name: 'PARSE ERROR ' + e.message, size: 0, what: '' }); }
+    if (++done === FILES.length) {
+      rows.sort(function (a, b) { return a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line; });
+      document.getElementById('out').textContent = rows.map(function (r) { return r.file.replace('Resources/', '') + ':' + r.line + '  ' + r.name + '  [' + r.what.trim() + ']  ' + r.size + 'b'; }).join('\n');
+      document.title = 'perf lint ' + rows.length;
+    }
+  });
+});
+</script>
+</body>
+</html>

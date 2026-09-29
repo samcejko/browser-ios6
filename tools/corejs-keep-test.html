@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>corejs keep test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// String match/replace/search/split handing regular expressions to their Symbol.* methods (and those to exec), trim
+// without U+200B/U+180E, Number reading 0b/0o strings, JSON.stringify of symbols, Date#toJSON of an invalid date, and
+// our Map/Set/Promise/Number reading as native code to Function.prototype.toString: what a page's own core-js checks
+// before it puts its own (slow) versions in. Chrome passes natively. ?corejs loads the whole core-js first and names
+// what it replaced anyway. (No \u escapes in here: strings with odd characters are made with fromCharCode.)
+var C = String.fromCharCode, S = window.Symbol;
+var watched = {
+  'String#match': [String.prototype, 'match'], 'String#replace': [String.prototype, 'replace'], 'String#search': [String.prototype, 'search'],
+  'String#split': [String.prototype, 'split'], 'String#trim': [String.prototype, 'trim'], 'String#trimStart': [String.prototype, 'trimStart'],
+  'String#trimEnd': [String.prototype, 'trimEnd'], 'Number': [window, 'Number'], 'JSON.stringify': [JSON, 'stringify'],
+  'Date#toJSON': [Date.prototype, 'toJSON'], 'Array#values': [Array.prototype, 'values'], 'Array#@@iterator': [Array.prototype, S.iterator],
+  'RegExp#@@replace': [RegExp.prototype, S.replace], 'RegExp#@@split': [RegExp.prototype, S.split], 'RegExp#@@match': [RegExp.prototype, S.match],
+  'RegExp#@@search': [RegExp.prototype, S.search], 'RegExp': [window, 'RegExp'], 'Map': [window, 'Map'], 'Promise': [window, 'Promise']
+};
+var before = {};
+for (var w in watched) before[w] = watched[w][0][watched[w][1]];
+var run = function () {
+  var res = [];
+  var check = function (name, fn, expect) {
+    var got;
+    try { got = fn(); } catch (e) { got = 'threw ' + (e instanceof TypeError ? 'TypeError' : e.name) + ' ' + e.message; }
+    res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+  };
+  // ---- what core-js tests (fix-regexp-well-known-symbol-logic and friends)
+  check('delegates to Symbol.* of any object', function () {
+    return ['match', 'replace', 'search', 'split'].map(function (k) { var O = {}; O[S[k]] = function () { return 7; }; return ''[k](O); });
+  }, [7, 7, 7, 7]);
+  check('Symbol.* methods call exec', function () {
+    return ['match', 'replace', 'search', 'split'].map(function (k) {
+      var called = false, re = /a/;
+      if (k === 'split') { re = {}; re.constructor = {}; re.constructor[S.species] = function () { return re; }; re.flags = ''; re[S.split] = /./[S.split]; }
+      re.exec = function () { called = true; return null; };
+      re[S[k]]('');
+      return called;
+    });
+  }, [true, true, true, true]);
+  check('replace: named groups from exec, $0 kept', function () {
+    var re = /./;
+    re.exec = function () { var r = []; r.groups = { a: '7' }; return r; };
+    return [''.replace(re, '$<a>'), 'a'.replace(/./, '$0'), /./[S.replace]('a', '$0')];
+  }, ['7', '$0', '$0']);
+  check('split with an overwritten exec, and the engine split quirks', function () {
+    var re = /(?:)/, ex = re.exec;
+    re.exec = function () { return ex.apply(this, arguments); };
+    return ['ab'.split(re), 'abbc'.split(/(b)*/)[1] === 'c', 'test'.split(/(?:)/, -1).length, 'ab'.split(/(?:ab)*/).length, '.'.split(/(.?)(.?)/).length,
+      '.'.split(/()()/).length, ''.split(/.?/).length, '0'.split(undefined, 0).length];
+  }, [['a', 'b'], false, 4, 2, 4, 1, 0, 0]);
+  // ---- ordinary use
+  check('replace', function () {
+    var args = null;
+    var r = ['a-b-c'.replace(/-/g, '+'), 'abc'.replace(/(b)/, '[$1]'), 'abc'.replace('b', '$&$&'), 'aaa'.replace(/a/g, function (m, i) { return i; }),
+      'x'.replace(/x/, "$`|$'|$$"), 'abc'.replace(/(z)?b/, '[$1]'), 'a.b'.replace('.', '$'), 'ab'.replace(/(?:)/g, '-')];
+    'xyz'.replace(/(y)/, function () { args = Array.prototype.slice.call(arguments); });
+    return r.concat([args]);
+  }, ['a+b+c', 'a[b]c', 'abbc', '012', '||$', 'a[]c', 'a$b', '-a-b-', ['y', 'y', 1, 'xyz']]);
+  check('match / search / split', function () {
+    return ['a1b22'.match(/\d+/g), 'abc'.match(/b/).index, 'abc'.match(/z/), 'abc'.search(/c/), 'abc'.search('b'), 'a,b,,c'.split(/,/), 'abc'.split(''),
+      'a b c'.split(' ', 2), 'a1b2c'.split(/(\d)/), 'abc'.split(), 'x'.match('x').length];
+  }, [['1', '22'], 1, null, 2, 1, ['a', 'b', '', 'c'], ['a', 'b', 'c'], ['a', 'b'], ['a', '1', 'b', '2', 'c'], ['abc'], 1]);
+  check('lowered expressions: named groups, sticky, lookbehind', function () {
+    var named = new RegExp('(?<y>\\d{4})-(?<m>\\d\\d)'), st = new RegExp('a', 'y'), lb = new RegExp('(?<=\\$)\\d+', 'g');
+    st.lastIndex = 1;
+    return ['on 2023-07'.replace(named, '$<m>/$<y>'), 'on 2023-07'.match(named).groups.m, st.test('ba'), 'a $12 b $3'.match(lb), 'x1y2z'.split(new RegExp('(?<d>\\d)')),
+      'q 2020-01 r'.search(named), 'k 1999-12'.replace(named, function () { return arguments[arguments.length - 1].y; })];
+  }, ['on 07/2023', '07', true, ['12', '3'], ['x', '1', 'y', '2', 'z'], 2, 'k 1999']);
+  check('RegExp constructor and flags as core-js checks them', function () {
+    var re1 = /a/g, re2 = /a/g, y = RegExp('a', 'y'), caret = RegExp('^r', 'gy'), dot = RegExp('.', 's'), ncg = RegExp('(?<a>b)', 'g');
+    re2[S.match] = false;
+    y.lastIndex = 2; caret.lastIndex = 2;
+    var flagsGet = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get, calls = '', O = {};
+    ['hasIndices:d', 'global:g', 'ignoreCase:i', 'multiline:m', 'dotAll:s', 'sticky:y'].forEach(function (p) {
+      var kv = p.split(':'); Object.defineProperty(O, kv[0], { get: function () { calls += kv[1]; return true; } });
+    });
+    var got = flagsGet.call(O);
+    return [RegExp(re1) === re1, RegExp(re2) !== re2, String(RegExp(re1, 'i')), new RegExp(re1) !== re1, y.exec('abcd'), RegExp('a', 'y').sticky, caret.exec('str'),
+      dot.dotAll && dot.test('\n') && dot.flags, ncg.exec('b').groups.a, 'b'.replace(ncg, '$<a>c'), got + '/' + calls, /x/gi.flags];
+  }, [true, true, '/a/i', true, null, true, null, 's', 'b', 'bc', 'dgimsy/dgimsy', 'gi']);
+  check('matchAll', function () { var out = []; var it = 'a1b2'.matchAll(/\d/g), st; while (!(st = it.next()).done) out.push(st.value[0] + st.value.index); return out; }, ['11', '23']);
+  check('null this throws', function () {
+    return ['match', 'replace', 'search', 'split'].map(function (k) { try { String.prototype[k].call(null, /a/); return 'no'; } catch (e) { return e instanceof TypeError; } });
+  }, [true, true, true, true]);
+  // ---- trim
+  check('trim: no U+200B / U+180E, all white space', function () {
+    var odd = C(0x200B) + C(0x85) + C(0x180E), ws = '\t\n\v\f\r ' + C(0xA0, 0x1680, 0x2000, 0x2001, 0x2005, 0x200A, 0x202F, 0x205F, 0x3000, 0x2028, 0x2029, 0xFEFF);
+    return [odd.trim() === odd, odd.trimStart() === odd, odd.trimEnd() === odd, ws.trim(), ws.trimStart(), ws.trimEnd(), ' a '.trim(), ' a '.trimStart(), ' a '.trimEnd(),
+      (ws + 'x' + C(0x200B)).trim() === 'x' + C(0x200B), String.prototype.trimLeft === String.prototype.trimStart, String.prototype.trimRight === String.prototype.trimEnd,
+      ''.trimStart.name, ''.trimEnd.name, ''.trim.name];
+  }, [true, true, true, '', '', '', 'a', 'a ', ' a', true, true, true, 'trimStart', 'trimEnd', 'trim']);
+  // ---- Number
+  check('Number: 0b / 0o strings, the rest as before', function () {
+    var n = new Number(5);
+    return [Number(' 0o17 '), Number('0b101'), Number('0B11'), Number('+0x1'), Number('-0x1'), Number('0x1F'), Number('0b2'), Number('0o'), Number(''), Number(), Number(undefined),
+      Number(null), Number('12.5'), Number([]), Number(true), Number(new Date(7)), typeof n, n.valueOf(), n instanceof Number, (5).constructor === Number, Number.MAX_SAFE_INTEGER,
+      Number.isInteger(5), Number.parseFloat === parseFloat, Number.name, Number.length, 1 / Number('-0') === -Infinity];
+  }, [15, 5, 3, null, null, 31, null, null, 0, 0, null, 0, 12.5, 0, 1, 7, 'object', 5, true, true, 9007199254740991, true, true, 'Number', 1, true]);
+  // ---- JSON and Date#toJSON
+  check('JSON.stringify: symbols, lone surrogates', function () {
+    return [JSON.stringify([S('x')]), JSON.stringify({ a: S('y'), b: 1 }), JSON.stringify(Object(S('z'))), JSON.stringify(C(0xDEAD)), JSON.stringify(C(0xDF06, 0xD834)),
+      JSON.stringify(C(0xD83D, 0xDE00)) === '"' + C(0xD83D, 0xDE00) + '"', JSON.stringify({ d: new Date(0) })];
+  }, ['[null]', '{"b":1}', '{}', '"\\udead"', '"\\udf06\\ud834"', true, '{"d":"1970-01-01T00:00:00.000Z"}']);
+  check('Date#toJSON', function () {
+    return [new Date(NaN).toJSON(), Date.prototype.toJSON.call({ toISOString: function () { return 1; } }), new Date(0).toJSON(), JSON.stringify([new Date(NaN)])];
+  }, [null, 1, '1970-01-01T00:00:00.000Z', '[null]']);
+  // ---- native-looking to Function.prototype.toString (lodash's isNative)
+  check('Map, Set, WeakMap, Promise, Number read as native code', function () {
+    var fts = Function.prototype.toString, reIsNative = RegExp('^' + fts.call(Object.prototype.hasOwnProperty).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+      .replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g, '$1.*?') + '$');
+    return [Map, Set, WeakMap, Promise, Number, Date].map(function (f) { return reIsNative.test(fts.call(f)) && /native code/.test(String(f)); });
+  }, [true, true, true, true, true, true]);
+  var pass = 0, lines = [];
+  for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  // timings (microseconds per call)
+  var t0, n, x, N = 2000, times = [], dash = /-/g, comma = /,/, obj = { a: 1, b: [1, 2], c: 'x' };
+  var time = function (label, f) { t0 = Date.now(); for (n = 0; n < N; n++) x = f(); times.push(label + ' ' + ((Date.now() - t0) * 1000 / N).toFixed(1)); };
+  time('replace re', function () { return 'a-b-c'.replace(dash, '+'); });
+  time('replace str', function () { return 'a-b-c'.replace('-', '+'); });
+  time('replace fn', function () { return 'a-b-c'.replace(dash, function () { return '+'; }); });
+  time('split str', function () { return 'a,b,c'.split(','); });
+  time('split re', function () { return 'a,b,c'.split(comma); });
+  time('match', function () { return 'abc'.match(/b/); });
+  time('trim', function () { return ' x '.trim(); });
+  time('Number', function () { return Number('42'); });
+  time('stringify', function () { return JSON.stringify(obj); });
+  var lost = [];
+  for (var w2 in watched) if (watched[w2][0][watched[w2][1]] !== before[w2]) lost.push(w2);
+  lines.push('us: ' + times.join(', ') + (withCoreJs ? ' (after core-js; replaced: ' + (lost.join(' ') || 'none') + ')' : ''));
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'keep ' + pass + '/' + res.length + (withCoreJs ? ' corejs' : '');
+};
+var withCoreJs = /corejs/.test(location.search);
+if (withCoreJs) {
+  var cj = document.createElement('script');
+  cj.src = 'https://cdn.jsdelivr.net/npm/core-js-bundle@3.41.0/minified.js';
+  cj.onload = function () { setTimeout(run, 300); };
+  cj.onerror = function () { document.title = 'core-js load failed'; };
+  document.head.appendChild(cj);
+} else setTimeout(run, 300);
+</script>
+</body>
+</html>

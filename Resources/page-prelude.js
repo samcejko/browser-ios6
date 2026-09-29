@@ -92,27 +92,36 @@
     // of one chain), and the page's own message listeners got all those messages. The engine delivers mutation
     // records at the end of each script, as microtasks run; the observer is one of the stand-ins above, let go with
     // the page.
+    // A job is four slots of the queue, a function and three arguments: the shims' Promise queues its reactions that
+    // way (__brNative.queueJob), without a closure for each - a function that makes one gets a scope object on every
+    // call here. Written by index: Array.prototype.push gets a wrapper later.
     (function () {
         var MO = window.MutationObserver;
         if (window.queueMicrotask || !MO || !MO.__brBoxed || !document.createTextNode) return;
         var queue = [], toggle = false, node = document.createTextNode('');
+        var rethrow = function (e) { setTimeout(function () { throw e; }, 0); };
         var flush = function () {
             var q = queue;
             queue = [];
-            for (var i = 0; i < q.length; i++) {
-                try { q[i](); } catch (e) { setTimeout(function () { throw e; }, 0); }
+            for (var i = 0; i < q.length; i += 4) {
+                try { q[i](q[i + 1], q[i + 2], q[i + 3]); } catch (e) { rethrow(e); }
             }
         };
         new MO(flush).observe(node, { characterData: true });
+        var later = function (fn, a, b, c) { setTimeout(function () { fn(a, b, c); }, 0); };
+        var queueJob = function (fn, a, b, c) {
+            if (gone) { later(fn, a, b, c); return; }
+            var n = queue.length;
+            if (!n) node.data = (toggle = !toggle) ? '1' : '0';
+            queue[n] = fn; queue[n + 1] = a; queue[n + 2] = b; queue[n + 3] = c;
+        };
         window.queueMicrotask = function queueMicrotask(callback) {
             if (typeof callback !== 'function') throw new TypeError("Failed to execute 'queueMicrotask' on 'Window': The callback provided as parameter 1 is not a function.");
-            if (gone) { setTimeout(callback, 0); return; }
-            if (!queue.length) node.data = (toggle = !toggle) ? '1' : '0';
-            queue.push(callback);
+            queueJob(callback, undefined, undefined, undefined);
         };
         // (core-js puts a wrapper of its own in front, 27 us a call here: shims.js puts this one back, and its Promise
         // uses it)
-        if (window.__brNative) window.__brNative.queueMicrotask = window.queueMicrotask;
+        if (window.__brNative) { window.__brNative.queueMicrotask = window.queueMicrotask; window.__brNative.queueJob = queueJob; }
     })();
 
     // matchMedia listeners are such roots too (until the document is destroyed - never, while they keep it): they are

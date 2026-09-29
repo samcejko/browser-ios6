@@ -1,0 +1,26 @@
+// Minifies the scripts the app puts in front of every page (and core-js-custom) for the bundle:
+//   node tools/minify-page-scripts.js <in> <out> [<in> <out> ...]
+// Function expressions lose their names, except constructors (capitalized) and trim, trimStart, trimEnd and values,
+// whose names core-js checks before it keeps them: on iOS 6 a named function expression costs every call - the engine
+// reads the variables it uses through a scope object of its own (measured on the iPad: 0.9 us instead of 0.2 for
+// three reads, 5.0 instead of 2.9 for JSON.stringify's wrapper). Functions that keep their names are written as
+// declarations in the sources where they are called often; reduce_vars is off so that terser does not inline a
+// declaration used once into a (named) function expression.
+const { minify } = require('terser');
+const fs = require('fs');
+const KEEP = /^(?:[A-Z][\w$]*|trim|trimStart|trimEnd|values)$/;
+const args = process.argv.slice(2);
+if (!args.length || args.length % 2) { console.error('usage: minify-page-scripts.js <in> <out> [...]'); process.exit(2); }
+(async () => {
+  for (let i = 0; i < args.length; i += 2) {
+    const src = fs.readFileSync(args[i], 'utf8');
+    const r = await minify(src, {
+      ecma: 5,
+      compress: { keep_fnames: KEEP, reduce_vars: false },
+      mangle: { keep_fnames: KEEP },
+      format: { ascii_only: true }
+    });
+    fs.writeFileSync(args[i + 1], r.code);
+    console.log(args[i] + ': ' + src.length + ' -> ' + r.code.length + ' bytes');
+  }
+})().catch(e => { console.error(e); process.exit(1); });

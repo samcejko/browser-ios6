@@ -142,7 +142,9 @@ jobs:
           EOF
           node build.js
           npm install terser@5.39.0 --no-audit --no-fund --silent
-          npx terser core-js-custom.js --compress --mangle --output "$GITHUB_WORKSPACE/Resources/js/core-js-custom.js"
+          # (names of constructors and of values stay: a page's own core-js finds Array.prototype.values nameless and puts
+          # a wrapper around it; other function expressions lose theirs, see the script)
+          NODE_PATH=/tmp/cjs/node_modules node "$GITHUB_WORKSPACE/tools/minify-page-scripts.js" core-js-custom.js "$GITHUB_WORKSPACE/Resources/js/core-js-custom.js"
           cd "$GITHUB_WORKSPACE"
           ls -la Resources/js/core-js-custom.js
 
@@ -185,9 +187,10 @@ jobs:
         run: |
           set -e
           npm install --no-save --silent acorn@8 terser@5
-          # function names stay: pages read Map.name, Promise.name and the like, as they do in native code
-          npx terser Resources/shims.js --compress --mangle --keep-fnames --output Resources/js/shims.js
-          npx terser Resources/shims-extra.js --compress --mangle --keep-fnames --output Resources/js/shims-extra.js
+          # (constructors keep their names - pages read Map.name, Promise.name - other function expressions lose them: a
+          # named one costs every call on iOS 6, see the script. The app takes js/<name>.js before <name>.js.)
+          node tools/minify-page-scripts.js Resources/shims.js Resources/js/shims.js Resources/shims-extra.js Resources/js/shims-extra.js \
+            Resources/page-prelude.js Resources/js/page-prelude.js Resources/regexp-shim.js Resources/js/regexp-shim.js
           node tools/gen-helpers.js > Resources/js/jsfix-helpers.js
           ls -la Resources/js/jsfix-helpers.js
           node tools/check-es5.js Resources/page-prelude.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/jsfix.js Resources/browserscore.js Resources/worker-shims.js Resources/regexp-shim.js Resources/js/*.js

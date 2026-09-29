@@ -4,6 +4,29 @@
     'use strict';
     var Ep = window.Element && window.Element.prototype;
 
+    // Functions of the shims that stand in for the engine's (Date, Map, Set, WeakMap, Promise, Number) read as native
+    // code, as core-js's own did: String(fn) through a toString of their own, and Function.prototype.toString.call(fn)
+    // - which core-js replaces, and lodash's isNative asks (a Map it took for a polyfill made it keep object keys in a
+    // list) - through core-js's record of the function: under the "state" key of its shared store for our core-js,
+    // and in the shared WeakMap (shared.state) that a page's own core-js 3 keeps its records in.
+    var NATIVE_TEMPLATE = String(String).split('String'), nativeSources = [];
+    var shareSources = function () {
+        var shared = window['__core-js_shared__'], WM = window.WeakMap;
+        if (!shared || !WM || !WM.__brLean || !nativeSources.length) return;
+        var store = shared.state;
+        try { if (!store) store = shared.state = new WM(); } catch (e) { return; }
+        if (typeof store.has !== 'function' || typeof store.set !== 'function') return;
+        for (var i = 0; i < nativeSources.length; i += 2) if (!store.has(nativeSources[i])) store.set(nativeSources[i], { source: nativeSources[i + 1], facade: nativeSources[i] });
+        nativeSources.length = 0;
+    };
+    var looksNative = function (fn, name) {
+        var src = NATIVE_TEMPLATE.join(name), shared = window['__core-js_shared__'], STATE = shared && shared.keys && shared.keys.state;
+        try { Object.defineProperty(fn, 'toString', { value: function toString() { return src; }, writable: true, configurable: true }); } catch (e) {}
+        if (typeof STATE === 'string') try { Object.defineProperty(fn, STATE, { value: { source: src, facade: fn }, writable: true, configurable: true }); } catch (e2) {}
+        nativeSources.push(fn, src);
+        shareSources();
+    };
+
     // Object.prototype.toString as in ES2015: an object's Symbol.toStringTag names it. core-js's Map, Set, Promise...
     // came out "[object Object]", and libraries tell types that way: Vue made a reactive Map with the handlers of a
     // plain object, so its methods ran on the proxy ("Incompatible receiver, Map required": kosik.cz), lodash's
@@ -106,13 +129,19 @@
             return t;
         };
         var isDate = function (v) { return Object.prototype.toString.call(v) === '[object Date]'; };
-        var D = function Date(year, month, day, hours, minutes, seconds, ms) {
+        // (the try in a function of its own, and no getPrototypeOf for a plain new Date(): a function with a try costs
+        // 2.3 us more on every call here, core-js's getPrototypeOf 1.4 - new Date() took 10.6 us, the engine's 2.4)
+        var setProto = function (r, p) { try { r.__proto__ = p; } catch (e) {} };
+        // (a declaration: it keeps its name, and a named function expression reads every outer variable through a
+        // scope object of its own here, a microsecond and more per call)
+        var D = Date;
+        function Date(year, month, day, hours, minutes, seconds, ms) {
             if (!(this instanceof D)) return ND();   // (called as a function: the current time as text)
             var n = arguments.length, r;
             if (n === 0) r = new ND();
             else if (n === 1) {
                 // (a date object keeps its milliseconds: the engine went through its text)
-                r = typeof year === 'string' ? new ND(readDate(year)) : isDate(year) ? new ND(year.getTime()) : new ND(year);
+                r = typeof year === 'number' ? new ND(year) : typeof year === 'string' ? new ND(readDate(year)) : isDate(year) ? new ND(year.getTime()) : new ND(year);
             } else {
                 // (as many arguments as given: a missing one is not undefined to the engine)
                 switch (n) {
@@ -125,15 +154,14 @@
                 }
             }
             // (a subclass constructing: its prototype)
-            var p = Object.getPrototypeOf(this);
-            if (p !== D.prototype) { try { r.__proto__ = p; } catch (e) {} }
+            if (this.constructor !== D) { var p = Object.getPrototypeOf(this); if (p !== D.prototype) setProto(r, p); }
             return r;
-        };
+        }
         D.prototype = ND.prototype;
         D.parse = function parse(s) { return readDate(String(s)); };
         D.UTC = ND.UTC;
         D.now = ND.now;
-        D.toString = function () { return 'function Date() {\n    [native code]\n}'; };
+        looksNative(D, 'Date');
         D.__brNative = ND;
         try { Object.defineProperty(ND.prototype, 'constructor', { value: D, writable: true, configurable: true, enumerable: false }); } catch (e1) { ND.prototype.constructor = D; }
         window.Date = D;
@@ -471,6 +499,7 @@
         };
         var engineKeys = N.keys;
         if (engineKeys && Object.keys !== engineKeys) Object.keys = function keys(o) {
+            if (typeof o === 'object' ? o !== null : typeof o === 'function') return engineKeys(o);
             if (o === null || o === undefined) throw new TypeError('Cannot convert undefined or null to object');
             return engineKeys(Object(o));
         };
@@ -480,13 +509,17 @@
         // (and the hidden records of the shims' Promise, Map/Set and the objects used as keys: not the page's)
         var namesOf = Object.getOwnPropertyNames, engineDesc = N.getOwnPropertyDescriptor || Object.getOwnPropertyDescriptor;
         var INTERNAL = { __brO: 1, __brP: 1, __brC: 1 };
-        var withoutPoison = function (o, names) {
-            var fn = typeof o === 'function', out = null, nm, drop;
+        // (names straight from the engine also hold core-js's symbols and hidden keys, all named "Symbol(...)_...":
+        // those go too, as core-js's own getOwnPropertyNames leaves them out)
+        var withoutPoison = function (o, names, engine) {
+            var fn = typeof o === 'function', out = null, nm, drop, c;
             for (var i = 0; i < names.length; i++) {
                 nm = names[i];
                 drop = false;
                 if (typeof nm === 'string') {
-                    if (nm.charCodeAt(0) === 95 && INTERNAL[nm] === 1) drop = true;
+                    c = nm.charCodeAt(0);
+                    if (c === 95 && INTERNAL[nm] === 1) drop = true;
+                    else if (c === 83 && engine && nm.lastIndexOf('Symbol(', 0) === 0) drop = true;
                     else if (fn && (nm === 'arguments' || nm === 'caller')) { var d = engineDesc(o, nm); if (d && d.get) drop = true; }
                 }
                 if (drop) { if (out === null) out = names.slice(0, i); }
@@ -494,10 +527,22 @@
             }
             return out === null ? names : out;
         };
-        if (namesOf) Object.getOwnPropertyNames = function getOwnPropertyNames(o) { return withoutPoison(o, namesOf(o)); };
-        // (core-js's Reflect.ownKeys takes the names its own way)
+        // (an object's names from the engine: core-js's getOwnPropertyNames filters them with its own forEach in JS,
+        // 25 us for {a: 1}; primitives still go its way, the engine's throws for them)
+        var engineNamesOf = N.getOwnPropertyNames && N.getOwnPropertyNames !== namesOf ? N.getOwnPropertyNames : null;
+        if (namesOf) Object.getOwnPropertyNames = function getOwnPropertyNames(o) {
+            if (engineNamesOf !== null && o !== null && (typeof o === 'object' || typeof o === 'function')) return withoutPoison(o, engineNamesOf(o), true);
+            return withoutPoison(o, namesOf(o), false);
+        };
+        // (core-js's Reflect.ownKeys took the names its own way: the same names here, then the symbols)
         var ownKeysOf = window.Reflect && window.Reflect.ownKeys;
-        if (ownKeysOf) window.Reflect.ownKeys = function ownKeys(o) { return withoutPoison(o, ownKeysOf(o)); };
+        if (ownKeysOf) window.Reflect.ownKeys = function ownKeys(o) {
+            if (engineNamesOf !== null && o !== null && (typeof o === 'object' || typeof o === 'function')) {
+                var names = withoutPoison(o, engineNamesOf(o), true), syms = Object.getOwnPropertySymbols(o);
+                return syms.length ? names.concat(syms) : names;
+            }
+            return withoutPoison(o, ownKeysOf(o), false);
+        };
         // (Babel's object spread asks every object for its symbols: an object without a property named "Symbol(...",
         // as core-js names them, has none, which core-js found out calling two functions per property)
         var nativeGOPS = Object.getOwnPropertySymbols, engineNames = N.getOwnPropertyNames;
@@ -516,10 +561,11 @@
         // JSON.stringify: core-js's (which its Symbol brings along) calls a replacer of its own for every value to leave
         // its symbols out, six times slower here. A symbol gets a toJSON that gives undefined instead, which the engine's
         // stringify then leaves out as the standard does, and lone surrogates are escaped afterwards (well-formed
-        // JSON.stringify, which core-js added as well).
+        // JSON.stringify, which core-js added as well). At the top (key '') it gives {}: Object(symbol) is the symbol
+        // itself here, and a page's own core-js checks that a boxed symbol turns into '{}' (else it puts its own in).
         var engineStringify = N.stringify, SymP = window.Symbol && window.Symbol.prototype;
         if (engineStringify && window.JSON && JSON.stringify !== engineStringify && SymP && typeof SymP === 'object') {
-            try { nativeDP(SymP, 'toJSON', { value: function () { return undefined; }, writable: true, configurable: true }); } catch (eS) { SymP = null; }
+            try { nativeDP(SymP, 'toJSON', { value: function (key) { return key === '' ? {} : undefined; }, writable: true, configurable: true }); } catch (eS) { SymP = null; }
             var LONE = /[\uD800-\uDFFF]/g;
             var escapeLone = function (match, offset, string) {
                 var c = match.charCodeAt(0), prev = string.charCodeAt(offset - 1), next = string.charCodeAt(offset + 1);
@@ -527,12 +573,16 @@
                 if ((lead && !(next >= 0xDC00 && next <= 0xDFFF)) || (!lead && !(prev >= 0xD800 && prev <= 0xDBFF))) return '\\u' + c.toString(16);
                 return match;
             };
+            // (this engine hands a replacer the index of an array item as a number)
+            var stringKeys = function (replacer) { return function (k, v) { return replacer.call(this, String(k), v); }; };
+            // (no function inside, no apply, no arguments: a function that makes a closure gets a scope object on every
+            // call here, even when it makes none - the wrapper cost 6.6 us, the engine's stringify of a number 2.2)
+            var SURROGATE = /[\uD800-\uDFFF]/;
             if (SymP) JSON.stringify = function stringify(value, replacer, space) {
-                var args = arguments;
-                // (this engine hands a replacer the index of an array item as a number)
-                if (typeof replacer === 'function') args = [value, function (k, v) { return replacer.call(this, String(k), v); }, space];
-                var out = engineStringify.apply(JSON, args);
-                return typeof out === 'string' && /[\uD800-\uDFFF]/.test(out) ? out.replace(LONE, escapeLone) : out;
+                var out;
+                if (typeof replacer === 'function') out = engineStringify(value, stringKeys(replacer), space);
+                else out = replacer === undefined && space === undefined ? engineStringify(value) : engineStringify(value, replacer, space);
+                return typeof out === 'string' && SURROGATE.test(out) ? out.replace(LONE, escapeLone) : out;
             };
         }
         if (!fixed) return;
@@ -666,8 +716,9 @@
             if (s !== null && typeof s === 'object' && s instanceof SymC) throw new TypeError(SYM_TO_STRING);
             return nPF(s);
         };
-        if (Number.parseInt === nPI || !Number.parseInt) Number.parseInt = window.parseInt;
-        if (Number.parseFloat === nPF || !Number.parseFloat) Number.parseFloat = window.parseFloat;
+        // (the same functions, as the standard has them: our core-js had put JS versions there, failing the symbol check)
+        Number.parseInt = window.parseInt;
+        Number.parseFloat = window.parseFloat;
     })();
     // Map, Set, WeakMap and WeakSet, lean, in place of core-js's (new Map 25 us, get/has 6.5, set 9.5; new WeakMap with a
     // set and a get 47 us here). Entries in insertion order as a linked list (iterators and forEach go on across deletions
@@ -712,6 +763,8 @@
                     if (r !== null) return st.o[r.id];
                     for (var i = 0; i < st.f.length; i++) if (st.f[i].k === k) return st.f[i];
                     return undefined;
+                // (an engine's own symbols - a desktop browser running these shims: they cannot become text)
+                case 'symbol': return st.y !== undefined ? st.y[k] : undefined;
                 default: return st.m[typeof k + ':' + k];
             }
         };
@@ -725,6 +778,9 @@
                     if (r !== null) { if (add) st.o[r.id] = e; else delete st.o[r.id]; return; }
                     if (add) st.f.push(e);
                     else for (var i = 0; i < st.f.length; i++) if (st.f[i] === e) { st.f.splice(i, 1); break; }
+                    return;
+                case 'symbol':
+                    if (add) { if (st.y === undefined) st.y = {}; st.y[k] = e; } else if (st.y !== undefined) delete st.y[k];
                     return;
                 default: if (add) st.m[typeof k + ':' + k] = e; else delete st.m[typeof k + ':' + k];
             }
@@ -754,13 +810,7 @@
             for (var e = st.first; e !== null; e = e.next) e.removed = true;
             st.first = st.last = null;
             st.size = 0;
-            st.s = Object.create(null); st.n = Object.create(null); st.m = Object.create(null); st.o = Object.create(null); st.f = [];
-        };
-        var eachEntry = function (st, fn) {
-            for (var e = st.first; e !== null; e = e.next) {
-                if (e.removed) continue;
-                fn(e);
-            }
+            st.s = Object.create(null); st.n = Object.create(null); st.m = Object.create(null); st.o = Object.create(null); st.f = []; st.y = undefined;
         };
         // iterators: kind 0 keys, 1 values, 2 entries. Each kind's prototype holds next itself and sits right below
         // %IteratorPrototype% (core-js's, with the iterator helpers map, filter, toArray...), as the native ones do: a
@@ -824,24 +874,28 @@
             hide(self, '__brC', st);
             return st;
         };
-        var M = function Map(iterable) {
+        // (the constructors as declarations: they keep their names, and a named function expression reads every outer
+        // variable through a scope object of its own here, a microsecond and more per call)
+        var M = Map, St = Set, WM = WeakMap, WS = WeakSet;
+        function Map(iterable) {
             construct(this, M, 'Map');
             if (iterable !== null && iterable !== undefined) fill(this, iterable, true);
-        };
+        }
         var MP = M.prototype;
         hide(MP, 'get', function get(k) { var e = find(stateOf(this, 'Map'), k); return e === undefined ? undefined : e.v; });
         hide(MP, 'set', function set(k, v) { add(stateOf(this, 'Map'), k, v); return this; });
         hide(MP, 'has', function has(k) { return find(stateOf(this, 'Map'), k) !== undefined; });
         hide(MP, 'delete', function (k) { return remove(stateOf(this, 'Map'), k); });
         hide(MP, 'clear', function clear() { clearAll(stateOf(this, 'Map')); });
+        // (the loop written out: no closure, no call more per entry)
         hide(MP, 'forEach', function forEach(fn, thisArg) {
-            var st = stateOf(this, 'Map'), map = this;
+            var st = stateOf(this, 'Map');
             if (typeof fn !== 'function') throw new TypeError(fn + ' is not a function');
-            eachEntry(st, function (e) { fn.call(thisArg, e.v, e.k, map); });
+            for (var e = st.first; e !== null; e = e.next) if (!e.removed) fn.call(thisArg, e.v, e.k, this);
         });
-        hide(MP, 'keys', function keys() { return new MapIter(stateOf(this, 'Map'), 0); });
-        hide(MP, 'values', function values() { return new MapIter(stateOf(this, 'Map'), 1); });
-        hide(MP, 'entries', function entries() { return new MapIter(stateOf(this, 'Map'), 2); });
+        hide(MP, 'keys', function () { return new MapIter(stateOf(this, 'Map'), 0); });
+        hide(MP, 'values', function () { return new MapIter(stateOf(this, 'Map'), 1); });
+        hide(MP, 'entries', function () { return new MapIter(stateOf(this, 'Map'), 2); });
         if (ITER !== null) hide(MP, ITER, MP.entries);
         hide(MP, '@@iterator', MP.entries);
         def(MP, 'size', { get: function () { return stateOf(this, 'Map').size; }, configurable: true, enumerable: false });
@@ -861,23 +915,25 @@
             Array.from(items).forEach(function (v) { var k = fn(v, i++), list = out.get(k); if (list === undefined) out.set(k, [v]); else list.push(v); });
             return out;
         });
-        var St = function Set(iterable) {
+        function Set(iterable) {
             construct(this, St, 'Set');
             if (iterable !== null && iterable !== undefined) fill(this, iterable, false);
-        };
+        }
         var SP = St.prototype;
         hide(SP, 'add', function add2(v) { var st = stateOf(this, 'Set'); if (find(st, v) === undefined) add(st, v, v); return this; });
         hide(SP, 'has', function has(v) { return find(stateOf(this, 'Set'), v) !== undefined; });
         hide(SP, 'delete', function (v) { return remove(stateOf(this, 'Set'), v); });
         hide(SP, 'clear', function clear() { clearAll(stateOf(this, 'Set')); });
         hide(SP, 'forEach', function forEach(fn, thisArg) {
-            var st = stateOf(this, 'Set'), set = this;
+            var st = stateOf(this, 'Set');
             if (typeof fn !== 'function') throw new TypeError(fn + ' is not a function');
-            eachEntry(st, function (e) { fn.call(thisArg, e.k, e.k, set); });
+            for (var e = st.first; e !== null; e = e.next) if (!e.removed) fn.call(thisArg, e.k, e.k, this);
         });
-        hide(SP, 'values', function values() { return new SetIter(stateOf(this, 'Set'), 0); });
+        // (named "values": a page's own core-js checks that name before it keeps Set's iterators)
+        function values() { return new SetIter(stateOf(this, 'Set'), 0); }
+        hide(SP, 'values', values);
         hide(SP, 'keys', SP.values);
-        hide(SP, 'entries', function entries() { return new SetIter(stateOf(this, 'Set'), 2); });
+        hide(SP, 'entries', function () { return new SetIter(stateOf(this, 'Set'), 2); });
         if (ITER !== null) hide(SP, ITER, SP.values);
         hide(SP, '@@iterator', SP.values);
         def(SP, 'size', { get: function () { return stateOf(this, 'Set').size; }, configurable: true, enumerable: false });
@@ -949,33 +1005,34 @@
             hide(self, '__brC', st);
             return st;
         };
-        var WM = function WeakMap(iterable) {
+        function WeakMap(iterable) {
             weakConstruct(this, WM, 'WeakMap');
             if (iterable !== null && iterable !== undefined) fill(this, iterable, true);
-        };
+        }
         var WMP = WM.prototype;
         hide(WMP, 'get', function get(k) { return wGet(weakState(this, 'WeakMap'), k); });
         hide(WMP, 'set', function set(k, v) { var st = weakState(this, 'WeakMap'); weakKey(k, 'WeakMap'); wSet(st, k, v); return this; });
         hide(WMP, 'has', function has(k) { return wHas(weakState(this, 'WeakMap'), k); });
         hide(WMP, 'delete', function (k) { return wDelete(weakState(this, 'WeakMap'), k); });
         tagged(WMP, 'WeakMap');
-        var WS = function WeakSet(iterable) {
+        function WeakSet(iterable) {
             weakConstruct(this, WS, 'WeakSet');
             if (iterable !== null && iterable !== undefined) fill(this, iterable, false);
-        };
+        }
         var WSP = WS.prototype;
         hide(WSP, 'add', function add3(v) { var st = weakState(this, 'WeakSet'); weakKey(v, 'WeakSet'); wSet(st, v, true); return this; });
         hide(WSP, 'has', function has(v) { return wHas(weakState(this, 'WeakSet'), v); });
         hide(WSP, 'delete', function (v) { return wDelete(weakState(this, 'WeakSet'), v); });
         tagged(WSP, 'WeakSet');
         var nativeLooking = function (C, name) {
-            hide(C, 'toString', function toString() { return 'function ' + name + '() { [native code] }'; });
             var sp = S && S.species;
             if (sp) try { Object.defineProperty(C, sp, { get: function () { return this; }, configurable: true }); } catch (e) {}
             C.__brLean = true;
+            looksNative(C, name);
         };
         nativeLooking(M, 'Map'); nativeLooking(St, 'Set'); nativeLooking(WM, 'WeakMap'); nativeLooking(WS, 'WeakSet');
         try { window.Map = M; window.Set = St; window.WeakMap = WM; window.WeakSet = WS; } catch (eG) {}
+        shareSources();
     })();
 
     // Lean versions of the ES2015+ methods pages call all the time, in place of core-js's: its general helpers cost
@@ -1123,6 +1180,10 @@
         // Array.from: arrays, strings, array-likes and core-js's Set and Map directly; other iterables step by step,
         // closed (their return()) when the map function throws; another constructor than Array: core-js's
         var nFrom = Array.from, CSet = window.Set, CMap = window.Map;
+        // (their callbacks made in functions of their own: a function that makes a closure over its variables gets a
+        // scope object on every call here, whether it makes it or not)
+        var setItems = function (set) { var out = []; set.forEach(function (v) { out.push(v); }); return out; };
+        var mapItems = function (map) { var out = []; map.forEach(function (v, k) { out.push([k, v]); }); return out; };
         var fromIterator = function (it, mapFn, thisArg) {
             var out = [], step, i = 0;
             while (!(step = it.next()).done) {
@@ -1158,11 +1219,9 @@
                 if (mapFn) for (i = 0; i < out.length; i++) out[i] = mapFn.call(thisArg, out[i], i);
                 return out;
             }
-            if (CSet && items instanceof CSet) {
-                out = []; items.forEach(function (v) { out.push(v); });
-            } else if (CMap && items instanceof CMap) {
-                out = []; items.forEach(function (v, k) { out.push([k, v]); });
-            } else {
+            if (CSet && items instanceof CSet) out = setItems(items);
+            else if (CMap && items instanceof CMap) out = mapItems(items);
+            else {
                 var getIt = ITER !== null ? items[ITER] : undefined;
                 if (getIt === undefined && typeof items['@@iterator'] === 'function') getIt = items['@@iterator'];
                 // (a NodeList, arguments...: the array iterator reads index by index, as the loop below does)
@@ -1189,7 +1248,8 @@
             return out;
         };
         hidden(Object, 'entries', function entries(o) { return ownEntries(o, false); });
-        hidden(Object, 'values', function values(o) { return ownEntries(o, true); });
+        // (no name: the minifier keeps every function named "values", see tools/minify-page-scripts.js)
+        hidden(Object, 'values', function (o) { return ownEntries(o, true); });
         hidden(Object, 'fromEntries', function fromEntries(iterable) {
             if (iterable === null || iterable === undefined) throw new TypeError(iterable + ' is not iterable');
             var out = {}, list = isArray(iterable) ? iterable : Array.from(iterable);
@@ -1263,6 +1323,102 @@
             if (k < 0) k += s.length;
             return k < 0 || k >= s.length ? undefined : s.charAt(k);
         });
+        // trim, trimStart (= trimLeft) and trimEnd (= trimRight): the engine's, which also takes away U+200B and U+180E
+        // (white space in older Unicode, not any more), so core-js put its own in (a regular expression replace per
+        // call); only a string that has one of those two is trimmed here by hand
+        var nTrim = SP.trim, nTrimL = SP.trimLeft, nTrimR = SP.trimRight, ODD_WS = /[\u200B\u180E]/;
+        var isWS = function (c) {
+            return c === 32 || (c >= 9 && c <= 13) || c === 0xA0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200A) || c === 0x2028 || c === 0x2029 ||
+                c === 0x202F || c === 0x205F || c === 0x3000 || c === 0xFEFF;
+        };
+        var trimBy = function (s, start, end) {
+            var i = 0, j = s.length;
+            if (start) while (i < j && isWS(s.charCodeAt(i))) i++;
+            if (end) while (j > i && isWS(s.charCodeAt(j - 1))) j--;
+            return s.slice(i, j);
+        };
+        // (declarations, in a function of their own: core-js checks their names, and a named function expression reads
+        // every outer variable through a scope object of its own here, a microsecond and more per call)
+        (function () {
+            if (!nTrim || !nTrimL || !nTrimR) return;
+            function trim() {
+                var s = this;
+                if (typeof s !== 'string') s = thisStr(s, 'trim');
+                var r = nTrim.call(s);
+                return r.length === s.length || !ODD_WS.test(s) ? r : trimBy(s, true, true);
+            }
+            function trimStart() {
+                var s = this;
+                if (typeof s !== 'string') s = thisStr(s, 'trimStart');
+                var r = nTrimL.call(s);
+                return r.length === s.length || !ODD_WS.test(s) ? r : trimBy(s, true, false);
+            }
+            function trimEnd() {
+                var s = this;
+                if (typeof s !== 'string') s = thisStr(s, 'trimEnd');
+                var r = nTrimR.call(s);
+                return r.length === s.length || !ODD_WS.test(s) ? r : trimBy(s, false, true);
+            }
+            hidden(SP, 'trim', trim);
+            hidden(SP, 'trimStart', trimStart); hidden(SP, 'trimLeft', trimStart);
+            hidden(SP, 'trimEnd', trimEnd); hidden(SP, 'trimRight', trimEnd);
+        })();
+        // Number: the engine's reads no '0b101' / '0o17' strings, so core-js put a Number of its own in place (a trim and
+        // a parse in JS for every string); this one hands everything else straight to the engine's
+        (function () {
+            var NNumber = window.Number;
+            if (NNumber(' 0o1') === 1 || NNumber.__brLean) return;
+            // (only a string that starts with 0b / 0o, or a sign and 0x, is read here)
+            var PREFIXED = /^\s*(?:0[bBoO]|[+-]0[xX])/;
+            var toNumber = function (v) {
+                if (typeof v === 'string') {
+                    if (v.length > 2 && PREFIXED.test(v)) {
+                        var t = trimBy(v, true, true), c1 = t.charCodeAt(1) | 32;
+                        // ('+0x1' / '-0x1' are NaN: no sign before a prefix)
+                        if (t.charAt(0) !== '0' || (c1 !== 98 && c1 !== 111)) return NaN;
+                        var radix = c1 === 98 ? 2 : 8, digits = t.slice(2);
+                        if (!digits.length || (radix === 2 ? /[^01]/ : /[^0-7]/).test(digits)) return NaN;
+                        return parseInt(digits, radix);
+                    }
+                    return NNumber(v);
+                }
+                if (v !== null && typeof v === 'object' && SymC && v instanceof SymC) throw new TypeError('Cannot convert a Symbol value to a number');
+                return NNumber(v);
+            };
+            var NumberW = Number;
+            function Number(value) {
+                // (numbers, and strings that are short or start with a digit 1-9, go to the engine at once: one call
+                // less, which is most of the cost here. The shims are strict: this is undefined for Number(x), the new
+                // object for new Number(x) - which gets the engine's wrapper object.)
+                var n, c;
+                if (typeof value === 'string') n = value.length < 3 || ((c = value.charCodeAt(0)) >= 49 && c <= 57) ? NNumber(value) : toNumber(value);
+                else if (typeof value === 'number') n = value;
+                else n = value !== undefined ? toNumber(value) : arguments.length ? NaN : 0;
+                return this instanceof NumberW ? new NNumber(n) : n;
+            }
+            var names = Object.getOwnPropertyNames(NNumber);
+            for (var ni = 0; ni < names.length; ni++) {
+                var nm = names[ni];
+                if (nm === 'prototype' || nm === 'length' || nm === 'name' || nm === 'arguments' || nm === 'caller') continue;
+                try { def(NumberW, nm, Object.getOwnPropertyDescriptor(NNumber, nm)); } catch (eN) {}
+            }
+            NumberW.prototype = NNumber.prototype;
+            def(NNumber.prototype, 'constructor', { value: NumberW, writable: true, configurable: true, enumerable: false });
+            looksNative(NumberW, 'Number');
+            NumberW.__brLean = true;
+            try { window.Number = NumberW; } catch (eW) {}
+        })();
+        // Date#toJSON: the engine's throws for an invalid date (null in ES5.1 on), so core-js put its own in
+        var nToJSON = Date.prototype.toJSON;
+        if (nToJSON && (function () { try { return new Date(NaN).toJSON() !== null; } catch (e) { return true; } })()) {
+            hidden(Date.prototype, 'toJSON', function toJSON(key) {
+                var O = Object(this), tv;
+                if (O instanceof Date) tv = O.getTime();
+                else { tv = O.valueOf(); if (tv !== null && (typeof tv === 'object' || typeof tv === 'function')) tv = O.toString(); }
+                if (typeof tv === 'number' && (tv !== tv || tv === Infinity || tv === -Infinity)) return null;
+                return O.toISOString();
+            });
+        }
         var nOf = Array.of;
         Array.of = function of() {
             if (this === Array || this === undefined || typeof this !== 'function') return AP.slice.call(arguments);
@@ -1317,17 +1473,27 @@
             var st = p.__brP;
             return st !== undefined && st !== null && st.p === p ? st : null;
         };
-        var P = function Promise(executor) {
+        // (a declaration: it keeps its name, and a named function expression reads every outer variable through a
+        // scope object of its own here)
+        var P = Promise;
+        function Promise(executor) {
             if (!(this instanceof P) || stateOf(this)) throw new TypeError("Promise constructor cannot be invoked without 'new'");
             if (typeof executor !== 'function') throw new TypeError('Promise resolver ' + executor + ' is not a function');
             var st = init(this), fns = resolvers(st);
             if (tryCall2(executor, undefined, fns[0], fns[1]) === ERR) fns[1](lastError);
-        };
+        }
+        // (one descriptor for all: an object less per promise)
+        var PD = { value: null, writable: true, configurable: true, enumerable: false };
         var init = function (p) {
             var st = { s: PENDING, v: undefined, r: null, h: false, p: p, reported: false };
-            hide(p, '__brP', st);
+            PD.value = st;
+            def(p, '__brP', PD);
+            PD.value = null;
             return st;
         };
+        // jobs: a function and three arguments through page-prelude's queue, no closure each (a function that makes a
+        // closure over its variables gets a scope object on every call here); else a closure through queueMicrotask
+        var later = N.queueJob || function (fn, a, b, c) { qm(function () { fn(a, b, c); }); };
         // a promise of ours made without an executor (then, resolve, all...)
         var Internal = function () { init(this); };
         Internal.prototype = P.prototype;
@@ -1341,14 +1507,7 @@
             if (x !== null && (typeof x === 'object' || typeof x === 'function')) {
                 var then = getThen(x);
                 if (then === ERR) return settle(st, REJECTED, lastError);
-                if (typeof then === 'function') {
-                    // (NewPromiseResolveThenableJob)
-                    qm(function () {
-                        var fns = resolvers(st);
-                        if (tryCall2(then, x, fns[0], fns[1]) === ERR) fns[1](lastError);
-                    });
-                    return;
-                }
+                if (typeof then === 'function') { later(thenableJob, st, then, x); return; }
             }
             settle(st, FULFILLED, x);
         };
@@ -1391,19 +1550,42 @@
                 }
             }
         };
-        var queueReaction = function (re, state, v) {
-            qm(function () {
-                var handler = state === FULFILLED ? re.f : re.r, out;
-                if (handler === null) { if (state === FULFILLED) capResolve(re.c, v); else capReject(re.c, v); return; }
-                out = try1(handler, v);
-                if (out === ERR) capReject(re.c, lastError); else capResolve(re.c, out);
-            });
+        // (NewPromiseResolveThenableJob: a promise of ours with its own then takes the other's state through a reaction
+        // of its own, without resolving functions and a call of then)
+        var thenableJob = function (st, then, x) {
+            var xs = then === protoThen && x.constructor === P ? stateOf(x) : null;
+            if (xs !== null) { subscribe(xs, { c: { st: st }, f: null, r: null }); return; }
+            var fns = resolvers(st);
+            if (tryCall2(then, x, fns[0], fns[1]) === ERR) fns[1](lastError);
+        };
+        var reactionJob = function (re, state, v) {
+            var handler = state === FULFILLED ? re.f : re.r, out;
+            if (handler === null) { if (state === FULFILLED) capResolve(re.c, v); else capReject(re.c, v); return; }
+            out = try1(handler, v);
+            if (out === ERR) capReject(re.c, lastError); else capResolve(re.c, out);
+        };
+        var queueReaction = function (re, state, v) { later(reactionJob, re, state, v); };
+        // (a reaction on a promise: kept while it is pending, queued when it is settled)
+        var subscribe = function (st, re) {
+            if (st.s === PENDING) {
+                if (st.r === null) st.r = re;
+                else if (st.r.length === undefined) st.r = [st.r, re];
+                else st.r[st.r.length] = re;
+            } else {
+                if (st.s === REJECTED && !st.h && st.reported) fire('rejectionhandled', st);
+                queueReaction(re, st.s, st.v);
+            }
+            st.h = true;
         };
         // a capability: {st} for ours, {resolve, reject, promise} for another constructor's
         var capResolve = function (c, v) { if (c.st) resolveWith(c.st, v); else c.resolve(v); };
         var capReject = function (c, e) { if (c.st) settle(c.st, REJECTED, e); else c.reject(e); };
         var newCap = function (C) {
             if (C === P) { var p = new Internal(); return { st: p.__brP, promise: p }; }
+            return foreignCap(C);
+        };
+        // (another constructor's: its executor is a closure, in a function of its own)
+        var foreignCap = function (C) {
             if (typeof C !== 'function') throw new TypeError('Promise resolve or reject function is not callable');
             var c = { resolve: undefined, reject: undefined, promise: undefined };
             c.promise = new C(function (res, rej) {
@@ -1421,22 +1603,14 @@
             return Sp === undefined || Sp === null ? P : Sp;
         };
         var proto = P.prototype;
-        hide(proto, 'then', function then(onFulfilled, onRejected) {
+        var protoThen = function then(onFulfilled, onRejected) {
             var st = stateOf(this);
             if (!st) throw new TypeError('Method Promise.prototype.then called on incompatible receiver ' + this);
             var c = newCap(speciesOf(this));
-            var re = { c: c, f: typeof onFulfilled === 'function' ? onFulfilled : null, r: typeof onRejected === 'function' ? onRejected : null };
-            if (st.s === PENDING) {
-                if (st.r === null) st.r = re;
-                else if (st.r.length === undefined) st.r = [st.r, re];
-                else st.r.push(re);
-            } else {
-                if (st.s === REJECTED && !st.h && st.reported) fire('rejectionhandled', st);
-                queueReaction(re, st.s, st.v);
-            }
-            st.h = true;
+            subscribe(st, { c: c, f: typeof onFulfilled === 'function' ? onFulfilled : null, r: typeof onRejected === 'function' ? onRejected : null });
             return c.promise;
-        });
+        };
+        hide(proto, 'then', protoThen);
         hide(proto, 'catch', function (onRejected) { return this.then(undefined, onRejected); });
         hide(proto, 'finally', function (onFinally) {
             if (this === null || (typeof this !== 'object' && typeof this !== 'function')) throw new TypeError('Promise.prototype.finally called on a non-object');
@@ -1519,7 +1693,7 @@
         hide(P, 'any', function any(iterable) { return combine(this, iterable, 'any'); });
         hide(P, 'race', function race(iterable) { return combine(this, iterable, 'race'); });
         if (SPECIES !== null) try { Object.defineProperty(P, S.species, { get: function () { return this; }, configurable: true }); } catch (eS) {}
-        hide(P, 'toString', function toString() { return 'function Promise() { [native code] }'; });
+        looksNative(P, 'Promise');
         P.__brLean = true;
         try { window.Promise = P; } catch (eP) {}
     })();

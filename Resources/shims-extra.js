@@ -1168,10 +1168,11 @@
         observeAdded(function (el) { if (Object.keys(registry).length) upgradeTree(el, true); });
         // document.createElement('my-el') of a defined element runs its constructor at once (as the native API does)
         var ceCreate = document.createElement, ceNativeCreate = ceCreate;
+        // (no arguments object and no lower-casing for a name without a dash: this runs for every element a page makes,
+        // and reading arguments costs a microsecond a call here)
         document.createElement = function (name) {
-            var el = ceCreate.apply(document, arguments);
-            var n = typeof name === 'string' ? name.toLowerCase() : '';
-            if (n.indexOf('-') > 0 && registry[n]) upgradeElement(el, false);
+            var el = ceCreate.call(document, name);
+            if (typeof name === 'string' && name.indexOf('-') > 0) { var n = name.toLowerCase(); if (registry[n]) upgradeElement(el, false); }
             return el;
         };
         // :defined (rewritten to :not(.br-undefined)): custom elements without a definition carry the class; only on
@@ -1234,8 +1235,8 @@
         };
         var origCreateElement = document.createElement;
         document.createElement = function (name) {
-            var el = origCreateElement.apply(document, arguments);
-            if (String(name).toLowerCase() === 'dialog') registerDialog(el);
+            var el = origCreateElement.call(document, name);
+            if (typeof name === 'string' && name.length === 6 && name.toLowerCase() === 'dialog') registerDialog(el);
             return el;
         };
         onReady(function () { registerDialogs(document); });
@@ -4255,7 +4256,10 @@
             var n = (idx - b) / a;
             return n >= 0 && Math.floor(n) === n;
         };
-        var matchesSel = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { return !!f.call(el, s); } catch (e) { return false; } };
+        // (a selector the engine took once goes without a try - a function with one costs 2.3 us more per call here)
+        var selOK = Object.create(null);
+        var matchesTry = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { var r = !!f.call(el, s); selOK[s] = true; return r; } catch (e) { return false; } };
+        var matchesSel = function (el, s) { return selOK[s] === true ? !!(el.matches || el.webkitMatchesSelector).call(el, s) : matchesTry(el, s); };
         // cells of a table with the columns they cover (colspan / rowspan honoured), and the table's width in columns
         var tableGrid = function (table) {
             var taken = [], cells = [], rows = table.rows, width = 0;
@@ -7723,7 +7727,10 @@
             cssomRules();
             return cssomByProp.hasOwnProperty(prop) ? cssomByProp[prop] : [];
         };
-        var matchesEl = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { return !!f.call(el, s); } catch (e) { return false; } };
+        // (a selector the engine took once goes without a try - a function with one costs 2.3 us more per call here)
+        var selTaken = Object.create(null);
+        var matchesElTry = function (el, s) { var f = el.matches || el.webkitMatchesSelector; try { var r = !!f.call(el, s); selTaken[s] = true; return r; } catch (e) { return false; } };
+        var matchesEl = function (el, s) { return selTaken[s] === true ? !!(el.matches || el.webkitMatchesSelector).call(el, s) : matchesElTry(el, s); };
         // what the subject of a selector (its last compound) needs on the element itself: its classes and id. A
         // selector whose subject needs a class the element lacks cannot match it: no engine call (tailwindcss.com: 84,000
         // selector matches, 5 s, a pass).
@@ -8064,7 +8071,7 @@
                     schedule();
                     return;
                 }
-                return origSet.apply(this, arguments);
+                return origSet.call(this, name, value, priority || '');
             };
             CSDp.getPropertyValue = function (name) {
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
@@ -8074,7 +8081,7 @@
                     if (owner && owner.__brCVi && owner.__brCVi.d.hasOwnProperty(name)) return owner.__brCVi.d[name];
                     return '';
                 }
-                return origGet.apply(this, arguments);
+                return origGet.call(this, name);
             };
             CSDp.removeProperty = function (name) {
                 if (typeof name === 'string' && name.charAt(0) === '-' && name.charAt(1) === '-') {
@@ -8095,7 +8102,7 @@
         if (Ep && Ep.setAttribute && !Ep.setAttribute.__brCV) {
             var origSetAttr = Ep.setAttribute;
             var wrappedSetAttr = function (name, value) {
-                var r = origSetAttr.apply(this, arguments);
+                var r = origSetAttr.call(this, name, value);
                 if (rules.length && (name === 'style' || name === 'STYLE') && String(value).indexOf('--') >= 0) { markDirty(this); schedule(); }
                 return r;
             };
@@ -8977,7 +8984,7 @@
         };
         if (Object.keys(upgrades).length) {
             document.createElement = function (name) {
-                var el = createElementBefore.apply(document, arguments);
+                var el = createElementBefore.call(document, name);
                 if (typeof name === 'string' && upgrades[name.toLowerCase()]) upgradeKnownElement(el);
                 return el;
             };
@@ -9451,14 +9458,15 @@
             probeRect = document.documentElement.getBoundingClientRect();
         }
         if (probeRect && !('x' in probeRect)) {
-            var origRect = Ep.getBoundingClientRect;
+            // (no arguments object, one toJSON for all: layout code asks for rectangles all the time)
+            var origRect = Ep.getBoundingClientRect, rectJSON = function () { return this; };
             Ep.getBoundingClientRect = function () {
-                var r = origRect.apply(this, arguments);
-                return { x: r.left, y: r.top, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height, toJSON: function () { return this; } };
+                var r = origRect.call(this);
+                return { x: r.left, y: r.top, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height, toJSON: rectJSON };
             };
             if (window.Range && window.Range.prototype.getBoundingClientRect) {
                 var origRangeRect = window.Range.prototype.getBoundingClientRect;
-                window.Range.prototype.getBoundingClientRect = function () { var r = origRangeRect.apply(this, arguments); return { x: r.left, y: r.top, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+                window.Range.prototype.getBoundingClientRect = function () { var r = origRangeRect.call(this); return { x: r.left, y: r.top, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
             }
         }
     }
@@ -9561,7 +9569,7 @@
         };
         var wrap = function (orig) {
             return function (sel) {
-                if (typeof sel !== 'string' || sel.indexOf(':') < 0 || sel.indexOf('read-') < 0 || !RW.test(sel)) return orig.apply(this, arguments);
+                if (typeof sel !== 'string' || sel.indexOf(':') < 0 || sel.indexOf('read-') < 0 || !RW.test(sel)) return orig.call(this, sel);
                 return query(this, orig, sel);
             };
         };
@@ -9761,8 +9769,14 @@
         // taken apart again on every call (Tailwind's [&_:is(...)] rules, matched for every element by the custom
         // properties runtime). Bounded: pages that build selectors with ids start it over.
         // (per kind of call: querySelector(All) take :scope, which matches() leaves to the rewrite)
-        var known = {}, knownCount = 0;
-        var remember = function (key, v) { if (knownCount >= 3000) { known = {}; knownCount = 0; } known[key] = v; knownCount++; };
+        // (a table per family, keyed by the selector itself: no string made per call; no prototype, so a selector
+        // named like an Object.prototype property finds nothing there)
+        var known = { q: Object.create(null), m: Object.create(null), u: Object.create(null) }, knownCount = 0;
+        var remember = function (family, sel, v) {
+            if (knownCount >= 3000) { known = { q: Object.create(null), m: Object.create(null), u: Object.create(null) }; knownCount = 0; }
+            known[family][sel] = v;
+            knownCount++;
+        };
         var retry = function (self, orig, kind, qsa, sel, rw, e) {
             var list = rw.list, direct = function (text) { return orig.call(self, text); };
             try {
@@ -9780,23 +9794,24 @@
                 throw e2;
             }
         };
-        var first = function (self, orig, kind, qsa, sel, args, key) {
+        var first = function (self, orig, kind, qsa, sel, family) {
             // (not a :scope selector: the engine takes it or not depending on the node, a fragment's has no element)
-            try { var r = orig.apply(self, args); if (key && sel.indexOf(':scope') < 0) remember(key, true); return r; } catch (e) {
-                if (!key || !isSyntax(e)) throw e;
+            try { var r = orig.call(self, sel); if (family && sel.indexOf(':scope') < 0) remember(family, sel, true); return r; } catch (e) {
+                if (!family || !isSyntax(e)) throw e;
                 var list = rewrite(sel), rw = { list: list, text: list.length ? joined(list) : '', filter: filtering(list) };
-                remember(key, rw);
+                remember(family, sel, rw);
                 return retry(self, orig, kind, qsa, sel, rw, e);
             }
         };
         // kind: 'one' querySelector, 'all' querySelectorAll, 'is' matches, 'up' closest; qsa: the owner's own querySelectorAll
+        // (the selector alone: no arguments object - every query of a page comes through here)
         var wrap = function (orig, kind, qsa) {
             var family = kind === 'one' || kind === 'all' ? 'q' : kind === 'is' ? 'm' : 'u';
             return function (sel) {
-                var key = typeof sel === 'string' ? family + sel : null, k = key ? known[key] : undefined;
-                if (k === true) return orig.apply(this, arguments);
+                var k = typeof sel === 'string' ? known[family][sel] : undefined;
+                if (k === true) return orig.call(this, sel);
                 if (k) return retry(this, orig, kind, qsa, sel, k, null);
-                return first(this, orig, kind, qsa, sel, arguments, key);
+                return first(this, orig, kind, qsa, sel, typeof sel === 'string' ? family : null);
             };
         };
         var owners = [Ep, window.Document && window.Document.prototype, window.DocumentFragment && window.DocumentFragment.prototype];
@@ -9841,17 +9856,17 @@
         while (owner && !Object.prototype.hasOwnProperty.call(owner, 'createEvent')) owner = Object.getPrototypeOf(owner);
         var create = owner && owner.createEvent;
         if (typeof create !== 'function') return;
-        owner.createEvent = function createEvent(kind) {
-            var e = create.apply(this, arguments);
-            try { Object.defineProperty(e, '__brMade', { value: true }); } catch (x) {}
-            return e;
-        };
+        // (the try in a function of its own, no arguments object)
+        var made = function (e) { try { Object.defineProperty(e, '__brMade', { value: true }); } catch (x) {} return e; };
+        owner.createEvent = function createEvent(kind) { return made(create.call(this, kind)); };
         // (and every event a script dispatches: the engine's own Event constructors make them without createEvent; all
         // dispatchEvent calls come through EventTarget.prototype, see above)
         var ETp = window.EventTarget && window.EventTarget.prototype, dispatch = ETp && ETp.dispatchEvent;
+        // (the try in a function of its own and no arguments object: each costs every call here)
+        var markMade = function (ev) { try { Object.defineProperty(ev, '__brMade', { value: true }); } catch (x) {} };
         if (typeof dispatch === 'function') ETp.dispatchEvent = function dispatchEvent(ev) {
-            if (ev && typeof ev === 'object' && !ev.__brMade) { try { Object.defineProperty(ev, '__brMade', { value: true }); } catch (x) {} }
-            return dispatch.apply(this, arguments);
+            if (ev && typeof ev === 'object' && !ev.__brMade) markMade(ev);
+            return dispatch.call(this, ev);
         };
         // (the click a script's element.click() makes is the engine's own too: untrusted while such a call runs)
         var HP = window.HTMLElement && window.HTMLElement.prototype, nativeClick = HP && HP.click, scriptClicks = 0;
@@ -10669,14 +10684,14 @@
             var m = mapName(n);
             if (!m) {
                 if (typeof n === 'string' && /^-webkit-transition(-property)?$/i.test(n)) return origSet.call(this, n, safeTransition(value, /property$/i.test(n)), priority || '');
-                return origSet.apply(this, arguments);
+                return origSet.call(this, n, value, priority || '');
             }
             if (m === '-webkit-transition' || m === '-webkit-transition-property') value = safeTransition(value, m === '-webkit-transition-property');
             return origSet.call(this, m, value, priority || '');
         };
-        CSDp.getPropertyValue = function (n) { var m = mapName(n); return m ? origGet.call(this, m) : origGet.apply(this, arguments); };
-        CSDp.removeProperty = function (n) { var m = mapName(n); return m ? origRemove.call(this, m) : origRemove.apply(this, arguments); };
-        if (origPriority) CSDp.getPropertyPriority = function (n) { var m = mapName(n); return m ? origPriority.call(this, m) : origPriority.apply(this, arguments); };
+        CSDp.getPropertyValue = function (n) { var m = mapName(n); return origGet.call(this, m || n); };
+        CSDp.removeProperty = function (n) { var m = mapName(n); return origRemove.call(this, m || n); };
+        if (origPriority) CSDp.getPropertyPriority = function (n) { var m = mapName(n); return origPriority.call(this, m || n); };
         // the standard twins of the prefixed events (bubbling like them, with their fields)
         if (!('ontransitionend' in window)) {
             var TWINS = { webkitTransitionEnd: 'transitionend', webkitAnimationStart: 'animationstart', webkitAnimationIteration: 'animationiteration',
@@ -10842,17 +10857,17 @@
         CSDp.setProperty = function (n, value, priority) {
             var name = typeof n === 'string' ? n.toLowerCase() : '';
             if ((name === 'display' || NAMES.hasOwnProperty(name)) && put(this, name, value, priority)) return;
-            return origSet.apply(this, arguments);
+            return origSet.call(this, n, value, priority || '');
         };
         CSDp.getPropertyValue = function (n) {
             var name = typeof n === 'string' ? n.toLowerCase() : '';
             if (NAMES.hasOwnProperty(name)) { var vals = this.__brFlexVals; return vals && vals[name] ? vals[name] : ''; }
-            return origGet.apply(this, arguments);
+            return origGet.call(this, n);
         };
         CSDp.removeProperty = function (n) {
             var name = typeof n === 'string' ? n.toLowerCase() : '';
             if (NAMES.hasOwnProperty(name)) { var old = this.getPropertyValue(name); put(this, name, '', ''); return old; }
-            return origRemove.apply(this, arguments);
+            return origRemove.call(this, n);
         };
         var accessor = function (name) {
             return {
@@ -10898,12 +10913,13 @@
         var Elp = window.Element && window.Element.prototype;
         if (Elp && Elp.setAttribute) {
             var origSetAttr = Elp.setAttribute;
+            // (no arguments object: React sets every attribute through here)
             Elp.setAttribute = function (name, value) {
                 if (typeof name === 'string' && name.length === 5 && name.toLowerCase() === 'style' && typeof value === 'string' && /flex|grid|order|justify|align-items/i.test(value)) {
                     var fixed = fixStyleText(value);
                     if (fixed !== null) return origSetAttr.call(this, name, fixed);
                 }
-                return origSetAttr.apply(this, arguments);
+                return origSetAttr.call(this, name, value);
             };
         }
     })();
@@ -11900,12 +11916,15 @@
         window.addEventListener('load', function () { fired.load = true; drain(); }, false);
         if (document.readyState !== 'loading') fired.DOMContentLoaded = true;
         if (document.readyState === 'complete') fired.load = true;
+        // (the late call made in a function of its own and no arguments object: a function that makes a closure, or
+        // reads arguments, pays for it on every call here)
+        var callLate = function (target, type, fn) {
+            setTimeout(function () { try { if (typeof fn === 'function') fn.call(target, { type: type, target: document }); else if (fn.handleEvent) fn.handleEvent({ type: type, target: document }); } catch (e) { report(e); } }, 0);
+        };
         var lateListeners = function (target, orig) {
-            return function (type, fn) {
-                var r = orig.apply(this, arguments);
-                if (running && fired[type] && fn && (type === 'DOMContentLoaded' || type === 'load')) {
-                    setTimeout(function () { try { if (typeof fn === 'function') fn.call(target, { type: type, target: document }); else if (fn.handleEvent) fn.handleEvent({ type: type, target: document }); } catch (e) { report(e); } }, 0);
-                }
+            return function (type, fn, options) {
+                var r = orig.call(this, type, fn, options);
+                if (running && fired[type] && fn && (type === 'DOMContentLoaded' || type === 'load')) callLate(target, type, fn);
                 return r;
             };
         };
@@ -12002,6 +12021,31 @@
             if (out) n.text = out;
         };
         var inDocument = function (n) { return !!n && !!document.documentElement && document.documentElement.contains(n); };
+        // the scripts inside a node that is a script or a fragment (null: none); classic ones are lowered on the way
+        var scriptsIn = function (n) {
+            var scripts = null, inner, k;
+            if (n.nodeName === 'SCRIPT') { if (isModuleScript(n)) scripts = [n]; else lowerClassic(n); }
+            else if (n.nodeType === 11 && n.querySelectorAll) {
+                inner = n.querySelectorAll('script');
+                for (k = 0; k < inner.length; k++) { if (isModuleScript(inner[k])) (scripts || (scripts = [])).push(inner[k]); else lowerClassic(inner[k]); }
+            }
+            return scripts;
+        };
+        var startIn = function (scripts) { for (var i = 0; i < scripts.length; i++) if (inDocument(scripts[i])) startModule(scripts[i]); };
+        // appendChild, insertBefore, replaceChild: the node alone - no arguments object, no array for the usual node that
+        // is no script (every insertion of the page comes through here, reading arguments costs a microsecond a call)
+        var watchOne = function (proto, name) {
+            var orig = proto && proto[name];
+            if (typeof orig !== 'function' || orig.__brModules) return;
+            var wrapped = function (n, ref) {
+                var scripts = n && typeof n === 'object' && (n.nodeType === 11 || n.nodeName === 'SCRIPT') ? scriptsIn(n) : null;
+                var r = orig.call(this, n, ref);
+                if (scripts !== null) startIn(scripts);
+                return r;
+            };
+            wrapped.__brModules = true;
+            try { proto[name] = wrapped; } catch (e) {}
+        };
         var watchInsert = function (proto, name) {
             var orig = proto && proto[name];
             if (typeof orig !== 'function' || orig.__brModules) return;
@@ -12023,9 +12067,9 @@
             try { proto[name] = wrapped; } catch (e) {}
         };
         var NodeP = window.Node && Node.prototype, ElementP = window.Element && Element.prototype;
-        watchInsert(NodeP, 'appendChild');
-        watchInsert(NodeP, 'insertBefore');
-        watchInsert(NodeP, 'replaceChild');
+        watchOne(NodeP, 'appendChild');
+        watchOne(NodeP, 'insertBefore');
+        watchOne(NodeP, 'replaceChild');
         watchInsert(ElementP, 'append');
         watchInsert(ElementP, 'prepend');
         watchInsert(ElementP, 'before');
