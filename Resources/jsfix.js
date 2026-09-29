@@ -3164,7 +3164,9 @@
         var starts = {}, id, machine = '';
         for (id in g.marks) if (hasOwn.call(g.marks, id)) starts[g.marks[id]] = 1;
         for (i = 0; i < g.listing.length; i++) machine += (i === 0 || starts[i] ? 'case ' + i + ':' : '') + g.listing[i];
-        if (starts[g.listing.length] && g.listing.length) machine += 'case ' + g.listing.length + ':';
+        // (an empty body still starts at 0: without that case `async () => {}` looped for ever in its while(1) - The Verge
+        // froze in `a ??= (async () => {})()`)
+        if (!g.listing.length || starts[g.listing.length]) machine += 'case ' + g.listing.length + ':';
         machine = resolve(machine) + 'case "end":return ' + cv + '.stop();';
         var tries = [];
         for (i = 0; i < g.tries.length; i++) {

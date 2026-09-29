@@ -95,6 +95,8 @@ var JSFIX_CASES = [
   ['async defaults and arguments', 'async function f(a, b = a * 2) { await null; return [a, b, arguments.length]; } return f(3);'],
   ['closures in a loop without await, inside async', 'async function f() { var fs = []; for (let i = 0; i < 3; i++) { fs.push(async () => i); } return Promise.all(fs.map(g => g())); } return f();'],
   ['await in while with break', 'async function f() { var i = 0, out = []; while (true) { if (await (i > 2)) break; out.push(i++); } return out; } return f();'],
+  // (an empty body: the machine must still start at 0, or it loops for ever - The Verge's `a ??= (async () => {})()`)
+  ['empty async and generator bodies', 'var f = async () => {}, h = async function () {}, g = function* () {}, a; return (async () => { var r = await (a ??= (async () => {})()); var v = await Promise.all([f(), h()]); return [v.length, v[0], g().next().done, r]; })();'],
   ['nested try in async with rethrow', 'async function f() { try { try { await Promise.reject("inner"); } finally { await null; } } catch (e) { return "outer got " + e; } } return f();'],
   ['async generator', 'async function* g() { yield 1; await null; yield 2; return 3; } var it = g(), out = []; return it.next().then(a => { out.push(a); return it.next(); }).then(b => { out.push(b); return it.next(); }).then(c => { out.push(c); return it.next(); }).then(d => { out.push(d); return out; });'],
   ['for await over async and sync iterables', 'async function* g() { for (let i = 0; i < 3; i++) { await null; yield i; } } async function f() { var out = []; for await (const x of g()) out.push(x); for await (const y of [Promise.resolve("a"), "b"]) out.push(y); return out; } return f();'],
