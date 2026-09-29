@@ -119,4 +119,6 @@ var JSFIX_CASES = [
   ['finally in a generator loop with let closures', 'var log = []; function* g() { for (let i = 0; i < 3; i++) { var f = () => i; try { yield f(); } finally { log.push("f" + i); } } } var it = g(); var a = it.next().value; var b = it.next().value; it.return(); return [a, b, log];'],
   // names with characters beyond the BMP (an HTML entity table: {𝒶:"ascr"}), which ES5 names cannot hold
   ['astral property names', 'var o = { 𝒶: "ascr", b: () => 1 }; o.𝔞 = "afr"; var { 𝒶: q } = o; class C { 𝕒() { return 3; } } return [o.𝒶, o.𝔞, q, new C().𝕒(), Object.keys(o).length];'],
+  // (℘ U+2118 is an ES2015 name start by Other_ID_Start, a math symbol for the old engine; 元 and á are letters in both)
+  ['property names beyond ASCII', 'var o = { ℘: "wp", 元: "CNY", á: 1, b: () => 2 }; o.℘ += "!"; return [o.℘, o.元, o.á, Object.keys(o).join()];'],
 ];

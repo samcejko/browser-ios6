@@ -872,10 +872,12 @@
     var regexNeedsWork = function (r) {
         return /[uysdv]/.test(r.flags) || /\(\?<[=!]|\(\?<[A-Za-z_$]|\\k<|\\[pP]\{|\\u\{/.test(r.pattern);
     };
-    // a name the old engine cannot read: a character beyond the BMP (ES2015 took them into names: CNN's entity table has
-    // {𝒶:"ascr"}) or an escape in it (\u{...}); as a property it is written as a string
-    var ASTRAL = /[\uD800-\uDFFF]/;
-    var nameDirty = function (id) { return ASTRAL.test(id.name) || (typeof id.start === 'number' && id.end - id.start !== id.name.length); };
+    // a name the old engine may not read: beyond ASCII, ES2015 names follow ID_Start / ID_Continue of today's Unicode
+    // (characters beyond the BMP, symbols like ℘ U+2118, letters added since), the engine the letter categories of 2012
+    // (CNN's entity table has {𝒶:"ascr"} and {℘:"wp"}: "Invalid character"); or an escape in it (\u{...}). As a
+    // property it is written as a string.
+    var NON_ASCII = /[^\x00-\x7f]/;
+    var nameDirty = function (id) { return NON_ASCII.test(id.name) || (typeof id.start === 'number' && id.end - id.start !== id.name.length); };
     var dotName = function (id) { return nameDirty(id) ? '[' + quote(id.name) + ']' : '.' + id.name; };
     var literalDirty = function (n) {
         if (n.bigint !== undefined) return true;
