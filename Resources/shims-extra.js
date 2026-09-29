@@ -10001,13 +10001,13 @@
         // the properties the page gives -webkit-calc() values and the ones it transitions (see guardCalcTransitions in
         // cssfix.js): the app's documents bring theirs in the manifest's vars, and every style rewritten here adds its
         // own (each insertRule is a document of its own for the rewriter)
-        var runState = { ' calc': {}, ' trans': {} };
+        var runState = { ' calc': {}, ' trans': {} }, stateGen = 0;
         var noteState = function (vars) {
             if (!vars) return;
             for (var key in runState) {
                 if (!runState.hasOwnProperty(key) || typeof vars[key] !== 'string') continue;
                 var names = vars[key].split(' ');
-                for (var i = 0; i < names.length; i++) if (names[i]) runState[key][names[i]] = 1;
+                for (var i = 0; i < names.length; i++) if (names[i] && !runState[key][names[i]]) { runState[key][names[i]] = 1; stateGen++; }
             }
         };
         var withState = function (o) {
@@ -10038,13 +10038,21 @@
                     }
                 } catch (e) {}
             }
+            // (kept while neither the page's variables nor the state changed: every style a script inserted and every
+            // transition the shims set copied all the page's variables; the readers only read it)
+            if (pvCache && pvCacheOf === pv && pvCacheGen === stateGen) return pvCache;
             var o = {};
             if (pv) {
                 for (var k in pv.vars) if (pv.vars.hasOwnProperty(k)) o[k] = pv.vars[k];
                 if (pv.scoped) o[' scoped'] = pv.scoped;
             }
-            return withState(o);
+            pvCache = withState(o);
+            pvCacheOf = pv;
+            pvCacheGen = stateGen;
+            nameSets = {};
+            return pvCache;
         };
+        var pvCache = null, pvCacheOf = null, pvCacheGen = -1, nameSets = {};
         var fixText = function (css, hostScope) {
             var lib = loadCSSFix();
             if (!lib || !lib.run) return null;
@@ -10091,9 +10099,11 @@
         // the page's properties with -webkit-calc() values / the transitioned ones as sets (for transitions scripts
         // set and values the shims set, see calcRisk)
         var nameSet = function (key) {
-            var o = pageVars(), set = {}, names = typeof o[key] === 'string' ? o[key].split(' ') : [];
+            var o = pageVars();
+            if (nameSets.hasOwnProperty(key)) return nameSets[key];
+            var set = {}, names = typeof o[key] === 'string' ? o[key].split(' ') : [];
             for (var i = 0; i < names.length; i++) if (names[i]) set[names[i]] = 1;
-            return set;
+            return (nameSets[key] = set);
         };
         var calcSet = function () { return nameSet(' calc'); };
         var transSet = function () { return nameSet(' trans'); };

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>svg dom test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+</style>
+</head>
+<body>
+<svg id="s" width="10" height="10" data-x="1"><path d="M0 0L1 1"/><g><circle r="1"/></g></svg>
+<pre id="out">running</pre>
+<script>
+// What the old engine has on HTML elements only (children, classList, innerHTML/outerHTML, insertAdjacentHTML,
+// tabIndex) on SVG elements too, as current browsers do (shims.js). Chrome passes natively.
+setTimeout(function () {
+  var res = [], s = document.getElementById('s');
+  var check = function (name, fn, expect) {
+    var got;
+    try { got = fn(); } catch (e) { got = 'threw ' + e.message; }
+    res.push([name, JSON.stringify(got) === JSON.stringify(expect), JSON.stringify(got)]);
+  };
+  check('children', function () { return [s.children.length, s.children[0].nodeName, s.children.item(1).nodeName]; }, [2, 'path', 'g']);
+  check('classList', function () { s.classList.add('on'); s.classList.toggle('on'); s.classList.add('a', 'b'); s.classList.remove('a'); s.classList.toggle('c', true); return [s.getAttribute('class'), s.classList.contains('b'), s.classList.length]; }, ['b c', true, 2]);
+  check('innerHTML read', function () { return s.querySelector('g').innerHTML.replace(/\s/g, ''); }, '<circler="1"></circle>');
+  check('innerHTML write makes SVG elements', function () {
+    var g = s.querySelector('g');
+    g.innerHTML = '<rect width="2" height="2"/><text>a&amp;b</text>';
+    return [g.children.length, g.firstChild.namespaceURI, g.lastChild.textContent];
+  }, [2, 'http://www.w3.org/2000/svg', 'a&b']);
+  check('outerHTML', function () { return s.querySelector('rect').outerHTML; }, '<rect width="2" height="2"></rect>');
+  check('insertAdjacentHTML', function () { s.insertAdjacentHTML('beforeend', '<line x1="0"/>'); return [s.lastChild.nodeName, s.lastChild.namespaceURI]; }, ['line', 'http://www.w3.org/2000/svg']);
+  check('tabIndex', function () { var t = s.tabIndex; s.tabIndex = 0; return [t, s.getAttribute('tabindex')]; }, [-1, '0']);
+  check('HTML elements keep their own', function () { var d = document.createElement('div'); d.innerHTML = '<i></i><b></b>'; d.classList.add('x'); return [d.children.length, d.className, d.innerHTML]; }, [2, 'x', '<i></i><b></b>']);
+  var pass = 0, lines = [];
+  for (var i = 0; i < res.length; i++) { if (res[i][1]) pass++; lines.push((res[i][1] ? 'OK   ' : 'FAIL ') + res[i][0] + (res[i][1] ? '' : ' -> ' + res[i][2])); }
+  document.getElementById('out').textContent = lines.join('\n');
+  document.title = 'svgdom ' + pass + '/' + res.length;
+}, 300);
+</script>
+</body>
+</html>

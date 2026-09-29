@@ -299,6 +299,74 @@
             addProps(window.Document && window.Document.prototype, document, parentProps);
             addProps(window.CharacterData && window.CharacterData.prototype, document.createTextNode(''), siblingProps);
         } catch (eParent) {}
+        // SVG (and other non-HTML) elements: what the old engine has on HTML elements only and current browsers on every
+        // element - children, classList, innerHTML/outerHTML, insertAdjacentHTML, tabIndex (o2.cz read i.children.length
+        // of an <svg>; icon scripts toggle classes on <svg> and fill it by innerHTML). On Element.prototype: an HTML
+        // element has the engine's own on itself and never gets there.
+        (function () {
+            var svg = document.createElementNS && document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            if (!svg) return;
+            addProps(Ep, svg, { children: parentProps.children });
+            var define = function (name, desc) {
+                if (name in svg) return;
+                desc.configurable = true;
+                try { Object.defineProperty(Ep, name, desc); } catch (e) {}
+            };
+            // the class attribute as a token list (a snapshot with the methods writing the attribute back)
+            var tokensOf = function (el) { var v = el.getAttribute('class'); v = v ? String(v).trim() : ''; return v ? v.split(/\s+/) : []; };
+            var TL = {
+                item: function (i) { return this[i] === undefined ? null : this[i]; },
+                contains: function (t) { return tokensOf(this.__el).indexOf(String(t)) >= 0; },
+                add: function () { var l = tokensOf(this.__el); for (var i = 0; i < arguments.length; i++) if (l.indexOf(String(arguments[i])) < 0) l.push(String(arguments[i])); this.__el.setAttribute('class', l.join(' ')); },
+                remove: function () { var l = tokensOf(this.__el), out = [], i, k; for (i = 0; i < l.length; i++) { for (k = 0; k < arguments.length; k++) if (l[i] === String(arguments[k])) break; if (k === arguments.length) out.push(l[i]); } this.__el.setAttribute('class', out.join(' ')); },
+                toggle: function (t, force) { var has = this.contains(t); if (force === undefined ? has : !force) { this.remove(t); return false; } this.add(t); return true; },
+                replace: function (a, b) { var l = tokensOf(this.__el), i = l.indexOf(String(a)); if (i < 0) return false; l[i] = String(b); this.__el.setAttribute('class', l.join(' ')); return true; },
+                supports: function () { return true; },
+                forEach: function (fn, self) { var l = tokensOf(this.__el); for (var i = 0; i < l.length; i++) fn.call(self, l[i], i, this); },
+                toString: function () { return this.__el.getAttribute('class') || ''; }
+            };
+            define('classList', { get: function () {
+                var l = tokensOf(this), o = Object.create(TL);
+                o.__el = this;
+                for (var i = 0; i < l.length; i++) o[i] = l[i];
+                o.length = l.length;
+                o.value = this.getAttribute('class') || '';
+                return o;
+            } });
+            // markup through the HTML parser, as an HTML document does it: inside <svg> it makes SVG elements
+            var parse = function (html) {
+                var box = document.createElement('div');
+                box.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg">' + html + '</svg>';
+                var frag = document.createDocumentFragment(), from = box.firstChild;
+                while (from && from.firstChild) frag.appendChild(from.firstChild);
+                return frag;
+            };
+            var serialize = function (nodes) {
+                var box = document.createElement('div');
+                for (var i = 0; i < nodes.length; i++) box.appendChild(nodes[i].cloneNode(true));
+                return box.innerHTML;
+            };
+            define('innerHTML', {
+                get: function () { var l = []; for (var c = this.firstChild; c; c = c.nextSibling) l.push(c); return serialize(l); },
+                set: function (v) { var frag = parse(v === null ? '' : String(v)); while (this.firstChild) this.removeChild(this.firstChild); this.appendChild(frag); }
+            });
+            define('outerHTML', {
+                get: function () { return serialize([this]); },
+                set: function (v) { if (this.parentNode) this.parentNode.replaceChild(parse(String(v)), this); }
+            });
+            if (!svg.insertAdjacentHTML) Ep.insertAdjacentHTML = function (where, html) {
+                var frag = parse(String(html)), w = String(where).toLowerCase();
+                if (w === 'beforebegin') { if (this.parentNode) this.parentNode.insertBefore(frag, this); }
+                else if (w === 'afterbegin') this.insertBefore(frag, this.firstChild);
+                else if (w === 'beforeend') this.appendChild(frag);
+                else if (w === 'afterend') { if (this.parentNode) this.parentNode.insertBefore(frag, this.nextSibling); }
+                else throw new Error("SyntaxError: The value provided ('" + where + "') is not one of 'beforeBegin', 'afterBegin', 'beforeEnd', or 'afterEnd'.");
+            };
+            define('tabIndex', {
+                get: function () { var v = this.getAttribute('tabindex'); return v === null ? -1 : (parseInt(v, 10) || 0); },
+                set: function (v) { this.setAttribute('tabindex', String(v)); }
+            });
+        })();
         if (!Ep.getAttributeNames) Ep.getAttributeNames = function () { var r = [], a = this.attributes; for (var i = 0; i < a.length; i++) r.push(a[i].name); return r; };
         if (!Ep.toggleAttribute) Ep.toggleAttribute = function (name, force) { var has = this.hasAttribute(name); if (force === undefined ? has : !force) { if (has) this.removeAttribute(name); return false; } this.setAttribute(name, ''); return true; };
         // classList.toggle(name, force) and classList.replace
