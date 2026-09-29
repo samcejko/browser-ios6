@@ -2537,11 +2537,18 @@ var CSSFix = (function () {
         };
         var shape = '', fillRule = '';
         var atSplit = function (s) { var p = s.split(/\s+at\s+/i); return { size: trim(p[0]), pos: p[1] ? splitWS(trim(p[1])) : ['50%', '50%'] }; };
+        // (a shape reaching outside the box shows what is there, which a mask, painted in the box only, would hide:
+        // DuckDuckGo's toolbar has polygon(0 -200%, ...) to show its tabs above it and a shadow only upwards. And a
+        // mask on an element with a filter and layers of its own outside its box made the old engine abort while
+        // painting it: then no mask)
+        var outside = false;
+        var span = function (lo, hi) { if (lo < 0 || (mode !== 'px' && hi > 100)) outside = true; };
         switch (fn) {
             case 'circle': {
                 var c = atSplit(inner), rTok = c.size || 'closest-side';
                 if (/^(closest|farthest)-side$/.test(rTok)) { if (mode === 'px') return null; mode = 'pct'; rTok = '50%'; }
                 var cr = val(rTok), cx = val(c.pos[0]), cy = val(c.pos.length > 1 ? c.pos[1] : '50%');
+                span(cx - cr, cx + cr); span(cy - cr, cy + cr);
                 shape = "<circle cx='" + cx + "' cy='" + cy + "' r='" + cr + "'/>";
                 break;
             }
@@ -2551,6 +2558,7 @@ var CSSFix = (function () {
                 if (/^(closest|farthest)-side$/.test(rxTok)) { if (mode === 'px') return null; mode = 'pct'; rxTok = '50%'; }
                 if (/^(closest|farthest)-side$/.test(ryTok)) { if (mode === 'px') return null; mode = 'pct'; ryTok = '50%'; }
                 var erx = val(rxTok), ery = val(ryTok), ecx = val(e.pos[0]), ecy = val(e.pos.length > 1 ? e.pos[1] : '50%');
+                span(ecx - erx, ecx + erx); span(ecy - ery, ecy + ery);
                 shape = "<ellipse cx='" + ecx + "' cy='" + ecy + "' rx='" + erx + "' ry='" + ery + "'/>";
                 break;
             }
@@ -2573,13 +2581,20 @@ var CSSFix = (function () {
                     x = rl; y = rt; w = rr - rl; h = rb - rt;
                 }
                 var rx = radiusOf(roundPart);
+                span(x, x + w); span(y, y + h);
                 shape = "<rect x='" + x + "' y='" + y + "' width='" + w + "' height='" + h + "'" + (rx ? " rx='" + rx + "'" : '') + "/>";
                 break;
             }
             case 'polygon': {
                 var pts = splitTop(inner, ','), points = [];
                 if (/^(nonzero|evenodd)$/i.test(trim(pts[0]))) { fillRule = trim(pts[0]).toLowerCase(); pts = pts.slice(1); }
-                for (var pi = 0; pi < pts.length; pi++) { var pt = splitWS(trim(pts[pi])); if (pt.length < 2) return null; points.push(val(pt[0]) + ',' + val(pt[1])); }
+                for (var pi = 0; pi < pts.length; pi++) {
+                    var pt = splitWS(trim(pts[pi]));
+                    if (pt.length < 2) return null;
+                    var px = val(pt[0]), py = val(pt[1]);
+                    span(px, px); span(py, py);
+                    points.push(px + ',' + py);
+                }
                 if (points.length < 3) return null;
                 shape = "<polygon points='" + points.join(' ') + "'" + (fillRule ? " fill-rule='" + fillRule + "'" : '') + "/>";
                 break;
@@ -2595,6 +2610,7 @@ var CSSFix = (function () {
             }
         }
         if (bad || !shape) return null;
+        if (outside) return [];
         if (!mode) mode = 'pct';
         var svg = "<svg xmlns='http://www.w3.org/2000/svg'" + (mode === 'pct' ? " viewBox='0 0 100 100' preserveAspectRatio='none'" : '') + '>' + shape + '</svg>';
         var url = 'url("data:image/svg+xml;charset=utf8,' + svg.replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E').replace(/ /g, '%20') + '")';
