@@ -447,8 +447,7 @@
         // current engines have none on such functions (classes, strict and arrow functions). lidl.cz wrapped every
         // method of a class it found through Object.getOwnPropertyNames and read e[o] for each name.
         var namesOf = Object.getOwnPropertyNames, engineDesc = N.getOwnPropertyDescriptor || Object.getOwnPropertyDescriptor;
-        if (namesOf) Object.getOwnPropertyNames = function getOwnPropertyNames(o) {
-            var names = namesOf(o);
+        var withoutPoison = function (o, names) {
             if (typeof o !== 'function') return names;
             var out = [];
             for (var i = 0; i < names.length; i++) {
@@ -460,6 +459,10 @@
             }
             return out;
         };
+        if (namesOf) Object.getOwnPropertyNames = function getOwnPropertyNames(o) { return withoutPoison(o, namesOf(o)); };
+        // (core-js's Reflect.ownKeys takes the names its own way)
+        var ownKeysOf = window.Reflect && window.Reflect.ownKeys;
+        if (ownKeysOf) window.Reflect.ownKeys = function ownKeys(o) { return withoutPoison(o, ownKeysOf(o)); };
         // (Babel's object spread asks every object for its symbols: an object without a property named "Symbol(...",
         // as core-js names them, has none, which core-js found out calling two functions per property)
         var nativeGOPS = Object.getOwnPropertySymbols, engineNames = N.getOwnPropertyNames;
