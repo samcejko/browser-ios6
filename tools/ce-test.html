@@ -41,6 +41,14 @@ var src = [
 var lowered = JSFix.transpile(src, {});
 (0, eval)(lowered);
 var results = {};
+// an ES5 script (Babel output) the engine takes as it is: its this.constructor reads go through __br_ctor (the old
+// engine answers an element's interface constructor for el.constructor)
+var es5 = 'function Tag() { var s = HTMLElement.call(this) || this; s.seenProps = this.constructor.props; return s; } Tag.props = "p";' +
+  'Tag.prototype = Object.create(HTMLElement.prototype, { constructor: { value: Tag, writable: true, configurable: true } }); customElements.define("es5-tag", Tag);';
+var es5out = JSFix.run(es5, '{}');
+results.es5CtorText = es5out.indexOf('__br_ctor(this)') >= 0 && es5out.indexOf('this.constructor') < 0;
+(0, eval)(es5out || es5);
+results.es5Ctor = document.createElement('es5-tag').seenProps === 'p';
 results.markup = document.querySelector('my-greet').textContent;
 results.litLike = document.getElementById('litLike').seen === 'label';
 var a = document.createElement('my-greet');
