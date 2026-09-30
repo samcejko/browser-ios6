@@ -8,6 +8,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stddef.h>
 #include <sys/mman.h>
@@ -169,6 +170,9 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
 
 - (void)threadMain
 {
+    // (the name as the system knows it too, so the sampler finds the thread: browser:profile?thread=js)
+    const char *threadName = _thread.name.UTF8String;
+    if (threadName) pthread_setname_np(threadName);
     for (;;) {
         dispatch_block_t block = nil;
         [_condition lock];

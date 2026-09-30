@@ -64,6 +64,12 @@ window.fetch = undefined;
             var fresh = new R('xhr-test.json', { method: 'POST', body: 'x', headers: { 'X-Test': '1' } });
             var copy = new R(fresh);
             check('copy takes the body', fresh.bodyUsed === true && copy.headers.get('x-test') === '1', String(fresh.bodyUsed));
+            // (TikTok: a POST with body "" cloned, then fetched)
+            var empty = new R('xhr-test.json', { method: 'POST', body: '', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+            var ec = empty.clone();
+            check('clone leaves an empty body unread', empty.bodyUsed === false && ec instanceof R, String(empty.bodyUsed));
+            var kept = new R('xhr-test.json', { method: 'POST', body: 'keep' }), over = new R(kept, { body: '' });
+            check('a new body leaves the old one unread', kept.bodyUsed === false && over.method === 'POST', String(kept.bodyUsed));
             return window.fetch(used, { body: 'third' }).then(function () { return null; }, function (e3) { return e3; });
         }).then(function (fe) {
             check('fetch of used request with a body', !fe || !/Already read/.test(fe.message), fe && fe.message);

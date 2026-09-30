@@ -8977,6 +8977,18 @@
                     // "'undefined' is not a function (evaluating 'a.commit()')")
                     var IDBT = window.IDBTransaction && window.IDBTransaction.prototype;
                     if (IDBT && !IDBT.commit) IDBT.commit = function () {};
+                    // (the shim's globals are getters, indexedDB's throws "Illegal invocation" unless `this` is the
+                    // window it was set on, and the old engine hands a getter reached by a bare name another object
+                    // for the global: TikTok's `typeof indexedDB` threw and its app gave up; plain values instead)
+                    for (var gi = 0; gi < idbNames.length; gi++) {
+                        try {
+                            var gd = Object.getOwnPropertyDescriptor(window, idbNames[gi]);
+                            if (gd && gd.get) {
+                                var gv = window[idbNames[gi]];
+                                Object.defineProperty(window, idbNames[gi], { value: gv, writable: true, configurable: true, enumerable: !!gd.enumerable });
+                            }
+                        } catch (e5) {}
+                    }
                 }
             } catch (e2) { if (window.console && console.error) console.error('IndexedDB shim failed: ' + e2.message); }
             idbLoaded = true;
@@ -11572,14 +11584,22 @@
         };
         window.MessageChannel = function MessageChannel() { this.port1 = new window.MessagePort(); this.port2 = new window.MessagePort(); this.port1.__peer = this.port2; this.port2.__peer = this.port1; };
     }
-    // new Request(request, {body}) and fetch(request, {body}) of a request whose body was read: the new body replaces it,
-    // as the standard has it; the fetch polyfill (whatwg-fetch) throws "Already read" whenever the old body was read
-    // (TikTok's request signer reads bodies: "Feature access control initialization error TypeError: Already read")
+    // new Request(request, {body}) and fetch(request, {body}): the new body replaces the old one, which stays unread, as
+    // the standard has it; the fetch polyfill (whatwg-fetch) throws "Already read" when the old body was read and marks it
+    // read when the new body is "". Its clone() of a request whose body is "" marked the original read too, and fetch()
+    // of it then threw (TikTok's privacy layer clones every request, its client posts body "": "Feature access control
+    // initialization error TypeError: Already read")
     (function () {
         var R = window.Request, F = window.fetch;
         if (!R || !F || !F.polyfill || R.__brReplaced) return;
+        var clone = R.prototype.clone;
+        if (clone) R.prototype.clone = function () {
+            var used = this.bodyUsed, c = clone.call(this);
+            if (!used && this.bodyUsed) this.bodyUsed = false;
+            return c;
+        };
         var replaced = function (input, init) {
-            if (!(input instanceof R) || !input.bodyUsed || !init || init.body === undefined || init.body === null) return null;
+            if (!(input instanceof R) || !init || init.body === undefined || init.body === null) return null;
             var copy = { method: input.method, headers: input.headers, credentials: input.credentials, mode: input.mode, signal: input.signal, referrer: input.referrer };
             for (var k in init) if (Object.prototype.hasOwnProperty.call(init, k) && init[k] !== undefined) copy[k] = init[k];
             return [input.url, copy];
