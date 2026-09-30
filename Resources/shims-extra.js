@@ -8969,6 +8969,10 @@
                 if (x.status === 200 && x.responseText) {
                     (0, eval)(x.responseText);
                     if (window.shimIndexedDB && window.shimIndexedDB.__useShim) window.shimIndexedDB.__useShim();
+                    // (transactions commit by themselves here: an explicit commit() only asks for it sooner - Windy's
+                    // "'undefined' is not a function (evaluating 'a.commit()')")
+                    var IDBT = window.IDBTransaction && window.IDBTransaction.prototype;
+                    if (IDBT && !IDBT.commit) IDBT.commit = function () {};
                 }
             } catch (e2) { if (window.console && console.error) console.error('IndexedDB shim failed: ' + e2.message); }
             idbLoaded = true;
@@ -11532,6 +11536,33 @@
         };
         window.MessageChannel = function MessageChannel() { this.port1 = new window.MessagePort(); this.port2 = new window.MessagePort(); this.port1.__peer = this.port2; this.port2.__peer = this.port1; };
     }
+    // postMessage(message, {transfer}) and window.postMessage(message, {targetOrigin, transfer}): the old engine knows
+    // the transfer list and the target origin as plain arguments only (Windy's workers got "Type error"), and a window's
+    // target origin is required there. A transfer the engine refuses is left out: the data goes as a copy.
+    (function () {
+        var plainObject = function (x) { return !!x && typeof x === 'object' && !(x instanceof Array) && typeof x.length !== 'number'; };
+        // (the try in a function of its own: setImmediate polyfills post a message per task, and a try costs every call)
+        var withTransfer = function (orig, self, msg, origin, list, isWindow) {
+            try { return isWindow ? orig.call(self, msg, origin, list) : orig.call(self, msg, list); }
+            catch (e) { return isWindow ? orig.call(self, msg, origin) : orig.call(self, msg); }
+        };
+        var fixPost = function (owner, isWindow) {
+            var orig = owner && owner.postMessage;
+            if (typeof orig !== 'function' || orig.__brPost) return;
+            var wrapped = function (msg, a2, a3) {
+                var transfer = isWindow ? a3 : a2, origin = isWindow ? a2 : undefined, self = this || window;
+                if (plainObject(a2)) { transfer = a2.transfer; if (isWindow) origin = a2.targetOrigin; }
+                if (isWindow && (origin === undefined || origin === null)) origin = '/';
+                if (transfer && transfer.length) return withTransfer(orig, self, msg, origin, transfer, isWindow);
+                return isWindow ? orig.call(self, msg, origin) : orig.call(self, msg);
+            };
+            wrapped.__brPost = true;
+            try { owner.postMessage = wrapped; } catch (e) {}
+        };
+        if (window.Worker && window.Worker.prototype) fixPost(window.Worker.prototype, false);
+        if (window.MessagePort && window.MessagePort.prototype) fixPost(window.MessagePort.prototype, false);
+        fixPost(window, true);
+    })();
 
     // ---- CSS Typed OM (css-typed-om-1): a working subset. Values parse into CSSUnitValue / CSSKeywordValue /
     // CSSMathSum ... / CSSTransformValue / CSSRGB / CSSImageValue / CSSUnparsedValue, computedStyleMap() and

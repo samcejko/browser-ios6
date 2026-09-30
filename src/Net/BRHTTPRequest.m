@@ -66,6 +66,8 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     z_stream _zstream;
     BOOL _zinit;
     BOOL _zactive;
+    BOOL _zrawTried;          // the body was taken again as raw deflate (see deliverBodyBytes)
+    NSUInteger _zproduced;    // decoded bytes so far
     uint8_t *_zout;
 }
 
@@ -240,12 +242,17 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 
 - (BOOL)setupInflate
 {
+    return [self setupInflateWindowBits:15 + 32];   // auto-detects gzip and zlib headers
+}
+
+- (BOOL)setupInflateWindowBits:(int)bits
+{
     if (_zinit) {
         inflateEnd(&_zstream);
         _zinit = NO;
     }
     memset(&_zstream, 0, sizeof(_zstream));
-    if (inflateInit2(&_zstream, 15 + 32) != Z_OK) return NO;   // auto-detects gzip and zlib headers
+    if (inflateInit2(&_zstream, bits) != Z_OK) return NO;
     _zinit = YES;
     if (!_zout) _zout = (uint8_t *)malloc(BRInflateBufferSize);
     if (!_zout) return NO;
@@ -268,11 +275,21 @@ static dispatch_semaphore_t BRConnectionSlots(void)
         _zstream.next_out = _zout;
         _zstream.avail_out = (uInt)BRInflateBufferSize;
         int rc = inflate(&_zstream, Z_NO_FLUSH);
+        if (rc == Z_DATA_ERROR && !_zrawTried && _zproduced == 0 && self.bodyReceived == length) {
+            // "deflate" sent raw, without the zlib header (many servers do; Seznam's h.seznam.cz): the first bytes once
+            // more as raw deflate, as browsers do
+            _zrawTried = YES;
+            if (![self setupInflateWindowBits:-15]) return NO;
+            _zstream.next_in = (Bytef *)bytes;
+            _zstream.avail_in = (uInt)length;
+            continue;
+        }
         if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
             BRLog(@"inflate failed (%d) for %@", rc, self.url);
             return NO;
         }
         NSUInteger produced = BRInflateBufferSize - _zstream.avail_out;
+        _zproduced += produced;
         [self deliverDecodedBytes:_zout length:produced];
         if (rc == Z_STREAM_END) {
             _zactive = NO;   // anything after the end of the stream is ignored
