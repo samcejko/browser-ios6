@@ -12,10 +12,19 @@
 // Immer (Redux Toolkit's state updates) on the Proxy stand-in: the library lowered with proxy: true (its Proxy.revocable
 // becomes the stand-in's) must give the same results as the real one on the engine's Proxy, including keys the recipe
 // adds or deletes (handed to the traps when Immer reads its state symbol before finalizing).
-var IMMER = 'https://cdn.jsdelivr.net/npm/immer@10.1.1/dist/cjs/immer.cjs.production.js';
-function load(text) {
+// ?v=9.0.21: Immer 9, which checks for Proxy at start; the lowered copy runs where typeof Proxy is "undefined", as on
+// the iPad. &plugin=keep leaves its ES5 plugin in the bundle (else it is left out, as a tree-shaken bundle does) and
+// &es5=1 then enables it; &path=text takes the path that only replaces names (an engine that parses the script);
+// &nosym=1 hides Symbol from the lowered copy too (Immer then keys its state with a string).
+var Q = {};
+location.search.replace(/[?&]([^=&]+)=?([^&]*)/g, function (m, k, v) { Q[k] = decodeURIComponent(v); });
+var VERSION = Q.v || '10.1.1', V9 = /^[6-9]\./.test(VERSION);
+var IMMER = V9 ? 'https://cdn.jsdelivr.net/npm/immer@' + VERSION + '/dist/immer.cjs.production.min.js'
+               : 'https://cdn.jsdelivr.net/npm/immer@' + VERSION + '/dist/cjs/immer.cjs.production.js';
+function load(text, bare) {
   var module = { exports: {} };
-  (0, eval)('(function (module, exports) {' + text + '\n})')(module, module.exports);
+  (0, eval)('(function (module, exports, Proxy, Symbol) {' + text + '\n})')(module, module.exports, bare ? undefined : window.Proxy, bare && Q.nosym ? undefined : window.Symbol);
+  if (bare && Q.es5 && module.exports.enableES5) module.exports.enableES5();
   return module.exports;
 }
 var BASE = function () {
@@ -42,6 +51,12 @@ var CASES = [
   ['find and mutate', function (d) { var it = d.items.find(function (i) { return i.id === 2; }); it.done = true; it.extra = 'x'; }],
   ['keys after add', function (d) { d.q = 1; d.entities['9'] = { id: 9 }; return undefined; }, null, function (d) { return [Object.keys(d).join(), Object.keys(d.entities).join()]; }],
   ['current mid-recipe', function (d, api) { d.a = 5; var c = api.current(d); d.z = c.a + 1; }],
+  // (keys added right after Immer read a draft's state: they reach the traps all the same)
+  ['isDraft then add', function (d, api) { api.isDraft(d); d.z = 1; }],
+  ['isDraft of child then add to it', function (d, api) { var x = d.x; api.isDraft(x); x.w = 2; }],
+  ['replace drafted child then add', function (d) { var x = d.x; d.x = { y: 9 }; d.newKey = 1; x.lost = 1; }],
+  ['original then add', function (d, api) { var o = api.original(d.entities); d.entities['7'] = { id: 7, from: o['1'].name }; }],
+  ['delete then add again', function (d) { delete d.a; d.a = 'again'; }],
   ['isDraft and original', function (d, api) { d.x.y = 7; }, null, function (d, api) { return [api.isDraft(d), api.isDraft(d.x), api.original(d.x).y, api.isDraft({})]; }],
   ['sort, reverse, unshift, pop, shift', function (d) { d.list.sort(function (a, b) { return b - a; }); d.list.reverse(); d.list.unshift(0); d.list.pop(); d.list.shift(); d.list.unshift(-1); }],
   ['spread into new array', function (d) { d.list = d.list.concat([5]); d.items = d.items.slice(1); }],
@@ -64,9 +79,17 @@ function run(immer, standin) {
 }
 fetch(IMMER).then(function (r) { return r.text(); }).then(function (src) {
   var real = load(src);
-  var lowered = JSFix.transpile(src, { proxy: true });
-  if (!/__br_Proxy\.revocable/.test(lowered)) throw new Error('Proxy.revocable was not retargeted');
-  var standin = load(lowered);
+  if (V9 && Q.plugin !== 'keep') src = src.replace(/\(\s*(["'])ES5\1\s*,/g, '("ES5-left-out",');
+  var lowered;
+  if (Q.path === 'text') {
+    var NP = window.Proxy;
+    window.Proxy = undefined;
+    try { lowered = JSFix.run(src, '{}'); } finally { window.Proxy = NP; }
+    if (JSFix.last() !== 'stand-in') throw new Error('path ' + JSFix.last() + ', not stand-in');
+  } else lowered = JSFix.transpile(src, { proxy: true });
+  if (!/__br_Proxy(?:\.revocable|\('revocable'\))\(/.test(lowered)) throw new Error('Proxy.revocable was not retargeted');
+  if (V9 && /typeof __br_Proxy/.test(lowered) !== (Q.plugin !== 'keep')) throw new Error('the Proxy check was ' + (Q.plugin === 'keep' ? '' : 'not ') + 'retargeted');
+  var standin = load(lowered, true);
   var want = run(real), got = run(standin, true), pass = 0, lines = [];
   // createDraft / finishDraft
   var cd = function (im) { var dr = im.createDraft(BASE()); dr.a = 5; dr.newk = 1; delete dr.other; dr.list.push(4); return JSON.stringify(im.finishDraft(dr)); };
@@ -83,8 +106,15 @@ fetch(IMMER).then(function (r) { return r.text(); }).then(function (src) {
   for (var k = 0; k < 200; k++) s = standin.produce(s, function (d) { d.entities[k % 500].v++; d.entities['new' + k] = { id: k }; d.ids.push('new' + k); });
   var ms = Date.now() - t0;
   lines.push('speed: 200 updates of a 500-entity state in ' + ms + ' ms (' + s.ids.length + ' ids)');
+  // (many drafts in one recipe: Immer reads the state of each while it finalizes)
+  var many = { items: [] };
+  for (var m = 0; m < 100; m++) many.items.push({ id: m, sel: false, name: 'n' + m });
+  var t1 = Date.now(), s2 = many;
+  for (var k2 = 0; k2 < 20; k2++) s2 = standin.produce(s2, function (d) { d.items.forEach(function (it) { it.sel = !it.sel; }); });
+  var ms2 = Date.now() - t1;
+  lines.push('speed: 20 updates of 100 items each in ' + ms2 + ' ms (' + s2.items.filter(function (it) { return it.sel; }).length + ' selected)');
   document.getElementById('out').textContent = lines.join('\n');
-  document.title = 'immer ' + pass + '/' + want.length + ' | ' + ms + ' ms';
+  document.title = 'immer ' + pass + '/' + want.length + ' | ' + ms + ' ms, ' + ms2 + ' ms';
 }).catch(function (e) { document.title = 'immer ERROR ' + e.message; document.getElementById('out').textContent = String(e.stack || e); });
 </script>
 </body>

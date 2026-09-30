@@ -1857,6 +1857,58 @@
         var SEP = { cs: [NB, ','], sk: [NB, ','], pl: [NB, ','], de: ['.', ','], fr: [' ', ','], it: ['.', ','], es: ['.', ','], ru: [NB, ','], hu: [NB, ','], nl: ['.', ','], pt: ['.', ','], sv: [NB, ','], da: ['.', ','], fi: [NB, ','], nb: [NB, ','], tr: ['.', ','], uk: [NB, ','], en: [',', '.'] };
         var CURRENCY = { CZK: ['Kč', 1], EUR: ['€', 1], USD: ['$', 0], GBP: ['£', 0], PLN: ['zł', 1], HUF: ['Ft', 1], CHF: ['CHF', 0], JPY: ['¥', 0], SEK: ['kr', 1], NOK: ['kr', 1], DKK: ['kr', 1], RUB: ['₽', 1], UAH: ['₴', 1], CNY: ['CN¥', 0], INR: ['₹', 0], BRL: ['R$', 0], CAD: ['CA$', 0], AUD: ['A$', 0] };
         var COMPACT = { cs: ['tis.', 'mil.', 'mld.', 'bil.'], sk: ['tis.', 'mil.', 'mld.', 'bil.'], pl: ['tys.', 'mln', 'mld', 'bln'], de: ['Tsd.', 'Mio.', 'Mrd.', 'Bio.'], en: ['K', 'M', 'B', 'T'] };
+        // Numbers are rounded as the engines do it: the shortest decimal that reads back as the number (String(x)), half
+        // away from zero (toFixed rounds the binary value: 1.005 gave "1.00", the engines "1.01", 12345 in scientific
+        // notation "1.234E4" for "1.235E4"). A decimal is { d: digits, p: point }, the value 0.d x 10^p.
+        var decimalOf = function (x) {
+            var s = String(x), e = 0, k = s.indexOf('e');
+            if (k >= 0) { e = +s.slice(k + 1); s = s.slice(0, k); }
+            var dot = s.indexOf('.'), d = dot < 0 ? s : s.slice(0, dot) + s.slice(dot + 1), p = (dot < 0 ? s.length : dot) + e, z = 0;
+            while (z < d.length - 1 && d.charAt(z) === '0') z++;
+            d = d.slice(z).replace(/0+$/, '');
+            return d ? { d: d, p: p - z } : { d: '0', p: 1 };
+        };
+        var zeros = function (n) { var s = ''; while (n-- > 0) s += '0'; return s; };
+        var plusOne = function (s) {
+            var i = s.length - 1;
+            while (i >= 0 && s.charAt(i) === '9') i--;
+            return i < 0 ? '1' + zeros(s.length) : s.slice(0, i) + String.fromCharCode(s.charCodeAt(i) + 1) + zeros(s.length - i - 1);
+        };
+        // the digits of q rounded to f fraction digits (f < 0: to tens, hundreds...); carry: one more digit before the point
+        var roundTo = function (q, f) {
+            var n = q.p + f, d = q.d, r, carry = false;
+            if (n <= 0) r = n === 0 && d.charAt(0) >= '5' ? '1' : '0';
+            else { r = d.length >= n ? d.slice(0, n) : d + zeros(n - d.length); if (d.charAt(n) >= '5') { r = plusOne(r); carry = r.length > n; } }
+            if (f < 0) { if (r !== '0') r += zeros(-f); f = 0; }
+            while (r.length <= f) r = '0' + r;
+            return { i: r.slice(0, r.length - f), f: r.slice(r.length - f), carry: carry };
+        };
+        var trimFraction = function (f, max, min) {
+            f = f.slice(0, max);
+            var cut = f.length;
+            while (cut > min && f.charAt(cut - 1) === '0') cut--;
+            f = f.slice(0, cut);
+            return f.length < min ? f + zeros(min - f.length) : f;
+        };
+        // ECMA-402 rounding by fraction digits, significant digits or both (roundingPriority morePrecision / lessPrecision:
+        // the result that rounds at the lower / higher digit): the digits before and after the point, as NumberFormat
+        // shows them and PluralRules counts them (1 with minimumFractionDigits 2 is "1.00": other in English)
+        var fixedDigits = function (q, minF, maxF) { var r = roundTo(q, maxF); return { i: r.i, f: trimFraction(r.f, maxF, minF), mag: -maxF }; };
+        var sigDigits = function (q, minS, maxS) {
+            var e = q.d === '0' ? 0 : q.p - 1, r = roundTo(q, maxS - 1 - e), mag = e - maxS + 1;
+            if (r.carry) e++;
+            return { i: r.i, f: trimFraction(r.f, Math.max(0, maxS - 1 - e), Math.max(0, minS - 1 - e)), mag: mag };
+        };
+        var roundDigits = function (q, o, minF, maxF) {
+            if (typeof q === 'number') q = decimalOf(q);
+            var sig = o.minimumSignificantDigits !== undefined || o.maximumSignificantDigits !== undefined;
+            var both = o.roundingPriority === 'morePrecision' || o.roundingPriority === 'lessPrecision';
+            var fr = !sig || both ? fixedDigits(q, minF, maxF) : null;
+            if (!sig && !both) return fr;
+            var sr = sigDigits(q, o.minimumSignificantDigits || 1, o.maximumSignificantDigits || 21);
+            if (!fr) return sr;
+            return (o.roundingPriority === 'morePrecision' ? sr.mag <= fr.mag : sr.mag > fr.mag) ? sr : fr;
+        };
         // (NumberFormat, DateTimeFormat and Collator can be called without new: Intl.NumberFormat(lang).format(x) had
         // no this, kosik.cz)
         var NumberFormat = function NumberFormat(locale, opts) {
@@ -1868,47 +1920,77 @@
             if (isNaN(v)) return [{ type: 'nan', value: 'NaN' }];
             if (!isFinite(v)) return [{ type: v < 0 ? 'minusSign' : 'plusSign', value: v < 0 ? '-' : '' }, { type: 'infinity', value: '∞' }];
             var style = o.style || 'decimal', currency = o.currency ? String(o.currency).toUpperCase() : null;
-            var scaled = style === 'percent' ? v * 100 : v, unitSuffix = '';
-            if (o.notation === 'compact') {
-                var names = COMPACT[lg] || COMPACT.en, abs = Math.abs(scaled), idx = -1;
-                if (abs >= 1e12) idx = 3; else if (abs >= 1e9) idx = 2; else if (abs >= 1e6) idx = 1; else if (abs >= 1e3) idx = 0;
-                if (idx >= 0) { scaled = scaled / Math.pow(1000, idx + 1); unitSuffix = (lg === 'en' ? '' : NB) + names[idx]; }
-            }
+            var q = decimalOf(Math.abs(v)), zero = q.d === '0', unitSuffix = '', idx = -1, exp = null;
+            if (style === 'percent') q.p += 2;
+            var sci = o.notation === 'scientific' || o.notation === 'engineering', compact = o.notation === 'compact';
+            // (compact: thousands, millions... by the digits before the point; scientific: one digit before the point,
+            // engineering: an exponent that is a multiple of 3)
+            if (compact && !zero && q.p >= 4) { idx = Math.min(3, Math.floor((q.p - 1) / 3) - 1); q.p -= 3 * (idx + 1); }
+            if (sci) { exp = zero ? 0 : q.p - 1; if (o.notation === 'engineering') exp -= ((exp % 3) + 3) % 3; q.p -= exp; }
             var minF = o.minimumFractionDigits, maxF = o.maximumFractionDigits;
             // (compact numbers keep two significant digits: 1.2K, 12K, 123K)
-            if (maxF === undefined) maxF = style === 'currency' ? (currency === 'JPY' || currency === 'HUF' ? 0 : 2) : style === 'percent' ? 0 : o.notation === 'compact' ? (Math.abs(scaled) < 10 ? 1 : 0) : 3;
+            if (maxF === undefined) maxF = style === 'currency' ? (currency === 'JPY' || currency === 'HUF' ? 0 : 2) : style === 'percent' && !sci ? 0 : compact ? (zero || q.p <= 1 ? 1 : 0) : 3;
             if (minF === undefined) minF = style === 'currency' ? maxF : 0;
             if (minF > maxF) maxF = minF;
-            if (o.maximumSignificantDigits) { var sig = Number(scaled.toPrecision(Math.min(21, o.maximumSignificantDigits))); scaled = sig; maxF = Math.max(maxF, 20); minF = 0; }
-            var neg = scaled < 0 || (scaled === 0 && 1 / scaled < 0), abs2 = Math.abs(scaled);
-            var fixed = abs2.toFixed(Math.min(maxF, 20)), dot = fixed.indexOf('.');
-            var intPart = dot < 0 ? fixed : fixed.slice(0, dot), frac = dot < 0 ? '' : fixed.slice(dot + 1);
-            frac = frac.replace(/0+$/, '');
-            while (frac.length < minF) frac += '0';
+            var dg = roundDigits(q, o, minF, maxF);
+            // (rounded up past the unit: 999.96K is 1M, 9.9999 is 1E1)
+            var over = sci ? (o.notation === 'engineering' ? 3 : 1) : compact && idx < 3 ? 3 : 0;
+            if (over && dg.i.length > over) {
+                if (sci) exp += over; else idx++;
+                q.p -= over;
+                dg = roundDigits(q, o, minF, compact && o.maximumFractionDigits === undefined ? (q.p <= 1 ? 1 : 0) : maxF);
+            }
+            if (idx >= 0) unitSuffix = (lg === 'en' ? '' : NB) + (COMPACT[lg] || COMPACT.en)[idx];
+            var intPart = dg.i, frac = dg.f, shownZero = /^0*$/.test(intPart + frac), neg = v < 0 || (v === 0 && 1 / v < 0);
             if (o.minimumIntegerDigits) while (intPart.length < o.minimumIntegerDigits) intPart = '0' + intPart;
-            // Polish, Spanish and Portuguese group only from five digits on (CLDR minimumGroupingDigits 2)
-            var grouping = o.useGrouping !== false && !(o.useGrouping === 'min2' && intPart.length < 5) && (lg !== 'pl' && lg !== 'es' && lg !== 'pt' || intPart.length > 4 || o.useGrouping === true || o.useGrouping === 'always');
+            // Polish, Spanish and Portuguese group only from five digits on (CLDR minimumGroupingDigits 2), compact numbers
+            // too by default (3000T)
+            var ug = o.useGrouping === undefined && compact ? 'min2' : o.useGrouping;
+            var grouping = ug !== false && !(ug === 'min2' && intPart.length < 5) && (lg !== 'pl' && lg !== 'es' && lg !== 'pt' || intPart.length > 4 || ug === true || ug === 'always');
             var groups = [];
             if (grouping) { var s = intPart; while (s.length > 3) { groups.unshift(s.slice(-3)); s = s.slice(0, -3); } groups.unshift(s); } else groups.push(intPart);
-            var sign = neg ? '-' : (o.signDisplay === 'always' || (o.signDisplay === 'exceptZero' && abs2 !== 0) ? '+' : '');
+            var sd = o.signDisplay || 'auto';
+            var sign = sd === 'never' || (shownZero && (sd === 'exceptZero' || sd === 'negative')) ? '' : neg ? (sd === 'negative' || sd === 'auto' || sd === 'always' || sd === 'exceptZero' ? '-' : '') : sd === 'always' || sd === 'exceptZero' ? '+' : '';
             var cur = style === 'currency' && currency ? (o.currencyDisplay === 'code' ? currency : o.currencyDisplay === 'name' ? currency : (CURRENCY[currency] ? CURRENCY[currency][0] : currency)) : null;
             var curAfter = cur ? (lg === 'en' ? 0 : (CURRENCY[currency] && o.currencyDisplay !== 'code' ? CURRENCY[currency][1] : 1)) : 0;
             if (sign) parts.push({ type: sign === '-' ? 'minusSign' : 'plusSign', value: sign });
             if (cur && !curAfter) parts.push({ type: 'currency', value: cur }, { type: 'literal', value: lg === 'en' ? '' : NB });
             for (var g = 0; g < groups.length; g++) { if (g) parts.push({ type: 'group', value: sep[0] }); parts.push({ type: 'integer', value: groups[g] }); }
             if (frac) parts.push({ type: 'decimal', value: sep[1] }, { type: 'fraction', value: frac });
+            if (exp !== null) {
+                parts.push({ type: 'exponentSeparator', value: 'E' });
+                if (exp < 0) parts.push({ type: 'exponentMinusSign', value: '-' });
+                parts.push({ type: 'exponentInteger', value: String(Math.abs(exp)) });
+            }
             if (unitSuffix) parts.push({ type: 'compact', value: unitSuffix });
             if (style === 'percent') parts.push({ type: 'literal', value: lg === 'en' ? '' : NB }, { type: 'percentSign', value: '%' });
-            if (style === 'unit' && o.unit) parts.push({ type: 'literal', value: ' ' }, { type: 'unit', value: UNIT_SHORT[o.unit] || o.unit });
+            if (style === 'unit' && o.unit) {
+                // (long names in English: "1 bit", "1E4 bits"; other languages keep the short ones)
+                var one = exp === null && pluralFor('en', +(intPart + (frac ? '.' + frac : '')), false, frac.length) === 'one';
+                parts.push({ type: 'literal', value: ' ' }, { type: 'unit', value: o.unitDisplay === 'long' && lg === 'en' ? unitLongEn(String(o.unit), one) : UNIT_SHORT[o.unit] || o.unit });
+            }
             if (cur && curAfter) parts.push({ type: 'literal', value: NB }, { type: 'currency', value: cur });
             var out = [];
             for (var i = 0; i < parts.length; i++) if (parts[i].value !== '') out.push(parts[i]);
             return out;
         };
         var UNIT_SHORT = { kilometer: 'km', meter: 'm', centimeter: 'cm', millimeter: 'mm', kilogram: 'kg', gram: 'g', liter: 'l', milliliter: 'ml', celsius: '°C', fahrenheit: '°F', percent: '%', second: 's', minute: 'min', hour: 'h', day: 'd', byte: 'B', kilobyte: 'kB', megabyte: 'MB', gigabyte: 'GB', 'kilometer-per-hour': 'km/h', 'mile-per-hour': 'mph', mile: 'mi', foot: 'ft', inch: 'in' };
+        var UNIT_LONG_EN = { foot: ['foot', 'feet'], inch: ['inch', 'inches'], century: ['century', 'centuries'], celsius: ['degree Celsius', 'degrees Celsius'], fahrenheit: ['degree Fahrenheit', 'degrees Fahrenheit'], percent: ['percent', 'percent'] };
+        var unitLongEn = function (u, one) {
+            var per = u.indexOf('-per-');
+            if (per > 0) return unitLongEn(u.slice(0, per), one) + ' per ' + unitLongEn(u.slice(per + 5), true);
+            return UNIT_LONG_EN[u] ? UNIT_LONG_EN[u][one ? 0 : 1] : one ? u : u + 's';
+        };
         NumberFormat.prototype.format = function (n) { var p = this.formatToParts(n), s = ''; for (var i = 0; i < p.length; i++) s += p[i].value; return s; };
         NumberFormat.prototype.formatRange = function (a, b) { return this.format(a) + ' – ' + this.format(b); };
-        NumberFormat.prototype.resolvedOptions = function () { var o = this.opts, r = { locale: this.locale, numberingSystem: 'latn', style: o.style || 'decimal', useGrouping: o.useGrouping === undefined ? 'auto' : o.useGrouping, notation: o.notation || 'standard', signDisplay: o.signDisplay || 'auto', minimumIntegerDigits: o.minimumIntegerDigits || 1, minimumFractionDigits: o.minimumFractionDigits === undefined ? 0 : o.minimumFractionDigits, maximumFractionDigits: o.maximumFractionDigits === undefined ? 3 : o.maximumFractionDigits }; if (o.currency) { r.currency = String(o.currency).toUpperCase(); r.currencyDisplay = o.currencyDisplay || 'symbol'; } if (o.unit) r.unit = o.unit; return r; };
+        NumberFormat.prototype.resolvedOptions = function () {
+            var o = this.opts, r = { locale: this.locale, numberingSystem: 'latn', style: o.style || 'decimal', useGrouping: o.useGrouping === undefined ? 'auto' : o.useGrouping, notation: o.notation || 'standard', signDisplay: o.signDisplay || 'auto', minimumIntegerDigits: o.minimumIntegerDigits || 1, minimumFractionDigits: o.minimumFractionDigits === undefined ? 0 : o.minimumFractionDigits, maximumFractionDigits: o.maximumFractionDigits === undefined ? 3 : o.maximumFractionDigits, roundingPriority: o.roundingPriority || 'auto' };
+            if (o.minimumSignificantDigits !== undefined || o.maximumSignificantDigits !== undefined) { r.minimumSignificantDigits = o.minimumSignificantDigits || 1; r.maximumSignificantDigits = o.maximumSignificantDigits || 21; }
+            if (o.notation === 'compact') r.compactDisplay = o.compactDisplay || 'short';
+            if (o.currency) { r.currency = String(o.currency).toUpperCase(); r.currencyDisplay = o.currencyDisplay || 'symbol'; r.currencySign = o.currencySign || 'standard'; }
+            if (o.unit) { r.unit = o.unit; r.unitDisplay = o.unitDisplay || 'short'; }
+            return r;
+        };
         NumberFormat.supportedLocalesOf = supportedOf;
         Intl.NumberFormat = NumberFormat;
         // ---- dates
@@ -1924,9 +2006,16 @@
             if (lg === 'en' && region && region !== 'US') return { months: d.months, monthsShort: d.monthsShort, days: d.days, daysShort: d.daysShort, numeric: 'dd/mm/y', dayMonth: 'dd/mm', long: 'd MMMM y', medium: 'd MMM y', h24: true, dayFirst: true, dateTimeSep: ', ', dayPeriods: d.dayPeriods };
             return d;
         };
+        // (as in the engines, dateStyle / timeStyle do not mix with single fields: FormatJS takes an engine that allows
+        // it for an old one and puts its own DateTimeFormat in)
+        var DTF_FIELDS = ['weekday', 'era', 'year', 'month', 'day', 'dayPeriod', 'hour', 'minute', 'second', 'fractionalSecondDigits', 'timeZoneName'];
         var DateTimeFormat = function DateTimeFormat(locale, opts) {
             if (!(this instanceof DateTimeFormat)) return new DateTimeFormat(locale, opts);
             this.locale = canon(locale); this.opts = opts || {}; this.data = localeData(this.locale);
+            var o = this.opts;
+            if (o.dateStyle !== undefined || o.timeStyle !== undefined) {
+                for (var i = 0; i < DTF_FIELDS.length; i++) if (o[DTF_FIELDS[i]] !== undefined) throw new TypeError("Can't set option " + DTF_FIELDS[i] + ' when ' + (o.dateStyle !== undefined ? 'dateStyle' : 'timeStyle') + ' is used');
+            }
         };
         var fields = function (d, utc) {
             return utc ? { y: d.getUTCFullYear(), mo: d.getUTCMonth(), d: d.getUTCDate(), wd: d.getUTCDay(), h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(), ms: d.getUTCMilliseconds() }
@@ -1976,7 +2065,8 @@
             if (wantTime) {
                 var h12 = o.hour12 !== undefined ? o.hour12 : (o.hourCycle ? o.hourCycle === 'h12' || o.hourCycle === 'h11' : !data.h24);
                 var hour = f.h, period = null;
-                if (h12) { period = hour < 12 ? data.dayPeriods[0] : data.dayPeriods[1]; hour = hour % 12; if (hour === 0) hour = 12; }
+                if (h12) { period = hour < 12 ? data.dayPeriods[0] : data.dayPeriods[1]; hour = hour % 12; if (hour === 0 && o.hourCycle !== 'h11') hour = 12; }
+                else if (hour === 0 && o.hourCycle === 'h24') hour = 24;
                 var showH = o.hour || o.timeStyle, showM = o.minute || o.timeStyle, showS = o.second || (o.timeStyle && o.timeStyle !== 'short');
                 if (showH) parts.push({ type: 'hour', value: o.hour === '2-digit' || (!h12 && o.hour !== 'numeric') ? pad2(hour) : String(hour) });
                 if (showM) { if (showH) lit(':'); parts.push({ type: 'minute', value: pad2(f.mi) }); }
@@ -1994,8 +2084,9 @@
         DateTimeFormat.supportedLocalesOf = supportedOf;
         Intl.DateTimeFormat = DateTimeFormat;
         // ---- plural rules (CLDR): cs/sk one, few (2-4), many (fractions), other; pl one, few, many, other; ru/uk; en/de/... one, other
-        var pluralFor = function (lg, n, ordinal) {
-            var i = Math.floor(Math.abs(n)), isInt = n === i;
+        // (v: the fraction digits shown, when known: "1.00" is not an integer for the rules)
+        var pluralFor = function (lg, n, ordinal, v) {
+            var i = Math.floor(Math.abs(n)), isInt = v === undefined ? Math.abs(n) === i : v === 0;
             if (ordinal) {
                 if (lg === 'en') { var m10 = i % 10, m100 = i % 100; return m10 === 1 && m100 !== 11 ? 'one' : m10 === 2 && m100 !== 12 ? 'two' : m10 === 3 && m100 !== 13 ? 'few' : 'other'; }
                 return 'other';
@@ -2009,10 +2100,23 @@
                 default: return isInt && i === 1 ? 'one' : 'other';
             }
         };
-        var PluralRules = function PluralRules(locale, opts) { this.locale = canon(locale); this.type = opts && opts.type === 'ordinal' ? 'ordinal' : 'cardinal'; };
-        PluralRules.prototype.select = function (n) { return pluralFor(lang(this.locale), Number(n), this.type === 'ordinal'); };
+        var PluralRules = function PluralRules(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; this.type = this.opts.type === 'ordinal' ? 'ordinal' : 'cardinal'; };
+        // (the number as NumberFormat shows it with the digit options: 1 with minimumFractionDigits 2 is "1.00")
+        PluralRules.prototype.select = function (n) {
+            var o = this.opts, x = Number(n);
+            if (!isFinite(x)) return 'other';
+            var minF = o.minimumFractionDigits || 0, maxF = o.maximumFractionDigits !== undefined ? o.maximumFractionDigits : Math.max(minF, 3);
+            var d = roundDigits(Math.abs(x), o, minF, Math.max(minF, maxF));
+            return pluralFor(lang(this.locale), +(d.i + (d.f ? '.' + d.f : '')), this.type === 'ordinal', d.f.length);
+        };
         PluralRules.prototype.selectRange = function (a, b) { return this.select(b); };
-        PluralRules.prototype.resolvedOptions = function () { var lg = lang(this.locale); return { locale: this.locale, type: this.type, pluralCategories: lg === 'cs' || lg === 'sk' ? ['one', 'few', 'many', 'other'] : lg === 'pl' || lg === 'ru' || lg === 'uk' ? ['one', 'few', 'many', 'other'] : ['one', 'other'] }; };
+        PluralRules.prototype.resolvedOptions = function () {
+            var o = this.opts, lg = lang(this.locale), minF = o.minimumFractionDigits || 0;
+            var r = { locale: this.locale, type: this.type, minimumIntegerDigits: o.minimumIntegerDigits || 1, minimumFractionDigits: minF, maximumFractionDigits: o.maximumFractionDigits !== undefined ? o.maximumFractionDigits : Math.max(minF, 3),
+                      pluralCategories: this.type === 'ordinal' ? (lg === 'en' ? ['one', 'two', 'few', 'other'] : ['other']) : lg === 'cs' || lg === 'sk' || lg === 'pl' || lg === 'ru' || lg === 'uk' ? ['one', 'few', 'many', 'other'] : lg === 'ja' || lg === 'zh' || lg === 'ko' || lg === 'vi' || lg === 'th' || lg === 'tr' || lg === 'hu' ? ['other'] : ['one', 'other'], roundingPriority: o.roundingPriority || 'auto' };
+            if (o.minimumSignificantDigits !== undefined || o.maximumSignificantDigits !== undefined) { r.minimumSignificantDigits = o.minimumSignificantDigits || 1; r.maximumSignificantDigits = o.maximumSignificantDigits || 21; }
+            return r;
+        };
         PluralRules.supportedLocalesOf = supportedOf;
         Intl.PluralRules = PluralRules;
         // ---- relative time
@@ -2074,25 +2178,155 @@
         Collator.prototype.resolvedOptions = function () { return { locale: this.locale, usage: this.opts.usage || 'sort', sensitivity: this.opts.sensitivity || 'variant', ignorePunctuation: !!this.opts.ignorePunctuation, collation: 'default', numeric: !!this.opts.numeric, caseFirst: this.opts.caseFirst || 'false' }; };
         Collator.supportedLocalesOf = supportedOf;
         Intl.Collator = Collator;
-        var NAMES = { language: { cs: { cs: 'čeština', sk: 'slovenština', en: 'angličtina', de: 'němčina', pl: 'polština', fr: 'francouzština', es: 'španělština', it: 'italština', ru: 'ruština' }, en: { cs: 'Czech', sk: 'Slovak', en: 'English', de: 'German', pl: 'Polish', fr: 'French', es: 'Spanish', it: 'Italian', ru: 'Russian' } },
-                      region: { cs: { CZ: 'Česko', SK: 'Slovensko', US: 'Spojené státy', GB: 'Spojené království', DE: 'Německo', PL: 'Polsko', AT: 'Rakousko', FR: 'Francie' }, en: { CZ: 'Czechia', SK: 'Slovakia', US: 'United States', GB: 'United Kingdom', DE: 'Germany', PL: 'Poland', AT: 'Austria', FR: 'France' } },
-                      currency: { cs: { CZK: 'česká koruna', EUR: 'euro', USD: 'americký dolar', GBP: 'britská libra' }, en: { CZK: 'Czech Koruna', EUR: 'Euro', USD: 'US Dollar', GBP: 'British Pound' } } };
-        var DisplayNames = function DisplayNames(locale, opts) { this.locale = canon(locale); this.opts = opts || {}; };
-        DisplayNames.prototype.of = function (code) { var lg = lang(this.locale), table = NAMES[this.opts.type] || {}, t = table[lg] || table.en || {}; var key = this.opts.type === 'language' ? String(code).split('-')[0].toLowerCase() : String(code).toUpperCase(); return t[key] || (this.opts.fallback === 'none' ? undefined : String(code)); };
-        DisplayNames.prototype.resolvedOptions = function () { return { locale: this.locale, style: this.opts.style || 'long', type: this.opts.type, fallback: this.opts.fallback || 'code' }; };
+        // display names: English complete for regions, Czech for the common ones (else the English name); the tables are
+        // text until first used. (A region FormatJS asks about, CA, or a script, arab, that came back as its code made
+        // it put its own DisplayNames in.)
+        var DN = {
+            en: {
+                region: 'AC:Ascension Island|AD:Andorra|AE:United Arab Emirates|AF:Afghanistan|AG:Antigua & Barbuda|AI:Anguilla|AL:Albania|AM:Armenia|AO:Angola|AQ:Antarctica|AR:Argentina|AS:American Samoa|AT:Austria|AU:Australia|AW:Aruba|AX:Åland Islands|AZ:Azerbaijan|BA:Bosnia & Herzegovina|BB:Barbados|BD:Bangladesh|BE:Belgium|BF:Burkina Faso|BG:Bulgaria|BH:Bahrain|BI:Burundi|BJ:Benin|BL:St. Barthélemy|BM:Bermuda|BN:Brunei|BO:Bolivia|BQ:Caribbean Netherlands|BR:Brazil|BS:Bahamas|BT:Bhutan|BV:Bouvet Island|BW:Botswana|BY:Belarus|BZ:Belize|CA:Canada|CC:Cocos (Keeling) Islands|CD:Congo - Kinshasa|CF:Central African Republic|CG:Congo - Brazzaville|CH:Switzerland|CI:Côte d’Ivoire|CK:Cook Islands|CL:Chile|CM:Cameroon|CN:China|CO:Colombia|CP:Clipperton Island|CR:Costa Rica|CU:Cuba|CV:Cape Verde|CW:Curaçao|CX:Christmas Island|CY:Cyprus|CZ:Czechia|DE:Germany|DG:Diego Garcia|DJ:Djibouti|DK:Denmark|DM:Dominica|DO:Dominican Republic|DZ:Algeria|EA:Ceuta & Melilla|EC:Ecuador|EE:Estonia|EG:Egypt|EH:Western Sahara|ER:Eritrea|ES:Spain|ET:Ethiopia|EU:European Union|EZ:Eurozone|FI:Finland|FJ:Fiji|FK:Falkland Islands|FM:Micronesia|FO:Faroe Islands|FR:France|GA:Gabon|GB:United Kingdom|GD:Grenada|GE:Georgia|GF:French Guiana|GG:Guernsey|GH:Ghana|GI:Gibraltar|GL:Greenland|GM:Gambia|GN:Guinea|GP:Guadeloupe|GQ:Equatorial Guinea|GR:Greece|GS:South Georgia & South Sandwich Islands|GT:Guatemala|GU:Guam|GW:Guinea-Bissau|GY:Guyana|HK:Hong Kong|HM:Heard & McDonald Islands|HN:Honduras|HR:Croatia|HT:Haiti|HU:Hungary|IC:Canary Islands|ID:Indonesia|IE:Ireland|IL:Israel|IM:Isle of Man|IN:India|IO:British Indian Ocean Territory|IQ:Iraq|IR:Iran|IS:Iceland|IT:Italy|JE:Jersey|JM:Jamaica|JO:Jordan|JP:Japan|KE:Kenya|KG:Kyrgyzstan|KH:Cambodia|KI:Kiribati|KM:Comoros|KN:St. Kitts & Nevis|KP:North Korea|KR:South Korea|KW:Kuwait|KY:Cayman Islands|KZ:Kazakhstan|LA:Laos|LB:Lebanon|LC:St. Lucia|LI:Liechtenstein|LK:Sri Lanka|LR:Liberia|LS:Lesotho|LT:Lithuania|LU:Luxembourg|LV:Latvia|LY:Libya|MA:Morocco|MC:Monaco|MD:Moldova|ME:Montenegro|MF:St. Martin|MG:Madagascar|MH:Marshall Islands|MK:North Macedonia|ML:Mali|MM:Myanmar (Burma)|MN:Mongolia|MO:Macao|MP:Northern Mariana Islands|MQ:Martinique|MR:Mauritania|MS:Montserrat|MT:Malta|MU:Mauritius|MV:Maldives|MW:Malawi|MX:Mexico|MY:Malaysia|MZ:Mozambique|NA:Namibia|NC:New Caledonia|NE:Niger|NF:Norfolk Island|NG:Nigeria|NI:Nicaragua|NL:Netherlands|NO:Norway|NP:Nepal|NR:Nauru|NU:Niue|NZ:New Zealand|OM:Oman|PA:Panama|PE:Peru|PF:French Polynesia|PG:Papua New Guinea|PH:Philippines|PK:Pakistan|PL:Poland|PM:St. Pierre & Miquelon|PN:Pitcairn Islands|PR:Puerto Rico|PS:Palestinian Territories|PT:Portugal|PW:Palau|PY:Paraguay|QA:Qatar|QO:Outlying Oceania|RE:Réunion|RO:Romania|RS:Serbia|RU:Russia|RW:Rwanda|SA:Saudi Arabia|SB:Solomon Islands|SC:Seychelles|SD:Sudan|SE:Sweden|SG:Singapore|SH:St. Helena|SI:Slovenia|SJ:Svalbard & Jan Mayen|SK:Slovakia|SL:Sierra Leone|SM:San Marino|SN:Senegal|SO:Somalia|SR:Suriname|SS:South Sudan|ST:São Tomé & Príncipe|SV:El Salvador|SX:Sint Maarten|SY:Syria|SZ:Eswatini|TA:Tristan da Cunha|TC:Turks & Caicos Islands|TD:Chad|TF:French Southern Territories|TG:Togo|TH:Thailand|TJ:Tajikistan|TK:Tokelau|TL:Timor-Leste|TM:Turkmenistan|TN:Tunisia|TO:Tonga|TR:Türkiye|TT:Trinidad & Tobago|TV:Tuvalu|TW:Taiwan|TZ:Tanzania|UA:Ukraine|UG:Uganda|UM:U.S. Outlying Islands|UN:United Nations|US:United States|UY:Uruguay|UZ:Uzbekistan|VA:Vatican City|VC:St. Vincent & Grenadines|VE:Venezuela|VG:British Virgin Islands|VI:U.S. Virgin Islands|VN:Vietnam|VU:Vanuatu|WF:Wallis & Futuna|WS:Samoa|XK:Kosovo|YE:Yemen|YT:Mayotte|ZA:South Africa|ZM:Zambia|ZW:Zimbabwe|001:world|002:Africa|003:North America|005:South America|009:Oceania|011:Western Africa|013:Central America|014:Eastern Africa|015:Northern Africa|017:Middle Africa|018:Southern Africa|019:Americas|021:Northern America|029:Caribbean|030:Eastern Asia|034:Southern Asia|035:Southeast Asia|039:Southern Europe|053:Australasia|054:Melanesia|057:Micronesian Region|061:Polynesia|142:Asia|143:Central Asia|145:Western Asia|150:Europe|151:Eastern Europe|154:Northern Europe|155:Western Europe|202:Sub-Saharan Africa|419:Latin America',
+                language: 'af:Afrikaans|am:Amharic|ar:Arabic|az:Azerbaijani|be:Belarusian|bg:Bulgarian|bn:Bangla|bs:Bosnian|ca:Catalan|cs:Czech|cy:Welsh|da:Danish|de:German|el:Greek|en:English|eo:Esperanto|es:Spanish|et:Estonian|eu:Basque|fa:Persian|fi:Finnish|fil:Filipino|fr:French|ga:Irish|gl:Galician|gu:Gujarati|he:Hebrew|hi:Hindi|hr:Croatian|hu:Hungarian|hy:Armenian|id:Indonesian|is:Icelandic|it:Italian|ja:Japanese|ka:Georgian|kk:Kazakh|km:Khmer|kn:Kannada|ko:Korean|ky:Kyrgyz|la:Latin|lb:Luxembourgish|lo:Lao|lt:Lithuanian|lv:Latvian|mk:Macedonian|ml:Malayalam|mn:Mongolian|mr:Marathi|ms:Malay|mt:Maltese|my:Burmese|nb:Norwegian Bokmål|ne:Nepali|nl:Dutch|nn:Norwegian Nynorsk|no:Norwegian|pa:Punjabi|pl:Polish|ps:Pashto|pt:Portuguese|ro:Romanian|rom:Romany|ru:Russian|sk:Slovak|sl:Slovenian|sq:Albanian|sr:Serbian|sv:Swedish|sw:Swahili|ta:Tamil|te:Telugu|tg:Tajik|th:Thai|tk:Turkmen|tl:Tagalog|tr:Turkish|uk:Ukrainian|ur:Urdu|uz:Uzbek|vi:Vietnamese|yi:Yiddish|zh:Chinese|zu:Zulu|und:Unknown language',
+                dialect: 'ar-001:Modern Standard Arabic|de-AT:Austrian German|de-CH:Swiss High German|en-AU:Australian English|en-CA:Canadian English|en-GB:British English|en-US:American English|es-419:Latin American Spanish|es-ES:European Spanish|es-MX:Mexican Spanish|fr-CA:Canadian French|fr-CH:Swiss French|nl-BE:Flemish|pt-BR:Brazilian Portuguese|pt-PT:European Portuguese|ro-MD:Moldavian|zh-Hans:Simplified Chinese|zh-Hant:Traditional Chinese',
+                script: 'Arab:Arabic|Armn:Armenian|Beng:Bangla|Brai:Braille|Cyrl:Cyrillic|Deva:Devanagari|Ethi:Ethiopic|Geor:Georgian|Grek:Greek|Gujr:Gujarati|Guru:Gurmukhi|Hang:Hangul|Hani:Han|Hans:Simplified|Hant:Traditional|Hebr:Hebrew|Hira:Hiragana|Jpan:Japanese|Kana:Katakana|Khmr:Khmer|Knda:Kannada|Kore:Korean|Laoo:Lao|Latn:Latin|Mlym:Malayalam|Mong:Mongolian|Mymr:Myanmar|Orya:Odia|Sinh:Sinhala|Taml:Tamil|Telu:Telugu|Thaa:Thaana|Thai:Thai|Tibt:Tibetan|Zmth:Mathematical Notation|Zsye:Emoji|Zsym:Symbols|Zxxx:Unwritten|Zyyy:Common|Zzzz:Unknown Script',
+                currency: 'AED:United Arab Emirates Dirham|AUD:Australian Dollar|BGN:Bulgarian Lev|BRL:Brazilian Real|CAD:Canadian Dollar|CHF:Swiss Franc|CNY:Chinese Yuan|CZK:Czech Koruna|DKK:Danish Krone|EUR:Euro|GBP:British Pound|HKD:Hong Kong Dollar|HUF:Hungarian Forint|ILS:Israeli New Shekel|INR:Indian Rupee|JPY:Japanese Yen|KRW:South Korean Won|MXN:Mexican Peso|NOK:Norwegian Krone|NZD:New Zealand Dollar|PLN:Polish Zloty|RON:Romanian Leu|RUB:Russian Ruble|SEK:Swedish Krona|SGD:Singapore Dollar|THB:Thai Baht|TRY:Turkish Lira|UAH:Ukrainian Hryvnia|USD:US Dollar|ZAR:South African Rand',
+                calendar: 'buddhist:Buddhist Calendar|chinese:Chinese Calendar|gregory:Gregorian Calendar|hebrew:Hebrew Calendar|islamic:Hijri Calendar|iso8601:ISO-8601 Calendar|japanese:Japanese Calendar|persian:Persian Calendar',
+                dateTimeField: 'era:era|year:year|quarter:quarter|month:month|weekOfYear:week|weekday:day of the week|day:day|dayPeriod:AM/PM|hour:hour|minute:minute|second:second|timeZoneName:time zone'
+            },
+            cs: {
+                region: 'AD:Andorra|AE:Spojené arabské emiráty|AF:Afghánistán|AL:Albánie|AM:Arménie|AR:Argentina|AT:Rakousko|AU:Austrálie|AZ:Ázerbájdžán|BA:Bosna a Hercegovina|BD:Bangladéš|BE:Belgie|BG:Bulharsko|BR:Brazílie|BY:Bělorusko|CA:Kanada|CH:Švýcarsko|CI:Pobřeží slonoviny|CL:Chile|CN:Čína|CO:Kolumbie|CR:Kostarika|CU:Kuba|CY:Kypr|CZ:Česko|DE:Německo|DK:Dánsko|DO:Dominikánská republika|DZ:Alžírsko|EC:Ekvádor|EE:Estonsko|EG:Egypt|ES:Španělsko|ET:Etiopie|EU:Evropská unie|FI:Finsko|FR:Francie|GB:Spojené království|GE:Gruzie|GR:Řecko|HK:Hongkong|HR:Chorvatsko|HU:Maďarsko|ID:Indonésie|IE:Irsko|IL:Izrael|IN:Indie|IQ:Irák|IR:Írán|IS:Island|IT:Itálie|JO:Jordánsko|JP:Japonsko|KE:Keňa|KP:Severní Korea|KR:Jižní Korea|KZ:Kazachstán|LB:Libanon|LI:Lichtenštejnsko|LT:Litva|LU:Lucembursko|LV:Lotyšsko|MA:Maroko|MC:Monako|MD:Moldavsko|ME:Černá Hora|MK:Severní Makedonie|MN:Mongolsko|MT:Malta|MX:Mexiko|MY:Malajsie|NG:Nigérie|NL:Nizozemsko|NO:Norsko|NZ:Nový Zéland|PE:Peru|PH:Filipíny|PK:Pákistán|PL:Polsko|PT:Portugalsko|QA:Katar|RO:Rumunsko|RS:Srbsko|RU:Rusko|SA:Saúdská Arábie|SE:Švédsko|SG:Singapur|SI:Slovinsko|SK:Slovensko|SM:San Marino|SY:Sýrie|TH:Thajsko|TN:Tunisko|TR:Turecko|TW:Tchaj-wan|UA:Ukrajina|US:Spojené státy|UY:Uruguay|UZ:Uzbekistán|VA:Vatikán|VE:Venezuela|VN:Vietnam|XK:Kosovo|ZA:Jihoafrická republika|001:svět|150:Evropa|419:Latinská Amerika',
+                language: 'ar:arabština|be:běloruština|bg:bulharština|bn:bengálština|ca:katalánština|cs:čeština|cy:velština|da:dánština|de:němčina|el:řečtina|en:angličtina|eo:esperanto|es:španělština|et:estonština|eu:baskičtina|fa:perština|fi:finština|fr:francouzština|ga:irština|gl:galicijština|he:hebrejština|hi:hindština|hr:chorvatština|hu:maďarština|hy:arménština|id:indonéština|is:islandština|it:italština|ja:japonština|ka:gruzínština|ko:korejština|la:latina|lb:lucemburština|lt:litevština|lv:lotyština|mk:makedonština|mt:maltština|nb:norština (bokmål)|nl:nizozemština|no:norština|pl:polština|pt:portugalština|ro:rumunština|rom:romština|ru:ruština|sk:slovenština|sl:slovinština|sq:albánština|sr:srbština|sv:švédština|th:thajština|tr:turečtina|uk:ukrajinština|ur:urdština|vi:vietnamština|yi:jidiš|zh:čínština|und:neznámý jazyk',
+                dialect: 'en-AU:angličtina (Austrálie)|en-CA:angličtina (Kanada)|en-GB:angličtina (Velká Británie)|en-US:angličtina (USA)|es-419:španělština (Latinská Amerika)|fr-CA:francouzština (Kanada)|nl-BE:vlámština|pt-BR:portugalština (Brazílie)|zh-Hans:čínština (zjednodušená)|zh-Hant:čínština (tradiční)',
+                script: 'Arab:arabské|Armn:arménské|Cyrl:cyrilice|Deva:dévanágarí|Geor:gruzínské|Grek:řecké|Hans:zjednodušené|Hant:tradiční|Hebr:hebrejské|Jpan:japonské|Kore:korejské|Latn:latinka|Thai:thajské|Zyyy:obecné|Zzzz:neznámé písmo',
+                currency: 'AUD:australský dolar|CAD:kanadský dolar|CHF:švýcarský frank|CNY:čínský jüan|CZK:česká koruna|DKK:dánská koruna|EUR:euro|GBP:britská libra|HUF:maďarský forint|JPY:japonský jen|NOK:norská koruna|PLN:polský zlotý|RUB:ruský rubl|SEK:švédská koruna|UAH:ukrajinská hřivna|USD:americký dolar',
+                calendar: 'gregory:gregoriánský kalendář',
+                dateTimeField: 'era:letopočet|year:rok|quarter:čtvrtletí|month:měsíc|weekOfYear:týden|weekday:den v týdnu|day:den|dayPeriod:část dne|hour:hodina|minute:minuta|second:sekunda|timeZoneName:časové pásmo'
+            }
+        };
+        var dnTable = function (lg, type) {
+            var d = DN[lg] || DN.en, t = d[type];
+            if (typeof t === 'string') {
+                var items = t.split('|');
+                t = d[type] = Object.create(null);
+                for (var i = 0; i < items.length; i++) { var c = items[i].indexOf(':'); t[items[i].slice(0, c)] = items[i].slice(c + 1); }
+            }
+            return t || {};
+        };
+        var dnName = function (lg, type, key) { var v = dnTable(lg, type)[key]; return v !== undefined || lg === 'en' ? v : dnTable('en', type)[key]; };
+        var DN_CODE = { region: /^(?:[a-z]{2}|\d{3})$/i, script: /^[a-z]{4}$/i, currency: /^[a-z]{3}$/i, language: /^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/i, calendar: /^[a-z0-9]{3,8}(?:-[a-z0-9]{3,8})*$/i, dateTimeField: /^[a-z]+$/i };
+        var DisplayNames = function DisplayNames(locale, opts) {
+            if (!(this instanceof DisplayNames)) throw new TypeError("Constructor Intl.DisplayNames requires 'new'");
+            this.locale = canon(locale); this.opts = opts || {};
+            if (!DN_CODE[this.opts.type]) throw new TypeError(this.opts.type === undefined ? 'Required option "type" is missing' : 'Value ' + this.opts.type + ' out of range for Intl.DisplayNames options property type');
+        };
+        DisplayNames.prototype.of = function (code) {
+            var type = this.opts.type, lg = lang(this.locale), s = String(code), name;
+            if (!DN_CODE[type].test(s) || (type === 'dateTimeField' && dnTable('en', type)[s] === undefined)) throw new RangeError('invalid_argument');
+            if (type === 'region') s = s.toUpperCase();
+            else if (type === 'script') s = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+            else if (type === 'currency') s = s.toUpperCase();
+            else if (type === 'calendar') s = s.toLowerCase();
+            if (type === 'language') {
+                var parts = s.split('-'), base = parts[0].toLowerCase(), script = '', region = '';
+                for (var i = 1; i < parts.length; i++) {
+                    if (/^[a-z]{4}$/i.test(parts[i]) && !script && !region) script = parts[i].charAt(0).toUpperCase() + parts[i].slice(1).toLowerCase();
+                    else if (/^(?:[a-z]{2}|\d{3})$/i.test(parts[i]) && !region) region = parts[i].toUpperCase();
+                }
+                s = base + (script ? '-' + script : '') + (region ? '-' + region : '');
+                name = this.opts.languageDisplay !== 'standard' ? dnName(lg, 'dialect', s) : undefined;
+                if (name === undefined) {
+                    name = dnName(lg, 'language', base);
+                    if (name !== undefined && (script || region)) {
+                        var more = [];
+                        if (script) more.push(dnName(lg, 'script', script) || script);
+                        if (region) more.push(dnName(lg, 'region', region) || region);
+                        name += ' (' + more.join(', ') + ')';
+                    }
+                }
+            } else name = dnName(lg, type, s);
+            return name !== undefined ? name : this.opts.fallback === 'none' ? undefined : s;
+        };
+        DisplayNames.prototype.resolvedOptions = function () {
+            var r = { locale: this.locale, style: this.opts.style || 'long', type: this.opts.type, fallback: this.opts.fallback || 'code' };
+            if (this.opts.type === 'language') r.languageDisplay = this.opts.languageDisplay || 'dialect';
+            return r;
+        };
         DisplayNames.supportedLocalesOf = supportedOf;
         Intl.DisplayNames = DisplayNames;
+        // Locale: the fields are getters of the prototype, as in the engines (FormatJS looks for variants there), with
+        // the Locale Info methods (getWeekInfo...); without them FormatJS puts its own Locale in
+        var LIKELY = { en: 'Latn-US', cs: 'Latn-CZ', sk: 'Latn-SK', de: 'Latn-DE', pl: 'Latn-PL', fr: 'Latn-FR', es: 'Latn-ES', it: 'Latn-IT', pt: 'Latn-BR', nl: 'Latn-NL', hu: 'Latn-HU', sv: 'Latn-SE', da: 'Latn-DK', fi: 'Latn-FI', nb: 'Latn-NO', no: 'Latn-NO', tr: 'Latn-TR', ro: 'Latn-RO', hr: 'Latn-HR', sl: 'Latn-SI', ru: 'Cyrl-RU', uk: 'Cyrl-UA', bg: 'Cyrl-BG', sr: 'Cyrl-RS', el: 'Grek-GR', he: 'Hebr-IL', ar: 'Arab-EG', fa: 'Arab-IR', hi: 'Deva-IN', th: 'Thai-TH', vi: 'Latn-VN', id: 'Latn-ID', ja: 'Jpan-JP', ko: 'Kore-KR', zh: 'Hans-CN', und: 'Latn-US' };
+        var SUNDAY_FIRST = ' AG AS BD BR BS BT BW BZ CA CN CO DM DO ET GT GU HK HN ID IL IN JM JP KE KH KR LA MH MM MO MT MX MZ NI NP PA PE PH PK PR PT PY SA SG SV TH TT TW UM US VE VI WS YE ZA ZW ';
+        var H12_REGIONS = ' US CA AU NZ IN PH PK BD EG SA MX CO ';
+        var ZONES = { CZ: ['Europe/Prague'], SK: ['Europe/Bratislava'], DE: ['Europe/Berlin', 'Europe/Busingen'], AT: ['Europe/Vienna'], PL: ['Europe/Warsaw'], HU: ['Europe/Budapest'], GB: ['Europe/London'], IE: ['Europe/Dublin'], FR: ['Europe/Paris'], IT: ['Europe/Rome'], ES: ['Africa/Ceuta', 'Atlantic/Canary', 'Europe/Madrid'], NL: ['Europe/Amsterdam'], CH: ['Europe/Zurich'], UA: ['Europe/Kyiv'], JP: ['Asia/Tokyo'], CN: ['Asia/Shanghai', 'Asia/Urumqi'], IN: ['Asia/Kolkata'],
+                      US: ['America/Adak', 'America/Anchorage', 'America/Chicago', 'America/Denver', 'America/Detroit', 'America/Los_Angeles', 'America/New_York', 'America/Phoenix', 'Pacific/Honolulu'] };
+        var LOCALE_KEYS = { ca: 'calendar', co: 'collation', fw: 'firstDayOfWeek', hc: 'hourCycle', kf: 'caseFirst', kn: 'numeric', nu: 'numberingSystem' };
         var Locale = function Locale(tag, opts) {
-            var parts = canon(tag).split('-');
-            this.language = (opts && opts.language) || parts[0].toLowerCase();
-            this.script = (opts && opts.script) || (parts[1] && parts[1].length === 4 ? parts[1] : undefined);
-            this.region = (opts && opts.region) || (parts[1] && parts[1].length === 2 ? parts[1].toUpperCase() : parts[2] && parts[2].length === 2 ? parts[2].toUpperCase() : undefined);
-            this.baseName = this.language + (this.script ? '-' + this.script : '') + (this.region ? '-' + this.region : '');
-            this.calendar = opts && opts.calendar; this.numberingSystem = opts && opts.numberingSystem; this.hourCycle = opts && opts.hourCycle;
+            if (!(this instanceof Locale)) throw new TypeError("Constructor Intl.Locale requires 'new'");
+            if (tag instanceof Locale) tag = tag.toString();
+            if (typeof tag !== 'string' && (tag === null || typeof tag !== 'object')) throw new TypeError("First argument to Intl.Locale constructor can't be empty or missing");
+            var parts = String(tag).replace(/_/g, '-').split('-'), k = 1, f = { language: parts[0].toLowerCase(), rest: '' }, key;
+            if (!/^[a-z]{2,8}$/.test(f.language)) throw new RangeError('Incorrect locale information provided');
+            if (parts[k] && /^[a-z]{4}$/i.test(parts[k])) { f.script = parts[k].charAt(0).toUpperCase() + parts[k].slice(1).toLowerCase(); k++; }
+            if (parts[k] && /^(?:[a-z]{2}|\d{3})$/i.test(parts[k])) { f.region = parts[k].toUpperCase(); k++; }
+            var vars = [];
+            while (parts[k] && /^(?:[a-z0-9]{5,8}|\d[a-z0-9]{3})$/i.test(parts[k])) vars.push(parts[k++].toLowerCase());
+            if (vars.length) f.variants = vars.join('-');
+            // (-u- keywords; other extensions and private use kept as they are)
+            while (k < parts.length) {
+                if (parts[k].toLowerCase() === 'u') {
+                    k++;
+                    while (k < parts.length && parts[k].length > 1) {
+                        key = parts[k++].toLowerCase();
+                        var val = [];
+                        while (k < parts.length && parts[k].length > 2) val.push(parts[k++].toLowerCase());
+                        if (LOCALE_KEYS[key]) f[LOCALE_KEYS[key]] = val.length ? val.join('-') : 'true';
+                    }
+                } else { f.rest = '-' + parts.slice(k).join('-').toLowerCase(); break; }
+            }
+            if (opts) {
+                var names = ['language', 'script', 'region', 'calendar', 'collation', 'hourCycle', 'caseFirst', 'numberingSystem', 'firstDayOfWeek'];
+                for (var n = 0; n < names.length; n++) if (opts[names[n]] !== undefined) f[names[n]] = String(opts[names[n]]);
+                if (opts.numeric !== undefined) f.numeric = opts.numeric ? 'true' : 'false';
+            }
+            Object.defineProperty(this, '__br_l', { value: f });
         };
-        Locale.prototype.toString = function () { return this.baseName; };
-        Locale.prototype.maximize = function () { return this; };
-        Locale.prototype.minimize = function () { return new Locale(this.language); };
+        var localeField = function (name, fn) { Object.defineProperty(Locale.prototype, name, { get: fn || function () { return this.__br_l[name]; }, configurable: true }); };
+        localeField('language'); localeField('script'); localeField('region'); localeField('variants'); localeField('calendar'); localeField('collation');
+        localeField('hourCycle'); localeField('caseFirst'); localeField('numberingSystem'); localeField('firstDayOfWeek');
+        localeField('numeric', function () { return this.__br_l.numeric === 'true'; });
+        localeField('baseName', function () { var f = this.__br_l; return f.language + (f.script ? '-' + f.script : '') + (f.region ? '-' + f.region : '') + (f.variants ? '-' + f.variants : ''); });
+        Locale.prototype.toString = function () {
+            var f = this.__br_l, u = '';
+            for (var key in LOCALE_KEYS) if (LOCALE_KEYS.hasOwnProperty(key) && f[LOCALE_KEYS[key]] !== undefined) u += '-' + key + (f[LOCALE_KEYS[key]] === 'true' ? '' : '-' + f[LOCALE_KEYS[key]]);
+            return this.baseName + (u ? '-u' + u : '') + f.rest;
+        };
+        Locale.prototype.toJSON = Locale.prototype.toString;
+        var likelyOf = function (f) { return (LIKELY[f.language] || 'Latn-US').split('-'); };
+        Locale.prototype.maximize = function () {
+            var f = this.__br_l, l = likelyOf(f);
+            return new Locale(this.toString(), { script: f.script || l[0], region: f.region || l[1] });
+        };
+        Locale.prototype.minimize = function () {
+            var f = this.__br_l, l = likelyOf(f);
+            return new Locale(f.language + (f.script && f.script !== l[0] ? '-' + f.script : '') + (f.region && f.region !== l[1] ? '-' + f.region : '') + (f.variants ? '-' + f.variants : ''));
+        };
+        var regionOf = function (loc) { return loc.__br_l.region || likelyOf(loc.__br_l)[1]; };
+        var LOCALE_INFO = {
+            getCalendars: function () { return [this.__br_l.calendar || 'gregory']; },
+            getCollations: function () { return this.__br_l.collation ? [this.__br_l.collation] : ['emoji', 'eor']; },
+            getHourCycles: function () { return [this.__br_l.hourCycle || (H12_REGIONS.indexOf(' ' + regionOf(this) + ' ') >= 0 ? 'h12' : 'h23')]; },
+            getNumberingSystems: function () { return [this.__br_l.numberingSystem || 'latn']; },
+            getTimeZones: function () { var r = this.__br_l.region; return r ? (ZONES[r] || []).slice() : undefined; },
+            getTextInfo: function () { return { direction: /^(?:ar|he|iw|fa|ur|yi|ps|sd|ug|dv|ckb)$/.test(this.__br_l.language) ? 'rtl' : 'ltr' }; },
+            getWeekInfo: function () {
+                var r = regionOf(this), fw = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 }[this.__br_l.firstDayOfWeek];
+                return { firstDay: fw || (SUNDAY_FIRST.indexOf(' ' + r + ' ') >= 0 ? 7 : 1), weekend: [6, 7] };
+            }
+        };
+        // (and the older getters: locale.weekInfo, locale.hourCycles...)
+        for (var li in LOCALE_INFO) if (LOCALE_INFO.hasOwnProperty(li)) {
+            Locale.prototype[li] = LOCALE_INFO[li];
+            localeField(li.charAt(3).toLowerCase() + li.slice(4), LOCALE_INFO[li]);
+        }
         Intl.Locale = Locale;
         var Segmenter = function Segmenter(locale, opts) { this.locale = canon(locale); this.granularity = opts && opts.granularity || 'grapheme'; };
         Segmenter.prototype.segment = function (str) {
@@ -2111,7 +2345,12 @@
         DurationFormat.prototype.formatToParts = function (d) { return [{ type: 'literal', value: this.format(d) }]; };
         DurationFormat.supportedLocalesOf = supportedOf;
         Intl.DurationFormat = DurationFormat;
-        Intl.getCanonicalLocales = function (l) { return supportedOf(l).map(canon); };
+        // (the case of each part as the standard writes it; a tag that is not one throws, as in the engines)
+        Intl.getCanonicalLocales = function (l) {
+            var a = supportedOf(l), out = [];
+            for (var i = 0; i < a.length; i++) { var c = new Locale(a[i]).toString(); if (out.indexOf(c) < 0) out.push(c); }
+            return out;
+        };
         Intl.supportedValuesOf = function (key) { switch (key) { case 'currency': { var c = []; for (var k in CURRENCY) if (CURRENCY.hasOwnProperty(k)) c.push(k); return c.sort(); } case 'calendar': return ['gregory']; case 'numberingSystem': return ['latn']; case 'timeZone': return ['Europe/Prague', 'UTC']; case 'unit': { var u = []; for (var uk in UNIT_SHORT) if (UNIT_SHORT.hasOwnProperty(uk)) u.push(uk); return u.sort(); } case 'collation': return ['default']; } return []; };
         // the locale-aware methods of Number and Date go through the implementation above when arguments are given
         var origNumToLocale = Number.prototype.toLocaleString;

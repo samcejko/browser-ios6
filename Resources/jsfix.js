@@ -170,35 +170,31 @@
             var P = __br_Proxy, slice = Array.prototype.slice, hasOwn = Object.prototype.hasOwnProperty;
             if (!P.revocable) {
                 // (statics: the helper text calls __br_Proxy() once)
-                P.live = [];
-                P.clean = false;
+                P.ids = 0;
+                P.pass = 0;
                 P.revocable = function (t, h) {
-                    var p = new P(t, h), entry = { p: p, on: true }, live = P.live;
-                    if (live.length > 64) { for (var i = live.length - 1; i >= 0; i--) if (!live[i].on) live.splice(i, 1); }
-                    live.push(entry);
-                    P.clean = false;
-                    return { proxy: p, revoke: function () { entry.on = false; } };
-                };
-                // (once per burst: page code touching a proxy, or a new one, starts the next)
-                P.sweepAll = function () {
-                    if (P.clean) return;
-                    P.clean = true;
-                    for (var i = P.live.length - 1; i >= 0; i--) {
-                        var e = P.live[i];
-                        if (!e.on) P.live.splice(i, 1);
-                        else e.p.__br_sweep();
-                    }
+                    P.rev = true;
+                    var p = new P(t, h), off = P.off;
+                    P.rev = false;
+                    return { proxy: p, revoke: off };
                 };
             }
             if (!(this instanceof P)) {
-                if (target === undefined && handler === undefined) return;
+                // (__br_Proxy('revocable') is Proxy.revocable where the helper text comes after the script: the
+                // statics are made above when it runs)
+                if (handler === undefined && (target === undefined || target === 'revocable')) return target && P.revocable;
                 throw new TypeError("Constructor Proxy requires 'new'");
             }
             if (target === null || (typeof target !== 'object' && typeof target !== 'function') || handler === null || typeof handler !== 'object') {
                 throw new TypeError('Cannot create proxy with a non-object as target or handler');
             }
             var proxy, done = {}, getters = {}, isArr = Object.prototype.toString.call(target) === '[object Array]', slack = 0;
-            var INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1, __br_resync: 1, __br_read: 1, __br_write: 1 }, INDEX = /^(?:0|[1-9]\d*)$/;
+            var INNER = P.INNER || (P.INNER = { __br_proxyArray: 1, toJSON: 1, __br_sweep: 1, __br_resync: 1, __br_read: 1, __br_write: 1, __br_id: 1 });
+            var INDEX = P.INDEX || (P.INDEX = /^(?:0|[1-9]\d*)$/);
+            // a proxy of Proxy.revocable (an Immer draft) knows the drafts read through it (kids): when its state is
+            // read, it and they look for keys the page added or deleted, as Immer is about to use them
+            var kids = P.rev ? [] : null, kidIds = kids && {}, alive = true, pass = 0;
+            var adopt = function (v) { var id = v.__br_id; if (id !== undefined && !kidIds[id]) { kidIds[id] = 1; kids.push(v); } };
             // (the receiver of a set is the target: Reflect.set(target, key, v, proxy) would find our accessor on the
             // proxy and refuse)
             var read = function (key) { return handler.get ? handler.get(target, key, proxy) : target[key]; };
@@ -278,17 +274,18 @@
                 var en = enumerable(key, len), was = done['$' + key];
                 if (was === en) return;
                 done['$' + key] = en;
-                var get = getters['$' + key] = function () { P.clean = false; return read(key); };
+                var get = getters['$' + key] = kids === null ? function () { return read(key); }
+                                                             : function () { var v = read(key); if (v !== null && typeof v === 'object') adopt(v); return v; };
                 try {
-                    Object.defineProperty(proxy, key, { get: get, set: function (v) { P.clean = false; write(key, v); grown(key); }, enumerable: en, configurable: true });
+                    Object.defineProperty(proxy, key, { get: get, set: function (v) { write(key, v); grown(key); }, enumerable: en, configurable: true });
                 } catch (e) {}
             };
             var getterOf = proxy.__lookupGetter__ ? function (key) { return proxy.__lookupGetter__(key); }
                                                   : function (key) { var d = Object.getOwnPropertyDescriptor(proxy, key); return d && d.get; };
             // accessors for keys that are not the target's: read only through the trap (not counted, not swept)
-            var special = function (key, sweep) {
+            var special = function (key, state) {
                 try {
-                    Object.defineProperty(proxy, key, { get: function () { if (sweep) P.sweepAll(); return read(key); },
+                    Object.defineProperty(proxy, key, { get: function () { if (state && kids !== null) sweep(++P.pass); return read(key); },
                                                         set: function (v) { write(key, v); }, enumerable: false, configurable: true });
                 } catch (e) {}
             };
@@ -309,16 +306,22 @@
                 for (var k = 0; k < list.length; k++) define(list[k], len);
                 if (isArr) extend(len);
             };
-            // keys the page added (plain values, also where it had deleted our accessor) or deleted since: to the traps
-            var sweep = function () {
-                if (typeof proxy === 'function') return;
+            // keys the page added (plain values, also where it had deleted our accessor: that delete first) or deleted
+            // since: to the traps (nothing to do while the own names are as at the last look)
+            var seen = null;
+            var look = function () {
                 var own = Object.getOwnPropertyNames(proxy), k, key, d, gone = [], changed = false;
+                if (seen !== null && own.length === seen.length) {
+                    for (k = 0; k < own.length && own[k] === seen[k]; k++) {}
+                    if (k === own.length) return;
+                }
                 for (k = 0; k < own.length; k++) {
                     key = own[k];
                     if (INNER[key] || (getters['$' + key] && getterOf(key) === getters['$' + key])) continue;
                     d = Object.getOwnPropertyDescriptor(proxy, key);
                     if (d && 'value' in d) {
                         delete proxy[key];
+                        if (done['$' + key] !== undefined && handler.deleteProperty) handler.deleteProperty(target, key);
                         done['$' + key] = getters['$' + key] = undefined;
                         write(key, d.value);
                         changed = true;
@@ -337,11 +340,22 @@
                     }
                     changed = true;
                 }
-                if (!changed) return;
+                if (!changed) { seen = own; return; }
                 keys();
                 if (isArr) { var len = arrLength(); for (k = 0; k < gone.length; k++) if (INDEX.test(gone[k]) && +gone[k] < slack) define(gone[k], len); }
+                seen = Object.getOwnPropertyNames(proxy);
             };
-            try { Object.defineProperty(proxy, '__br_sweep', { value: sweep }); } catch (e1) {}
+            // (this proxy and its kids, once in a pass; a revoked one no more)
+            var sweep = function (n) {
+                if (!alive || pass === n) return;
+                pass = n;
+                if (typeof proxy !== 'function') look();
+                for (var i = 0; i < kids.length; i++) kids[i].__br_sweep(n);
+            };
+            if (kids !== null) {
+                try { Object.defineProperty(proxy, '__br_sweep', { value: sweep }); Object.defineProperty(proxy, '__br_id', { value: ++P.ids }); } catch (e1) {}
+                P.off = function () { alive = false; };
+            }
             keys();
             // (keys a script adds to the target itself later: Object.assign to it asks its proxies to look again, see
             // shims.js - Pinia assigns a store's actions to toRaw(store))
@@ -399,6 +413,8 @@
             for (var f = 0; f < flags.length; f++) if (done['$' + flags[f]] === undefined) special(flags[f], false);
             // Immer's state (a registered symbol; the polyfilled ones are keys of their own)
             if (typeof Symbol === 'function' && Symbol['for']) { try { special(Symbol['for']('immer-state'), true); } catch (e3) {} }
+            // (and its key where typeof tells no symbol: a script the engine takes as it is keeps its own typeof)
+            if (P.rev) special('__$immer_state', true);
             // (the collection methods of a Map / Set target, see coll above)
             if (coll && handler.get) {
                 var cm = ['get', 'set', 'has', 'add', 'delete', 'clear', 'forEach', 'size', 'keys', 'values', 'entries', '@@iterator'];
@@ -3681,13 +3697,27 @@
     // invalid" and a Next.js page is replaced by its error page (nextjs.org). A guard like that, with the proxy right
     // after it, asks about the stand-in instead, so the proxy path runs (typeof Proxy elsewhere stays the engine's).
     var PROXY_GUARD = /(if\s*\(\s*)((["'])(?:u|undefined)\3\s*(?:<|===?)\s*typeof\s+Proxy\b|typeof\s+Proxy\s*(?:>|===?)\s*(["'])(?:u|undefined)\4)(\s*\)\s*return\b)/g;
+    // Immer 6 to 9 decide at start whether they draft with proxies (`typeof Proxy !== "undefined" && typeof
+    // Proxy.revocable !== "undefined" && ...`) and otherwise take their ES5 plugin, getPlugin("ES5"), which an app has
+    // only when it loads it: without it every produce() threw "[Immer] minified error nr: 18 'ES5'" (regiojet.cz
+    // showed its error page). In a script that asks for that plugin and does not register it (loadPlugin("ES5",
+    // {...})), a check that Proxy exists followed by one of Proxy.revocable asks about the stand-in, made for Immer's
+    // drafts; its Proxy.revocable is retargeted in the text too (the path that replaces only calls leaves it), in the
+    // form that works before the helper text has run.
+    var PROXY_REVOCABLE_GUARD = /((["'])(?:u|undefined)\2\s*(?:!==?|>)\s*typeof\s+Proxy\b|typeof\s+Proxy\s*(?:!==?|<)\s*(["'])(?:u|undefined)\3)(\s*&&(?:[^&|;,?:(){}]{0,40}?[^.\w$])?)Proxy\s*\.\s*revocable\b/g;
+    var IMMER_ES5_USE = /\(\s*(["'])ES5\1\s*\)/, IMMER_ES5_PLUGIN = /\(\s*(["'])ES5\1\s*,/;
     var retargetProxyGuards = function (src) {
         if (src.indexOf('typeof') < 0 || !PROXY_USE.test(src)) return src;
         PROXY_GUARD.lastIndex = 0;
-        return src.replace(PROXY_GUARD, function (whole, head, guard, q1, q2, tail, offset) {
-            var after = src.slice(offset + whole.length, offset + whole.length + 600);
+        src = src.replace(PROXY_GUARD, function (whole, head, guard, q1, q2, tail, offset, all) {
+            var after = all.slice(offset + whole.length, offset + whole.length + 600);
             if (!/\bnew\s+Proxy\s*\(/.test(after)) return whole;
             return head + guard.replace(/typeof\s+Proxy/, 'typeof __br_Proxy') + tail;
+        });
+        if (src.indexOf('ES5') < 0 || !IMMER_ES5_USE.test(src) || IMMER_ES5_PLUGIN.test(src)) return src;
+        PROXY_REVOCABLE_GUARD.lastIndex = 0;
+        return src.replace(PROXY_REVOCABLE_GUARD, function (whole, guard, q1, q2, mid) {
+            return guard.replace(/typeof\s+Proxy/, 'typeof __br_Proxy') + mid + "__br_Proxy('revocable')";
         });
     };
     var helperText = function (names) {
@@ -4259,7 +4289,7 @@
         if (opts.module || opts.islands === false || src.length < ISLAND_SCRIPT || !root.acorn || !root.acorn.Parser || STANDIN_OWN.test(src)) return prep;
         var isrc = src, standins = [];
         if (needsProxy(isrc)) {
-            isrc = isrc.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2');
+            isrc = isrc.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')(");
             standins.push('__br_Proxy');
         }
         if (needsBigInt(isrc)) { isrc = isrc.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); standins.push('__br_BigInt'); }
@@ -4353,7 +4383,7 @@
             }
             if (low === null) {
                 // (the stand-ins by text, as for a whole script the engine takes)
-                if (needsProxy(piece)) { piece = piece.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2'); use('__br_Proxy'); }
+                if (needsProxy(piece)) { piece = piece.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')("); use('__br_Proxy'); }
                 if (needsBigInt(piece)) { piece = piece.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); use('__br_BigInt'); }
                 if (needsDsDelete(piece)) { var dp = dsDeletes(piece); if (engineTakes(prefix + dp)) { piece = dp; use('__br_dsdel'); } }
                 st.out.push(piece);
@@ -4401,6 +4431,8 @@
         try { opts = optsJSON ? JSON.parse(optsJSON) : {}; } catch (e) { opts = {}; }
         stats.runs++;
         stats.note = '';
+        // (the text as it came: the app cuts the lazy factories out of that, see below)
+        var given = src;
         if (opts.proxy !== undefined ? opts.proxy : needsProxy(src)) src = retargetProxyGuards(src);
         if (opts.module) {
             // a module always becomes a registration; when it cannot, the loader is told why
@@ -4452,7 +4484,7 @@
                 // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
                 var text = src, used = [];
                 if (np) {
-                    text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy(\s*\.\s*revocable\s*\()/g, '$1__br_Proxy$2');
+                    text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')(");
                     used.push('__br_Proxy');
                 }
                 if (nb) { text = text.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); used.push('__br_BigInt'); }
@@ -4471,13 +4503,15 @@
         var prep = parsesAsIs ? null : islandPrep(src, opts, planned), skip = prep ? prep.skip : null, standins = prep ? prep.standins : [];
         if (skip) src = prep.src;
         // a webpack chunk with big factories: those are lowered when the page first calls them (the app keeps their
-        // text: JSFix.lazy() tells where they are); anything unexpected and the whole script is lowered as usual
+        // text: JSFix.lazy() tells where they are); anything unexpected and the whole script is lowered as usual.
+        // (Where they are in the text the app has: the Proxy checks retargeted above made it longer, and factories cut
+        // at those places did not parse, imdb.com; transpile() retargets the skeleton, the app each factory.)
         stats.lazy = null;
-        if (!skip && opts.lazy && !opts.module && !parsesAsIs && src.length >= LAZY_SCRIPT) {
+        if (!skip && opts.lazy && !opts.module && !parsesAsIs && given.length >= LAZY_SCRIPT) {
             var parts = null;
-            try { parts = lazyParts(src); } catch (el) { parts = null; }
+            try { parts = lazyParts(given); } catch (el) { parts = null; }
             if (parts) {
-                var skeleton = lazySkeleton(src, parts, String(opts.lazy)), sout = null, sok = true;
+                var skeleton = lazySkeleton(given, parts, String(opts.lazy)), sout = null, sok = true;
                 try { sout = transpile(skeleton, opts); } catch (es) { sok = !(es instanceof Unsupported) || es.what !== 'memory' ? false : 'memory'; }
                 if (sok === 'memory') { stats.failed++; stats.last = 'failed: unsupported: memory'; return ''; }
                 if (sok) {
