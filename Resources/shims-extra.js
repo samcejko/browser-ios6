@@ -12739,6 +12739,240 @@
         watchInsert(ElementP, 'after');
         watchInsert(ElementP, 'replaceWith');
     })();
+    // ---- Library additions of ES2024-2026 that core-js 3.41 still counts among its proposals (the bundle leaves those
+    // out, see build.yml): Array.fromAsync (Baseline 2024: bundles call it as it is), Uint8Array base64/hex,
+    // Error.isError, Iterator.concat, and Symbol.dispose / Symbol.asyncDispose for TypeScript's lowered `using`
+    (function () {
+        var P = window.Promise, Sym = window.Symbol, U8 = window.Uint8Array, It = window.Iterator;
+        var ITER = Sym && Sym.iterator, AITER = Sym && Sym.asyncIterator;
+        var put = function (o, k, v) { try { Object.defineProperty(o, k, { value: v, writable: true, configurable: true, enumerable: false }); } catch (e) { o[k] = v; } };
+        var isObj = function (o) { return o !== null && (typeof o === 'object' || typeof o === 'function'); };
+        if (Sym) {
+            if (!Sym.dispose) try { Object.defineProperty(Sym, 'dispose', { value: Sym('Symbol.dispose') }); } catch (e1) {}
+            if (!Sym.asyncDispose) try { Object.defineProperty(Sym, 'asyncDispose', { value: Sym('Symbol.asyncDispose') }); } catch (e2) {}
+        }
+        if (!Error.isError) put(Error, 'isError', function (v) {
+            if (!isObj(v)) return false;
+            if (v instanceof Error || (window.DOMException && v instanceof window.DOMException)) return true;
+            var t = Object.prototype.toString.call(v);
+            return t === '[object Error]' || t === '[object DOMException]';
+        });
+        // (the standard's steps: an async iterable's values as they come, a sync iterable's and an array-like's awaited,
+        // each mapped value awaited, the iterator closed when mapping or awaiting fails)
+        if (!Array.fromAsync && P) put(Array, 'fromAsync', function (items, mapFn, thisArg) {
+            var C = this;
+            return new P(function (resolve, reject) {
+                if (mapFn !== undefined && typeof mapFn !== 'function') throw new TypeError(mapFn + ' is not a function');
+                if (items === null || items === undefined) throw new TypeError(items + ' is not iterable');
+                var out, k = 0, it = null, isAsync = false, list = null, len = 0;
+                var am = AITER ? items[AITER] : undefined, sm;
+                if (am !== undefined && am !== null) { it = am.call(items); isAsync = true; }
+                else if (ITER && (sm = items[ITER]) !== undefined && sm !== null) it = sm.call(items);
+                else { list = Object(items); len = Math.min(Math.max(Math.floor(Number(list.length)) || 0, 0), 9007199254740991); }
+                if (it !== null && !isObj(it)) throw new TypeError('Result of the Symbol.iterator method is not an object');
+                out = typeof C === 'function' && C !== Array ? (list !== null ? new C(len) : new C()) : [];
+                var close = function (e) {
+                    var ret = it !== null ? it['return'] : undefined, r;
+                    if (typeof ret !== 'function') { reject(e); return; }
+                    try { r = ret.call(it); } catch (e2) { reject(e); return; }
+                    if (isAsync) P.resolve(r).then(function () { reject(e); }, function () { reject(e); });
+                    else reject(e);
+                };
+                var add = function (v) {
+                    try { out[k] = v; } catch (e) { close(e); return; }
+                    k++;
+                    step();
+                };
+                var take = function (v) {
+                    if (!mapFn) { add(v); return; }
+                    var m;
+                    try { m = mapFn.call(thisArg, v, k); } catch (e) { close(e); return; }
+                    P.resolve(m).then(add, close);
+                };
+                var finish = function () { try { out.length = k; } catch (e) { reject(e); return; } resolve(out); };
+                var got = function (r) {
+                    if (!isObj(r)) { reject(new TypeError('Iterator result ' + r + ' is not an object')); return; }
+                    if (r.done) finish();
+                    else if (isAsync) take(r.value);
+                    else P.resolve(r.value).then(take, close);
+                };
+                var step = function () {
+                    if (list !== null) {
+                        if (k >= len) finish();
+                        else P.resolve(list[k]).then(take, reject);
+                        return;
+                    }
+                    var r;
+                    try { r = it.next(); } catch (e) { reject(e); return; }
+                    if (isAsync) P.resolve(r).then(got, reject);
+                    else got(r);
+                };
+                step();
+            });
+        });
+        if (typeof It === 'function' && It.prototype && !It.concat && ITER) put(It, 'concat', function () {
+            var list = [], j;
+            for (j = 0; j < arguments.length; j++) {
+                var o = arguments[j], m = isObj(o) ? o[ITER] : undefined;
+                if (typeof m !== 'function') throw new TypeError(o + ' is not an iterable object');
+                list.push([o, m]);
+            }
+            var at = 0, cur = null, done = false, res = Object.create(It.prototype);
+            put(res, 'next', function () {
+                while (!done) {
+                    if (cur === null) {
+                        if (at >= list.length) { done = true; break; }
+                        var e = list[at++];
+                        cur = e[1].call(e[0]);
+                        if (!isObj(cur)) { done = true; throw new TypeError('Result of the Symbol.iterator method is not an object'); }
+                    }
+                    var r = cur.next();
+                    if (!isObj(r)) throw new TypeError('Iterator result ' + r + ' is not an object');
+                    if (r.done) { cur = null; continue; }
+                    return { value: r.value, done: false };
+                }
+                return { value: undefined, done: true };
+            });
+            put(res, 'return', function () {
+                var c = cur;
+                done = true; cur = null;
+                if (c !== null && typeof c['return'] === 'function') c['return']();
+                return { value: undefined, done: true };
+            });
+            return res;
+        });
+        // Uint8Array.fromBase64 / fromHex, toBase64 / toHex and setFromBase64 / setFromHex, after the standard's
+        // FromBase64 and FromHex (padding optional in the default "loose" mode, ASCII white space skipped)
+        if (U8 && !U8.fromBase64) (function () {
+            var STD = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', HEX = '0123456789abcdef', VAL = {}, i;
+            for (i = 0; i < 64; i++) VAL[STD.charCodeAt(i)] = i;
+            var isWS = function (c) { return c === 9 || c === 10 || c === 12 || c === 13 || c === 32; };
+            var fail = function (read, bytes, msg) { return { read: read, bytes: bytes, error: new SyntaxError(msg) }; };
+            var ok = function (read, bytes) { return { read: read, bytes: bytes, error: null }; };
+            var options = function (o) {
+                if (o === undefined) return {};
+                if (!isObj(o)) throw new TypeError('The options argument must be an object');
+                return o;
+            };
+            var alphabetOf = function (o) {
+                var a = o.alphabet;
+                if (a === undefined) return 'base64';
+                if (a !== 'base64' && a !== 'base64url') throw new TypeError('The alphabet must be "base64" or "base64url"');
+                return a;
+            };
+            var lastOf = function (o) {
+                var l = o.lastChunkHandling;
+                if (l === undefined) return 'loose';
+                if (l !== 'loose' && l !== 'strict' && l !== 'stop-before-partial') throw new TypeError('lastChunkHandling must be "loose", "strict" or "stop-before-partial"');
+                return l;
+            };
+            var needU8 = function (a) { if (!(a instanceof U8)) throw new TypeError('The receiver must be a Uint8Array'); };
+            var needStr = function (s) { if (typeof s !== 'string') throw new TypeError('The input must be a string'); };
+            // (2 to 4 sextets; false when strict and the bits past the last byte are not zero)
+            var chunk = function (v, n, strict, out) {
+                var b = (v[0] << 18) | (v[1] << 12) | ((n > 2 ? v[2] : 0) << 6) | (n > 3 ? v[3] : 0);
+                var b0 = (b >> 16) & 255, b1 = (b >> 8) & 255, b2 = b & 255;
+                if (n === 2) { if (strict && b1 !== 0) return false; out.push(b0); }
+                else if (n === 3) { if (strict && b2 !== 0) return false; out.push(b0, b1); }
+                else out.push(b0, b1, b2);
+                return true;
+            };
+            var decode = function (s, alphabet, last, max) {
+                var bytes = [], read = 0, v = [], n = 0, at = 0, len = s.length, c, x;
+                if (max === 0) return ok(0, bytes);
+                for (;;) {
+                    while (at < len && isWS(s.charCodeAt(at))) at++;
+                    if (at === len) {
+                        if (n > 0) {
+                            if (last === 'stop-before-partial') return ok(read, bytes);
+                            if (last !== 'loose') return fail(read, bytes, 'Missing padding at the end of the base64 input');
+                            if (n === 1) return fail(read, bytes, 'A lone base64 character at the end of the input');
+                            chunk(v, n, false, bytes);
+                        }
+                        return ok(len, bytes);
+                    }
+                    c = s.charCodeAt(at++);
+                    if (c === 61) {
+                        if (n < 2) return fail(read, bytes, 'Unexpected padding in the base64 input');
+                        while (at < len && isWS(s.charCodeAt(at))) at++;
+                        if (n === 2) {
+                            if (at === len) return last === 'stop-before-partial' ? ok(read, bytes) : fail(read, bytes, 'Incomplete padding in the base64 input');
+                            if (s.charCodeAt(at) === 61) { at++; while (at < len && isWS(s.charCodeAt(at))) at++; }
+                        }
+                        if (at < len) return fail(read, bytes, 'Characters after the padding of the base64 input');
+                        if (!chunk(v, n, last === 'strict', bytes)) return fail(read, bytes, 'Nonzero bits after the last byte of the base64 input');
+                        return ok(len, bytes);
+                    }
+                    if (alphabet === 'base64url') {
+                        if (c === 43 || c === 47) return fail(read, bytes, 'A base64 character that base64url does not have');
+                        if (c === 45) c = 43; else if (c === 95) c = 47;
+                    }
+                    x = VAL[c];
+                    if (x === undefined) return fail(read, bytes, 'An invalid character in the base64 input');
+                    var room = max - bytes.length;
+                    if ((room === 1 && n === 2) || (room === 2 && n === 3)) return ok(read, bytes);
+                    v[n++] = x;
+                    if (n === 4) {
+                        chunk(v, 4, false, bytes);
+                        n = 0; read = at;
+                        if (bytes.length === max) return ok(read, bytes);
+                    }
+                }
+            };
+            var hexit = function (c) { return c >= 48 && c <= 57 ? c - 48 : (c | 32) >= 97 && (c | 32) <= 102 ? (c | 32) - 87 : -1; };
+            var decodeHex = function (s, max) {
+                var len = s.length, bytes = [], read = 0, h, l;
+                if (len % 2) return fail(0, bytes, 'A hex string of odd length');
+                while (read < len && bytes.length < max) {
+                    h = hexit(s.charCodeAt(read)); l = hexit(s.charCodeAt(read + 1));
+                    if (h < 0 || l < 0) return fail(read, bytes, 'An invalid character in the hex input');
+                    bytes.push(h * 16 + l);
+                    read += 2;
+                }
+                return ok(read, bytes);
+            };
+            var into = function (a, r) {
+                for (var j = 0; j < r.bytes.length; j++) a[j] = r.bytes[j];
+                if (r.error) throw r.error;
+                return { read: r.read, written: r.bytes.length };
+            };
+            put(U8, 'fromBase64', function (s, opts) {
+                needStr(s);
+                var o = options(opts), alphabet = alphabetOf(o), r = decode(s, alphabet, lastOf(o), Infinity);
+                if (r.error) throw r.error;
+                return new U8(r.bytes);
+            });
+            put(U8, 'fromHex', function (s) {
+                needStr(s);
+                var r = decodeHex(s, Infinity);
+                if (r.error) throw r.error;
+                return new U8(r.bytes);
+            });
+            put(U8.prototype, 'setFromBase64', function (s, opts) {
+                needU8(this); needStr(s);
+                var o = options(opts), alphabet = alphabetOf(o);
+                return into(this, decode(s, alphabet, lastOf(o), this.length));
+            });
+            put(U8.prototype, 'setFromHex', function (s) {
+                needU8(this); needStr(s);
+                return into(this, decodeHex(s, this.length));
+            });
+            put(U8.prototype, 'toBase64', function (opts) {
+                needU8(this);
+                var o = options(opts), alphabet = alphabetOf(o), omit = !!o.omitPadding, n = this.length, bin = '', j;
+                for (j = 0; j < n; j += 4096) bin += String.fromCharCode.apply(null, Array.prototype.slice.call(this.subarray(j, Math.min(n, j + 4096))));
+                var out = window.btoa(bin);
+                if (alphabet === 'base64url') out = out.replace(/\+/g, '-').replace(/\//g, '_');
+                return omit ? out.replace(/=+$/, '') : out;
+            });
+            put(U8.prototype, 'toHex', function () {
+                needU8(this);
+                var out = '', n = this.length, b;
+                for (var j = 0; j < n; j++) { b = this[j]; out += HEX.charAt(b >> 4) + HEX.charAt(b & 15); }
+                return out;
+            });
+        })();
+    })();
     // ---- The attributes of document, window, navigator, location, screen and history are own non-configurable data
     // properties in the old engine (current browsers keep them as accessors on the prototypes, which pages wrap:
     // consent managers redefine document.cookie, sreality.cz threw there). Such a redefinition by the page is skipped

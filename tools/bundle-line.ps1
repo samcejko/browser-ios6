@@ -70,4 +70,4 @@ foreach ($debug in $false, $true) {
     }
     ''
 }
-if ($Crc -and -not $matched) { "no bundle $Crc in $deb: another build, or a swapped shim was on the device" }
+if ($Crc -and -not $matched) { "no bundle $Crc in ${deb}: another build, or a swapped shim was on the device" }

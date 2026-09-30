@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>esnext test</title>
+<script>
+// Array.fromAsync, Uint8Array base64/hex, Error.isError and Iterator.concat from shims-extra.js. The desktop browser's
+// own are kept aside to compare with, then taken away, as the old engine has none of them.
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+var U8 = Uint8Array, UP = Uint8Array.prototype;
+window.__native = { fromAsync: Array.fromAsync, fromBase64: U8.fromBase64, fromHex: U8.fromHex, toBase64: UP.toBase64, toHex: UP.toHex,
+    setFromBase64: UP.setFromBase64, setFromHex: UP.setFromHex, isError: Error.isError, concat: window.Iterator && Iterator.concat };
+delete Array.fromAsync; delete U8.fromBase64; delete U8.fromHex; delete UP.toBase64; delete UP.toHex; delete UP.setFromBase64; delete UP.setFromHex;
+delete Error.isError;
+if (window.Iterator) delete Iterator.concat;
+</script>
+<script src="babel-test/bundle-parts/fetch.js"></script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+(function () {
+    var results = [], pending = 0, done = false, N = window.__native;
+    var check = function (name, ok, info) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (info !== undefined && !ok ? ' (' + info + ')' : '')); };
+    var finish = function () {
+        if (done || pending > 0) return;
+        done = true;
+        var fails = 0;
+        for (var i = 0; i < results.length; i++) if (results[i].indexOf('FAIL') === 0) fails++;
+        document.title = 'esnext ' + (results.length - fails) + '/' + results.length + (window.__errors.length ? ' errors ' + window.__errors.length : '');
+        document.getElementById('out').textContent = document.title + '\n' + results.join('\n') + (window.__errors.length ? '\n' + window.__errors.join('\n') : '');
+    };
+    var start = function () { pending++; };
+    var end = function () { pending--; finish(); };
+    var list = function (a) { return a ? Array.prototype.join.call(a, ',') : String(a); };
+    // (the result or the error's name, as text, for our function and the browser's own)
+    var run = function (fn, self, args) {
+        try { var r = fn.apply(self, args); return r instanceof Uint8Array ? '[' + list(r) + ']' : typeof r === 'object' ? JSON.stringify(r) : String(r); }
+        catch (e) { return 'throws ' + e.name; }
+    };
+    var same = function (name, ours, native, self, args, expect) {
+        var a = run(ours, self, args), b = native ? run(native, self, args) : null;
+        if (expect !== undefined) check(name, a === expect && (b === null || b === expect), a + (b !== null ? ' / native ' + b : ''));
+        else check(name, b === null || a === b, a + ' / native ' + b);
+    };
+
+    check('installed', typeof Array.fromAsync === 'function' && typeof Uint8Array.fromBase64 === 'function' && typeof Error.isError === 'function' &&
+        (!window.Iterator || typeof Iterator.concat === 'function') && !!Symbol.dispose && !!Symbol.asyncDispose);
+
+    // fromBase64: padding optional in loose mode, white space skipped, strict wants padding and zero bits
+    var B = [
+        ['SGVsbG8=', undefined, '[72,101,108,108,111]'], ['SGVsbG8', undefined, '[72,101,108,108,111]'], ['SGVsbA==', undefined, '[72,101,108,108]'],
+        ['SGVsbA', undefined, '[72,101,108,108]'], ['SGVsbA=', undefined, 'throws SyntaxError'], [' S G\nV s\tb G 8 = ', undefined, '[72,101,108,108,111]'],
+        ['', undefined, '[]'], ['A', undefined, 'throws SyntaxError'], ['AB', undefined, '[0]'], ['AB', { lastChunkHandling: 'strict' }, 'throws SyntaxError'],
+        ['AA==', { lastChunkHandling: 'strict' }, '[0]'], ['AB==', { lastChunkHandling: 'strict' }, 'throws SyntaxError'], ['AF==', { lastChunkHandling: 'strict' }, 'throws SyntaxError'], ['AF==', undefined, '[0]'],
+        ['SGVsbG8=X', undefined, 'throws SyntaxError'], ['SGVsbG8==', undefined, 'throws SyntaxError'], ['SG=', undefined, 'throws SyntaxError'],
+        ['SGVsbG8', { lastChunkHandling: 'stop-before-partial' }, '[72,101,108]'], ['SGVsbA=', { lastChunkHandling: 'stop-before-partial' }, '[72,101,108]'],
+        ['-_8=', { alphabet: 'base64url' }, '[251,255]'], ['+/8=', { alphabet: 'base64url' }, 'throws SyntaxError'], ['+/8=', undefined, '[251,255]'],
+        ['====', undefined, 'throws SyntaxError'], ['SGVsbG8=\n', undefined, '[72,101,108,108,111]'], ['éAAA', undefined, 'throws SyntaxError'],
+        ['AAAA', { alphabet: 'base32' }, 'throws TypeError'], ['AAAA', 5, 'throws TypeError'], ['AAAA', { lastChunkHandling: 'x' }, 'throws TypeError']
+    ];
+    for (var i = 0; i < B.length; i++) same('fromBase64 ' + JSON.stringify(B[i][0]) + ' ' + JSON.stringify(B[i][1]), Uint8Array.fromBase64, N.fromBase64, Uint8Array, [B[i][0], B[i][1]], B[i][2]);
+    same('fromBase64 of a number', Uint8Array.fromBase64, N.fromBase64, Uint8Array, [5], 'throws TypeError');
+    var H = [['ABcd', '[171,205]'], ['', '[]'], ['abc', 'throws SyntaxError'], ['zz', 'throws SyntaxError'], ['0f', '[15]']];
+    for (i = 0; i < H.length; i++) same('fromHex ' + JSON.stringify(H[i][0]), Uint8Array.fromHex, N.fromHex, Uint8Array, [H[i][0]], H[i][1]);
+
+    var T = [[[72, 101, 108, 108, 111], undefined, 'SGVsbG8='], [[72, 101, 108, 108, 111], { omitPadding: true }, 'SGVsbG8'],
+        [[251, 255], { alphabet: 'base64url' }, '-_8='], [[251, 255], undefined, '+/8='], [[], undefined, '']];
+    for (i = 0; i < T.length; i++) same('toBase64 ' + T[i][0] + ' ' + JSON.stringify(T[i][1]), Uint8Array.prototype.toBase64, N.toBase64, new Uint8Array(T[i][0]), [T[i][1]], T[i][2]);
+    var big = new Uint8Array(10000);
+    for (i = 0; i < big.length; i++) big[i] = (i * 7) & 255;
+    check('toBase64 / fromBase64 round trip of 10000 bytes', list(Uint8Array.fromBase64(big.toBase64())) === list(big));
+    same('toHex', Uint8Array.prototype.toHex, N.toHex, new Uint8Array([0, 15, 255, 16]), [], '000fff10');
+
+    // setFromBase64 / setFromHex: as much as fits, whole chunks
+    var S = [['SGVsbG8=', 3, '{"read":4,"written":3}'], ['SGVsbG8=', 4, '{"read":4,"written":3}'], ['SGVsbG8=', 8, '{"read":8,"written":5}'],
+        ['SGVsbG8', 5, '{"read":7,"written":5}'], ['SGVsbG8=', 0, '{"read":0,"written":0}']];
+    for (i = 0; i < S.length; i++) same('setFromBase64 ' + S[i][0] + ' into ' + S[i][1], Uint8Array.prototype.setFromBase64, N.setFromBase64, new Uint8Array(S[i][1]), [S[i][0]], S[i][2]);
+    var into = new Uint8Array(4), r = into.setFromBase64('SGVsbG8=');
+    check('setFromBase64 writes', list(into) === '72,101,108,0' && r.written === 3, list(into));
+    same('setFromHex into 2', Uint8Array.prototype.setFromHex, N.setFromHex, new Uint8Array(2), ['abcdef'], '{"read":4,"written":2}');
+    var partial = new Uint8Array(4), threw = null;
+    try { partial.setFromHex('abzz'); } catch (e) { threw = e; }
+    check('setFromHex writes before it throws', threw instanceof SyntaxError && list(partial) === '171,0,0,0', list(partial));
+
+    // Error.isError
+    same('isError Error', Error.isError, N.isError, Error, [new Error('x')], 'true');
+    same('isError TypeError', Error.isError, N.isError, Error, [new TypeError('x')], 'true');
+    same('isError plain object', Error.isError, N.isError, Error, [{ name: 'Error', message: 'x' }], 'false');
+    same('isError string', Error.isError, N.isError, Error, ['Error'], 'false');
+
+    // Iterator.concat
+    if (window.Iterator) {
+        var it = Iterator.concat([1, 2], new Set([3]), new Map([['a', 4]]).keys());
+        var got = [], s;
+        while (!(s = it.next()).done) got.push(s.value);
+        check('Iterator.concat', got.join(',') === '1,2,3,a', got.join(','));
+        var threwS = null;
+        try { Iterator.concat('ab'); } catch (e) { threwS = e; }
+        check('Iterator.concat of a string throws (objects only)', threwS instanceof TypeError);
+        check('Iterator.concat helpers', typeof Iterator.concat([1]).map === 'function' ? Iterator.concat([1, 2], [3]).map(function (x) { return x * 2; }).toArray().join(',') === '2,4,6' : true);
+        var threwC = null;
+        try { Iterator.concat([1], 5); } catch (e) { threwC = e; }
+        check('Iterator.concat of a number throws', threwC instanceof TypeError);
+    }
+
+    // Array.fromAsync
+    var closed = 0;
+    var gen = function () { var n = 0; var o = { next: function () { n++; return n <= 3 ? { value: n, done: false } : { value: undefined, done: true }; }, 'return': function () { closed++; return { done: true }; } }; o[Symbol.iterator] = function () { return o; }; return o; };
+    var agen = function () { var n = 0; var o = { next: function () { n++; return Promise.resolve(n <= 2 ? { value: Promise.resolve(n), done: false } : { done: true }); } }; o[Symbol.asyncIterator] = function () { return o; }; return o; };
+    var cases = [
+        ['array with promises', function () { return Array.fromAsync([1, Promise.resolve(2), 3]); }, '1,2,3'],
+        ['sync iterable', function () { return Array.fromAsync(gen()); }, '1,2,3'],
+        ['array-like', function () { return Array.fromAsync({ length: 2, 0: Promise.resolve('a'), 1: 'b' }); }, 'a,b'],
+        ['mapped and awaited', function () { return Array.fromAsync([1, 2], function (x, i) { return Promise.resolve(x * 10 + i); }); }, '10,21'],
+        ['async iterable keeps its values', function () { return Array.fromAsync(agen()).then(function (a) { return a.map(function (x) { return x instanceof Promise ? 'P' : x; }); }); }, 'P,P'],
+        ['mapFn throws closes the iterator', function () { return Array.fromAsync(gen(), function () { throw new RangeError('m'); }).then(null, function (e) { return e.name + ' ' + closed; }); }, 'RangeError 1'],
+        ['null rejects', function () { return Array.fromAsync(null).then(null, function (e) { return e.name; }); }, 'TypeError'],
+        ['bad mapFn rejects', function () { return Array.fromAsync([1], 5).then(null, function (e) { return e.name; }); }, 'TypeError'],
+        ['returns a promise', function () { var p = Array.fromAsync([]); return Promise.resolve(p instanceof Promise ? 'yes' : 'no'); }, 'yes']
+    ];
+    cases.forEach(function (c) {
+        start();
+        var p;
+        try { p = c[1](); } catch (e) { check('fromAsync ' + c[0], false, 'threw ' + e); end(); return; }
+        p.then(function (v) { var t = Array.isArray(v) ? v.join(',') : String(v); check('fromAsync ' + c[0], t === c[2], t); end(); },
+            function (e) { check('fromAsync ' + c[0], false, 'rejected ' + e); end(); });
+    });
+    setTimeout(function () { if (!done) { pending = 0; results.push('FAIL timed out'); finish(); } }, 8000);
+    finish();
+})();
+</script>
+</body>
+</html>
