@@ -6,6 +6,8 @@
 // three reads, 5.0 instead of 2.9 for JSON.stringify's wrapper). Functions that keep their names are written as
 // declarations in the sources where they are called often; reduce_vars is off so that terser does not inline a
 // declaration used once into a (named) function expression.
+// Lines are kept short: iOS 6 reports errors with a line and no column, and shims-extra on one line made every error
+// from it point at the same place (tools/bundle-line.ps1 finds a reported line in a build).
 const { minify } = require('terser');
 const fs = require('fs');
 const KEEP = /^(?:[A-Z][\w$]*|trim|trimStart|trimEnd|values)$/;
@@ -18,7 +20,7 @@ if (!args.length || args.length % 2) { console.error('usage: minify-page-scripts
       ecma: 5,
       compress: { keep_fnames: KEEP, reduce_vars: false },
       mangle: { keep_fnames: KEEP },
-      format: { ascii_only: true }
+      format: { ascii_only: true, max_line_len: 400 }
     });
     fs.writeFileSync(args[i + 1], r.code);
     console.log(args[i] + ': ' + src.length + ' -> ' + r.code.length + ' bytes');
