@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>style-dup test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>Identical copies of a big stylesheet: only the last one in document order stays on</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div id="t" class="dup-target">target</div>
+<div id="boxes"></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+// a text the app marked as rewritten (/*br*/: not rewritten again here), over the 8 KB the check starts at
+var big = '/*br*/.dup-target{color:rgb(0, 128, 0)}\n';
+for (var i = 0; i < 400; i++) big += '.dup-filler-' + i + '{margin-left:' + i + 'px}\n';
+var boxes = document.getElementById('boxes'), styles = [];
+var addCopy = function (text) {
+  var box = document.createElement('div'), st = document.createElement('style');
+  st.textContent = text;
+  box.appendChild(st);
+  boxes.appendChild(box);
+  styles.push(st);
+  return st;
+};
+var on = function (st) { return !!st.sheet && !st.sheet.disabled; };
+var state = function () { return styles.map(function (s) { return document.documentElement.contains(s) ? (on(s) ? '1' : '0') : '-'; }).join(''); };
+addCopy(big); addCopy(big); addCopy(big);
+var other = addCopy(big.replace('rgb(0, 128, 0)', 'rgb(0, 0, 255)') + '.x{}');
+setTimeout(function () {
+  show('of three copies only the last is on', state() === '0011', state());
+  show('a text of its own stays on', on(other));
+  show('the rules still apply', getComputedStyle(document.getElementById('t')).color === 'rgb(0, 0, 255)', getComputedStyle(document.getElementById('t')).color);
+  // the one that is on goes: the last one left comes on
+  boxes.removeChild(styles[2].parentNode);
+  setTimeout(function () {
+    show('when the one on goes, the last one left comes on', state() === '01-1', state());
+    // a copy added before the others (in document order): stays off
+    var box = document.createElement('div'), st = document.createElement('style');
+    st.textContent = big;
+    box.appendChild(st);
+    boxes.insertBefore(box, boxes.firstChild);
+    setTimeout(function () {
+      show('a copy that comes before the one on stays off', !on(st) && on(styles[1]), on(st) + ' ' + state());
+      // a copy whose text changes leaves the group (and is on)
+      styles[1].textContent = big + '.changed{}';
+      setTimeout(function () {
+        show('a copy whose text changes is on, and the group elects again', on(styles[1]) && on(styles[0]) !== on(st), on(styles[1]) + ' ' + on(styles[0]) + ' ' + on(st));
+        // a page's own switched-off sheet is left off
+        var own = addCopy(big);
+        own.sheet.disabled = true;
+        setTimeout(function () {
+          show('small styles are left alone', (function () { var s = document.createElement('style'); s.textContent = '.a{}'; document.body.appendChild(s); var s2 = document.createElement('style'); s2.textContent = '.a{}'; document.body.appendChild(s2); return on(s) && on(s2); })());
+          document.getElementById('summary').textContent = pass + ' / ' + total;
+          document.title = 'style-dup ' + pass + '/' + total;
+          window.__dupResults = results;
+        }, 50);
+      }, 50);
+    }, 50);
+  }, 50);
+}, 50);
+</script>
+</body>
+</html>

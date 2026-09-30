@@ -605,6 +605,18 @@
         __br_dsdel: function (el, key) {
             try { return delete el.dataset[key]; } catch (e) { return true; }
         },
+        // delete o[k] in strict code. The old engine's elements have their DOM attributes (title, id, hidden, disabled,
+        // name, value...) as own properties that cannot be deleted, so hasOwnProperty finds them and delete throws: Lit
+        // deletes the reactive properties an element has of its own when it starts ("Unable to delete property." on
+        // Reddit's components). Today those live on the prototypes and deleting one on an element does nothing: true.
+        // (Other objects as they are; the try only for nodes)
+        __br_del: function (o, k) {
+            if (o !== null && typeof o === 'object' && typeof o.nodeType === 'number') return __br_delNode(o, k);
+            return delete o[k];
+        },
+        __br_delNode: function (o, k) {
+            try { return delete o[k]; } catch (e) { return true; }
+        },
         // x instanceof C where C has a Symbol.hasInstance of its own: the old engine's instanceof knows only the prototype
         // chain (Zod 4 makes its schemas so that only the method knows them: "expected a Zod schema" on Pinterest). The
         // symbol's key is found once (a polyfilled symbol as a key costs a conversion each time); the one every function
@@ -869,7 +881,7 @@
     };
     var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter', '__br_spread'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
                          __br_super: ['__br_isNative', '__br_new', '__br_nativeSuper'], __br_nativeSuper: ['__br_new'], __br_Proxy: ['__br_new'], __br_ctor: ['__br_isNative'],
-                         __br_isNative: ['__br_nativeLook'], __br_asyncFn: ['__br_asyncMake'] };
+                         __br_isNative: ['__br_nativeLook'], __br_asyncFn: ['__br_asyncMake'], __br_del: ['__br_delNode'] };
 
     // ------------------------------------------------------------------------------------------------ small utilities
     var hex4 = function (c) { return ('0000' + c.toString(16)).slice(-4); };
@@ -1553,6 +1565,9 @@
                 // at start): a helper deletes it
                 if (n.operator === 'delete' && n.argument.type === 'MemberExpression' && n.argument.object.type === 'MemberExpression' &&
                     !n.argument.object.computed && n.argument.object.property.name === 'dataset' && n.argument.object.object.type !== 'Super') { n.$dsDelete = true; d = true; }
+                // (any other delete of a property in strict code: see __br_del)
+                else if (n.operator === 'delete' && s.strict && n.argument.type === 'MemberExpression' && n.argument.object.type !== 'Super' &&
+                         n.argument.property.type !== 'PrivateIdentifier') { n.$del = true; d = true; }
                 if (n.type === 'UpdateExpression' && n.argument.type === 'Identifier') n.argument.$w = true;
                 break;
             case 'BinaryExpression':
@@ -2272,6 +2287,12 @@
             var dsCode = this.h('__br_dsdel') + '(' + this.E(target.object.object, P_ASSIGN) + ',' + key + ')';
             this.prec = P_CALL;
             return dsCode;
+        }
+        if (op === 'delete' && n.$del) {
+            var dt = n.argument, dk = dt.computed ? this.E(dt.property, P_ASSIGN) : quote(dt.property.name);
+            var delCode = this.h('__br_del') + '(' + this.E(dt.object, P_ASSIGN) + ',' + dk + ')';
+            this.prec = P_CALL;
+            return delCode;
         }
         if (op === 'typeof' && n.$typeofSym) {
             var tcode;

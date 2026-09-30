@@ -748,7 +748,7 @@
         var noteSlow = function (what, ms, text) {
             if (ms < 1500 || slow >= 15) return;
             slow++;
-            sendToApp('brlog', 'JS debug (slow ' + what + '): ' + ms + ' ms' + (text ? ' in ' + String(text).replace(/\s+/g, ' ').slice(0, 400) : '') + ' page ' + location.hostname);
+            sendToApp('brlog', 'JS debug (slow ' + what + '): ' + ms + ' ms' + (text ? ' in ' + String(text).replace(/\s+/g, ' ').slice(0, 900) : '') + ' page ' + location.hostname);
         };
         window.__brNoteSlow = noteSlow;
         var guard = function (fn, kind) {
@@ -1044,6 +1044,9 @@
             if (window.__brHostSheets) window.__brHostSheets.sync(root, host);
             return root;
         };
+        // (an element without a root answers null, as today: Reddit's `e.shadowRoot !== null` held for undefined, and
+        // then 'undefined' is not an object (evaluating 'e.shadowRoot.mode'); a host has its root as its own property)
+        if (!('shadowRoot' in Ep)) try { Object.defineProperty(Ep, 'shadowRoot', { configurable: true, get: function () { return null; } }); } catch (eSR) {}
         addStyle('[data-shadow-root]{display:inherit}');
         // A slot's nodes stay where they are in the host (nothing is projected), so a slot that is not shown (display:
         // none from the root's styles or its hidden attribute) hides them here: developer.mozilla.org's language menu
@@ -1097,7 +1100,69 @@
                 }
             }
         };
+        // What a slot gets: the host's children with its name in their slot attribute (text goes to the default slot),
+        // for the first slot of that name in the root only; with flatten, a slot's own children when nothing goes to it
+        // and the nodes of the slots among them. (Reddit's tab groups and menus read them: "'undefined' is not a
+        // function (evaluating 't.assignedElements({flatten:!0})')".)
+        var rootOfSlot = function (slot) {
+            var root = slot.parentNode;
+            while (root && !(root.nodeType === 1 && root.hasAttribute('data-shadow-root'))) root = root.parentNode;
+            return root;
+        };
+        var slotNodes = function (slot, flatten) {
+            var out = [], root = rootOfSlot(slot), host = root && root.host, name = slot.getAttribute('name') || '', c, i;
+            if (host && root.getElementsByTagName) {
+                var slots = root.getElementsByTagName('slot'), first = null;
+                for (i = 0; i < slots.length && !first; i++) if ((slots[i].getAttribute('name') || '') === name) first = slots[i];
+                if (first === slot) for (c = host.firstChild; c; c = c.nextSibling) {
+                    if (c === root) continue;
+                    if (c.nodeType === 1 ? (c.getAttribute('slot') || '') === name : c.nodeType === 3 && !name) out.push(c);
+                }
+            }
+            if (!flatten) return out;
+            if (!out.length && host) for (c = slot.firstChild; c; c = c.nextSibling) if (c.nodeType === 1 || c.nodeType === 3) out.push(c);
+            var flat = [];
+            for (i = 0; i < out.length; i++) {
+                if (out[i].nodeType === 1 && out[i].tagName === 'SLOT' && rootOfSlot(out[i])) flat = flat.concat(slotNodes(out[i], true));
+                else flat.push(out[i]);
+            }
+            return flat;
+        };
+        var slotProto = Object.getPrototypeOf(document.createElement('slot'));
+        if (slotProto && !slotProto.assignedNodes) {
+            slotProto.assignedNodes = function (opts) { return this.tagName === 'SLOT' ? slotNodes(this, !!(opts && opts.flatten)) : []; };
+            slotProto.assignedElements = function (opts) {
+                var all = this.tagName === 'SLOT' ? slotNodes(this, !!(opts && opts.flatten)) : [], out = [];
+                for (var i = 0; i < all.length; i++) if (all[i].nodeType === 1) out.push(all[i]);
+                return out;
+            };
+            slotProto.assign = function () {};   // (manual slot assignment: nodes stay where they are here)
+        }
+        if (Np && !('assignedSlot' in Np)) try { Object.defineProperty(Np, 'assignedSlot', { configurable: true, get: function () { return this.nodeType === 1 || this.nodeType === 3 ? slotOf(this) : null; } }); } catch (eAS) {}
+        // slotchange: once a slot has a listener for it, fired when what goes to it changes (and once it has nodes)
+        var watchSlot = function (slot) {
+            if (slot.__brSlotWatch) return;
+            slot.__brSlotWatch = true;
+            var last = [], host = null, obs = null;
+            var check = function () {
+                var root = rootOfSlot(slot), h = root && root.host;
+                if (h !== host) {
+                    if (obs) obs.disconnect();
+                    host = h;
+                    obs = null;
+                    // (the host's children and their slot attributes; the root's own changes cost a look at the children)
+                    if (host && window.MutationObserver) { obs = new MutationObserver(check); obs.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ['slot', 'name'] }); }
+                }
+                var now = slotNodes(slot, false), same = now.length === last.length;
+                for (var i = 0; same && i < now.length; i++) same = now[i] === last[i];
+                if (same) return;
+                last = now;
+                try { var ev = document.createEvent('Event'); ev.initEvent('slotchange', true, false); slot.dispatchEvent(ev); } catch (eSC) {}
+            };
+            setTimeout(check, 0);
+        };
         window.__brSlotListen = function (slot, type, fn, options) {
+            if (type === 'slotchange') { watchSlot(slot); return; }   // (dispatched on the slot itself, see watchSlot)
             var capture = options && typeof options === 'object' ? !!options.capture : !!options;
             (slot.__brSlotL || (slot.__brSlotL = [])).push({ type: type, fn: fn, capture: capture });
             var key = type + (capture ? '|c' : '|b');
@@ -1154,8 +1219,17 @@
             if (observed.length && el.attributeChangedCallback && window.MutationObserver) {
                 var attrObserver = new MutationObserver(function (records) {
                     for (var r = 0; r < records.length; r++) {
-                        var an = records[r].attributeName;
-                        try { el.attributeChangedCallback(an, records[r].oldValue, el.getAttribute(an), null); } catch (e5) { if (window.console && console.error) console.error(e5); }
+                        var an = records[r].attributeName, old = records[r].oldValue, k;
+                        // (the value this change made: the old value of the next change of that attribute in the batch,
+                        // else today's)
+                        for (k = r + 1; k < records.length && records[k].attributeName !== an; k++) {}
+                        var now = k < records.length ? records[k].oldValue : el.getAttribute(an);
+                        // An attribute set to the value it had is not told. Native custom elements are told at once,
+                        // while Lit still knows it reflects that property itself; told later, it set the property again,
+                        // and for a DOM property the old engine keeps on the element itself (id, title, hidden...) that
+                        // is the attribute again: Reddit's posts set their id thousands of times, the page stood still.
+                        if (old === now) continue;
+                        try { el.attributeChangedCallback(an, old, now, null); } catch (e5) { if (window.console && console.error) console.error(e5); }
                     }
                 });
                 attrObserver.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: Array.prototype.slice.call(observed) });
@@ -7416,6 +7490,7 @@
             }
             var tRun = Date.now();
             var classes = docClasses(), mediaCache = {}, users = [], i, b, k, r, list, el, rec;
+            var docMs = Date.now() - tRun, qsaN = 0, qsaMs = 0, qsaEls = 0, q0;
             var mediaOk = function (m) {
                 if (!m) return true;
                 for (var j = 0; j < m.length; j++) {
@@ -7445,7 +7520,11 @@
                         }
                         continue;
                     }
+                    q0 = Date.now();
                     try { list = document.querySelectorAll(sel.base); } catch (x) { continue; }
+                    qsaMs += Date.now() - q0;
+                    qsaN++;
+                    qsaEls += list.length;
                     if (list.length) matched++;
                     if (sel.state) for (k = 0; k < list.length; k++) { stateNow.push(list[k]); stateNowSub.push(!!(r.d && r.d.length)); }
                     var spec = r.sp ? r.sp[b] : 0;
@@ -7473,6 +7552,7 @@
             stateEls = stateNow;
             stateSub = stateNowSub;
             stats.tCollect = Date.now() - tRun;
+            stats.collectParts = [docMs, rules.length, qsaN, qsaMs, qsaEls];
             // style attributes (and style.setProperty('--x') of scripts)
             var inl = [], seen = [];
             try { inl = document.querySelectorAll('[style*="--"], [style*="var("], [style*="inherit("]'); } catch (x2) {}
@@ -7503,7 +7583,7 @@
             }
             stats.tInline = Date.now() - tRun - stats.tCollect;
             // what each user of a scoped property gets (an element nothing changed around keeps what it got last time)
-            var pending = [], reused = 0, redone = 0;
+            var pending = [], reused = 0, redone = 0, subMs = 0, normMs = 0, s0;
             for (i = 0; i < users.length; i++) {
                 el = users[i];
                 rec = el.__brCV;
@@ -7514,13 +7594,15 @@
                     if (pr && pr.v === use.v) { raw = pr.raw; reused++; }
                     else {
                         redone++;
+                        s0 = Date.now();
                         raw = substitute(use.v, el, 0);
+                        subMs += Date.now() - s0;
                         if (raw === null) raw = INHERITED.test(use.p) ? 'inherit' : 'initial';   // invalid at computed-value time
                     }
                     // (the comparison with the stylesheet's value is kept with the value: thousands of norm() calls a pass)
                     var old = oldRaw && oldRaw.hasOwnProperty(ukey) ? oldRaw[ukey] : null;
                     if (old && old.raw === raw && old.st === use.st) same = old.same;
-                    else same = use.st !== null && use.st !== undefined && norm(raw) === norm(use.st);
+                    else { s0 = Date.now(); same = use.st !== null && use.st !== undefined && norm(raw) === norm(use.st); normMs += Date.now() - s0; }
                     nextRaw[ukey] = { v: use.v, raw: raw, st: use.st, same: same };
                     if (same) continue;   // the stylesheet already has it
                     pending.push({ el: el, use: use, raw: raw, key: ukey });
@@ -7529,7 +7611,7 @@
             }
             pending.sort(function (a, c) { return a.use.sp - c.use.sp || a.use.o - c.use.o; });
             stats.tResolve = Date.now() - tRun;
-            stats.resolveParts = [stats.tInline, users.length, reused, redone];
+            stats.resolveParts = [stats.tInline, users.length, reused, redone, subMs, normMs];
             lastPending = pending;
             var t1 = Date.now();
             apply(pending);
@@ -7706,9 +7788,12 @@
         // app crashed in CoreGraphics seconds later on astro.build). Rules the CSSOM does not expose keep the probe's
         // answer.
         var cssomList = null, cssomByProp = {}, lastRivals = [];
-        var normSel = function (s) { return String(s).replace(/["']/g, '').replace(/\s+/g, '').toLowerCase(); };
+        var normSel = function (s) { return String(s).replace(/["'\s]+/g, '').toLowerCase(); };
+        // (no brackets, quotes or escapes: what most selectors are, split without a walk over their characters)
+        var PLAIN_SEL = /^[^(\["'\\]*$/;
         var selectorList = function (text) {
             var parts = [], depth = 0, start = 0, q = null, s = String(text);
+            if (PLAIN_SEL.test(s)) return s.split(',');
             for (var i = 0; i < s.length; i++) {
                 var c = s.charAt(i);
                 if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
@@ -7756,10 +7841,12 @@
                 for (var i = 0; i < list.length; i++) {
                     var r = list[i];
                     if (r.type === 1) {
-                        var entry = { rule: r, key: normSel(r.selectorText), order: 0, sels: null, items: [] }, st = r.style, n = st ? st.length : 0;
+                        // (its key and each declaration's importance once a check needs them, see rivalIndex and look:
+                        // for IKEA's 13,000 rules they were 380 ms of every walk)
+                        var entry = { rule: r, key: null, order: 0, sels: null, items: [] }, st = r.style, n = st ? st.length : 0;
                         for (var d = 0; d < n; d++) {
                             var p = st[d];
-                            if (p) entry.items.push({ p: p, entry: entry, imp: st.getPropertyPriority(p) === 'important' });
+                            if (p) entry.items.push({ p: p, entry: entry, imp: null });
                         }
                         out.push(entry);
                         continue;
@@ -7801,6 +7888,14 @@
         // selector matches, 5 s, a pass).
         var subjectNeeds = function (sel) {
             var s = String(sel), depth = 0, start = 0, q = null;
+            if (PLAIN_SEL.test(s)) {
+                // (IKEA's 10,000 selectors took 1.7 s a page this way, the walk below included)
+                var t = trim(s), cut = Math.max(t.lastIndexOf(' '), t.lastIndexOf('>'), t.lastIndexOf('+'), t.lastIndexOf('~')), tail = t.slice(cut + 1);
+                var pcls = [], pm, pre = /\.([\w-]+)/g, pid = /#([\w-]+)/.exec(tail);
+                while ((pm = pre.exec(tail)) !== null) pcls.push(pm[1]);
+                var ptag = tail.indexOf('|') < 0 ? /^([a-zA-Z][\w-]*)/.exec(tail) : null;
+                return { cls: pcls, id: pid ? pid[1] : null, tag: ptag ? ptag[1].toLowerCase() : null, attrs: [], pe: /::|:(before|after|first-line|first-letter)\b/i.test(tail) };
+            }
             for (var i = 0; i < s.length; i++) {
                 var c = s.charAt(i);
                 if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
@@ -7891,7 +7986,9 @@
             var n = (stateUses[comp.text] || 0) + 1;
             stateUses[comp.text] = n;
             if (n < 4) return null;
+            var q0 = Date.now();
             try { got = document.querySelectorAll(comp.text); } catch (e) { got = null; }
+            rivalQsaMs += Date.now() - q0;
             if (got && got.length > 64) got = null;
             return (statePass[comp.text] = got ? Array.prototype.slice.call(got) : null);
         };
@@ -7924,9 +8021,10 @@
             var list = rulesSetting(prop);
             if (rivalIndexOf !== cssomList) { rivalIndexes = {}; rivalIndexOf = cssomList; }
             if (hasOwnRI.call(rivalIndexes, prop)) return rivalIndexes[prop];
-            var ix = { own: {}, id: {}, cls: {}, tag: {}, any: [] }, i, j;
+            var ix = { own: {}, id: {}, cls: {}, tag: {}, any: [] }, i, j, x0 = Date.now();
             for (i = 0; i < list.length; i++) {
                 var r = list[i], e = r.entry;
+                if (e.key === null) e.key = normSel(e.rule.selectorText);
                 ix.own['$' + e.key] = e;   // (the last copy counts)
                 if (!e.sels) {
                     // (by selector text: a sheet walked again keeps what its selectors need)
@@ -7937,7 +8035,8 @@
                         var parts = selectorList(text);
                         // (a selector of classes and an id only matches every element that has them: no engine call; most
                         // utility-class selectors are such, tailwind-style pages made 7,000 matches a pass, 2.7 s)
-                        for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: selectorSpecificity(parts[k]), need: subjectNeeds(parts[k]), simple: SIMPLE_SEL.test(trim(parts[k])) });
+                        // (its specificity and whether it is simple once an element gets that far, see look)
+                        for (var k = 0; k < parts.length; k++) e.sels.push({ s: parts[k], sp: -1, need: subjectNeeds(parts[k]), simple: null });
                         if (selInfoSize++ > 30000) { selInfo = {}; selInfoSize = 0; }
                         selInfo[text] = e.sels;
                     }
@@ -7951,6 +8050,8 @@
                     else ix.any.push(item);
                 }
             }
+            rivalIdxMs += Date.now() - x0;
+            rivalIdxN++;
             return (rivalIndexes[prop] = ix);
         };
         // does another rule win `prop` on the item's element? (null when our own rule is not in the CSSOM)
@@ -7959,17 +8060,23 @@
             if (!own) return null;
             var ownImp = !!it.use.i, el = it.el, tag = el.tagName.toLowerCase(), hit = false, c;
             if (!it.cls) it.cls = classSet(el);
+            rivalCalls++;
             var look = function (items) {
+                rivalLooked += items.length;
                 for (var b = 0; b < items.length; b++) {
                     var r = items[b].r, e = r.entry, sel = items[b].sel, need = sel.need, miss = false, k;
-                    if (e === own || e.key === it.use.rk || (ownImp && !r.imp)) continue;
+                    if (e === own || e.key === it.use.rk) continue;
+                    if (r.imp === null) r.imp = e.rule.style.getPropertyPriority(r.p) === 'important';
+                    if (ownImp && !r.imp) continue;
                     // only a selector that would beat ours needs matching
+                    if (sel.sp < 0) sel.sp = selectorSpecificity(sel.s);
                     if (!(r.imp && !ownImp) && (sel.sp < it.use.sp || (sel.sp === it.use.sp && e.order <= own.order))) continue;
                     if (need.id !== null && el.id !== need.id) continue;
                     if (need.tag !== null && need.tag !== '*' && need.tag !== tag) continue;
                     for (k = 0; k < need.cls.length && !miss; k++) if (it.cls[need.cls[k]] !== 1) miss = true;
                     for (k = 0; k < need.attrs.length && !miss; k++) if (!el.hasAttribute(need.attrs[k])) miss = true;
                     if (miss) continue;
+                    if (sel.simple === null) sel.simple = SIMPLE_SEL.test(trim(sel.s));
                     if (sel.simple) return sel.s;
                     if (sel.anc === undefined) { sel.anc = ancestorIds(sel.s); sel.exact = sel.anc !== null && EXACT_ANC.test(trim(sel.s)); }
                     if (sel.anc !== null && !insideIds(el, sel.anc)) continue;
@@ -7988,7 +8095,7 @@
             if (!hit) hit = look(ix.any);
             return hit || false;
         };
-        var matchCalls = 0, rivalSelCount = null;
+        var matchCalls = 0, rivalSelCount = null, rivalCalls = 0, rivalLooked = 0, rivalIdxMs = 0, rivalIdxN = 0, rivalQsaMs = 0;
         var rivalCheck = function (work) {
             var i, k, it, t0 = Date.now(), key = cssomFingerprint();
             rivalSelCount = window.__brNoteSlow ? {} : null;
@@ -7997,7 +8104,7 @@
             var t1 = Date.now();
             cssomRules();
             var t2 = Date.now();
-            matchCalls = 0;
+            matchCalls = 0; rivalCalls = 0; rivalLooked = 0; rivalIdxMs = 0; rivalIdxN = 0; rivalQsaMs = 0;
             lastRivals = [];
             for (i = 0; i < work.length; i++) {
                 it = work[i];
@@ -8014,7 +8121,7 @@
                 it.ok = false;
                 it.part = keep.length ? keep : null;
             }
-            stats.rivalParts = [t1 - t0, t2 - t1, Date.now() - t2, matchCalls, cssomList ? cssomList.length : 0];
+            stats.rivalParts = [t1 - t0, t2 - t1, Date.now() - t2, matchCalls, cssomList ? cssomList.length : 0, rivalCalls, rivalLooked, rivalIdxN, rivalIdxMs, rivalQsaMs];
             // (for the debug log: the selectors matched most often)
             if (rivalSelCount) {
                 var top = [];
@@ -8107,10 +8214,11 @@
             stats.log.push(stats.dirty + ': ' + lastCost + ' = ' + stats.tCollect + '/' + (stats.tResolve - stats.tCollect) + '/' + stats.tApply + ' work ' + (stats.applyParts ? stats.applyParts[stats.applyParts.length - 3] : '?') +
                            ' [' + (stats.applyParts || []).slice(0, 9).join(' ') + '] rival ' + (stats.rivalParts || []).join(' ') + (stats.rivalTop ? ' top ' + stats.rivalTop.slice(0, 160) : ''));
             if (stats.log.length > 12) stats.log.shift();
-            if (window.__brNoteSlow) window.__brNoteSlow('custom properties', lastCost, '(' + stats.dirty + ') collect ' + stats.tCollect + ', resolve ' + (stats.tResolve - stats.tCollect) +
-                                                        ' [inline users reused redone: ' + (stats.resolveParts || []).join(' ') + '], apply ' + stats.tApply +
+            if (window.__brNoteSlow) window.__brNoteSlow('custom properties', lastCost, '(' + stats.dirty + ') collect ' + stats.tCollect + ' [doc rules qsaN qsaMs els: ' + (stats.collectParts || []).join(' ') +
+                                                        '], resolve ' + (stats.tResolve - stats.tCollect) +
+                                                        ' [inline users reused redone subMs normMs: ' + (stats.resolveParts || []).join(' ') + '], apply ' + stats.tApply +
                                                         ' [fix freeze before probe slow rival set keep thaw / work keep slow: ' + (stats.applyParts || []).join(' ') + '], pending ' + stats.pending +
-                                                        ', rival [key index match / matches rules: ' + (stats.rivalParts || []).join(' ') + '] top ' + (stats.rivalTop || ''));
+                                                        ', rival [key index match / matches rules calls looked idxN idxMs qsaMs: ' +(stats.rivalParts || []).join(' ') + '] top ' + (stats.rivalTop || ''));
             if (observer && observer.takeRecords) observer.takeRecords();   // our own style changes
             if (classObserver && classObserver.takeRecords) classObserver.takeRecords();
         };
@@ -10431,24 +10539,55 @@
             return pvCache;
         };
         var pvCache = null, pvCacheOf = null, pvCacheGen = -1, nameSets = {};
+        // A stylesheet of an emulated shadow root: every instance of a component brings the same text (Lit puts its
+        // styles into each root; Reddit's 40 posts took a second each). It is rewritten once for a stand-in host that
+        // each root's own id then replaces, in the output and in the manifest entries; unless entries whose classes are
+        // hashed from their selectors name the host (:has(), @container...): such a text is rewritten for each root.
+        var HOST_MARK = 'brhostmark', hostCache = {}, hostCacheN = 0;
+        var hostSafe = function (manifest) {
+            for (var k in manifest) if (manifest.hasOwnProperty(k) && k !== 'cv' && k !== 'vars' && JSON.stringify(manifest[k]).indexOf(HOST_MARK) >= 0) return false;
+            return true;
+        };
+        var addEntries = function (add) { if (add && window.__brManifestAdd) { try { window.__brManifestAdd(add); } catch (e) {} } };
         var fixText = function (css, hostScope) {
             var lib = loadCSSFix();
             if (!lib || !lib.run) return null;
-            var r;
+            var pv = pageVars(), land = window.orientation === 90 || window.orientation === -90, ck = null;
+            if (hostScope && css.length > 256) {
+                ck = (land ? 'L|' : 'P|') + css;
+                var hit = hostCache[ck];
+                if (hit && hit.pv === pv) {
+                    if (hit.add) addEntries(JSON.parse(hit.add.split(HOST_MARK).join(hostScope)));
+                    return hit.out.split(HOST_MARK).join(hostScope);
+                }
+            }
+            var r, vw = Math.min(screen.width || 768, screen.height || 1024), opts = { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1,
+                orientation: land ? 'landscape' : 'portrait' };
             try {
-                var vw = Math.min(screen.width || 768, screen.height || 1024), opts = { viewportWidth: vw, devicePixelRatio: window.devicePixelRatio || 1,
-                    orientation: window.orientation === 90 || window.orientation === -90 ? 'landscape' : 'portrait' };
-                if (hostScope) opts.hostScope = hostScope;   // a stylesheet inside an emulated shadow root (see hostSelector)
-                r = JSON.parse(lib.run('css', css, pageVars(), opts));
+                if (hostScope) opts.hostScope = ck !== null ? HOST_MARK : hostScope;   // (a stylesheet inside an emulated shadow root, see hostSelector)
+                r = JSON.parse(lib.run('css', css, pv, opts));
+                if (ck !== null && r.manifest && !hostSafe(r.manifest)) {
+                    ck = null;
+                    opts.hostScope = hostScope;
+                    r = JSON.parse(lib.run('css', css, pv, opts));
+                }
             } catch (e) { return null; }
             noteState(r.vars);
             // (with the custom properties this text defines, see extraVars)
             var add = r.manifest || null, rv = r.vars, defs = null;
             for (var vk in rv) if (rv.hasOwnProperty(vk) && vk.charAt(0) === '-' && vk.charAt(1) === '-') { if (!defs) defs = {}; defs[vk] = rv[vk]; }
             if (defs || (r.scoped && r.scoped.length)) { add = add || {}; if (defs) add.vars = defs; if (r.scoped && r.scoped.length) add.scoped = r.scoped; }
-            if (add && window.__brManifestAdd) { try { window.__brManifestAdd(add); } catch (e2) {} }
             // (the page-state and manifest comments close the output)
-            return String(r.out || '').replace(/\n?\/\*br-(page|manifest):[\s\S]*$/, '');
+            var out = String(r.out || '').replace(/\n?\/\*br-(page|manifest):[\s\S]*$/, '');
+            if (ck === null) { addEntries(add); return out; }
+            var addText = add ? JSON.stringify(add) : null;
+            if (out.length < 800000) {
+                if (hostCacheN >= 24) { hostCache = {}; hostCacheN = 0; }
+                if (!hostCache[ck]) hostCacheN++;
+                hostCache[ck] = { pv: pv, out: out, add: addText };
+            }
+            if (addText) addEntries(JSON.parse(addText.split(HOST_MARK).join(hostScope)));
+            return out.split(HOST_MARK).join(hostScope);
         };
         // top-level rules of a stylesheet text
         var splitRules = function (s) {
@@ -10567,25 +10706,82 @@
             if (out !== data) node.data = out;
         };
         var ownStyle = function (el) { return el.__brOwn || (el.id && el.id.indexOf('br-') === 0) || (el.type && !/^\s*(text\/css)?\s*$/i.test(el.type)); };
+        // Identical copies of a big stylesheet: only the last one in document order stays on, the others are switched
+        // off while it is there. Reddit renders its whole Tailwind (2,700 rules) into the declarative shadow root of
+        // every component; the app rewrites those without a host, so all of them reach the whole page anyway: 40
+        // copies, 110,000 rules the engine matched every element against (and the custom property pass walked).
+        var DUP_MIN = 8192, dupGroups = {}, dupSeen = false;   // (dupSeen: some text had a copy; removals are looked at from then on)
+        var dupElect = function (key) {
+            var g = dupGroups[key], live = [], last = null, i, root = document.documentElement;
+            if (!g) return;
+            for (i = 0; i < g.els.length; i++) if (g.els[i].__brDupKey === key && root.contains(g.els[i])) live.push(g.els[i]);
+            g.els = live;
+            if (!live.length) { delete dupGroups[key]; return; }
+            last = live[0];
+            for (i = 1; i < live.length; i++) if (last.compareDocumentPosition(live[i]) & 4) last = live[i];
+            for (i = 0; i < live.length; i++) {
+                var el = live[i], sh = el.sheet;
+                if (!sh) continue;
+                // (only what this switched off comes on again: a sheet the page switched off stays so)
+                if (el === last) { if (el.__brDupOff) { el.__brDupOff = false; sh.disabled = false; } }
+                else if (!sh.disabled) { el.__brDupOff = true; sh.disabled = true; }
+            }
+        };
+        var dupLeave = function (el) {
+            var key = el.__brDupKey;
+            if (!key) return;
+            el.__brDupKey = null;
+            if (el.__brDupOff) { el.__brDupOff = false; if (el.sheet) el.sheet.disabled = false; }
+            dupElect(key);
+        };
+        var dupJoin = function (el) {
+            if (el.__brShadow || el.hasAttribute('data-br-sheet') || el.hasAttribute('data-br-adopted')) return;
+            var text = el.textContent || '', og = el.__brDupKey ? dupGroups[el.__brDupKey] : null;
+            if (og && og.text === text) {
+                // (moved: back in its group)
+                if (og.els.indexOf(el) < 0) og.els.push(el);
+                if (og.els.length > 1) dupElect(el.__brDupKey);
+                return;
+            }
+            if (el.__brDupKey) dupLeave(el);
+            if (text.length < DUP_MIN) return;
+            var key = (el.getAttribute('media') || '') + '|' + text.length + '|' + text.slice(0, 120) + text.slice(-120), g = dupGroups[key];
+            if (!g) g = dupGroups[key] = { text: text, els: [] };
+            else if (g.text !== text) return;   // (the same length, start and end, another text: rare, left alone)
+            el.__brDupKey = key;
+            g.els.push(el);
+            if (g.els.length > 1) { dupSeen = true; dupElect(key); }
+        };
         var fixStyle = function (el) {
             if (ownStyle(el)) return;
             for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) fixNode(n);
+            dupJoin(el);
+        };
+        var dupGone = function (n) {
+            if (n.nodeType !== 1) return;
+            if (n.nodeName === 'STYLE') { if (n.__brDupKey) dupElect(n.__brDupKey); return; }
+            if (!n.getElementsByTagName) return;
+            var inner = n.getElementsByTagName('style');
+            for (var s = 0; s < inner.length; s++) if (inner[s].__brDupKey) dupElect(inner[s].__brDupKey);
         };
         var styleObserver = new MutationObserver(function (records) {
             for (var i = 0; i < records.length; i++) {
                 var rec = records[i], t = rec.target;
                 if (rec.type === 'characterData') {
-                    if (t.parentNode && t.parentNode.nodeName === 'STYLE' && !ownStyle(t.parentNode)) fixNode(t);
+                    if (t.parentNode && t.parentNode.nodeName === 'STYLE' && !ownStyle(t.parentNode)) { fixNode(t); if (t.parentNode.__brDupKey) dupJoin(t.parentNode); }
                     continue;
                 }
-                var added = rec.addedNodes;
+                var added = rec.addedNodes, removed = rec.removedNodes;
                 for (var k = 0; k < added.length; k++) {
                     var a = added[k];
-                    if (a.nodeType === 3) { if (t.nodeName === 'STYLE' && !ownStyle(t)) fixNode(a); continue; }
+                    // (text a library appends to its style element rule by rule is not compared as it grows: only a
+                    // copy's text that changes leaves its group)
+                    if (a.nodeType === 3) { if (t.nodeName === 'STYLE' && !ownStyle(t)) { fixNode(a); if (t.__brDupKey) dupJoin(t); } continue; }
                     if (a.nodeType !== 1) continue;
                     if (a.nodeName === 'STYLE') fixStyle(a);
                     else if (a.getElementsByTagName) { var inner = a.getElementsByTagName('style'); for (var s = 0; s < inner.length; s++) fixStyle(inner[s]); }
                 }
+                if (dupSeen && removed) for (var r = 0; r < removed.length; r++) dupGone(removed[r]);
             }
         });
         try { styleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (e) {}

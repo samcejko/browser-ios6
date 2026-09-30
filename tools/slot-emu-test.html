@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slot-emu test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script>
+// the old engine has no shadow DOM: the emulation of shims-extra.js runs (attachShadow, slots' assignedNodes & co.)
+delete Element.prototype.attachShadow;
+if (window.HTMLSlotElement) { delete HTMLSlotElement.prototype.assignedNodes; delete HTMLSlotElement.prototype.assignedElements; delete HTMLSlotElement.prototype.assign; }
+delete Element.prototype.assignedSlot; delete Text.prototype.assignedSlot;
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>Slots of emulated shadow roots: assignedNodes, assignedElements, assignedSlot, slotchange</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<x-a id="host"><span slot="s1" id="a1">A</span><b id="d1">D</b>text</x-a>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var ids = function (list) { return Array.prototype.map.call(list, function (n) { return n.nodeType === 1 ? n.id || n.tagName.toLowerCase() : '#text'; }).join(','); };
+var changes = 0;
+class XA extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    var r = this.attachShadow({ mode: 'open' });
+    r.innerHTML = '<slot name="s1" id="s1"></slot><slot id="def"></slot><slot name="empty" id="emp"><i id="fb">fallback</i></slot>';
+    r.querySelector('#s1').addEventListener('slotchange', function () { changes++; });
+  }
+}
+customElements.define('x-a', XA);
+window.addEventListener('load', function () {
+  var host = document.getElementById('host'), root = host.shadowRoot;
+  var s1 = root.querySelector('#s1'), def = root.querySelector('#def'), emp = root.querySelector('#emp');
+  show('the shadow root is the emulated one', root.nodeType === 1 && root.hasAttribute('data-shadow-root'));
+  show('a named slot gets the child with its name', ids(s1.assignedNodes()) === 'a1', ids(s1.assignedNodes()));
+  show('the default slot gets the other children and text', ids(def.assignedNodes()) === 'd1,#text', ids(def.assignedNodes()));
+  show('assignedElements leaves the text out', ids(def.assignedElements()) === 'd1', ids(def.assignedElements()));
+  show('a slot nothing goes to has no nodes', emp.assignedNodes().length === 0);
+  show('with flatten it has its fallback', ids(emp.assignedNodes({ flatten: true })) === 'fb', ids(emp.assignedNodes({ flatten: true })));
+  show('assignedElements({flatten: true}) too', ids(emp.assignedElements({ flatten: true })) === 'fb');
+  show('assignedSlot of a slotted child', document.getElementById('a1').assignedSlot === s1);
+  show('assignedSlot of a child of no host', document.getElementById('out').assignedSlot === null);
+  setTimeout(function () {
+    var first = changes;
+    show('slotchange once the slot has nodes', first === 1, 'changes ' + first);
+    var c = document.createElement('em'); c.id = 'a2'; c.setAttribute('slot', 's1');
+    host.appendChild(c);
+    setTimeout(function () {
+      show('slotchange when a child with its name comes', changes === first + 1 && ids(s1.assignedNodes()) === 'a1,a2', 'changes ' + changes + ', ' + ids(s1.assignedNodes()));
+      c.setAttribute('slot', 'other');
+      setTimeout(function () {
+        show('slotchange when a child leaves by its slot attribute', changes === first + 2 && ids(s1.assignedNodes()) === 'a1', 'changes ' + changes);
+        document.getElementById('summary').textContent = pass + ' / ' + total;
+        document.title = 'slot-emu ' + pass + '/' + total;
+        window.__slotResults = results;
+      }, 100);
+    }, 100);
+  }, 100);
+}, false);
+</script>
+</body>
+</html>
