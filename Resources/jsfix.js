@@ -1545,7 +1545,7 @@
             case 'TemplateLiteral': this.list(n.expressions, n, s); d = true; break;
             case 'TaggedTemplateExpression': this.v(n.tag, n, s); n.quasi.$p = n; this.list(n.quasi.expressions, n.quasi, s); d = true; break;
             case 'UnaryExpression': case 'UpdateExpression':
-                if (n.operator === 'typeof' && n.argument.type === 'Identifier') n.argument.$typeof = true;   // (typeof Proxy stays the engine's)
+                if (n.operator === 'typeof' && (n.argument.type === 'Identifier' || n.argument.type === 'MemberExpression')) n.argument.$typeof = true;   // (typeof Proxy stays the engine's)
                 d = this.v(n.argument, n, s);
                 // typeof of a polyfilled symbol (see __br_typeof), unless compared with a type it cannot change
                 if (n.operator === 'typeof' && typeofSymbolish(n, p)) { n.$typeofSym = true; d = true; }
@@ -1601,6 +1601,10 @@
                 if (n.optional) d = true;
                 // x.constructor read (a custom element's class, see __br_ctor)
                 if (!n.computed && n.property.name === 'constructor' && n.object.type !== 'Super' && ctorRead(n, p)) { n.$ctor = true; d = true; }
+                // globalThis.BigInt(...), window.Proxy: the stand-ins as for the bare names (Google Maps' app module
+                // starts with globalThis.BigInt(0), a TypeError its module wrapper swallowed: no map), not for typeof
+                if (!n.computed && n.object.type === 'Identifier' && GLOBAL_OBJECTS[n.object.name] === 1 && !n.$typeof && !(p && p.type === 'AssignmentExpression' && p.left === n) &&
+                    ((n.property.name === 'BigInt' && this.bigintShim) || (n.property.name === 'Proxy' && this.proxyShim))) { n.$standin = n.property.name; d = true; }
                 break;
             case 'ChainExpression': this.v(n.expression, n, s); d = true; break;
             case 'AwaitExpression': case 'YieldExpression':
@@ -2326,6 +2330,7 @@
     };
     P.member = function (n) {
         var code;
+        if (n.$standin) { this.prec = P_PRIMARY; return this.h(n.$standin === 'BigInt' ? '__br_BigInt' : '__br_Proxy'); }
         if (n.$ctor) {
             code = this.h('__br_ctor') + '(' + this.E(n.object, P_ASSIGN) + ')';
             this.prec = P_CALL;
@@ -3704,7 +3709,10 @@
     // free references to Proxy get the stand-in, except `typeof Proxy`: a library that looks first keeps its own way
     // without it (a bundle often holds both kinds)
     // (Proxy.revocable: Immer makes every draft with it)
-    var PROXY_USE = /\bnew\s+Proxy\s*\(|(?:^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/, BIGINT_USE = /(?:^|[^.\w$])BigInt\s*[(.]/, DIRECT_EVAL = /(?:^|[^.\w$])eval\s*\(/;
+    // (globalThis.BigInt(...) and the like count too: see $standin)
+    var GLOBAL_OBJECTS = { globalThis: 1, window: 1, self: 1 };
+    var PROXY_USE = /\bnew\s+Proxy\s*\(|(?:^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/, BIGINT_USE = /(?:^|[^.\w$])(?:(?:globalThis|window|self)\s*\.\s*)?BigInt\s*[(.]/, DIRECT_EVAL = /(?:^|[^.\w$])eval\s*\(/;
+    var BIGINT_TEXT = /(^|[^.\w$])(?:(?:globalThis|window|self)\s*\.\s*)?BigInt(\s*[(.])/g;
     var needsProxy = function (src) { return typeof root.Proxy !== 'function' && PROXY_USE.test(src); };
     var needsBigInt = function (src) { return typeof root.BigInt !== 'function' && BIGINT_USE.test(src); };
     // delete el.dataset.x in a script the engine takes as it is (see __br_dsdel; DuckDuckGo's Next.js chunks are ES5
@@ -4326,7 +4334,7 @@
             isrc = isrc.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')(");
             standins.push('__br_Proxy');
         }
-        if (needsBigInt(isrc)) { isrc = isrc.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); standins.push('__br_BigInt'); }
+        if (needsBigInt(isrc)) { isrc = isrc.replace(BIGINT_TEXT, '$1__br_BigInt$2'); standins.push('__br_BigInt'); }
         var skip = islandSkips(isrc);
         return skip ? { src: isrc, skip: skip, standins: standins } : prep;
     };
@@ -4418,7 +4426,7 @@
             if (low === null) {
                 // (the stand-ins by text, as for a whole script the engine takes)
                 if (needsProxy(piece)) { piece = piece.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')("); use('__br_Proxy'); }
-                if (needsBigInt(piece)) { piece = piece.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); use('__br_BigInt'); }
+                if (needsBigInt(piece)) { piece = piece.replace(BIGINT_TEXT, '$1__br_BigInt$2'); use('__br_BigInt'); }
                 if (needsDsDelete(piece)) { var dp = dsDeletes(piece); if (engineTakes(prefix + dp)) { piece = dp; use('__br_dsdel'); } }
                 st.out.push(piece);
                 continue;
@@ -4521,7 +4529,7 @@
                     text = text.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')(");
                     used.push('__br_Proxy');
                 }
-                if (nb) { text = text.replace(/(^|[^.\w$])BigInt(\s*[(.])/g, '$1__br_BigInt$2'); used.push('__br_BigInt'); }
+                if (nb) { text = text.replace(BIGINT_TEXT, '$1__br_BigInt$2'); used.push('__br_BigInt'); }
                 if (nd) {
                     // (such a delete inside a string would no longer parse: then the deletes stay)
                     var dtext = dsDeletes(text);

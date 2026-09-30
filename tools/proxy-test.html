@@ -64,6 +64,19 @@ var bi = (0, eval)(JSFix.transpile('(function () { return [BigInt(10) * 2, 10n +
 var biOk = JSON.stringify(bi) === JSON.stringify([20, 15, 'function', 1, -16, 31]);
 lines.push((biOk ? 'OK   ' : 'FAIL ') + 'BigInt stand-in' + (biOk ? '' : ': ' + JSON.stringify(bi)));
 if (biOk) pass++;
+// globalThis.BigInt / window.BigInt / self.BigInt reach the stand-in too (Google Maps' app module starts with
+// globalThis.BigInt(0)); typeof globalThis.BigInt stays the engine's - in both paths
+var savedGBI = window.BigInt, gbi, gfast;
+window.BigInt = undefined;
+try {
+  gbi = (0, eval)(JSFix.transpile('(function () { return [globalThis.BigInt(0), window.BigInt.asUintN(8, 257), self.BigInt("5") + 1, typeof globalThis.BigInt, 2n]; })();', { bigint: true }));
+  gfast = JSFix.run('window.__fastGBigInt = [globalThis.BigInt(7) + 1, typeof window.BigInt];', '{}');
+  (0, eval)(gfast);
+} catch (e) { gbi = 'threw ' + e.message; }
+window.BigInt = savedGBI;
+var gbiOk = JSON.stringify(gbi) === JSON.stringify([0, 1, 6, 'undefined', 2]) && JSON.stringify(window.__fastGBigInt) === JSON.stringify([8, 'undefined']);
+lines.push((gbiOk ? 'OK   ' : 'FAIL ') + 'globalThis.BigInt through the stand-in' + (gbiOk ? '' : ': ' + JSON.stringify(gbi) + ' ' + JSON.stringify(window.__fastGBigInt)));
+if (gbiOk) pass++;
 var savedBigInt = window.BigInt;
 window.BigInt = undefined;
 var fastBi = JSFix.run('window.__fastBigInt = BigInt("0x10") + 1;', '{}');
@@ -104,7 +117,7 @@ framerRuns.forEach(function (fr) {
   lines.push((ok ? 'OK   ' : 'FAIL ') + 'symbol in with a polyfilled Symbol' + (ok ? '' : ': ' + info));
   if (ok) pass++;
 })();
-CASES.length += 7;
+CASES.length += 8;
 document.getElementById('out').textContent = lines.join('\n');
 document.title = 'proxy ' + pass + '/' + CASES.length;
 </script>
