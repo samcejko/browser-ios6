@@ -9020,6 +9020,38 @@
     // ---- Workers, storage, files
     if (!window.SharedWorker) window.SharedWorker = function SharedWorker() { throw domException('NotSupportedError', 'SharedWorker is not available'); };
     if (!window.Worklet) window.Worklet = function Worklet() {};
+    // the Cache API (caches.open(name).put/match...), in memory for the page's life and at most 150 entries (the iPad's
+    // memory): Telegram Web read caches at start ("Can't find variable: caches"); the same in worker-shims.js
+    if (!window.caches && P) {
+        (function (G) {
+            var total = [];
+            var keyOf = function (req) { var u = typeof req === 'string' ? req : req && req.url; try { return new URL(String(u), G.location.href).href.replace(/#.*$/, ''); } catch (e) { return String(u); } };
+            var Cache = function Cache() { this.__m = {}; };
+            var copy = function (res) { try { return res && res.clone ? res.clone() : res; } catch (e) { return res; } };
+            Cache.prototype.match = function (req) { var e = this.__m['$' + keyOf(req)]; return P.resolve(e ? copy(e.res) : undefined); };
+            Cache.prototype.matchAll = function (req) { var out = [], k; if (req === undefined) { for (k in this.__m) out.push(copy(this.__m[k].res)); } else { var e = this.__m['$' + keyOf(req)]; if (e) out.push(copy(e.res)); } return P.resolve(out); };
+            Cache.prototype.put = function (req, res) {
+                var k = '$' + keyOf(req), m = this.__m;
+                if (!m[k]) { total.push([m, k]); if (total.length > 150) { var old = total.shift(); delete old[0][old[1]]; } }
+                m[k] = { req: typeof req === 'string' ? keyOf(req) : req, res: copy(res) };
+                return P.resolve();
+            };
+            Cache.prototype.add = function (req) { var c = this; return G.fetch(req).then(function (res) { if (!res.ok) throw new TypeError('Request failed'); return c.put(req, res); }); };
+            Cache.prototype.addAll = function (list) { var c = this, all = []; for (var i = 0; i < list.length; i++) all.push(c.add(list[i])); return P.all(all).then(function () {}); };
+            Cache.prototype['delete'] = function (req) { var k = '$' + keyOf(req), had = !!this.__m[k]; delete this.__m[k]; return P.resolve(had); };
+            Cache.prototype.keys = function () { var out = []; for (var k in this.__m) { var r = this.__m[k].req; out.push(typeof r === 'string' && G.Request ? new G.Request(r) : r); } return P.resolve(out); };
+            var stores = {};
+            var CacheStorage = function CacheStorage() {};
+            CacheStorage.prototype.open = function (name) { var k = '$' + String(name); return P.resolve(stores[k] || (stores[k] = new Cache())); };
+            CacheStorage.prototype.has = function (name) { return P.resolve(!!stores['$' + String(name)]); };
+            CacheStorage.prototype['delete'] = function (name) { var k = '$' + String(name), had = !!stores[k]; delete stores[k]; return P.resolve(had); };
+            CacheStorage.prototype.keys = function () { var out = []; for (var k in stores) out.push(k.slice(1)); return P.resolve(out); };
+            CacheStorage.prototype.match = function (req) { for (var k in stores) { var e = stores[k].__m['$' + keyOf(req)]; if (e) return P.resolve(copy(e.res)); } return P.resolve(undefined); };
+            G.Cache = Cache;
+            G.CacheStorage = CacheStorage;
+            G.caches = new CacheStorage();
+        })(window);
+    }
     if (!window.requestFileSystem && !window.webkitRequestFileSystem) {
         window.requestFileSystem = window.webkitRequestFileSystem = function (type, size, ok, err) { setTimeout(function () { if (err) err(domException('SecurityError', 'The file system is not available')); }, 0); };
         window.resolveLocalFileSystemURL = window.webkitResolveLocalFileSystemURL = function (url, ok, err) { setTimeout(function () { if (err) err(domException('NotFoundError', 'not found')); }, 0); };
@@ -12304,9 +12336,11 @@
         // "Can't find variable: Promise" there)
         var NativeShared = window.SharedWorker;
         if (NativeShared && !NativeShared.__brWrapped) {
+            // (the old engine takes only a name as the second argument: an options object became the name
+            // "[object Object]" for every worker, and a second one of another URL threw URL_MISMATCH_ERR)
             var WrappedShared = function SharedWorker(url, opts) {
-                var u = workerURL(url);
-                return arguments.length > 1 ? new NativeShared(u, opts) : new NativeShared(u);
+                var u = workerURL(url), name = typeof opts === 'string' ? opts : opts && typeof opts === 'object' && opts.name !== undefined ? String(opts.name) : undefined;
+                return name !== undefined ? new NativeShared(u, name) : new NativeShared(u);
             };
             WrappedShared.prototype = NativeShared.prototype;
             WrappedShared.__brWrapped = true;

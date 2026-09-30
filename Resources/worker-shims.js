@@ -67,6 +67,41 @@
             perf.clearResourceTimings = function () {};
         })(self.performance);
     }
+    // weak references hold on here (the engine has none; a registry is never told of a collection, which the standard
+    // allows): Telegram's protocol worker makes a FinalizationRegistry at start
+    if (!self.WeakRef) { self.WeakRef = function WeakRef(target) { this.__t = target; }; self.WeakRef.prototype.deref = function () { return this.__t; }; }
+    if (!self.FinalizationRegistry) { self.FinalizationRegistry = function FinalizationRegistry() {}; self.FinalizationRegistry.prototype.register = function () {}; self.FinalizationRegistry.prototype.unregister = function () { return false; }; }
+    // the Cache API (caches.open(name).put/match...), in memory for this worker's life (see shims-extra.js)
+    if (!self.caches && self.Promise) {
+        (function (G) {
+            var P = G.Promise, total = [];
+            var keyOf = function (req) { var u = typeof req === 'string' ? req : req && req.url; try { return new URL(String(u), G.location.href).href.replace(/#.*$/, ''); } catch (e) { return String(u); } };
+            var Cache = function Cache() { this.__m = {}; };
+            var copy = function (res) { try { return res && res.clone ? res.clone() : res; } catch (e) { return res; } };
+            Cache.prototype.match = function (req) { var e = this.__m['$' + keyOf(req)]; return P.resolve(e ? copy(e.res) : undefined); };
+            Cache.prototype.matchAll = function (req) { var out = [], k; if (req === undefined) { for (k in this.__m) out.push(copy(this.__m[k].res)); } else { var e = this.__m['$' + keyOf(req)]; if (e) out.push(copy(e.res)); } return P.resolve(out); };
+            Cache.prototype.put = function (req, res) {
+                var k = '$' + keyOf(req), m = this.__m;
+                if (!m[k]) { total.push([m, k]); if (total.length > 150) { var old = total.shift(); delete old[0][old[1]]; } }
+                m[k] = { req: typeof req === 'string' ? keyOf(req) : req, res: copy(res) };
+                return P.resolve();
+            };
+            Cache.prototype.add = function (req) { var c = this; return G.fetch(req).then(function (res) { if (!res.ok) throw new TypeError('Request failed'); return c.put(req, res); }); };
+            Cache.prototype.addAll = function (list) { var c = this, all = []; for (var i = 0; i < list.length; i++) all.push(c.add(list[i])); return P.all(all).then(function () {}); };
+            Cache.prototype['delete'] = function (req) { var k = '$' + keyOf(req), had = !!this.__m[k]; delete this.__m[k]; return P.resolve(had); };
+            Cache.prototype.keys = function () { var out = []; for (var k in this.__m) { var r = this.__m[k].req; out.push(typeof r === 'string' && G.Request ? new G.Request(r) : r); } return P.resolve(out); };
+            var stores = {};
+            var CacheStorage = function CacheStorage() {};
+            CacheStorage.prototype.open = function (name) { var k = '$' + String(name); return P.resolve(stores[k] || (stores[k] = new Cache())); };
+            CacheStorage.prototype.has = function (name) { return P.resolve(!!stores['$' + String(name)]); };
+            CacheStorage.prototype['delete'] = function (name) { var k = '$' + String(name), had = !!stores[k]; delete stores[k]; return P.resolve(had); };
+            CacheStorage.prototype.keys = function () { var out = []; for (var k in stores) out.push(k.slice(1)); return P.resolve(out); };
+            CacheStorage.prototype.match = function (req) { for (var k in stores) { var e = stores[k].__m['$' + keyOf(req)]; if (e) return P.resolve(copy(e.res)); } return P.resolve(undefined); };
+            G.Cache = Cache;
+            G.CacheStorage = CacheStorage;
+            G.caches = new CacheStorage();
+        })(self);
+    }
     if (!self.PerformanceObserver) {
         self.PerformanceObserver = function PerformanceObserver() {};
         self.PerformanceObserver.prototype.observe = function () {};
