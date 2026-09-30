@@ -169,6 +169,23 @@ static BOOL BRIsFontType(NSString *type)
 {
     return [type hasPrefix:@"font/"] || [type rangeOfString:@"font-"].location != NSNotFound || [type rangeOfString:@"opentype"].location != NSNotFound;
 }
+// A body the rewriter would take for a document, a stylesheet or a script whose bytes say otherwise: the kind to give it
+// ("font", "woff", "sfnt", "webp"), "binary" for another picture to pass as it is, nil for text. (Google's icon font kit,
+// fonts.gstatic.com/l/font?kit=..., comes as text/html: rewritten as a document the WOFF2 was ruined and every icon of
+// Google Maps was a box, "FT_Open_Face failed: error 2".)
+static NSString *BRSniffBinaryKind(NSData *d)
+{
+    if (d.length < 12) return nil;
+    const unsigned char *b = d.bytes;
+    if (!memcmp(b, "wOF2", 4)) return @"font";
+    if (!memcmp(b, "wOFF", 4)) return @"woff";
+    // (an sfnt's table count follows its tag: a script that starts with "true..." has text there)
+    unsigned numTables = ((unsigned)b[4] << 8) | b[5];
+    if ((!memcmp(b, "OTTO", 4) || !memcmp(b, "true", 4) || (b[0] == 0 && b[1] == 1 && b[2] == 0 && b[3] == 0)) && numTables > 0 && numTables < 64) return @"sfnt";
+    if (!memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WEBP", 4)) return @"webp";
+    if (!memcmp(b, "\x89PNG", 4) || (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) || !memcmp(b, "GIF8", 4)) return @"binary";
+    return nil;
+}
 static BOOL BRCachedRewriteIsStale(NSCachedURLResponse *c)
 {
     if (![c.response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
@@ -887,6 +904,26 @@ static BOOL BRIsFontDataURL(NSURL *url)
     NSData *buffered = self.rewriteBuffer ?: [NSData data];
     self.rewriteBuffer = nil;
     NSString *kind = self.rewriteKind;
+    // (a font or a picture whatever its type said, see BRSniffBinaryKind)
+    if ([kind isEqualToString:@"html"] || [kind isEqualToString:@"css"] || [kind isEqualToString:@"js"]) {
+        NSString *sniffed = BRSniffBinaryKind(buffered);
+        if ([sniffed isEqualToString:@"binary"]) {
+            NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:self.pendingStatus HTTPVersion:@"HTTP/1.1" headerFields:self.pendingHeaderFields];
+            if (self.cacheBody && buffered.length <= BRMaxCacheableBody) [self storeHeaders:self.pendingHeaderFields status:self.pendingStatus data:buffered maxAge:self.cacheMaxAge];
+            self.cacheBody = nil;
+            [self performOnClientThread:^{
+                [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+                if (buffered.length) [self.client URLProtocol:self didLoadData:buffered];
+                [self.client URLProtocolDidFinishLoading:self];
+            }];
+            return;
+        }
+        if (sniffed) {
+            BRLog(@"%@ as %@ by its bytes: %@", kind, sniffed, self.request.URL.absoluteString.length > 120 ? [self.request.URL.absoluteString substringToIndex:120] : self.request.URL.absoluteString);
+            kind = self.rewriteKind = sniffed;
+            if (![sniffed isEqualToString:@"webp"]) self.fontBody = YES;
+        }
+    }
     if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"] || [kind isEqualToString:@"webp"]) {
         // synchronous, on the worker thread
         BOOL isFont = [kind isEqualToString:@"font"];
