@@ -62,6 +62,8 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 - (NSData *)loweredPageScript:(NSData *)text failed:(BOOL *)failed;
 // NO when a lowered chunk keeps factories for later whose texts are gone (it must be lowered again); any thread
 + (BOOL)lazyPartsPresentIn:(NSData *)lowered;
+// The transpiler's kept result for a script of this text goes (a script the page could not parse, see BRURLProtocol)
+- (void)forgetTranspiledScript:(NSData *)data;
 // An inline script too big for the document's rewrite is set aside (its text in Caches/transpiled) and the document
 // loads it from /__br_inline-<name>.js: its text (nil when gone), and NO when a rewritten document names such scripts
 // whose texts are gone (it must be rewritten again). Any thread.

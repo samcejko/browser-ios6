@@ -452,9 +452,11 @@ static NSHashTable *g_activeProtocols;
     }
     dispatch_async(BRCacheQueue(), ^{
         NSURLRequest *request = [NSURLRequest requestWithURL:url];
-        BOOL had = [[NSURLCache sharedURLCache] cachedResponseForRequest:request] != nil;
+        NSCachedURLResponse *cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
+        // (and the transpiler's result for that text, which may be an "unchanged" kept by an older version)
+        if (cached.data.length) [[BRCSSRewriter shared] forgetTranspiledScript:cached.data];
         [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
-        BRLog(@"Script that did not parse: %@ %@", had ? @"cached copy dropped" : @"not in the cache", url.absoluteString.length > 160 ? [url.absoluteString substringToIndex:160] : url.absoluteString);
+        BRLog(@"Script that did not parse: %@ %@", cached ? @"cached copy dropped" : @"not in the cache", url.absoluteString.length > 160 ? [url.absoluteString substringToIndex:160] : url.absoluteString);
     });
 }
 

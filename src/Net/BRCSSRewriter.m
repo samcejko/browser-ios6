@@ -625,6 +625,13 @@ static NSArray *BRManifestKinds(void)
             [engine releaseContextNow];
             return out;
         }
+        // (nothing to keep but a script the engine takes as it is: "unchanged" after a failure was kept for good, and
+        // the page got the ES2020 text on every visit - IKEA's recommendation chunks)
+        if (!out && ![last isEqualToString:@"es5"]) {
+            BRLog(@"jsfix %@: not lowered (%@), not remembered", name, last);
+            _lastNoRoom = YES;   // (nor is the text as it came cached: see rewriteData)
+            return nil;
+        }
     }
     NSData *store = out ?: [NSData data];
     [_transpiled setObject:store forKey:key cost:store.length + 64];
@@ -637,6 +644,16 @@ static NSArray *BRManifestKinds(void)
     // (acorn and jsfix.js load again in about 0.4 s; most scripts come from the cache above anyway)
     [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
     return out;
+}
+
+- (void)forgetTranspiledScript:(NSData *)data
+{
+    if (!data.length) return;
+    unsigned long crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
+    NSString *key = [NSString stringWithFormat:@"%08lx-%lx-%@", crc, (unsigned long)data.length, BRTranspileTag()];
+    [_transpiled removeObjectForKey:key];
+    [[NSFileManager defaultManager] removeItemAtPath:[BRTranspiledDirectory() stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]] error:NULL];
 }
 
 // A lowered chunk that keeps factories for later starts with /*br-lazy:N:<base>*/ and needs their texts: YES when
