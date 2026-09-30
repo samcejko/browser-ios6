@@ -855,12 +855,14 @@
         MapIter.prototype = iterProto('Map Iterator');
         var SetIter = function (st, kind) { this.__st = st; this.__cur = null; this.__kind = kind; this.__done = false; };
         SetIter.prototype = iterProto('Set Iterator');
-        // fill from an iterable: arrays directly, others step by step (closed when adding throws)
+        // fill from an iterable: arrays directly, others step by step (closed when adding throws). An arguments object is
+        // iterable today and has no iterator here: taken like an array (Facebook's `new Set(arguments)`: "[object
+        // Arguments] is not iterable", the page stayed empty)
         var fill = function (target, iterable, pairs) {
             if (iterable === null || iterable === undefined) return;
             var adder = pairs ? target.set : target.add;
             if (typeof adder !== 'function') throw new TypeError("'" + (pairs ? 'set' : 'add') + "' returned for property is not a function");
-            var list = Array.isArray(iterable) ? iterable : null, i, it = null, step, item;
+            var list = Array.isArray(iterable) || (typeof iterable === 'object' && Object.prototype.toString.call(iterable) === '[object Arguments]') ? iterable : null, i, it = null, step, item;
             if (list === null) {
                 var getIt = ITER !== null ? iterable[ITER] : undefined;
                 if ((getIt === undefined || getIt === null) && typeof iterable['@@iterator'] === 'function') getIt = iterable['@@iterator'];

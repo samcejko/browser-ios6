@@ -64,6 +64,11 @@ var run = function () {
     if (!a.union) return 'no set methods';
     return [Array.from(a.union(b)), Array.from(a.intersection(b)), Array.from(a.difference(b)), Array.from(a.symmetricDifference(b)), new Set([2]).isSubsetOf(a), a.isSupersetOf(new Set([1, 3])), a.isDisjointFrom(new Set([9]))];
   }, [[1, 2, 3, 4], [2, 3], [1], [1, 4], true, true, true]);
+  // (an arguments object is iterable: Facebook's `new Set(arguments)`)
+  check('Set and Map from an arguments object', function () {
+    var s = (function () { return new Set(arguments); })(1, 2, 2, 3), m = (function () { return new Map(arguments); })(['a', 1], ['b', 2]);
+    return [Array.from(s), m.get('a'), m.size];
+  }, [[1, 2, 3], 1, 2]);
   check('WeakMap / WeakSet: objects, several maps, frozen keys, DOM nodes, primitives refused', function () {
     var k = {}, f = Object.freeze({}), node = document.getElementById('host'), w1 = new WeakMap(), w2 = new WeakMap(), ws = new WeakSet();
     w1.set(k, 1).set(f, 'frozen').set(node, 'node'); w2.set(k, 2); ws.add(k);

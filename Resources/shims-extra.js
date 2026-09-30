@@ -2654,7 +2654,14 @@
     // ---- Credentials, authentication, payments
     if (!navigator.credentials) {
         var credUnsupported = rejectWith('NotSupportedError', 'Credential management is not available');
-        navigator.credentials = { get: credUnsupported, create: credUnsupported, store: credUnsupported, preventSilentAccess: function () { return resolved(); } };
+        // (no stored password: null, as a browser that has none answers - Facebook's login page logged the rejection as
+        // an error; public keys and one-time codes stay unsupported)
+        navigator.credentials = {
+            get: function (opts) { return opts && (opts.publicKey || opts.otp || opts.identity) ? credUnsupported() : resolved(null); },
+            create: function (opts) { return opts && opts.password && window.PasswordCredential ? resolved(new window.PasswordCredential(opts.password)) : credUnsupported(); },
+            store: function () { return resolved(undefined); },
+            preventSilentAccess: function () { return resolved(); }
+        };
         window.Credential = function Credential() {};
         window.PasswordCredential = function PasswordCredential(init) { init = init || {}; this.type = 'password'; this.id = init.id || ''; this.password = init.password || ''; this.name = init.name || ''; this.iconURL = init.iconURL || ''; };
         window.FederatedCredential = function FederatedCredential(init) { init = init || {}; this.type = 'federated'; this.id = init.id || ''; this.provider = init.provider || ''; this.name = init.name || ''; };
