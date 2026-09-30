@@ -473,6 +473,8 @@ static NSArray *BRManifestKinds(void)
     if (url.absoluteString.length) o[@"url"] = url.absoluteString;
     if (module) o[@"module"] = @YES;
     if (lazyScan.length) o[@"lazy"] = base;
+    // (a small one stops at the floor it waited for: jsfix.js's own 40 MB gave up IKEA's 32 KB module at 39 MB available)
+    if (floorMB < 40) o[@"memoryFloor"] = @(floorMB);
     NSData *oj = [NSJSONSerialization dataWithJSONObject:o options:0 error:NULL];
     if (oj) optsJSON = [[NSString alloc] initWithData:oj encoding:NSUTF8StringEncoding] ?: @"{}";
     // a big row of statements goes a group of them at a time (jsfix.js pieces): the tree of one group only, groups the
@@ -570,9 +572,10 @@ static NSArray *BRManifestKinds(void)
     // a whole lowering given up for lack of memory: left as it is the script breaks the page (a SyntaxError where the old
     // engine meets the newer syntax), and the page waits for it anyway. Once there is room again (the transpiler's heap
     // let go first) it is lowered again, twice at most. (The Verge's 333 KB turbopack chunk, one big factory, gave up at
-    // 42 MB available while the page grew beside it.)
-    for (int again = 0; !pieces && !lazyPart && !result.length && again < 2; again++) {
+    // 42 MB available while the page grew beside it.) A module answers with its failure for the loader: the same.
+    for (int again = 0; !pieces && !lazyPart && again < 2; again++) {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
+        if (result.length && !(module && [why hasPrefix:@"failed"])) break;
         if ([why rangeOfString:@"memory"].location == NSNotFound) break;
         [engine releaseContextNow];
         BOOL room = [BRMemory waitForAvailableMB:need timeout:45 reason:[NSString stringWithFormat:@"lowering %@ again", name] engine:nil];
@@ -580,7 +583,7 @@ static NSArray *BRManifestKinds(void)
             BRLog(@"jsfix %@: gave up, the iPad is short of memory (%ld MB available)", name, [BRMemory availableMB]);
             [BRMemory setActivity:nil forKey:@"js"];
             _lastNoRoom = YES;
-            return nil;
+            return module && result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
         }
         BRLog(@"jsfix %@: lowered again after a wait for room (%ld MB available)", name, [BRMemory availableMB]);
         result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
@@ -1021,8 +1024,9 @@ static NSString *BRPageKey(NSURL *url)
                 if (generation != g_workGeneration) { completion(data, charset, NO); return; }   // (the page load was stopped)
                 _lastNoRoom = NO;
                 NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL module:module] : nil;
-                // (a script left as it is for lack of memory is not cached as it is: base.js of YouTube stayed broken)
-                if (lowered) completion(lowered, @"utf-8", YES);
+                // (a script left as it is for lack of memory is not cached as it is: base.js of YouTube stayed broken; nor
+                // is a module's failure for lack of it: IKEA's agent module failed from the cache on every visit)
+                if (lowered) completion(lowered, @"utf-8", !_lastNoRoom);
                 else completion(data, charset, !_lastNoRoom);
             }
         }];

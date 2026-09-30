@@ -11971,21 +11971,36 @@
                 return r.fetching;
             }
             r.fetching = new P(function (done) {
-                var x = new XMLHttpRequest(), hook = window.__brModuleTransform;   // (tests transform in the page)
-                x.open('GET', hook ? r.url : r.url + (r.url.indexOf('?') >= 0 ? '&' : '?') + '__brmod=1', true);
-                x.onreadystatechange = function () {
-                    if (x.readyState !== 4) return;
-                    if ((x.status && (x.status < 200 || x.status >= 300)) || (!x.status && !x.responseText)) {
-                        r.error = new TypeError('Failed to fetch module ' + r.url + (x.status ? ' (HTTP ' + x.status + ')' : ''));
+                var hook = window.__brModuleTransform, tries = 0;   // (tests transform in the page)
+                var asked = hook ? r.url : r.url + (r.url.indexOf('?') >= 0 ? '&' : '?') + '__brmod=1';
+                var load = function () {
+                    var x = new XMLHttpRequest();
+                    x.open('GET', asked, true);
+                    x.onreadystatechange = function () {
+                        if (x.readyState !== 4) return;
+                        if ((x.status && (x.status < 200 || x.status >= 300)) || (!x.status && !x.responseText)) {
+                            r.error = new TypeError('Failed to fetch module ' + r.url + (x.status ? ' (HTTP ' + x.status + ')' : ''));
+                            done(r);
+                            return;
+                        }
+                        var code = x.responseText, unparsed = false;
+                        try { if (hook) code = hook(code, r.url); (0, eval)(code + '\n//# sourceURL=' + r.url); } catch (e) { r.error = e; unparsed = e instanceof SyntaxError; }
+                        // the app had no room to lower it just now: its failure says so, or the module came as it is (the
+                        // old engine meets import/export). Asked for again in a while, twice - what depends on it waits;
+                        // a copy the cache kept goes first
+                        if (!r.factory && r.error && tries < 2 && !hook && (r.error.__brNoRoom || (unparsed && code.indexOf('__brModules') < 0))) {
+                            tries++;
+                            r.error = null;
+                            sendToApp('brevict', asked);
+                            setTimeout(load, 3000 * tries);
+                            return;
+                        }
+                        if (!r.factory && !r.error) r.error = new SyntaxError('Module ' + r.url + ' did not register');
                         done(r);
-                        return;
-                    }
-                    var code = x.responseText;
-                    try { if (hook) code = hook(code, r.url); (0, eval)(code + '\n//# sourceURL=' + r.url); } catch (e) { r.error = e; }
-                    if (!r.factory && !r.error) r.error = new SyntaxError('Module ' + r.url + ' did not register');
-                    done(r);
+                    };
+                    x.send(null);
                 };
-                x.send(null);
+                load();
             });
             return r.fetching;
         };
@@ -12122,7 +12137,11 @@
         try { window.addEventListener = lateListeners(window, window.addEventListener); } catch (e2) {}
         var api = {
             define: function (url, deps, factory) { var r = record(url); if (!r.factory) { r.deps = deps; r.factory = factory; r.error = null; } },
-            fail: function (url, message) { record(url).error = new SyntaxError('Module ' + url + ' could not be lowered: ' + message); },
+            fail: function (url, message) {
+                var e = new SyntaxError('Module ' + url + ' could not be lowered: ' + message);
+                if (/memory/.test(message)) e.__brNoRoom = true;   // (see fetchRecord)
+                record(url).error = e;
+            },
             // a <script type="module">: src (resolved against the document) or the id of an inline module defined before
             entry: function (src, id, el) {
                 var r = record(id || toURL(src, document.baseURI));
