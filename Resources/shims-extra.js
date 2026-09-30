@@ -1648,14 +1648,18 @@
         };
         if (window.Response && window.Response.prototype && !('body' in window.Response.prototype)) {
             try {
+                // (the body is read when the stream is: ofetch - every Nuxt site - looks at response.body before it
+                // calls response.json(), which then threw "Already read" and pilulka.cz showed its error page)
                 Object.defineProperty(window.Response.prototype, 'body', { get: function () {
-                    var self = this;
+                    var self = this, started = false;
                     if (self.__brBody) return self.__brBody;
                     if (!self.arrayBuffer) return null;
-                    self.__brBody = new ReadableStream({ start: function (c) {
+                    self.__brBody = new ReadableStream({ pull: function (c) {
+                        if (started) return;
+                        started = true;
                         var p;
                         try { p = self.arrayBuffer(); } catch (e) { c.error(e); return; }
-                        p.then(function (buf) { c.enqueue(new Uint8Array(buf)); c.close(); }, function (e) { c.error(e); });
+                        return p.then(function (buf) { c.enqueue(new Uint8Array(buf)); c.close(); }, function (e) { c.error(e); });
                     } });
                     return self.__brBody;
                 }, configurable: true });

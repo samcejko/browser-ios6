@@ -11,6 +11,8 @@ window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (
 window.__names = ['Navigator', 'History', 'Location', 'Performance', 'Geolocation', 'Permissions', 'StorageManager', 'MediaDevices'];
 for (var i = 0; i < __names.length; i++) try { delete window[__names[i]]; } catch (e) { window.__errors.push('strip ' + __names[i]); }
 window.fetch = undefined;
+// (the shims' streams, as on the old engine: response.body over the polyfill's responses)
+window.ReadableStream = undefined;
 // (a method a shim puts on navigator itself, as shims.js does with sendBeacon on the old engine)
 navigator.brOwnMethod = function () { return 7; };
 </script>
@@ -80,6 +82,19 @@ navigator.brOwnMethod = function () { return 7; };
         });
     }).then(null, function (e) { check('request', false, e && e.message); end(); });
 
+    // looking at response.body does not read it (ofetch: if (response.body) ... response.json())
+    start();
+    var looked = new window.Response('{"a":1}', { headers: { 'Content-Type': 'application/json' } });
+    var hasBody = !!looked.body;
+    looked.json().then(function (j) {
+        check('response.body leaves the body unread', hasBody && j && j.a === 1);
+        var streamed = new window.Response('hello');
+        var reader = streamed.body.getReader();
+        return reader.read().then(function (r) {
+            check('response.body stream reads', r && r.value && r.value.length === 5 && streamed.bodyUsed === true, r && r.value && r.value.length);
+            end();
+        });
+    }).then(null, function (e) { check('response.body', false, e && e.message); end(); });
     setTimeout(function () { if (!done) { pending = 0; results.push('FAIL timed out'); finish(); } }, 8000);
     finish();
 })();
