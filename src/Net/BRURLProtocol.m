@@ -1,4 +1,5 @@
 #import "BRURLProtocol.h"
+#import <libkern/OSAtomic.h>
 #import "BRHTTPRequest.h"
 #import "BRAdBlock.h"
 #import "BRCSSRewriter.h"
@@ -154,6 +155,87 @@ static dispatch_queue_t BRCacheQueue(void)
     static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("com.samcejko.browser.cache", DISPATCH_QUEUE_SERIAL); });
     return q;
+}
+// Stores wait for the lookups: a response to keep is held here (and found here by lookups) until no lookup waits, then
+// written one at a time on the cache queue. Each store took the cache queue for long on the iPad's flash, and every
+// lookup queued behind all the stores before it: IKEA's visit from the cache waited 8 s for one lookup. Held bytes
+// are bounded: above the bound a store goes out even while lookups wait.
+static NSMutableDictionary *g_pendingStores;       // URL string -> @[NSCachedURLResponse, NSURLRequest]
+static NSMutableArray *g_pendingOrder;             // URL strings, oldest first
+static unsigned long long g_pendingBytes;
+static volatile int32_t g_lookupsWaiting;
+static BOOL g_flushScheduled;
+static const unsigned long long BRPendingStoreBound = 16ULL * 1024 * 1024;
+static NSObject *BRPendingLock(void)
+{
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+static NSCachedURLResponse *BRPendingStoreFor(NSURLRequest *request)
+{
+    NSString *key = request.URL.absoluteString;
+    if (!key) return nil;
+    @synchronized (BRPendingLock()) { return [g_pendingStores[key] firstObject]; }
+}
+static void BRForgetPendingStore(NSURLRequest *request)
+{
+    NSString *key = request.URL.absoluteString;
+    if (!key) return;
+    @synchronized (BRPendingLock()) {
+        NSArray *p = g_pendingStores[key];
+        if (!p) return;
+        g_pendingBytes -= MIN(g_pendingBytes, (unsigned long long)[(NSCachedURLResponse *)p[0] data].length);
+        [g_pendingStores removeObjectForKey:key];
+        [g_pendingOrder removeObject:key];
+    }
+}
+static void BRScheduleCacheFlush(NSTimeInterval delay);
+// (cache queue) the oldest held store, unless lookups wait and the held bytes are within the bound
+static void BRFlushOneStore(void)
+{
+    NSArray *p = nil;
+    BOOL more = NO;
+    @synchronized (BRPendingLock()) {
+        g_flushScheduled = NO;
+        if (!g_pendingOrder.count) return;
+        if (g_lookupsWaiting > 0 && g_pendingBytes < BRPendingStoreBound) { more = YES; }
+        else {
+            NSString *key = g_pendingOrder[0];
+            [g_pendingOrder removeObjectAtIndex:0];
+            p = g_pendingStores[key];
+            [g_pendingStores removeObjectForKey:key];
+            if (p) g_pendingBytes -= MIN(g_pendingBytes, (unsigned long long)[(NSCachedURLResponse *)p[0] data].length);
+            more = g_pendingOrder.count > 0;
+        }
+    }
+    if (p) [[NSURLCache sharedURLCache] storeCachedResponse:p[0] forRequest:p[1]];
+    // (the next one as a block of its own: lookups queued meanwhile go first)
+    if (more) BRScheduleCacheFlush(p ? 0 : 0.3);
+}
+static void BRScheduleCacheFlush(NSTimeInterval delay)
+{
+    @synchronized (BRPendingLock()) {
+        if (g_flushScheduled) return;
+        g_flushScheduled = YES;
+    }
+    if (delay <= 0) dispatch_async(BRCacheQueue(), ^{ @autoreleasepool { BRFlushOneStore(); } });
+    else dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), BRCacheQueue(), ^{ @autoreleasepool { BRFlushOneStore(); } });
+}
+static void BRStoreLater(NSCachedURLResponse *c, NSURLRequest *request)
+{
+    NSString *key = request.URL.absoluteString;
+    if (!key || !c) return;
+    @synchronized (BRPendingLock()) {
+        if (!g_pendingStores) { g_pendingStores = [NSMutableDictionary dictionary]; g_pendingOrder = [NSMutableArray array]; }
+        NSArray *old = g_pendingStores[key];
+        if (old) { g_pendingBytes -= MIN(g_pendingBytes, (unsigned long long)[(NSCachedURLResponse *)old[0] data].length); [g_pendingOrder removeObject:key]; }
+        g_pendingStores[key] = @[c, request];
+        [g_pendingOrder addObject:key];
+        g_pendingBytes += c.data.length;
+    }
+    BRScheduleCacheFlush(0.3);
 }
 // A text body stored as it came (too big to rewrite, rewriting switched off) is tagged with what made it so: it goes
 // stale when the rewriters or those limits change, like a rewritten one.
@@ -434,6 +516,15 @@ static NSHashTable *g_activeProtocols;
     @synchronized (self) { [g_credentials removeAllObjects]; }
 }
 
++ (void)dropPendingCacheStores
+{
+    @synchronized (BRPendingLock()) {
+        [g_pendingStores removeAllObjects];
+        [g_pendingOrder removeAllObjects];
+        g_pendingBytes = 0;
+    }
+}
+
 + (NSURL *)lastMainDocumentURL { @synchronized (self) { return g_lastMainURL; } }
 + (NSString *)lastMainDocumentTLSInfo { @synchronized (self) { return g_lastMainTLS; } }
 + (NSString *)lastMainDocumentContentType { @synchronized (self) { return g_lastMainContentType; } }
@@ -453,9 +544,10 @@ static NSHashTable *g_activeProtocols;
     }
     dispatch_async(BRCacheQueue(), ^{
         NSURLRequest *request = [NSURLRequest requestWithURL:url];
-        NSCachedURLResponse *cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
+        NSCachedURLResponse *cached = BRPendingStoreFor(request) ?: [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
         // (and the transpiler's result for that text, which may be an "unchanged" kept by an older version)
         if (cached.data.length) [[BRCSSRewriter shared] forgetTranspiledScript:cached.data];
+        BRForgetPendingStore(request);
         [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
         BRLog(@"Script that did not parse: %@ %@", cached ? @"cached copy dropped" : @"not in the cache", url.absoluteString.length > 160 ? [url.absoluteString substringToIndex:160] : url.absoluteString);
     });
@@ -579,22 +671,43 @@ static BOOL BRIsFontDataURL(NSURL *url)
     }
     self.thirdParty = subresource && [BRSettings blockThirdPartyCookies] && !BRSameSite(url, request.mainDocumentURL);
 
-    // 1. Cache
+    // 1. Cache: looked up on the cache queue, never on this thread. This is WebKit's loader thread, which delivers every
+    // response of the page: a lookup waiting there held all of them (IKEA's visit from the cache: 35 responses at hand
+    // waited 13-15 s, nothing loaded for 12 s). The load goes on here with what it found.
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
-        __block NSCachedURLResponse *cached = nil;
         NSTimeInterval lookup0 = [NSDate timeIntervalSinceReferenceDate];
-        dispatch_sync(BRCacheQueue(), ^{
-            cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
-            if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data] ||
-                           (BRCachedIsHTML(cached) && ![BRCSSRewriter inlineScriptsPresentIn:cached.data]))) {
-                // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later, or a
-                // document whose inline scripts set aside, are gone from the transpiler's cache: loaded again)
-                [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
-                cached = nil;
+        OSAtomicIncrement32(&g_lookupsWaiting);
+        dispatch_async(BRCacheQueue(), ^{
+            NSCachedURLResponse *cached = nil;
+            @autoreleasepool {
+                cached = BRPendingStoreFor(request) ?: [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
+                if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data] ||
+                               (BRCachedIsHTML(cached) && ![BRCSSRewriter inlineScriptsPresentIn:cached.data]))) {
+                    // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later, or a
+                    // document whose inline scripts set aside, are gone from the transpiler's cache: loaded again)
+                    BRForgetPendingStore(request);
+                    [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
+                    cached = nil;
+                }
             }
+            OSAtomicDecrement32(&g_lookupsWaiting);
+            NSTimeInterval lookup = [NSDate timeIntervalSinceReferenceDate] - lookup0;
+            if (lookup > 1.0) BRLog(@"Cache lookup took %.1f s (%@): %@", lookup, cached ? @"hit" : @"miss", url.absoluteString.length > 120 ? [url.absoluteString substringToIndex:120] : url.absoluteString);
+            [self performOnClientThread:^{ [self continueLoadingWithCached:cached lookedUp:YES]; }];
         });
-        NSTimeInterval lookup = [NSDate timeIntervalSinceReferenceDate] - lookup0;
-        if (lookup > 0.5) BRLog(@"Cache lookup took %.1f s (%@): %@", lookup, cached ? @"hit" : @"miss", url.absoluteString.length > 120 ? [url.absoluteString substringToIndex:120] : url.absoluteString);
+        return;
+    }
+    [self continueLoadingWithCached:nil lookedUp:NO];
+}
+
+// startLoading goes on here (client thread) with the cache's answer: a fresh copy is served, a stale one revalidated
+- (void)continueLoadingWithCached:(NSCachedURLResponse *)cached lookedUp:(BOOL)lookedUp
+{
+    NSURLRequest *request = self.request;
+    NSURL *url = request.URL;
+    NSString *method = request.HTTPMethod.length ? [request.HTTPMethod uppercaseString] : @"GET";
+    NSURLRequestCachePolicy policy = request.cachePolicy;
+    if (lookedUp) {
         if (cached && [cached.response isKindOfClass:[NSHTTPURLResponse class]] && cached.userInfo[BRCacheStoredAtKey]) {
             if (BRCachedResponseIsFresh(cached) || policy == NSURLRequestReturnCacheDataElseLoad || policy == NSURLRequestReturnCacheDataDontLoad) {
                 [self serveCachedResponse:cached];
@@ -1134,8 +1247,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
                             BRCacheRewriteTagKey: self.fontBody ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
     // (the body is not changed after this: the request lets go of it)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
-    NSURLRequest *request = self.request;
-    dispatch_async(BRCacheQueue(), ^{ [[NSURLCache sharedURLCache] storeCachedResponse:c forRequest:request]; });
+    BRStoreLater(c, self.request);   // (written once no lookup waits, see BRStoreLater)
 }
 
 - (void)serveFontDataURL
@@ -1297,22 +1409,31 @@ static BOOL BRIsFontDataURL(NSURL *url)
         }
     } else if ([path isEqualToString:@"/lower"]) {
         // the text of a classic script a page inserts (shims-extra.js lowerClassic): lowered by the transpiler, which keeps
-        // it by the text; an empty body when it needs nothing, an error when it could not be lowered (the page tries itself)
+        // it by the text; an empty body when it needs nothing, an error when it could not be lowered (the page tries itself).
+        // Answered from a queue of its own: the lowering waits for the transpiler, and this thread (WebKit's loader
+        // thread) delivers every response of the page meanwhile
         NSData *src = self.request.HTTPBody ?: BRReadBodyStream(self.request.HTTPBodyStream);
-        BOOL failed = NO;
-        body = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
-        if (!body && !failed) body = [NSData data];
-        type = @"text/plain; charset=utf-8";
-        cacheControl = @"no-store";
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            BOOL failed = NO;
+            NSData *lowered = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
+            if (!lowered && !failed) lowered = [NSData data];
+            [self deliverInternalBody:lowered type:@"text/plain; charset=utf-8" cacheControl:@"no-store"];
+        });
+        return;
     } else if ([path hasPrefix:@"/lazy/"]) {
         // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request
-        // of the page's stub, answered when it is lowered)
+        // of the page's stub, answered when it is lowered; from a queue of its own, as /lower)
         NSArray *comps = [[path substringFromIndex:6] componentsSeparatedByString:@"/"];
         NSString *base = comps.count == 2 ? comps[0] : nil;
         NSString *file = comps.count == 2 ? comps[1] : nil;
         if (base.length && [base rangeOfString:@"^[0-9a-f]+-[0-9a-f]+$" options:NSRegularExpressionSearch].location != NSNotFound &&
-            [file rangeOfString:@"^[0-9]+\\.js$" options:NSRegularExpressionSearch].location != NSNotFound)
-            body = [[BRCSSRewriter shared] lazyModuleForBase:base index:[file integerValue]];
+            [file rangeOfString:@"^[0-9]+\\.js$" options:NSRegularExpressionSearch].location != NSNotFound) {
+            NSInteger index = [file integerValue];
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [self deliverInternalBody:[[BRCSSRewriter shared] lazyModuleForBase:base index:index] type:@"text/javascript; charset=utf-8" cacheControl:@"no-store"];
+            });
+            return;
+        }
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
@@ -1345,6 +1466,12 @@ static BOOL BRIsFontDataURL(NSURL *url)
             return;
         }
     }
+    [self deliverInternalBody:body type:type cacheControl:cacheControl];
+}
+
+// an internal resource's answer (any thread): the body, or a failure when there is none
+- (void)deliverInternalBody:(NSData *)body type:(NSString *)type cacheControl:(NSString *)cacheControl
+{
     self.done = YES;
     if (!body) {
         [self failWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist
@@ -1408,6 +1535,16 @@ static BOOL BRIsFontDataURL(NSURL *url)
     [self performOnClientThread:^{
         [self.client URLProtocol:self didFailWithError:error];
     }];
+}
+
+@end
+
+@implementation BRURLCache
+
+- (void)removeAllCachedResponses
+{
+    [BRURLProtocol dropPendingCacheStores];
+    [super removeAllCachedResponses];
 }
 
 @end
