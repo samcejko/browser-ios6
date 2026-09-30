@@ -12279,7 +12279,7 @@
             owner.createObjectURL.__brBlobText = true;
         };
         try { remember(window.URL); remember(window.webkitURL); } catch (e1) {}
-        var Wrapped = function Worker(url, opts) {
+        var workerURL = function (url) {
             var u = String(url);
             if (/^blob:/i.test(u)) {
                 var src = texts.hasOwnProperty(u) ? texts[u] : read(u), fixed = src ? prepare(src) : null;
@@ -12290,12 +12290,28 @@
                 var hash = u.indexOf('#'), base = hash < 0 ? u : u.slice(0, hash);
                 u = base + (base.indexOf('?') < 0 ? '?' : '&') + '__brwork=1' + (hash < 0 ? '' : u.slice(hash));
             }
+            return u;
+        };
+        var Wrapped = function Worker(url, opts) {
+            var u = workerURL(url);
             return arguments.length > 1 ? new NativeWorker(u, opts) : new NativeWorker(u);
         };
         Wrapped.prototype = NativeWorker.prototype;
         Wrapped.__brWrapped = true;
         window.__brWorkerPrelude = prepare;   // (tests)
         try { window.Worker = Wrapped; } catch (e) {}
+        // the old engine has shared workers too, which need the same (Telegram's web client runs its protocol in one:
+        // "Can't find variable: Promise" there)
+        var NativeShared = window.SharedWorker;
+        if (NativeShared && !NativeShared.__brWrapped) {
+            var WrappedShared = function SharedWorker(url, opts) {
+                var u = workerURL(url);
+                return arguments.length > 1 ? new NativeShared(u, opts) : new NativeShared(u);
+            };
+            WrappedShared.prototype = NativeShared.prototype;
+            WrappedShared.__brWrapped = true;
+            try { window.SharedWorker = WrappedShared; } catch (e6) {}
+        }
     })();
 
     // ---- ES modules. The rewriter turns <script type="module"> into __brModules.entry(src) (inline ones into their

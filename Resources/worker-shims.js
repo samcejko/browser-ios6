@@ -39,6 +39,41 @@
         self.performance.now = function () { return Date.now() - origin; };
         self.performance.timeOrigin = origin;
     }
+    // user timing in workers (Outlook's worker starts with performance.mark("WorkerEntry_LS"))
+    if (self.performance && !self.performance.mark) {
+        (function (perf) {
+            var entries = [];
+            var add = function (e) { entries.push(e); if (entries.length > 1000) entries.shift(); return e; };
+            var timeOf = function (v) {
+                if (typeof v === 'number') return v;
+                if (typeof v === 'string') { for (var i = entries.length - 1; i >= 0; i--) if (entries[i].entryType === 'mark' && entries[i].name === v) return entries[i].startTime; throw new SyntaxError("The mark '" + v + "' does not exist."); }
+                return undefined;
+            };
+            perf.mark = function (name, opts) {
+                return add({ name: String(name), entryType: 'mark', startTime: opts && typeof opts.startTime === 'number' ? opts.startTime : perf.now(), duration: 0, detail: opts && opts.detail !== undefined ? opts.detail : null });
+            };
+            perf.measure = function (name, start, end) {
+                var opts = start && typeof start === 'object' ? start : null, s, e;
+                if (opts) { s = timeOf(opts.start); e = opts.end !== undefined ? timeOf(opts.end) : opts.duration !== undefined && s !== undefined ? s + opts.duration : perf.now(); if (s === undefined) s = opts.duration !== undefined ? e - opts.duration : 0; }
+                else { s = start === undefined ? 0 : timeOf(start); e = end === undefined ? perf.now() : timeOf(end); }
+                return add({ name: String(name), entryType: 'measure', startTime: s, duration: e - s, detail: opts && opts.detail !== undefined ? opts.detail : null });
+            };
+            perf.getEntries = function () { return entries.slice(); };
+            perf.getEntriesByType = function (t) { var out = []; for (var i = 0; i < entries.length; i++) if (entries[i].entryType === t) out.push(entries[i]); return out; };
+            perf.getEntriesByName = function (n, t) { var out = []; for (var i = 0; i < entries.length; i++) if (entries[i].name === n && (!t || entries[i].entryType === t)) out.push(entries[i]); return out; };
+            var clear = function (type) { return function (n) { for (var i = entries.length - 1; i >= 0; i--) if (entries[i].entryType === type && (n === undefined || entries[i].name === n)) entries.splice(i, 1); }; };
+            perf.clearMarks = clear('mark');
+            perf.clearMeasures = clear('measure');
+            perf.clearResourceTimings = function () {};
+        })(self.performance);
+    }
+    if (!self.PerformanceObserver) {
+        self.PerformanceObserver = function PerformanceObserver() {};
+        self.PerformanceObserver.prototype.observe = function () {};
+        self.PerformanceObserver.prototype.disconnect = function () {};
+        self.PerformanceObserver.prototype.takeRecords = function () { return []; };
+        self.PerformanceObserver.supportedEntryTypes = [];
+    }
     if (!self.TextEncoder) {
         var utf8 = function (str) {
             var out = [], i, c, c2;
