@@ -2145,8 +2145,25 @@
         var code;
         if (n.$d) code = this.X(n);
         else { code = this.src.slice(n.start, n.end); this.prec = precOf(n, this.src); }
-        if (this.prec < min) { code = '(' + code + ')'; this.prec = P_PRIMARY; }
+        if (this.prec < min || n.$wrap) { code = '(' + code + ')'; this.prec = P_PRIMARY; }
         return code;
+    };
+    // the node an expression's text starts with (see ExpressionStatement)
+    var leftmostNode = function (n) {
+        for (var guard = 0; n && guard < 200; guard++) {
+            switch (n.type) {
+                case 'CallExpression': n = n.callee; break;
+                case 'MemberExpression': n = n.object; break;
+                case 'TaggedTemplateExpression': n = n.tag; break;
+                case 'ChainExpression': n = n.expression; break;
+                case 'AssignmentExpression': case 'BinaryExpression': case 'LogicalExpression': n = n.left; break;
+                case 'ConditionalExpression': n = n.test; break;
+                case 'SequenceExpression': n = n.expressions[0]; break;
+                case 'UpdateExpression': if (n.prefix) return null; n = n.argument; break;
+                default: return n;
+            }
+        }
+        return null;
     };
     P.X = function (n) {
         var code;
@@ -2807,6 +2824,11 @@
         if (!n.$d) return sliceStmt(this.src, n);
         switch (n.type) {
             case 'ExpressionStatement': {
+                // A statement that starts with a function goes in parentheses. Around the function itself: around the
+                // whole, an assignment to a member of its call, (function(){return a,b}(x).y = z), is refused by the old
+                // engine ("Expected token ')'", once the function holds a comma expression: imgur's lowered classes)
+                var lead = leftmostNode(n.expression);
+                if (lead && (lead.type === 'FunctionExpression' || lead.type === 'ClassExpression' || lead.type === 'ArrowFunctionExpression')) lead.$wrap = true;
                 var code = this.E(n.expression, P_SEQ);
                 if (/^(?:function\b|class\b|\{|let\s*\[)/.test(code)) code = '(' + code + ')';
                 return code + ';';
