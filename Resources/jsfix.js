@@ -414,8 +414,11 @@
             }
             // a proxy that only reads and hands what the target lacks to an object the target holds (Twitch's router
             // wrapper, get: (e, t) => t in e ? e[t] : this.router[t]; router.state came back undefined and React Router
-            // threw): the names of the objects among the target's values, those the trap answers, read through it
-            if (readOnly && typeof target === 'object' && !isArr && !coll) {
+            // threw): the names of the objects among the target's values, those the trap answers, read through it. Only
+            // for an instance of a class (the wrapper returns the proxy from its constructor): the trap runs for names
+            // the page may never read, and a plain object's reading proxy is more often a watcher (Instagram's around its
+            // Redux state makes a proxy of each value it reads, and one of undefined threw "Error creating proxy")
+            if (readOnly && typeof target === 'object' && !isArr && !coll && proto !== null && proto !== undefined && proto !== Object.prototype) {
                 var seenName = {}, asked = 0, own = Object.getOwnPropertyNames(target);
                 for (var oi = 0; oi < own.length && asked < 400; oi++) {
                     var inner;
