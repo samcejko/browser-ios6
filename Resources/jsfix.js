@@ -412,6 +412,29 @@
                 addKeys(inst.data, true);
                 addKeys(inst.props, true);
             }
+            // a proxy that only reads and hands what the target lacks to an object the target holds (Twitch's router
+            // wrapper, get: (e, t) => t in e ? e[t] : this.router[t]; router.state came back undefined and React Router
+            // threw): the names of the objects among the target's values, those the trap answers, read through it
+            if (readOnly && typeof target === 'object' && !isArr && !coll) {
+                var seenName = {}, asked = 0, own = Object.getOwnPropertyNames(target);
+                for (var oi = 0; oi < own.length && asked < 400; oi++) {
+                    var inner;
+                    try { inner = target[own[oi]]; } catch (e10) { continue; }
+                    if (inner === null || typeof inner !== 'object' || inner === target || inner.nodeType || inner.window === inner) continue;
+                    for (var io = inner; io && io !== Object.prototype && asked < 400; io = Object.getPrototypeOf(io)) {
+                        var names = Object.getOwnPropertyNames(io);
+                        for (var ni = 0; ni < names.length && asked < 400; ni++) {
+                            var nm = names[ni];
+                            if (done['$' + nm] !== undefined || seenName['$' + nm] || nm === 'constructor' || nm.slice(0, 5) === '__br_' || hasOwn.call(target, nm)) continue;
+                            seenName['$' + nm] = 1;
+                            asked++;
+                            var got;
+                            try { got = handler.get(target, nm, proxy); } catch (e11) { continue; }
+                            if (got !== undefined && !(nm in proxy)) special(nm, false);
+                        }
+                    }
+                }
+            }
             var flags = ['__v_skip', '__v_isReactive', '__v_isReadonly', '__v_isShallow', '__v_raw'];
             for (var f = 0; f < flags.length; f++) if (done['$' + flags[f]] === undefined) special(flags[f], false);
             // Immer's state (a registered symbol; the polyfilled ones are keys of their own)

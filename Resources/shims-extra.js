@@ -4525,13 +4525,22 @@
             if (applyTimer) return;
             applyTimer = setTimeout(apply, Math.max(120, applyEnd + applyCost * 5 - Date.now()));
         };
-        // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest
-        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
+        // entries of styles scripts inserted at run time (see runtimeCSS), kept across reloads of the page manifest; and
+        // the custom properties those styles define (a CSS-in-JS theme, :root{--x:...} or a class with its own): the root
+        // values and the scoped names, for the rules inserted after them and the variables pass (Twitch's consent banner
+        // lost its background, color and shadow: var() of names nobody had seen)
+        var extra = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] }, extraVars = {}, extraScoped = {}, anyExtraVars = false;
         var mergeExtra = function (m) {
             for (var kind in extra) {
                 if (!extra.hasOwnProperty(kind) || !extra[kind].length) continue;
                 if (!m[kind]) m[kind] = [];
                 m[kind] = m[kind].concat(extra[kind]);
+            }
+            if (anyExtraVars) {
+                var vars = {}, k, mv = m.vars || {};
+                for (k in mv) if (mv.hasOwnProperty(k)) vars[k] = mv[k];
+                for (k in extraVars) if (extraVars.hasOwnProperty(k)) vars[k] = extraVars[k];
+                m.vars = vars;
             }
         };
         // the selectors of the rules with markers, for the marker scan (see markerCandidates)
@@ -4565,19 +4574,35 @@
                 if (e.d) for (k = 0; k < e.d.length; k++) names[e.d[k][0]] = 1;
                 if (e.r) names[e.r[0]] = 1;
             }
+            for (var sn in extraScoped) if (extraScoped.hasOwnProperty(sn)) names[sn] = 1;
             for (var n in names) if (names.hasOwnProperty(n)) list.push(n);
-            window.__brPageVars = { vars: m.vars || {}, scoped: list.join(' ') };
+            var vars = m.vars || {};
+            if (anyExtraVars) {
+                vars = {};
+                for (k in m.vars) if (m.vars.hasOwnProperty(k)) vars[k] = m.vars[k];
+                for (k in extraVars) if (extraVars.hasOwnProperty(k)) vars[k] = extraVars[k];
+            }
+            window.__brPageVars = { vars: vars, scoped: list.join(' ') };
         };
         window.__brManifestAdd = function (add) {
-            var any = false;
+            var any = false, varsNew = false, k3;
             for (var kind in extra) {
                 if (!extra.hasOwnProperty(kind) || !add[kind] || !add[kind].length) continue;
                 extra[kind] = extra[kind].concat(add[kind]);
                 any = true;
             }
-            if (!any) return;
+            if (add.vars) for (k3 in add.vars) if (add.vars.hasOwnProperty(k3) && extraVars[k3] !== add.vars[k3]) { extraVars[k3] = add.vars[k3]; varsNew = anyExtraVars = true; }
+            if (add.scoped) for (k3 = 0; k3 < add.scoped.length; k3++) if (!extraScoped[add.scoped[k3]]) { extraScoped[add.scoped[k3]] = 1; varsNew = true; }
+            if (!any && !varsNew) return;
             if (!manifest) manifest = { has: [], cq: [], dv: [], pt: [], cv: [], sc: [], mk: [], gd: [] };
             for (var k2 in add) if (add.hasOwnProperty(k2) && extra.hasOwnProperty(k2) && add[k2]) manifest[k2] = (manifest[k2] || []).concat(add[k2]);
+            if (varsNew) {
+                var mv = {};
+                for (k3 in manifest.vars) if (manifest.vars.hasOwnProperty(k3)) mv[k3] = manifest.vars[k3];
+                for (k3 in extraVars) if (extraVars.hasOwnProperty(k3)) mv[k3] = extraVars[k3];
+                manifest.vars = mv;
+                notePageVars(manifest);
+            }
             noteMarkerRules(manifest);
             try { if (window.__brDeferred) window.__brDeferred.setManifest(manifest); } catch (e) {}
             try { if (window.__brVars) window.__brVars.setManifest(manifest); } catch (e2) {}
@@ -10321,7 +10346,11 @@
                 r = JSON.parse(lib.run('css', css, pageVars(), opts));
             } catch (e) { return null; }
             noteState(r.vars);
-            if (r.manifest && window.__brManifestAdd) { try { window.__brManifestAdd(r.manifest); } catch (e2) {} }
+            // (with the custom properties this text defines, see extraVars)
+            var add = r.manifest || null, rv = r.vars, defs = null;
+            for (var vk in rv) if (rv.hasOwnProperty(vk) && vk.charAt(0) === '-' && vk.charAt(1) === '-') { if (!defs) defs = {}; defs[vk] = rv[vk]; }
+            if (defs || (r.scoped && r.scoped.length)) { add = add || {}; if (defs) add.vars = defs; if (r.scoped && r.scoped.length) add.scoped = r.scoped; }
+            if (add && window.__brManifestAdd) { try { window.__brManifestAdd(add); } catch (e2) {} }
             // (the page-state and manifest comments close the output)
             return String(r.out || '').replace(/\n?\/\*br-(page|manifest):[\s\S]*$/, '');
         };

@@ -130,6 +130,16 @@ var run = function () {
   rtBox.className = 'rt3 big';
   rtBox.innerHTML = '<i id="rq"></i>';
   document.body.appendChild(rtBox);
+  // a CSS-in-JS theme through insertRule (styled-components on Twitch): root variables, a theme class with its own, then
+  // rules that use them (the variables were unknown to the rules inserted after them: declarations dropped)
+  var thSheet = document.createElement('style');
+  document.head.appendChild(thSheet);
+  thSheet.sheet.insertRule(':root{--th-bg:rgb(1, 2, 3);--th-w:13px}', 0);
+  thSheet.sheet.insertRule('.thm{--th-w:21px}', 1);
+  thSheet.sheet.insertRule('.th1{background-color:var(--th-bg);width:var(--th-w);height:2px}', 2);
+  var thBox = document.createElement('div');
+  thBox.innerHTML = '<div id="th1" class="th1"></div><div class="thm"><div id="th2" class="th1"></div></div>';
+  document.body.appendChild(thBox);
   setTimeout(function () {
     check('class added later', cs('b0').backgroundColor === 'rgb(220, 53, 69)', cs('b0').backgroundColor);
     check('style.setProperty(--sp)', document.getElementById('sp1').offsetWidth === 77, document.getElementById('sp1').offsetWidth);
@@ -137,6 +147,9 @@ var run = function () {
     check('insertRule rewritten, still one rule', inserted === 0 && r0.length === 1 && /-webkit-box/.test(r0[0].cssText) && /rgba\(0, 0, 255, 0\.5\)/.test(r0[0].cssText), r0.length + ' ' + (r0[0] && r0[0].cssText));
     check('<style> text rewritten', /-webkit-box/.test(rtText.textContent) && /top:\s*0/.test(rtText.textContent), rtText.textContent);
     check('runtime style with scoped custom properties', document.getElementById('rq').offsetWidth === 9, document.getElementById('rq').offsetWidth + ' ' + rtVars.textContent.slice(0, 200));
+    var th1 = document.getElementById('th1'), th2 = document.getElementById('th2');
+    check('CSS-in-JS theme variables through insertRule', cs('th1').backgroundColor === 'rgb(1, 2, 3)' && th1.offsetWidth === 13 && th2.offsetWidth === 21,
+      cs('th1').backgroundColor + ' ' + th1.offsetWidth + ' ' + th2.offsetWidth + ' | ' + [].map.call(thSheet.sheet.cssRules, function (r) { return r.cssText; }).join(' '));
     // state pseudo-classes (hover, focus, checked...): an event redoes only what those rules match (with the subtree
     // where they define custom properties), not the whole page. (:checked here: the test page has no focus)
     var tick = function (id, on) {
