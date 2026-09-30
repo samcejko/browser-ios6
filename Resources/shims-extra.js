@@ -1203,7 +1203,7 @@
         if (!ctor) return;
         if (connecting && el.shadowRoot && window.__brHostSheets) window.__brHostSheets.sync(el.shadowRoot, el);
         if (el.__brUpgraded) {
-            if (connecting && el.connectedCallback) try { el.connectedCallback(); } catch (e0) {}
+            if (connecting && el.connectedCallback) { flushAttrChanges(el); try { el.connectedCallback(); } catch (e0) {} }
             return;
         }
         el.__brUpgraded = true;
@@ -1217,7 +1217,7 @@
             for (var i = 0; i < observed.length; i++) if (el.hasAttribute(observed[i]) && el.attributeChangedCallback) el.attributeChangedCallback(observed[i], null, el.getAttribute(observed[i]), null);
             // later changes of the observed attributes
             if (observed.length && el.attributeChangedCallback && window.MutationObserver) {
-                var attrObserver = new MutationObserver(function (records) {
+                var attrChanges = function (records) {
                     for (var r = 0; r < records.length; r++) {
                         var an = records[r].attributeName, old = records[r].oldValue, k;
                         // (the value this change made: the old value of the next change of that attribute in the batch,
@@ -1231,12 +1231,24 @@
                         if (old === now) continue;
                         try { el.attributeChangedCallback(an, old, now, null); } catch (e5) { if (window.console && console.error) console.error(e5); }
                     }
-                });
+                };
+                var attrObserver = new MutationObserver(attrChanges);
                 attrObserver.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: Array.prototype.slice.call(observed) });
                 el.__brAttrObserver = attrObserver;
+                el.__brAttrChanges = attrChanges;
             }
         } catch (e3) {}
         try { if (el.connectedCallback && document.documentElement.contains(el)) el.connectedCallback(); } catch (e4) {}
+    }
+    // Attribute changes still waiting in the element's observer, told now: native custom elements hear of an attribute
+    // at once, and a script that sets attributes and then inserts the element finds them in connectedCallback (TikTok's
+    // cookie banner read its user-config-ele-id there, still unset: JSON.parse(undefined))
+    function flushAttrChanges(el) {
+        var ob = el.__brAttrObserver, handle = el.__brAttrChanges;
+        if (!ob || !handle || !ob.takeRecords) return;
+        var records = null;
+        try { records = ob.takeRecords(); } catch (e) { records = null; }
+        if (records && records.length) handle(records);
     }
     function upgradeTree(root, connecting) {
         if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) return;

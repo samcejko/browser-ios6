@@ -49,6 +49,12 @@ var es5out = JSFix.run(es5, '{}');
 results.es5CtorText = es5out.indexOf('__br_ctor(this)') >= 0 && es5out.indexOf('this.constructor') < 0;
 (0, eval)(es5out || es5);
 results.es5Ctor = document.createElement('es5-tag').seenProps === 'p';
+// an attribute set between createElement and insertion is known in connectedCallback (TikTok's cookie banner)
+(0, eval)(JSFix.transpile('class CfgEl extends HTMLElement { static get observedAttributes() { return ["cfg"]; } attributeChangedCallback(n, o, v) { this.cfg = v; } connectedCallback() { window.__cfgSeen = this.cfg; } } customElements.define("cfg-el", CfgEl);', {}));
+var cfgEl = document.createElement('cfg-el');
+cfgEl.setAttribute('cfg', 'set before insertion');
+document.getElementById('host').appendChild(cfgEl);
+setTimeout(function () { results.attrBeforeConnect = window.__cfgSeen === 'set before insertion' ? true : String(window.__cfgSeen); }, 20);
 results.markup = document.querySelector('my-greet').textContent;
 results.litLike = document.getElementById('litLike').seen === 'label';
 var a = document.createElement('my-greet');
