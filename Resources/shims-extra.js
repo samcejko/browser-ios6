@@ -8826,6 +8826,36 @@
         }, false);
         document.addEventListener('keydown', function (e) { if (e.keyCode === 27) for (var i = open.length - 1; i >= 0; i--) if ((open[i].getAttribute('popover') || 'auto').toLowerCase() !== 'manual') hide(open[i], true); }, false);
     })();
+    // WebGL work left in the GPU's queue: a context that goes (the garbage collector took its canvas) with rendering still
+    // queued crashes the iPad's driver (glDeleteRenderbuffers -> sgxEndRender -> sgxPatchDeferredFramebufferOffsets,
+    // SIGSEGV). A canvas on the screen is presented, which flushes; a fingerprinting script's canvas outside the document
+    // never is (LinkedIn made three at start: the app crashed every time a few seconds later). So each context with new
+    // work is flushed at the end of the task; the pending list holds it until then.
+    var glPending = [];
+    var glFlushAll = function () {
+        var list = glPending;
+        glPending = [];
+        for (var i = 0; i < list.length; i++) { list[i].__brGLDirty = false; try { list[i].flush(); } catch (e) {} }
+    };
+    var glDirty = function (gl) {
+        if (gl.__brGLDirty) return;
+        gl.__brGLDirty = true;
+        glPending.push(gl);
+        if (glPending.length === 1) setTimeout(glFlushAll, 0);
+    };
+    var WGLp = window.WebGLRenderingContext && window.WebGLRenderingContext.prototype;
+    if (WGLp && !WGLp.__brFlushes) {
+        WGLp.__brFlushes = true;
+        var glWork = function (name) {
+            var orig = WGLp[name];
+            if (typeof orig !== 'function') return;
+            WGLp[name] = function (a, b, c, d) {
+                if (this.__brGLDirty !== true) glDirty(this);
+                return orig.call(this, a, b, c, d);
+            };
+        };
+        glWork('clear'); glWork('drawArrays'); glWork('drawElements');
+    }
     // The engine knows WebGL only under its experimental name; pages ask for 'webgl' (and 'webgl2', which does not exist here)
     if (HCp && HCp.getContext && !HCp.__brGLAlias) {
         HCp.__brGLAlias = true;
@@ -8833,6 +8863,8 @@
         HCp.getContext = function (type, attrs) {
             var ctx = origGL.apply(this, arguments);
             if (!ctx && type === 'webgl') { try { ctx = origGL.call(this, 'experimental-webgl', attrs); } catch (e) {} }
+            // (a new context clears its drawing buffer: work already)
+            if (ctx && WGLp && typeof type === 'string' && type.indexOf('webgl') >= 0 && !ctx.__brGLSeen) { ctx.__brGLSeen = true; glDirty(ctx); }
             return ctx;
         };
     }
@@ -11922,6 +11954,26 @@
                 Object.defineProperty(window.ResizeObserverEntry.prototype, 'devicePixelContentBoxSize', { get: function () { var s = sizeOf(this, false)[0], r = window.devicePixelRatio || 1; return [new window.ResizeObserverSize(s.inlineSize * r, s.blockSize * r)]; }, configurable: true });
             } catch (e5) {}
         }
+        // The resize observer polyfill takes only `target instanceof target.ownerDocument.defaultView.Element`: an element
+        // this window made and put into an iframe's document is none of that one's (Airbnb's start observed such a
+        // div: 'parameter 1 is not of type "Element"', its setup stopped there). A native observer takes any element:
+        // such a one is left unobserved here (what an iframe lays out is not measured in this window anyway).
+        var ROp = window.ResizeObserver && window.ResizeObserver.prototype;
+        if (ROp && !ROp.__brOtherDoc && !/\[native code\]/.test(String(window.ResizeObserver))) {
+            ROp.__brOtherDoc = true;
+            var foreign = function (t) {
+                var od = t && t.nodeType === 1 ? t.ownerDocument : null, dv = od && od !== document ? od.defaultView : null;
+                if (!dv || dv === window) return false;
+                try { return !(t instanceof dv.Element); } catch (e) { return true; }
+            };
+            var roSkip = function (name) {
+                var orig = ROp[name];
+                if (typeof orig !== 'function') return;
+                ROp[name] = function (t) { return foreign(t) ? undefined : orig.apply(this, arguments); };
+            };
+            roSkip('observe');
+            roSkip('unobserve');
+        }
         // font loading extras
         if (window.FontFace) {
             if (!window.FontFaceFeatures) window.FontFaceFeatures = function FontFaceFeatures() {};
@@ -12408,7 +12460,11 @@
         // element goes in (it runs when inserted)
         var CLASSIC_TYPE = /^\s*$|^\s*(text|application)\/(x-)?(java|ecma)script\s*(;.*)?$|^\s*text\/jscript\s*$/i;
         var lowerClassic = function (n) {
-            if (!n || n.nodeType !== 1 || n.nodeName !== 'SCRIPT' || n.__brClassic || n.getAttribute('src') !== null) return;
+            if (!n || n.nodeType !== 1 || n.nodeName !== 'SCRIPT' || n.__brClassic) return;
+            // a script file in CORS mode: as in the documents (see cssfix.js), the engine refused to run a file it had
+            // loaded without the attribute (Airbnb's loader asks again for chunks the document loaded, crossorigin=
+            // "anonymous": error events, "Failed to async require", no page)
+            if (n.getAttribute('src') !== null) { if (n.hasAttribute('crossorigin')) n.removeAttribute('crossorigin'); return; }
             var t = n.getAttribute('type');
             if (t !== null && !CLASSIC_TYPE.test(t)) return;
             try { n.__brClassic = true; } catch (e0) {}
