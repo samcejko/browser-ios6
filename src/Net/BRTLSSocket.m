@@ -847,6 +847,19 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
     return NO;   // unexpected bytes on an idle connection (e.g. a TLS close_notify): do not reuse
 }
 
+- (int)fileDescriptor
+{
+    @synchronized (self) {
+        return _net.fd;
+    }
+}
+
+- (BOOL)hasBufferedData
+{
+    if (self.plain || !_connected || !_initialized) return NO;
+    return mbedtls_ssl_get_bytes_avail(&_ssl) > 0 || mbedtls_ssl_check_pending(&_ssl);
+}
+
 - (void)setReadTimeoutMs:(uint32_t)ms
 {
     _readTimeoutMs = ms;

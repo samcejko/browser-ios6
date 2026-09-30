@@ -144,6 +144,18 @@ delete window.AbortController; delete window.AbortSignal;
     var ts = AbortSignal.timeout(10);
     setTimeout(function () { check('AbortSignal.timeout', ts.aborted && ts.reason && ts.reason.name === 'TimeoutError', ts.reason && ts.reason.name); end(); }, 80);
 
+    // WebSocket: the wrapper (the app's local proxy is not there on the desktop, so sockets stay the browser's own)
+    var wsOk = false, wsInfo = '';
+    try {
+        var w1 = new WebSocket('/br-no-socket'), w2 = new WebSocket('wss://127.0.0.1:1/x', ['a', 'b']);
+        wsInfo = w1.url + ' ' + w2.url;
+        wsOk = w1 instanceof WebSocket && w1.url === 'ws://' + location.host + '/br-no-socket' && /^wss:\/\/127\.0\.0\.1:1\/x/.test(w2.url) &&
+            WebSocket.OPEN === 1 && WebSocket.name === 'WebSocket' && w1.constructor === WebSocket;
+        w1.onerror = w2.onerror = function () {};
+        w1.close(); w2.close();
+    } catch (e) { wsInfo = 'threw ' + e; }
+    check('WebSocket wrapper', wsOk, wsInfo);
+
     // Array.fromAsync
     var closed = 0;
     var gen = function () { var n = 0; var o = { next: function () { n++; return n <= 3 ? { value: n, done: false } : { value: undefined, done: true }; }, 'return': function () { closed++; return { done: true }; } }; o[Symbol.iterator] = function () { return o; }; return o; };

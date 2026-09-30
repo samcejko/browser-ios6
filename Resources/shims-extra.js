@@ -12743,6 +12743,39 @@
         watchInsert(ElementP, 'after');
         watchInsert(ElementP, 'replaceWith');
     })();
+    // ---- WebSockets through the app's network layer: WebCore opens wss:// with the system's TLS, which knows neither
+    // today's ciphers nor today's root certificates (Let's Encrypt), so most secure sockets never opened. A wss://
+    // socket asks the app for a local ws:// address (BRMediaProxy), which opens the real one with the app's own TLS and
+    // passes the frames through. Relative and http(s) URLs are taken too, as today's browsers take them.
+    (function () {
+        var Native = window.WebSocket;
+        if (!Native || (typeof Native !== 'function' && typeof Native !== 'object') || Native.__brLocal || !Native.prototype) return;
+        var resolve = function (u) {
+            var s = String(u);
+            if (/^wss?:\/\//i.test(s)) return s;
+            var a = document.createElement('a');
+            a.href = s;
+            return a.href.replace(/^http(s?):/i, 'ws$1:');
+        };
+        var local = function (target) {
+            if (!/^wss:/i.test(target)) return null;
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', 'https://ios6-browser.invalid/wsproxy?u=' + encodeURIComponent(target), false);
+                x.send(null);
+                return x.status === 200 ? JSON.parse(x.responseText).url : null;
+            } catch (e) { return null; }
+        };
+        function WebSocket(url, protocols) {
+            var target = resolve(url), via = local(target) || target;
+            return protocols === undefined ? new Native(via) : new Native(via, protocols);
+        }
+        WebSocket.prototype = Native.prototype;
+        WebSocket.CONNECTING = 0; WebSocket.OPEN = 1; WebSocket.CLOSING = 2; WebSocket.CLOSED = 3;
+        WebSocket.__brLocal = true;
+        try { Native.prototype.constructor = WebSocket; } catch (e) {}
+        try { window.WebSocket = WebSocket; } catch (e2) {}
+    })();
     // ---- Library additions of ES2024-2026 that core-js 3.41 still counts among its proposals (the bundle leaves those
     // out, see build.yml): Array.fromAsync (Baseline 2024: bundles call it as it is), Uint8Array base64/hex,
     // Error.isError, Iterator.concat, and Symbol.dispose / Symbol.asyncDispose for TypeScript's lowered `using`

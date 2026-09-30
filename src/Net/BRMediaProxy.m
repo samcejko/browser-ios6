@@ -1,5 +1,6 @@
 #import "BRMediaProxy.h"
 #import "BRHTTPRequest.h"
+#import "BRTLSSocket.h"
 #import "BRSettings.h"
 #import "BRCommon.h"
 
@@ -9,8 +10,11 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <poll.h>
+#include <CommonCrypto/CommonDigest.h>
 
 static const NSUInteger BRMediaProxyMaxEntries = 4000;   // (an HLS stream registers every segment it lists)
+static const NSUInteger BRWebSocketMaxEntries = 200;     // (handed out, not yet connected)
 
 @interface BRMediaProxy ()
 @property (nonatomic) int listenFD;
@@ -20,7 +24,49 @@ static const NSUInteger BRMediaProxyMaxEntries = 4000;   // (an HLS stream regis
 @property (nonatomic, strong) NSMutableDictionary *idsByURL;   // absolute URL -> id
 @property (nonatomic, strong) NSMutableArray *order;           // ids, oldest first
 @property (nonatomic) NSUInteger nextId;
+@property (nonatomic, copy) NSString *wsSecret;                // (a secret of its own: pages see the socket addresses)
+@property (nonatomic, strong) NSMutableDictionary *wsEntries;  // id -> @[url, page url]
+@property (nonatomic, strong) NSMutableArray *wsOrder;
 @end
+
+static NSString *BRBase64(const unsigned char *p, size_t n)
+{
+    static const char *T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    NSMutableString *s = [NSMutableString stringWithCapacity:(n + 2) / 3 * 4];
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)p[i] << 16 | (i + 1 < n ? (uint32_t)p[i + 1] << 8 : 0) | (i + 2 < n ? (uint32_t)p[i + 2] : 0);
+        [s appendFormat:@"%c%c%c%c", T[(v >> 18) & 63], T[(v >> 12) & 63], i + 1 < n ? T[(v >> 6) & 63] : '=', i + 2 < n ? T[v & 63] : '='];
+    }
+    return s;
+}
+
+// Sec-WebSocket-Accept for a Sec-WebSocket-Key (RFC 6455)
+static NSString *BRWebSocketAccept(NSString *key)
+{
+    NSData *d = [[key stringByAppendingString:@"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"] dataUsingEncoding:NSASCIIStringEncoding];
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(d.bytes, (CC_LONG)d.length, digest);
+    return BRBase64(digest, sizeof(digest));
+}
+
+// The lines of a request or response head: the first line's words, and the headers with lowercase names (Set-Cookie
+// values collected apart)
+static NSDictionary *BRParseHead(NSData *head, NSArray **firstLine, NSMutableArray *setCookies)
+{
+    NSString *text = [[NSString alloc] initWithData:head encoding:NSISOLatin1StringEncoding] ?: @"";
+    NSArray *lines = [text componentsSeparatedByString:@"\r\n"];
+    if (firstLine) *firstLine = [lines.firstObject componentsSeparatedByString:@" "];
+    NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+    for (NSUInteger i = 1; i < lines.count; i++) {
+        NSRange colon = [lines[i] rangeOfString:@":"];
+        if (colon.location == NSNotFound) continue;
+        NSString *name = [[lines[i] substringToIndex:colon.location] lowercaseString];
+        NSString *value = [[lines[i] substringFromIndex:colon.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if ([name isEqualToString:@"set-cookie"]) { [setCookies addObject:value]; continue; }
+        headers[name] = value;
+    }
+    return headers;
+}
 
 // (cookies go with the media request only to the page's own site when third-party cookies are blocked, as in
 // BRURLProtocol: the registrable domain is the last two labels)
@@ -103,6 +149,11 @@ static NSString *BRResponseHead(NSInteger status, NSDictionary *headers, BOOL ke
     NSMutableString *secret = [NSMutableString string];
     for (int i = 0; i < 4; i++) [secret appendFormat:@"%08x", arc4random()];
     self.secret = secret;
+    NSMutableString *wsSecret = [NSMutableString string];
+    for (int i = 0; i < 4; i++) [wsSecret appendFormat:@"%08x", arc4random()];
+    self.wsSecret = wsSecret;
+    self.wsEntries = [NSMutableDictionary dictionary];
+    self.wsOrder = [NSMutableArray array];
     self.listenFD = -1;
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) { BRLog(@"Media proxy: no socket (%d)", errno); return; }
@@ -151,6 +202,34 @@ static NSString *BRResponseHead(NSInteger status, NSDictionary *headers, BOOL ke
     NSString *last = url.lastPathComponent.length && ![url.lastPathComponent isEqualToString:@"/"] ? url.lastPathComponent : @"media";
     last = [last stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @"media";
     return [NSString stringWithFormat:@"http://127.0.0.1:%u/%@/%@/%@", self.port, self.secret, ident, last];
+}
+
+- (NSString *)webSocketURLStringForURL:(NSURL *)url pageURL:(NSURL *)pageURL
+{
+    if (self.listenFD < 0 || !url.host.length) return nil;
+    NSString *ident;
+    @synchronized (self) {
+        ident = [NSString stringWithFormat:@"%lu", (unsigned long)++self.nextId];
+        self.wsEntries[ident] = @[url, pageURL ?: url];
+        [self.wsOrder addObject:ident];
+        while (self.wsOrder.count > BRWebSocketMaxEntries) {
+            [self.wsEntries removeObjectForKey:self.wsOrder[0]];
+            [self.wsOrder removeObjectAtIndex:0];
+        }
+    }
+    return [NSString stringWithFormat:@"ws://127.0.0.1:%u/%@/%@", self.port, self.wsSecret, ident];
+}
+
+// (taken: one connection per id)
+- (NSArray *)webSocketEntryForPath:(NSString *)path
+{
+    NSArray *parts = [path componentsSeparatedByString:@"/"];   // "", ws secret, id
+    if (parts.count < 3 || ![parts[1] isEqualToString:self.wsSecret]) return nil;
+    @synchronized (self) {
+        NSArray *entry = self.wsEntries[parts[2]];
+        if (entry) { [self.wsEntries removeObjectForKey:parts[2]]; [self.wsOrder removeObject:parts[2]]; }
+        return entry;
+    }
 }
 
 - (NSArray *)entryForPath:(NSString *)path
@@ -206,6 +285,14 @@ static NSString *BRResponseHead(NSInteger status, NSDictionary *headers, BOOL ke
             if (colon.location == NSNotFound) continue;
             headers[[[lines[i] substringToIndex:colon.location] lowercaseString]] =
                 [[lines[i] substringFromIndex:colon.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        }
+        NSArray *socketEntry = requestLine.count >= 2 && [method isEqualToString:@"GET"] ? [self webSocketEntryForPath:requestLine[1]] : nil;
+        if (socketEntry) {
+            NSUInteger after = end.location + end.length;
+            NSData *early = after < buffer.length ? [buffer subdataWithRange:NSMakeRange(after, buffer.length - after)] : nil;
+            [self relayWebSocket:socketEntry headers:headers early:early to:fd];
+            close(fd);
+            return;
         }
         NSArray *entry = requestLine.count >= 2 ? [self entryForPath:requestLine[1]] : nil;
         if (!entry || !([method isEqualToString:@"GET"] || [method isEqualToString:@"HEAD"])) {
@@ -284,6 +371,128 @@ static NSString *BRResponseHead(NSInteger status, NSDictionary *headers, BOOL ke
         if (!headSent && !broken) BRSendString(fd, @"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
     }
+}
+
+// One WebSocket of the page: the real one opened through the app's network layer, then WebCore's handshake answered,
+// then the bytes passed both ways on this thread (poll on both sockets; the TLS socket is used from this thread only).
+- (void)relayWebSocket:(NSArray *)entry headers:(NSDictionary *)client early:(NSData *)early to:(int)fd
+{
+    NSURL *url = entry[0], *page = entry[1];
+    NSString *key = client[@"sec-websocket-key"];
+    if (!key.length || ![[client[@"upgrade"] lowercaseString] isEqualToString:@"websocket"]) {
+        BRSendString(fd, @"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
+    }
+    BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"wss"];
+    int port = url.port ? url.port.intValue : (secure ? 443 : 80);
+    NSString *host = url.host;
+    // (the same address as http(s), for the cookie jar)
+    NSURL *httpURL = [NSURL URLWithString:[(secure ? @"https" : @"http") stringByAppendingString:[url.absoluteString substringFromIndex:url.scheme.length]]] ?: url;
+    BRTLSSocket *up = [[BRTLSSocket alloc] init];
+    up.plain = !secure;
+    NSError *error = nil;
+    if (![up connectToHost:host port:port verify:[BRSettings verifyTLS] connectTimeoutMs:20000 readTimeoutMs:20000 error:&error]) {
+        BRLog(@"WebSocket proxy: %@ failed: %@", host, error.localizedDescription);
+        BRSendString(fd, @"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        [up close];
+        return;
+    }
+    // the request target: path and query as written, no fragment
+    NSString *abs = url.absoluteString;
+    NSRange schemeEnd = [abs rangeOfString:@"://"];
+    NSString *rest = schemeEnd.location == NSNotFound ? abs : [abs substringFromIndex:schemeEnd.location + 3];
+    NSRange slash = [rest rangeOfString:@"/"], query = [rest rangeOfString:@"?"];
+    NSString *target = slash.location != NSNotFound && (query.location == NSNotFound || slash.location < query.location) ? [rest substringFromIndex:slash.location] :
+        query.location != NSNotFound ? [@"/" stringByAppendingString:[rest substringFromIndex:query.location]] : @"/";
+    NSRange hash = [target rangeOfString:@"#"];
+    if (hash.location != NSNotFound) target = [target substringToIndex:hash.location];
+    unsigned char nonce[16];
+    for (int i = 0; i < 16; i++) nonce[i] = (unsigned char)arc4random_uniform(256);
+    NSString *upKey = BRBase64(nonce, sizeof(nonce));
+    BOOL defaultPort = (secure && port == 443) || (!secure && port == 80);
+    NSMutableString *req = [NSMutableString stringWithFormat:@"GET %@ HTTP/1.1\r\nHost: %@\r\n", target, defaultPort ? host : [NSString stringWithFormat:@"%@:%d", host, port]];
+    [req appendFormat:@"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %@\r\n", upKey];
+    // (the page's own Origin, as WebCore sent it: servers check it; no extensions, so the frames stay as WebCore makes them)
+    if (client[@"origin"]) [req appendFormat:@"Origin: %@\r\n", client[@"origin"]];
+    if (client[@"sec-websocket-protocol"]) [req appendFormat:@"Sec-WebSocket-Protocol: %@\r\n", client[@"sec-websocket-protocol"]];
+    [req appendFormat:@"User-Agent: %@\r\n", [BRSettings userAgentOverrideForURL:httpURL] ?: [BRHTTPRequest defaultUserAgent]];
+    if (client[@"accept-language"]) [req appendFormat:@"Accept-Language: %@\r\n", client[@"accept-language"]];
+    [req appendString:@"Pragma: no-cache\r\nCache-Control: no-cache\r\n"];
+    BOOL cookiesAllowed = ![BRSettings blockThirdPartyCookies] || BRMediaSameSite(url, page);
+    if (cookiesAllowed) {
+        NSArray *cookies = nil;
+        @synchronized (BRCookieLock()) { cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:httpURL]; }
+        NSString *cookie = cookies.count ? [NSHTTPCookie requestHeaderFieldsWithCookies:cookies][@"Cookie"] : nil;
+        if (cookie.length) [req appendFormat:@"Cookie: %@\r\n", cookie];
+    }
+    [req appendString:@"\r\n"];
+    if (![up writeData:[req dataUsingEncoding:NSUTF8StringEncoding] error:&error]) {
+        BRLog(@"WebSocket proxy: %@ handshake not sent: %@", host, error.localizedDescription);
+        BRSendString(fd, @"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        [up close];
+        return;
+    }
+    // the server's answer
+    NSMutableData *acc = [NSMutableData data];
+    NSData *blank = [@"\r\n\r\n" dataUsingEncoding:NSASCIIStringEncoding];
+    NSRange headEnd = NSMakeRange(NSNotFound, 0);
+    unsigned char buf[16384];
+    while (acc.length < 65536) {
+        NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:&error];
+        if (n <= 0) break;
+        [acc appendBytes:buf length:(NSUInteger)n];
+        headEnd = [acc rangeOfData:blank options:0 range:NSMakeRange(0, acc.length)];
+        if (headEnd.location != NSNotFound) break;
+    }
+    NSArray *status = nil;
+    NSMutableArray *setCookies = [NSMutableArray array];
+    NSDictionary *answer = headEnd.location != NSNotFound ? BRParseHead([acc subdataWithRange:NSMakeRange(0, headEnd.location)], &status, setCookies) : nil;
+    if (!answer || status.count < 2 || ![status[1] isEqualToString:@"101"] ||
+        ![answer[@"sec-websocket-accept"] isEqualToString:BRWebSocketAccept(upKey)]) {
+        BRLog(@"WebSocket proxy: %@ refused (%@)", host, status.count >= 2 ? status[1] : (error.localizedDescription ?: @"no answer"));
+        BRSendString(fd, @"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        [up close];
+        return;
+    }
+    if (cookiesAllowed && setCookies.count) {
+        NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+        for (NSString *value in setCookies) {
+            NSArray *cookies = [NSHTTPCookie cookiesWithResponseHeaderFields:@{ @"Set-Cookie": value } forURL:httpURL];
+            if (cookies.count) { @synchronized (BRCookieLock()) { [jar setCookies:cookies forURL:httpURL mainDocumentURL:page ?: httpURL]; } }
+        }
+    }
+    // WebCore's handshake answered
+    NSMutableString *reply = [NSMutableString stringWithFormat:@"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %@\r\n", BRWebSocketAccept(key)];
+    if (answer[@"sec-websocket-protocol"]) [reply appendFormat:@"Sec-WebSocket-Protocol: %@\r\n", answer[@"sec-websocket-protocol"]];
+    [reply appendString:@"\r\n"];
+    NSUInteger after = headEnd.location + headEnd.length;
+    BOOL ok = BRSendString(fd, reply) && (after >= acc.length || BRSendAll(fd, (const char *)acc.bytes + after, acc.length - after));
+    if (ok && early.length) ok = [up writeData:early error:NULL];
+    BRLog(@"WebSocket proxy: %@ open (%@)", host, secure ? (up.tlsVersion ?: @"TLS") : @"plain");
+    // (a record that started arriving is complete within this; between frames the sockets wait in poll)
+    [up setReadTimeoutMs:15000];
+    while (ok) {
+        if ([up hasBufferedData]) {
+            NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
+            if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) break;
+            continue;
+        }
+        struct pollfd p[2] = { { fd, POLLIN, 0 }, { up.fileDescriptor, POLLIN, 0 } };
+        int r = poll(p, 2, 60000);
+        if (r < 0) { if (errno == EINTR) continue; break; }
+        if (r == 0) continue;
+        if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            if (![up writeData:[NSData dataWithBytesNoCopy:buf length:(NSUInteger)n freeWhenDone:NO] error:NULL]) break;
+        }
+        if (p[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
+            if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) break;
+        }
+    }
+    BRLog(@"WebSocket proxy: %@ closed", host);
+    [up close];
 }
 
 // Every URI of an HLS playlist (media lines, URI="..." of keys, maps, renditions) as an absolute proxy URL.

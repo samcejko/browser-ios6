@@ -1341,6 +1341,18 @@ static BOOL BRIsFontDataURL(NSURL *url)
         body = [NSJSONSerialization dataWithJSONObject:@{ @"url": proxied ?: [NSNull null] } options:0 error:NULL];
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
+    } else if ([path isEqualToString:@"/wsproxy"]) {
+        // a WebSocket the page opens: the local address WebCore connects to instead, the socket itself going through the
+        // app's network layer (see BRMediaProxy)
+        NSString *u = nil;
+        for (NSString *pair in [(self.request.URL.query ?: @"") componentsSeparatedByString:@"&"])
+            if ([pair hasPrefix:@"u="]) u = [[pair substringFromIndex:2] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
+        NSURL *socketURL = u.length ? [NSURL URLWithString:u] : nil;
+        NSString *scheme = [socketURL.scheme lowercaseString];
+        NSString *local = ([scheme isEqualToString:@"wss"] || [scheme isEqualToString:@"ws"]) ? [[BRMediaProxy shared] webSocketURLStringForURL:socketURL pageURL:self.request.mainDocumentURL] : nil;
+        body = [NSJSONSerialization dataWithJSONObject:@{ @"url": local ?: [NSNull null] } options:0 error:NULL];
+        type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/speech/"]) {
         // speechSynthesis of the page shim: info (voices), speak / cancel / pause / resume, and the events poll
         NSMutableDictionary *q = [NSMutableDictionary dictionary];

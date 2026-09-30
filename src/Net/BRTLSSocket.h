@@ -24,6 +24,11 @@
 - (BOOL)isLikelyAlive;                       // idle socket still open and nothing pending from the peer
 - (void)setReadTimeoutMs:(uint32_t)ms;       // applies to subsequent reads
 
+// For a relay that waits on several sockets at once (poll): the TCP descriptor, and whether bytes the TLS layer
+// already took from it wait to be read (poll does not see those)
+@property (nonatomic, readonly) int fileDescriptor;
+- (BOOL)hasBufferedData;
+
 @property (nonatomic, readonly) NSString *cipherSuite;
 @property (nonatomic, readonly) NSString *tlsVersion;
 
