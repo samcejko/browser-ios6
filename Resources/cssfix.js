@@ -4864,10 +4864,16 @@ var CSSFix = (function () {
         return out;
     }
 
+    // the value of an attribute, attribute by attribute: data-type="gh" is not a type (eBay's inline scripts with ?. were
+    // taken for a script type of their own and not lowered: "Unexpected token '.'"), nor is type=... inside a value
+    var ATTR = /([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
     function attrValue(attrs, name) {
-        var m = new RegExp('\\b' + name + '\\s*=\\s*("([^"]*)"|\'([^\']*)\'|([^\\s>]+))', 'i').exec(attrs);
-        if (!m) return null;
-        return m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+        var m;
+        ATTR.lastIndex = 0;
+        while ((m = ATTR.exec(attrs)) !== null) {
+            if (m[1].toLowerCase() === name) return m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : '';
+        }
+        return null;
     }
 
     function jsString(s) {
@@ -4883,7 +4889,7 @@ var CSSFix = (function () {
         }
         // module scripts go to the module loader of the page shim (in the polyfill bundle of main documents), unless the
         // page ships a nomodule fallback: that one runs as it is (the old engine skips type=module on its own)
-        var modules = !!(opts && opts.transpile && opts.polyfillURL) && !/<script\b[^>]*\bnomodule\b/i.test(html), moduleCount = 0;
+        var modules = !!(opts && opts.transpile && opts.polyfillURL) && !/<script\b[^>]*\snomodule\b/i.test(html), moduleCount = 0;
         var pageId = opts && opts.pageURL ? String(opts.pageURL).replace(/#.*$/, '') : 'about:blank';
         html = html.replace(re, function (all, open, attrs, body, close) {
             var type = attrValue(attrs, 'type') || '';

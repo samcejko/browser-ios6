@@ -148,11 +148,14 @@
             try { Object.defineProperty(C, '__br_c', { value: 1 }); } catch (e) {}
             return C;
         },
-        // native constructors (built-ins, DOM interfaces) cannot be called on an existing object
+        // native constructors (built-ins, DOM interfaces) cannot be called on an existing object. (The hot helpers keep
+        // try and inner functions in helpers of their own: the old engine charges a function that has one on every call.)
         __br_isNative: function (f) {
             if (typeof f !== 'function') return true;
             if (f.__br_c) return false;
-            if (Object.prototype.hasOwnProperty.call(f, '__br_n')) return f.__br_n;
+            return Object.prototype.hasOwnProperty.call(f, '__br_n') ? f.__br_n : __br_nativeLook(f);
+        },
+        __br_nativeLook: function (f) {
             var n;
             try { n = /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(f)); } catch (e) { n = true; }
             try { Object.defineProperty(f, '__br_n', { value: n }); } catch (e2) {}
@@ -482,13 +485,14 @@
         // super(...args) in a derived constructor: the object the constructor continues with
         __br_super: function (self, S, args) {
             if (S === null) return self;
-            if (__br_isNative(S)) {
-                var r = __br_new(S, args), p = Object.getPrototypeOf(self);
-                if (p && r !== null && (typeof r === 'object' || typeof r === 'function')) { try { r.__proto__ = p; } catch (e) {} }
-                return r;
-            }
+            if (__br_isNative(S)) return __br_nativeSuper(self, S, args);
             var r2 = S.apply(self, args);
             return r2 !== null && (typeof r2 === 'object' || typeof r2 === 'function') ? r2 : self;
+        },
+        __br_nativeSuper: function (self, S, args) {
+            var r = __br_new(S, args), p = Object.getPrototypeOf(self);
+            if (p && r !== null && (typeof r === 'object' || typeof r === 'function')) { try { r.__proto__ = p; } catch (e) {} }
+            return r;
         },
         // private fields: not enumerable
         __br_defp: function (o, k, v) {
@@ -499,10 +503,11 @@
         // (the page shim's String.prototype.match/replace use exec for expressions marked __brRe: .groups, $<name>)
         // a literal lowered at build time (the s and u flags gone) keeps the flags it was written with for the page
         // shim's getters (flags, unicode, dotAll): moo's lexer throws unless all its rules agree on /u
+        // (a literal is a new expression each time: always extensible, no try needed)
         __br_reFlags: function (re, flags, source) {
             var info = re.__brRe;
             if (info) { info.flags = flags; info.source = source; }
-            else { try { Object.defineProperty(re, '__brRe', { value: { flags: flags, source: source }, writable: true, configurable: true }); } catch (e) {} }
+            else Object.defineProperty(re, '__brRe', { value: { flags: flags, source: source }, writable: true, configurable: true });
             return re;
         },
         __br_named: function (re, names) {
@@ -605,22 +610,24 @@
         },
         // async function expressions: Object.getPrototypeOf(async function () {}).constructor is an AsyncFunction
         // (Alpine compiles its expressions with it) whose functions return promises
+        // (fn: a new function expression, whose prototype can always be set)
         __br_asyncFn: function (fn) {
-            var G = typeof window !== 'undefined' ? window : {}, proto = G.__br_asyncProto;
-            if (!proto) {
-                var AsyncFunction = function AsyncFunction() {
-                    var f = Function.apply(null, arguments);
-                    var w = function () { try { return Promise.resolve(f.apply(this, arguments)); } catch (e) { return Promise.reject(e); } };
-                    try { w.__proto__ = proto; } catch (e2) {}
-                    return w;
-                };
-                proto = Object.create(Function.prototype);
-                try { Object.defineProperty(proto, 'constructor', { value: AsyncFunction, writable: true, configurable: true }); } catch (e3) { proto.constructor = AsyncFunction; }
-                AsyncFunction.prototype = proto;
-                G.__br_asyncProto = proto;
-            }
-            try { fn.__proto__ = proto; } catch (e4) {}
+            var G = typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : {};
+            fn.__proto__ = G.__br_asyncProto || __br_asyncMake(G);
             return fn;
+        },
+        __br_asyncMake: function (G) {
+            var proto = Object.create(Function.prototype);
+            var AsyncFunction = function AsyncFunction() {
+                var f = Function.apply(null, arguments);
+                var w = function () { try { return Promise.resolve(f.apply(this, arguments)); } catch (e) { return Promise.reject(e); } };
+                try { w.__proto__ = proto; } catch (e2) {}
+                return w;
+            };
+            try { Object.defineProperty(proto, 'constructor', { value: AsyncFunction, writable: true, configurable: true }); } catch (e3) { proto.constructor = AsyncFunction; }
+            AsyncFunction.prototype = proto;
+            G.__br_asyncProto = proto;
+            return proto;
         },
         // generators and async functions: the state machines the printer writes run on this (the protocol of
         // facebook/regenerator's runtime: wrap/async/awrap, context prev/next/sent, abrupt/finish/catch/delegateYield)
@@ -835,7 +842,8 @@
         }
     };
     var RUNTIME_DEPS = { __br_spread: ['__br_iter'], __br_arr: ['__br_iter', '__br_spread'], __br_asyncIter: ['__br_iter'], __br_props: ['__br_assignOwn'], __br_class: ['__br_defs'],
-                         __br_super: ['__br_isNative', '__br_new'], __br_Proxy: ['__br_new'], __br_ctor: ['__br_isNative'] };
+                         __br_super: ['__br_isNative', '__br_new', '__br_nativeSuper'], __br_nativeSuper: ['__br_new'], __br_Proxy: ['__br_new'], __br_ctor: ['__br_isNative'],
+                         __br_isNative: ['__br_nativeLook'], __br_asyncFn: ['__br_asyncMake'] };
 
     // ------------------------------------------------------------------------------------------------ small utilities
     var hex4 = function (c) { return ('0000' + c.toString(16)).slice(-4); };

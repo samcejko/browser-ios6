@@ -246,6 +246,9 @@ var cases = [
 // pretend transpiler (jsfix.js in the app): uppercases scripts that contain "modern", leaves the others ('')
 window.JSFix = { run: function (src) { return src.indexOf('modern') >= 0 ? src.toUpperCase() : ''; } };
 cases.push(['html inline script transpiled', '<html><head></head><body><script>var modern = 1<\/script><script>var old = 1<\/script></body></html>', '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script>VAR MODERN = 1<\/script><script>var old = 1<\/script></body></html>']);
+// data-type / data-src are not type / src (eBay's challenge page: <script data-type="gh"> with ?. stayed as it was)
+cases.push(['html data-* attributes of scripts', '<html><head></head><body><script data-type="gh">var modern = 1<\/script><script data-src="x.js">var modern = 2<\/script><script data-x="type=module">var modern = 3<\/script></body></html>',
+  '<html><head><script src="https://x.invalid/p.js"><\/script></head><body><script data-type="gh">VAR MODERN = 1<\/script><script data-src="x.js">VAR MODERN = 2<\/script><script data-x="type=module">VAR MODERN = 3<\/script></body></html>']);
 // module scripts stay as they are (the old engine skips them and runs the nomodule fallback)
 cases.push(['html modules', '<html><head><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>',
   '<html><head><script src="https://x.invalid/p.js"><\/script><script type="importmap">{"imports":{}}<\/script></head><body><script type="module" data-br-src="/app.js" crossorigin><\/script><script type="module">import a from "./a.js"<\/script><script nomodule src="/legacy.js"><\/script></body></html>']);
