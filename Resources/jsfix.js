@@ -438,6 +438,47 @@
                     }
                 }
             }
+            // a proxy of an empty object that hands every name to an object its trap reads them from (TikTok's device
+            // info: new Proxy({}, {get(e, t) {let i = p || (p = new c), r = i[t]; ...}}), whose names the page reads
+            // (K.cF.isHevcTypeSupported() was undefined and the feed page fell over): one read of a name every object
+            // answers, from Object.prototype, while it notes where it was read tells that object; its names (and its
+            // prototypes') then read through the trap as they are used
+            var emptyTarget = false;
+            if (readOnly && typeof target === 'object' && !isArr && !coll && proto === Object.prototype) {
+                var tks = ownKeys();
+                emptyTarget = true;
+                for (var tki = 0; tki < tks.length && emptyTarget; tki++) if (String(tks[tki]).slice(0, 5) !== '__br_') emptyTarget = false;
+            }
+            if (emptyTarget) {
+                if (!P.selfProbe) {
+                    P.selfProbe = { on: false, seen: undefined };
+                    try {
+                        Object.defineProperty(Object.prototype, '__br_self', { get: function () {
+                            var sp = P.selfProbe;
+                            if (!sp.on) return undefined;
+                            if (sp.seen === undefined) sp.seen = this;
+                            return this;
+                        }, configurable: true });
+                    } catch (e12) {}
+                }
+                var sp = P.selfProbe, from;
+                if (!sp.on) {
+                    sp.on = true; sp.seen = undefined;
+                    try { handler.get(target, '__br_self', proxy); } catch (e13) {}
+                    from = sp.seen;
+                    sp.on = false; sp.seen = undefined;
+                }
+                if (from !== undefined && from !== null && from !== target && from !== proxy && (typeof from === 'object' || typeof from === 'function')) {
+                    for (var fo = from, depth = 0; fo && fo !== Object.prototype && fo !== Function.prototype && depth < 6; fo = Object.getPrototypeOf(fo), depth++) {
+                        var fnames = Object.getOwnPropertyNames(fo);
+                        for (var fi = 0; fi < fnames.length && fi < 800; fi++) {
+                            var fname = fnames[fi];
+                            if (fname === 'constructor' || fname.slice(0, 5) === '__br_' || done['$' + fname] !== undefined || hasOwn.call(proxy, fname)) continue;
+                            special(fname, false);
+                        }
+                    }
+                }
+            }
             var flags = ['__v_skip', '__v_isReactive', '__v_isReadonly', '__v_isShallow', '__v_raw'];
             for (var f = 0; f < flags.length; f++) if (done['$' + flags[f]] === undefined) special(flags[f], false);
             // Immer's state (a registered symbol; the polyfilled ones are keys of their own)
