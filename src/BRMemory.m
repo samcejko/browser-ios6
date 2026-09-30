@@ -495,8 +495,9 @@ static NSString *BRTopCounts(id set, NSUInteger limit)
         g_reliefRunning = YES;
         g_reliefStarted = now;
     }
-    // our two script engines: whole heaps, recreated on the next use (0.3 to 0.5 s each)
+    // our script engines: whole heaps, recreated on the next use (0.3 to 0.5 s each)
     [[BRJSEngine transpiler] resetContext];
+    [[BRJSEngine transpiler2] resetContext];
     [[BRJSEngine shared] resetContext];
     // the pages' garbage, the resources no page uses and the decoded copies of images (redecoded when painted; the
     // iOS variant keeps the application caches that +empty would delete), then WebKit's free lists back to the system

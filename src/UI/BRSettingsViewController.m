@@ -347,6 +347,7 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         [[NSFileManager defaultManager] removeItemAtPath:transpiled error:NULL];
         [[BRJSEngine shared] resetContext];
         [[BRJSEngine transpiler] resetContext];
+        [[BRJSEngine transpiler2] resetContext];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cache cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     } else if (indexPath.row == 1) {
         NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];

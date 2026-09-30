@@ -12,8 +12,14 @@ extern NSString * const BRJSEngineDidResetNotification;
 // A second engine (own thread and context) for lowering scripts, so that stylesheets and documents are not held up
 // behind a large script (the iPad 2 has two cores).
 + (instancetype)transpiler;
+// A third one, for scripts that would otherwise wait behind the transpiler's work (see BRCSSRewriter scriptEngineFor:)
++ (instancetype)transpiler2;
 
 @property (nonatomic, readonly) BOOL available;
+// (the rewriter's: its last lowering on this engine was given up for lack of memory; engine thread)
+@property (atomic) BOOL lastNoRoom;
+// blocks queued or running (any thread)
+@property (atomic, readonly) NSInteger pending;
 
 // Runs `block` on the engine thread (serially).
 - (void)performSync:(dispatch_block_t)block;

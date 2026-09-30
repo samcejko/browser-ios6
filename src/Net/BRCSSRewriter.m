@@ -133,11 +133,11 @@ static NSString *BRInlineScriptPath(NSString *name)
 
 @implementation BRCSSRewriter {
     NSMutableDictionary *_noRoom;       // script key -> when it did not fit in memory (not waited for again soon)
-    BOOL _lastNoRoom;                   // (transpiler queue) the last transpiledScript: left as it was for lack of memory
     BOOL _loaded;
     BOOL _loadFailed;
     BOOL _jsfixLoaded;                  // in the rewriter's engine (inline scripts of documents)
     BOOL _jsfixLoadedTranspiler;        // in the transpiler engine (script files)
+    BOOL _jsfixLoadedTranspiler2;       // in the second one (see scriptEngineFor:)
     BOOL _jsfixFailed;
     NSCache *_transpiled;               // cache key -> lowered script (empty data: unchanged)
     NSMutableDictionary *_pageVars;     // page key -> NSMutableDictionary of --name: value
@@ -384,14 +384,35 @@ static NSArray *BRManifestKinds(void)
 {
     // posted on the engine's own thread
     if (note.object == [BRJSEngine transpiler]) _jsfixLoadedTranspiler = NO;
+    else if (note.object == [BRJSEngine transpiler2]) _jsfixLoadedTranspiler2 = NO;
     else { _loaded = NO; _jsfixLoaded = NO; }
+}
+
+- (BOOL *)jsfixFlagFor:(BRJSEngine *)engine
+{
+    return engine == [BRJSEngine transpiler] ? &_jsfixLoadedTranspiler : engine == [BRJSEngine transpiler2] ? &_jsfixLoadedTranspiler2 : &_jsfixLoaded;
+}
+
+// Script files go to the transpiler engine; when it has work queued, a script that is not big goes to the second one
+// (the iPad 2 has two cores, and pages ask for dozens of modules at once: Pinterest's were lowered one after the other
+// for a minute). urgent: the page stands still for it (a lazy factory, an inserted script), so a free engine is taken
+// whatever the size (TikTok waited 25 s for a 52 KB factory behind other scripts). The second one only while there is
+// room for two lowerings at once.
+- (BRJSEngine *)scriptEngineFor:(NSUInteger)length urgent:(BOOL)urgent
+{
+    BRJSEngine *t1 = [BRJSEngine transpiler], *t2 = [BRJSEngine transpiler2];
+    NSInteger p1 = t1.pending, p2 = t2.pending;
+    if (p1 == 0 || ![BRSettings transpileEnabled]) return t1;
+    if (!urgent && length > 256 * 1024) return t1;
+    if ([BRMemory availableMB] < BRRoomFloorMB + 45) return t1;
+    return p2 < p1 ? t2 : t1;
 }
 
 // the engine's queue only: acorn and the transpiler, loaded on the first script that needs them (the rewriter's
 // engine for inline scripts of documents, the transpiler engine for script files)
 - (BOOL)ensureJSFixIn:(BRJSEngine *)engine
 {
-    BOOL *loaded = engine == [BRJSEngine transpiler] ? &_jsfixLoadedTranspiler : &_jsfixLoaded;
+    BOOL *loaded = [self jsfixFlagFor:engine];
     if (*loaded) return YES;
     if (_jsfixFailed) return NO;
     if (!engine.available) { _jsfixFailed = YES; return NO; }
@@ -414,16 +435,18 @@ static NSArray *BRManifestKinds(void)
     NSString *probe = [engine callFunction:@"JSFix.run" arguments:@[@"let f = (a = 1) => `${a}`;", @"{\"force\":true}"]];
     if (!probe.length) { BRLog(@"jsfix.js self test failed"); _jsfixFailed = YES; return NO; }
     *loaded = YES;
-    BRLog(@"jsfix.js loaded in %ld ms (%@)", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000), engine == [BRJSEngine transpiler] ? @"scripts" : @"documents");
+    BRLog(@"jsfix.js loaded in %ld ms (%@)", (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000),
+          engine == [BRJSEngine transpiler] ? @"scripts" : engine == [BRJSEngine transpiler2] ? @"scripts, second engine" : @"documents");
     return YES;
 }
 
-// the transpiler engine's queue only: the ES5 text of a script, nil when it needs nothing (or cannot be lowered);
-// a module always gives its registration for the page's loader (or a stub reporting why it failed)
-- (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url module:(BOOL)module
+// a transpiler engine's queue only (the engine given): the ES5 text of a script, nil when it needs nothing (or cannot
+// be lowered); a module always gives its registration for the page's loader (or a stub reporting why it failed).
+// engine.lastNoRoom says afterwards whether it was given up for lack of memory.
+- (NSData *)transpiledScript:(NSData *)data charset:(NSString *)charset url:(NSURL *)url module:(BOOL)module engine:(BRJSEngine *)engine
 {
-    BRJSEngine *engine = [BRJSEngine transpiler];
-    _lastNoRoom = NO;
+    engine.lastNoRoom = NO;
+    NSString *activityKey = engine == [BRJSEngine transpiler2] ? @"js3" : @"js";   // (what the memory report says each engine does)
     unsigned long crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
     // (a module's registration names its URL: the key has it too)
@@ -545,7 +568,7 @@ static NSArray *BRManifestKinds(void)
             if (_noRoom.count > 64) [_noRoom removeAllObjects];
             _noRoom[key] = [NSDate date];
         }
-        _lastNoRoom = YES;
+        engine.lastNoRoom = YES;
         return nil;
     }
     if (![self ensureJSFixIn:engine]) return nil;
@@ -556,7 +579,7 @@ static NSArray *BRManifestKinds(void)
     if (!text) return nil;
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     long mb0 = (long)BRResidentMemoryMB();
-    [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(work >> 10)] forKey:@"js"];
+    [BRMemory setActivity:[NSString stringWithFormat:@"transpiling %@ (%lu KB)", name, (unsigned long)(work >> 10)] forKey:activityKey];
     NSString *result = [engine callFunction:@"JSFix.run" arguments:@[text, optsJSON]];
     // a row of statements given up for lack of memory keeps the groups it did: once there is room again it goes on from
     // there (the page waits for this script anyway, and a page like CNN's takes the room back while it is lowered)
@@ -581,8 +604,8 @@ static NSArray *BRManifestKinds(void)
         BOOL room = [BRMemory waitForAvailableMB:need timeout:45 reason:[NSString stringWithFormat:@"lowering %@ again", name] engine:nil];
         if (!room || ![self ensureJSFixIn:engine]) {
             BRLog(@"jsfix %@: gave up, the iPad is short of memory (%ld MB available)", name, [BRMemory availableMB]);
-            [BRMemory setActivity:nil forKey:@"js"];
-            _lastNoRoom = YES;
+            [BRMemory setActivity:nil forKey:activityKey];
+            engine.lastNoRoom = YES;
             return module && result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
         }
         BRLog(@"jsfix %@: lowered again after a wait for room (%ld MB available)", name, [BRMemory availableMB]);
@@ -594,7 +617,7 @@ static NSArray *BRManifestKinds(void)
         kept = [self storeLazyParts:[engine callFunction:@"JSFix.lazy" arguments:@[]] ofText:text base:base];
         if (!kept) {
             BRLog(@"jsfix %@: the factories kept for later could not be stored", name);
-            [BRMemory setActivity:nil forKey:@"js"];
+            [BRMemory setActivity:nil forKey:activityKey];
             return nil;
         }
         else BRLog(@"jsfix %@: %lu factories (%ld KB) lowered only when the page needs them", name, (unsigned long)kept, lazyBytes >> 10);
@@ -604,27 +627,30 @@ static NSArray *BRManifestKinds(void)
     NSData *out = result.length ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
     result = nil;
     long mb1 = (long)BRResidentMemoryMB();
+    // (a long one says where its time went: parse with the early units / walk / resolve / print, ms)
+    NSString *phases = ms > 3000 ? [engine callFunction:@"JSFix.phases" arguments:@[]] : nil;
+    NSString *phaseText = phases.length ? [NSString stringWithFormat:@" [phases %@]", phases] : @"";
     if (out && module) {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
-        BRLog(@"jsfix module %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
-              [why hasPrefix:@"failed"] ? [@" " stringByAppendingString:why] : @"");
+        BRLog(@"jsfix module %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
+              [why hasPrefix:@"failed"] ? [@" " stringByAppendingString:why] : @"", phaseText);
     } else if (out) {
         NSString *note = [engine callFunction:@"JSFix.note" arguments:@[]];
-        BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
-              note.length ? [NSString stringWithFormat:@" (%@)", note] : @"");
+        BRLog(@"jsfix %@: %ld ms, %lu -> %lu bytes, %ld -> %ld MB%@%@", name, ms, (unsigned long)data.length, (unsigned long)out.length, mb0, mb1,
+              note.length ? [NSString stringWithFormat:@" (%@)", note] : @"", phaseText);
     }
     else {
         NSString *why = [engine callFunction:@"JSFix.last" arguments:@[]];
         if (![why isEqualToString:@"es5"] || ms > 200) BRLog(@"jsfix %@: unchanged after %ld ms (%@), %ld -> %ld MB", name, ms, why ?: @"?", mb0, mb1);
     }
-    [BRMemory setActivity:nil forKey:@"js"];
+    [BRMemory setActivity:nil forKey:activityKey];
     // given up for lack of memory (see jsfix.js MEMORY_FLOOR_MB): not remembered, a later visit lowers it; nor is a run
     // that did not answer at all (its context went away: "unchanged" was kept for good)
     if (!out || module) {
         NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
         if (!last.length || [last rangeOfString:@"memory"].location != NSNotFound) {
             BRLog(@"jsfix %@: gave up, %@ (%ld MB available)", name, last.length ? @"the iPad is short of memory" : @"the transpiler did not answer", [BRMemory availableMB]);
-            _lastNoRoom = YES;
+            engine.lastNoRoom = YES;
             [engine releaseContextNow];
             return out;
         }
@@ -632,7 +658,7 @@ static NSArray *BRManifestKinds(void)
         // the page got the ES2020 text on every visit - IKEA's recommendation chunks)
         if (!out && ![last isEqualToString:@"es5"]) {
             BRLog(@"jsfix %@: not lowered (%@), not remembered", name, last);
-            _lastNoRoom = YES;   // (nor is the text as it came cached: see rewriteData)
+            engine.lastNoRoom = YES;   // (nor is the text as it came cached: see rewriteData)
             return nil;
         }
     }
@@ -743,8 +769,9 @@ static NSArray *BRManifestKinds(void)
     __block BOOL noRoom = NO;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
-    [[BRJSEngine transpiler] performAsync:^{
-        @autoreleasepool { out = [self transpiledScript:wrapped charset:@"utf-8" url:url module:NO]; noRoom = _lastNoRoom; }
+    BRJSEngine *engine = [self scriptEngineFor:wrapped.length urgent:YES];
+    [engine performAsync:^{
+        @autoreleasepool { out = [self transpiledScript:wrapped charset:@"utf-8" url:url module:NO engine:engine]; noRoom = engine.lastNoRoom; }
         dispatch_semaphore_signal(done);
     }];
     BOOL finished = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(240 * NSEC_PER_SEC))) == 0;
@@ -763,13 +790,14 @@ static NSArray *BRManifestKinds(void)
     __block BOOL noRoom = NO, bad = NO;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
-    [[BRJSEngine transpiler] performAsync:^{
+    BRJSEngine *engine = [self scriptEngineFor:text.length urgent:YES];
+    [engine performAsync:^{
         @autoreleasepool {
-            out = [self transpiledScript:text charset:@"utf-8" url:url module:NO];
-            noRoom = _lastNoRoom;
+            out = [self transpiledScript:text charset:@"utf-8" url:url module:NO engine:engine];
+            noRoom = engine.lastNoRoom;
             // (nothing back: the text needs nothing, or it failed, which the transpiler says when it just ran)
-            if (!out && _jsfixLoadedTranspiler) {
-                NSString *last = [[BRJSEngine transpiler] callFunction:@"JSFix.last" arguments:@[]] ?: @"";
+            if (!out && *[self jsfixFlagFor:engine]) {
+                NSString *last = [engine callFunction:@"JSFix.last" arguments:@[]] ?: @"";
                 bad = [last hasPrefix:@"failed"];
             }
         }
@@ -1016,18 +1044,19 @@ static NSString *BRPageKey(NSURL *url)
 {
     if (!completion) return;
     if ([kind isEqualToString:@"js"] || [kind isEqualToString:@"jsmodule"]) {
-        // scripts on the transpiler engine: stylesheets and documents do not wait behind them
+        // scripts on a transpiler engine (see scriptEngineFor:): stylesheets and documents do not wait behind them
         BOOL module = [kind isEqualToString:@"jsmodule"];
         NSUInteger generation = g_workGeneration;
-        [[BRJSEngine transpiler] performAsync:^{
+        BRJSEngine *engine = [self scriptEngineFor:data.length urgent:NO];
+        [engine performAsync:^{
             @autoreleasepool {
                 if (generation != g_workGeneration) { completion(data, charset, NO); return; }   // (the page load was stopped)
-                _lastNoRoom = NO;
-                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL module:module] : nil;
+                engine.lastNoRoom = NO;
+                NSData *lowered = [BRSettings transpileEnabled] ? [self transpiledScript:data charset:charset url:sourceURL module:module engine:engine] : nil;
                 // (a script left as it is for lack of memory is not cached as it is: base.js of YouTube stayed broken; nor
                 // is a module's failure for lack of it: IKEA's agent module failed from the cache on every visit)
-                if (lowered) completion(lowered, @"utf-8", !_lastNoRoom);
-                else completion(data, charset, !_lastNoRoom);
+                if (lowered) completion(lowered, @"utf-8", !engine.lastNoRoom);
+                else completion(data, charset, !engine.lastNoRoom);
             }
         }];
         return;

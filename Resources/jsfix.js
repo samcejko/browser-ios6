@@ -4626,6 +4626,7 @@
     };
     // (note: how the last run went where it did something unusual, for the app's log: islands)
     root.JSFix = { transpile: transpile, run: run, plan: plan, shape: shape, stats: stats, last: function () { return stats.last; }, note: function () { return stats.note; },
+                   phases: function () { return stats.phases; },
                    version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex, scanFunctions: scanFunctions, islandSkips: islandSkips,
                    lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts, helperSource: helperSource,
                    lazyScan: function (src) { var p = null; try { p = lazyParts(src); } catch (e) { p = null; } return p ? JSON.stringify(p) : ''; } };

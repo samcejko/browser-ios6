@@ -3,6 +3,7 @@
 #import "BRMemory.h"
 
 #include <dlfcn.h>
+#include <libkern/OSAtomic.h>
 #include <malloc/malloc.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
@@ -118,7 +119,9 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
     void *_group;       // this engine's context group (its VM and heap)
     BOOL _available;
     NSUInteger _uses;   // engine thread: counts evaluations, so an idle release can tell whether it was used since
+    volatile int32_t _pendingCount;   // blocks queued or running
 }
+@synthesize lastNoRoom = _lastNoRoom;
 
 + (instancetype)shared
 {
@@ -134,6 +137,19 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
     static dispatch_once_t once;
     dispatch_once(&once, ^{ engine = [[BRJSEngine alloc] initWithName:@"com.samcejko.browser.js2"]; });
     return engine;
+}
+
++ (instancetype)transpiler2
+{
+    static BRJSEngine *engine;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ engine = [[BRJSEngine alloc] initWithName:@"com.samcejko.browser.js3"]; });
+    return engine;
+}
+
+- (NSInteger)pending
+{
+    return _pendingCount;
 }
 
 - (instancetype)initWithName:(NSString *)name
@@ -163,6 +179,7 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
         @autoreleasepool {
             block();
         }
+        OSAtomicDecrement32(&_pendingCount);
     }
 }
 
@@ -174,6 +191,7 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
 - (void)performAsync:(dispatch_block_t)block
 {
     if (!block) return;
+    OSAtomicIncrement32(&_pendingCount);
     [_condition lock];
     [_queue addObject:[block copy]];
     [_condition signal];
