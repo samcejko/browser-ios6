@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>workershims test</title>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// worker-shims.js in a real worker (see workershims-probe.js)
+var w = new Worker('workershims-probe.js');
+w.onmessage = function (e) {
+    var results = e.data, fails = 0;
+    for (var i = 0; i < results.length; i++) if (results[i].indexOf('FAIL') === 0) fails++;
+    document.title = 'workershims ' + (results.length - fails) + '/' + results.length;
+    document.getElementById('out').textContent = document.title + '\n' + results.join('\n');
+};
+w.onerror = function (e) { document.title = 'workershims error'; document.getElementById('out').textContent = 'error ' + e.message + ' @' + e.lineno; };
+</script>
+</body>
+</html>

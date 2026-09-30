@@ -184,6 +184,39 @@
         G.AbortController = AbortController;
         G.AbortSignal = AbortSignal;
     })(self);
+    // wss:// WebSockets through the app's TLS, as in shims-extra.js (a local ws:// address from /wsproxy); relative and
+    // http(s) URLs taken as today's browsers take them
+    if (self.WebSocket && self.WebSocket.prototype && !self.WebSocket.__brLocal && typeof XMLHttpRequest !== 'undefined') (function (G) {
+        var Native = G.WebSocket;
+        var resolve = function (u) {
+            var s = String(u);
+            if (/^wss?:\/\//i.test(s)) return s;
+            var base = String(G.location && G.location.href || ''), m = /^(https?):\/\/[^\/]+/i.exec(base);
+            if (/^https?:\/\//i.test(s)) return s.replace(/^http(s?):/i, 'ws$1:');
+            if (!m) return s;
+            var origin = m[0].replace(/^http(s?):/i, 'ws$1:');
+            if (s.charAt(0) === '/') return s.charAt(1) === '/' ? origin.split(':')[0] + ':' + s : origin + s;
+            return origin + base.slice(m[0].length).replace(/[?#].*$/, '').replace(/[^\/]*$/, '') + s;
+        };
+        var local = function (target) {
+            if (!/^wss:/i.test(target)) return null;
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', 'https://ios6-browser.invalid/wsproxy?u=' + encodeURIComponent(target), false);
+                x.send(null);
+                return x.status === 200 ? JSON.parse(x.responseText).url : null;
+            } catch (e) { return null; }
+        };
+        function WebSocket(url, protocols) {
+            var target = resolve(url), via = local(target) || target;
+            return protocols === undefined ? new Native(via) : new Native(via, protocols);
+        }
+        WebSocket.prototype = Native.prototype;
+        WebSocket.CONNECTING = 0; WebSocket.OPEN = 1; WebSocket.CLOSING = 2; WebSocket.CLOSED = 3;
+        WebSocket.__brLocal = true;
+        try { Native.prototype.constructor = WebSocket; } catch (e) {}
+        try { G.WebSocket = WebSocket; } catch (e2) {}
+    })(self);
     // the Cache API (caches.open(name).put/match...), in memory for this worker's life (see shims-extra.js)
     if (!self.caches && self.Promise) {
         (function (G) {
