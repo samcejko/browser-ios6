@@ -4640,6 +4640,10 @@
                 if (needsProxy(piece)) { piece = piece.replace(/\bnew\s+Proxy\s*\(/g, 'new __br_Proxy(').replace(/(^|[^.\w$])Proxy\s*\.\s*revocable\s*\(/g, "$1__br_Proxy('revocable')("); use('__br_Proxy'); }
                 if (needsBigInt(piece)) { piece = piece.replace(BIGINT_TEXT, '$1__br_BigInt$2'); use('__br_BigInt'); }
                 if (needsDsDelete(piece)) { var dp = dsDeletes(piece); if (engineTakes(prefix + dp)) { piece = dp; use('__br_dsdel'); } }
+                // (this.constructor of custom elements, as for a whole script: the script names customElements, maybe
+                // in another group)
+                if (st.ctor === undefined) st.ctor = needsCtor(src);
+                if (st.ctor) { CTOR_THIS.lastIndex = 0; if (CTOR_THIS.test(piece)) { var cp = ctorReads(piece); if (engineTakes(prefix + cp)) { piece = cp; use('__br_ctor'); } } }
                 st.out.push(piece);
                 continue;
             }
