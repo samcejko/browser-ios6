@@ -11,6 +11,8 @@ window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (
 window.__names = ['Navigator', 'History', 'Location', 'Performance', 'Geolocation', 'Permissions', 'StorageManager', 'MediaDevices'];
 for (var i = 0; i < __names.length; i++) try { delete window[__names[i]]; } catch (e) { window.__errors.push('strip ' + __names[i]); }
 window.fetch = undefined;
+// (a method a shim puts on navigator itself, as shims.js does with sendBeacon on the old engine)
+navigator.brOwnMethod = function () { return 7; };
 </script>
 <script src="babel-test/bundle-parts/fetch.js"></script>
 <script src="../Resources/shims.js"></script>
@@ -43,6 +45,7 @@ window.fetch = undefined;
         check(n, typeof C === 'function' && inst[n] instanceof C && C.prototype === Object.getPrototypeOf(inst[n]) && thrown instanceof TypeError,
             typeof C + ' ' + (C && C.name));
     }
+    check('own methods on the prototype too', typeof Navigator.prototype.brOwnMethod === 'function' && Navigator.prototype.brOwnMethod.apply(navigator, []) === 7);
     check('typeof Navigator guard', typeof Navigator !== 'undefined' && navigator instanceof Navigator && navigator.userAgent === navigator.userAgent);
 
     // Request over the polyfill: a read body can be replaced (the standard's rule), a read body alone cannot be reused

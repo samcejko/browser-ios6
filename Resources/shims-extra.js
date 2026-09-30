@@ -9058,6 +9058,22 @@
         try { Object.defineProperty(proto, 'constructor', { value: C, configurable: true, writable: true }); } catch (e2) {}
         try { Object.defineProperty(C, 'name', { value: name, configurable: true }); } catch (e3) {}
         try { Object.defineProperty(window, name, { value: C, configurable: true, writable: true }); } catch (e4) { window[name] = C; }
+        mirrorMethods(instance, proto);
+        onReady(function () { mirrorMethods(instance, proto); });
+    };
+    // The methods these shims put on the object itself (navigator.sendBeacon, vibrate, getBattery...) are on the
+    // prototype today, where pages call them: Seznam's scripts run Navigator.prototype.sendBeacon.apply(...), which
+    // threw once Navigator existed ("'undefined' is not an object", seznamzpravy.cz, sport.cz)
+    var mirrorMethods = function (instance, proto) {
+        var names = [];
+        try { names = Object.getOwnPropertyNames(instance); } catch (e) { return; }
+        for (var i = 0; i < names.length; i++) {
+            var k = names[i], v;
+            if (k === 'constructor' || k.slice(0, 4) === '__br' || k in proto) continue;
+            try { v = instance[k]; } catch (e1) { continue; }
+            if (typeof v !== 'function') continue;
+            try { Object.defineProperty(proto, k, { value: v, writable: true, configurable: true }); } catch (e2) {}
+        }
     };
     var perf = window.performance;
     exposeInterface('Navigator', navigator);
