@@ -1768,24 +1768,70 @@
         };
     }
 
-    // AbortController
-    if (!window.AbortController) {
-        var AbortSignal = function () { this.aborted = false; this.reason = undefined; this.onabort = null; this.__l = []; };
-        AbortSignal.prototype.addEventListener = function (t, f) { if (t === 'abort') this.__l.push(f); };
-        AbortSignal.prototype.removeEventListener = function (t, f) { var i = this.__l.indexOf(f); if (i >= 0) this.__l.splice(i, 1); };
-        AbortSignal.prototype.dispatchEvent = function (e) { for (var i = 0; i < this.__l.length; i++) this.__l[i](e); if (this.onabort) this.onabort(e); };
-        AbortSignal.prototype.throwIfAborted = function () { if (this.aborted) throw this.reason; };
-        AbortSignal.abort = function (reason) { var c = new window.AbortController(); c.abort(reason); return c.signal; };
-        AbortSignal.timeout = function (ms) { var c = new window.AbortController(); setTimeout(function () { c.abort(new Error('TimeoutError')); }, ms); return c.signal; };
-        window.AbortController = function () { this.signal = new AbortSignal(); };
-        window.AbortController.prototype.abort = function (reason) {
-            if (this.signal.aborted) return;
-            this.signal.aborted = true;
-            this.signal.reason = reason === undefined ? new Error('AbortError') : reason;
-            this.signal.dispatchEvent({ type: 'abort', target: this.signal });
+    // AbortController / AbortSignal: the default reasons are DOMExceptions named AbortError / TimeoutError (pages test
+    // e.name === 'AbortError' to tell a cancelled request from a failed one), listeners get the signal as this and may
+    // be objects with handleEvent, { once } is kept, one throwing listener does not stop the others; AbortSignal.any.
+    // (the same in worker-shims.js)
+    if (!window.AbortController) (function () {
+        var named = function (name, msg) {
+            try { var e = new window.DOMException(msg, name); if (e.name === name) return e; } catch (eD) {}
+            var err = new Error(msg);
+            err.name = name;
+            return err;
         };
+        // (declarations: constructor.name is read by some libraries' isAbortSignal)
+        function AbortSignal() { this.aborted = false; this.reason = undefined; this.onabort = null; this.__l = []; }
+        function AbortController() { this.signal = new AbortSignal(); }
+        var SP = AbortSignal.prototype;
+        SP.addEventListener = function (t, f, opts) {
+            if (t !== 'abort' || !f) return;
+            for (var i = 0; i < this.__l.length; i++) if (this.__l[i].f === f) return;
+            this.__l.push({ f: f, once: !!(opts && typeof opts === 'object' && opts.once) });
+        };
+        SP.removeEventListener = function (t, f) {
+            for (var i = 0; i < this.__l.length; i++) if (this.__l[i].f === f) { this.__l.splice(i, 1); return; }
+        };
+        var call = function (self, f, e) {
+            try {
+                if (typeof f === 'function') f.call(self, e);
+                else if (f && typeof f.handleEvent === 'function') f.handleEvent(e);
+            } catch (err) { setTimeout(function () { throw err; }, 0); }
+        };
+        SP.dispatchEvent = function (e) {
+            var list = this.__l.slice();
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].once) this.removeEventListener('abort', list[i].f);
+                call(this, list[i].f, e);
+            }
+            if (typeof this.onabort === 'function') call(this, this.onabort, e);
+            return true;
+        };
+        SP.throwIfAborted = function () { if (this.aborted) throw this.reason; };
+        var noop = function () {};
+        var abort = function (s, reason) {
+            if (s.aborted) return;
+            s.aborted = true;
+            s.reason = reason === undefined ? named('AbortError', 'signal is aborted without reason') : reason;
+            s.dispatchEvent({ type: 'abort', target: s, currentTarget: s, srcElement: s, isTrusted: true, bubbles: false, cancelable: false,
+                defaultPrevented: false, eventPhase: 2, timeStamp: Date.now(), preventDefault: noop, stopPropagation: noop, stopImmediatePropagation: noop });
+        };
+        AbortSignal.abort = function (reason) { var s = new AbortSignal(); abort(s, reason); return s; };
+        AbortSignal.timeout = function (ms) {
+            var s = new AbortSignal();
+            setTimeout(function () { abort(s, named('TimeoutError', 'signal timed out')); }, ms);
+            return s;
+        };
+        AbortSignal.any = function (signals) {
+            var s = new AbortSignal(), list = Array.from ? Array.from(signals) : Array.prototype.slice.call(signals), i;
+            for (i = 0; i < list.length; i++) if (list[i].aborted) { abort(s, list[i].reason); return s; }
+            var follow = function () { abort(s, this.reason); };
+            for (i = 0; i < list.length; i++) list[i].addEventListener('abort', follow, { once: true });
+            return s;
+        };
+        AbortController.prototype.abort = function (reason) { abort(this.signal, reason); };
+        window.AbortController = AbortController;
         window.AbortSignal = AbortSignal;
-    }
+    })();
 
     // TextEncoder / TextDecoder (UTF-8)
     if (!window.TextEncoder) {

@@ -124,6 +124,66 @@
             G.BroadcastChannel = BC;
         })(self);
     }
+    // AbortController / AbortSignal, as in shims.js (fetch in workers takes a signal; AbortError / TimeoutError reasons)
+    if (!self.AbortController) (function (G) {
+        var named = function (name, msg) {
+            try { var e = new G.DOMException(msg, name); if (e.name === name) return e; } catch (eD) {}
+            var err = new Error(msg);
+            err.name = name;
+            return err;
+        };
+        function AbortSignal() { this.aborted = false; this.reason = undefined; this.onabort = null; this.__l = []; }
+        function AbortController() { this.signal = new AbortSignal(); }
+        var SP = AbortSignal.prototype;
+        SP.addEventListener = function (t, f, opts) {
+            if (t !== 'abort' || !f) return;
+            for (var i = 0; i < this.__l.length; i++) if (this.__l[i].f === f) return;
+            this.__l.push({ f: f, once: !!(opts && typeof opts === 'object' && opts.once) });
+        };
+        SP.removeEventListener = function (t, f) {
+            for (var i = 0; i < this.__l.length; i++) if (this.__l[i].f === f) { this.__l.splice(i, 1); return; }
+        };
+        var call = function (self, f, e) {
+            try {
+                if (typeof f === 'function') f.call(self, e);
+                else if (f && typeof f.handleEvent === 'function') f.handleEvent(e);
+            } catch (err) { setTimeout(function () { throw err; }, 0); }
+        };
+        SP.dispatchEvent = function (e) {
+            var list = this.__l.slice();
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].once) this.removeEventListener('abort', list[i].f);
+                call(this, list[i].f, e);
+            }
+            if (typeof this.onabort === 'function') call(this, this.onabort, e);
+            return true;
+        };
+        SP.throwIfAborted = function () { if (this.aborted) throw this.reason; };
+        var noop = function () {};
+        var abort = function (s, reason) {
+            if (s.aborted) return;
+            s.aborted = true;
+            s.reason = reason === undefined ? named('AbortError', 'signal is aborted without reason') : reason;
+            s.dispatchEvent({ type: 'abort', target: s, currentTarget: s, isTrusted: true, bubbles: false, cancelable: false, defaultPrevented: false,
+                eventPhase: 2, timeStamp: Date.now(), preventDefault: noop, stopPropagation: noop, stopImmediatePropagation: noop });
+        };
+        AbortSignal.abort = function (reason) { var s = new AbortSignal(); abort(s, reason); return s; };
+        AbortSignal.timeout = function (ms) {
+            var s = new AbortSignal();
+            setTimeout(function () { abort(s, named('TimeoutError', 'signal timed out')); }, ms);
+            return s;
+        };
+        AbortSignal.any = function (signals) {
+            var s = new AbortSignal(), list = Array.from ? Array.from(signals) : Array.prototype.slice.call(signals), i;
+            for (i = 0; i < list.length; i++) if (list[i].aborted) { abort(s, list[i].reason); return s; }
+            var follow = function () { abort(s, this.reason); };
+            for (i = 0; i < list.length; i++) list[i].addEventListener('abort', follow, { once: true });
+            return s;
+        };
+        AbortController.prototype.abort = function (reason) { abort(this.signal, reason); };
+        G.AbortController = AbortController;
+        G.AbortSignal = AbortSignal;
+    })(self);
     // the Cache API (caches.open(name).put/match...), in memory for this worker's life (see shims-extra.js)
     if (!self.caches && self.Promise) {
         (function (G) {

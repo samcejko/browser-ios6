@@ -7,13 +7,19 @@
 // Array.fromAsync, Uint8Array base64/hex, Error.isError and Iterator.concat from shims-extra.js. The desktop browser's
 // own are kept aside to compare with, then taken away, as the old engine has none of them.
 window.__errors = [];
-window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+window.onerror = function (msg, src, line) {
+    if (/expected listener error/.test(msg)) { window.__listenerError = true; return true; }   // (an abort listener's, reported on its own)
+    window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line);
+};
 var U8 = Uint8Array, UP = Uint8Array.prototype;
 window.__native = { fromAsync: Array.fromAsync, fromBase64: U8.fromBase64, fromHex: U8.fromHex, toBase64: UP.toBase64, toHex: UP.toHex,
     setFromBase64: UP.setFromBase64, setFromHex: UP.setFromHex, isError: Error.isError, concat: window.Iterator && Iterator.concat };
 delete Array.fromAsync; delete U8.fromBase64; delete U8.fromHex; delete UP.toBase64; delete UP.toHex; delete UP.setFromBase64; delete UP.setFromHex;
 delete Error.isError;
 if (window.Iterator) delete Iterator.concat;
+// (the shims' AbortController, as on the old engine)
+window.__nativeAbort = { AC: window.AbortController, AS: window.AbortSignal };
+delete window.AbortController; delete window.AbortSignal;
 </script>
 <script src="babel-test/bundle-parts/fetch.js"></script>
 <script src="../Resources/shims.js"></script>
@@ -106,6 +112,37 @@ if (window.Iterator) delete Iterator.concat;
         try { Iterator.concat([1], 5); } catch (e) { threwC = e; }
         check('Iterator.concat of a number throws', threwC instanceof TypeError);
     }
+
+    // AbortController / AbortSignal (the shims' own, compared with the browser's where it says what to expect)
+    check('AbortController is the shim', window.AbortController !== window.__nativeAbort.AC && AbortSignal.name === 'AbortSignal' && AbortController.name === 'AbortController');
+    var ac = new AbortController(), calls = [], sig = ac.signal;
+    sig.addEventListener('abort', function (e) { calls.push('fn' + (this === sig) + e.type); });
+    sig.addEventListener('abort', { handleEvent: function () { calls.push('obj'); } });
+    sig.addEventListener('abort', function () { calls.push('once'); }, { once: true });
+    sig.addEventListener('abort', function () { throw new Error('expected listener error'); });
+    sig.addEventListener('abort', function () { calls.push('after'); });
+    sig.onabort = function () { calls.push('on'); };
+    ac.abort();
+    check('abort listeners', calls.join(' ') === 'fntrueabort obj once after on', calls.join(' '));
+    var nativeReason = window.__nativeAbort.AC ? (function () { var c = new window.__nativeAbort.AC(); c.abort(); return c.signal.reason; })() : null;
+    check('abort reason is an AbortError DOMException', sig.aborted && sig.reason && sig.reason.name === 'AbortError' && sig.reason instanceof DOMException &&
+        (!nativeReason || (nativeReason.name === sig.reason.name && nativeReason.code === sig.reason.code)), sig.reason && sig.reason.name + ' ' + sig.reason.code);
+    ac.abort('again');
+    check('second abort changes nothing', sig.reason.name === 'AbortError' && calls.length === 5, calls.length);
+    var threwA = null;
+    try { sig.throwIfAborted(); } catch (e) { threwA = e; }
+    check('throwIfAborted', threwA === sig.reason);
+    check('abort(reason)', (function () { var c = new AbortController(); c.abort('why'); return c.signal.reason === 'why'; })());
+    check('AbortSignal.abort', AbortSignal.abort().aborted && AbortSignal.abort(5).reason === 5);
+    var a1 = new AbortController(), a2 = new AbortController(), any = AbortSignal.any([a1.signal, a2.signal]), anyCalls = 0;
+    any.addEventListener('abort', function () { anyCalls++; });
+    a2.abort('second');
+    a1.abort('first');
+    check('AbortSignal.any follows the first abort', any.aborted && any.reason === 'second' && anyCalls === 1, any.reason);
+    check('AbortSignal.any of an aborted signal', AbortSignal.any([AbortSignal.abort('x')]).reason === 'x');
+    start();
+    var ts = AbortSignal.timeout(10);
+    setTimeout(function () { check('AbortSignal.timeout', ts.aborted && ts.reason && ts.reason.name === 'TimeoutError', ts.reason && ts.reason.name); end(); }, 80);
 
     // Array.fromAsync
     var closed = 0;
