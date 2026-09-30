@@ -71,6 +71,59 @@
     // allows): Telegram's protocol worker makes a FinalizationRegistry at start
     if (!self.WeakRef) { self.WeakRef = function WeakRef(target) { this.__t = target; }; self.WeakRef.prototype.deref = function () { return this.__t; }; }
     if (!self.FinalizationRegistry) { self.FinalizationRegistry = function FinalizationRegistry() {}; self.FinalizationRegistry.prototype.register = function () {}; self.FinalizationRegistry.prototype.unregister = function () { return false; }; }
+    // IndexedDB in workers: the WebSQL-backed shim the page gets too (see shims-extra.js), loaded on first use, where the
+    // worker has WebSQL
+    if (!self.indexedDB && typeof self.openDatabase === 'function' && typeof importScripts === 'function') {
+        (function (G) {
+            var names = ['indexedDB', 'IDBKeyRange', 'IDBFactory', 'IDBDatabase', 'IDBObjectStore', 'IDBIndex', 'IDBTransaction', 'IDBRequest', 'IDBOpenDBRequest', 'IDBCursor', 'IDBCursorWithValue', 'IDBVersionChangeEvent'];
+            var loaded = false;
+            var load = function () {
+                if (loaded) return;
+                loaded = true;
+                for (var i = 0; i < names.length; i++) try { delete G[names[i]]; } catch (e) {}
+                try {
+                    importScripts('https://ios6-browser.invalid/indexeddbshim.js');
+                    if (G.shimIndexedDB && G.shimIndexedDB.__useShim) G.shimIndexedDB.__useShim();
+                    for (var j = 0; j < names.length; j++) {
+                        var d = Object.getOwnPropertyDescriptor(G, names[j]);
+                        if (d && d.get) { var v = G[names[j]]; Object.defineProperty(G, names[j], { value: v, writable: true, configurable: true }); }
+                    }
+                } catch (e2) {}
+            };
+            for (var k = 0; k < names.length; k++) (function (name) {
+                var getter = function () {
+                    load();
+                    var d = Object.getOwnPropertyDescriptor(G, name);
+                    return d && d.get === getter ? undefined : G[name];   // (still this getter: the shim did not come)
+                };
+                try { Object.defineProperty(G, name, { configurable: true, get: getter, set: function (v) { try { delete G[name]; } catch (e) {} G[name] = v; } }); } catch (e3) {}
+            })(names[k]);
+        })(self);
+    }
+    // BroadcastChannel within this worker (other contexts do not hear it; Telegram's protocol worker makes one at start)
+    if (!self.BroadcastChannel) {
+        (function (G) {
+            var open = {};
+            var BC = function BroadcastChannel(name) { this.name = String(name); this.onmessage = null; this.onmessageerror = null; this.__l = []; this.__closed = false; (open['$' + this.name] = open['$' + this.name] || []).push(this); };
+            BC.prototype.postMessage = function (data) {
+                if (this.__closed) throw new Error('InvalidStateError');
+                var list = (open['$' + this.name] || []).slice(), from = this;
+                setTimeout(function () {
+                    for (var i = 0; i < list.length; i++) {
+                        var c = list[i];
+                        if (c === from || c.__closed) continue;
+                        var ev = { type: 'message', data: data, target: c, currentTarget: c, origin: '', lastEventId: '' };
+                        if (typeof c.onmessage === 'function') try { c.onmessage(ev); } catch (e) {}
+                        for (var j = 0; j < c.__l.length; j++) try { c.__l[j].call(c, ev); } catch (e2) {}
+                    }
+                }, 0);
+            };
+            BC.prototype.addEventListener = function (type, fn) { if (type === 'message' && typeof fn === 'function') this.__l.push(fn); };
+            BC.prototype.removeEventListener = function (type, fn) { for (var i = this.__l.length - 1; i >= 0; i--) if (this.__l[i] === fn) this.__l.splice(i, 1); };
+            BC.prototype.close = function () { this.__closed = true; var l = open['$' + this.name] || []; for (var i = l.length - 1; i >= 0; i--) if (l[i] === this) l.splice(i, 1); };
+            G.BroadcastChannel = BC;
+        })(self);
+    }
     // the Cache API (caches.open(name).put/match...), in memory for this worker's life (see shims-extra.js)
     if (!self.caches && self.Promise) {
         (function (G) {
