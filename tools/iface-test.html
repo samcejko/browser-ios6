@@ -13,6 +13,8 @@ for (var i = 0; i < __names.length; i++) try { delete window[__names[i]]; } catc
 window.fetch = undefined;
 // (the shims' streams, as on the old engine: response.body over the polyfill's responses)
 window.ReadableStream = undefined;
+// (no Cache API, as on the old engine)
+try { Object.defineProperty(window, 'caches', { value: undefined, configurable: true, writable: true }); } catch (e) { window.__errors.push('strip caches'); }
 // (a method a shim puts on navigator itself, as shims.js does with sendBeacon on the old engine)
 navigator.brOwnMethod = function () { return 7; };
 </script>
@@ -82,6 +84,24 @@ navigator.brOwnMethod = function () { return 7; };
         });
     }).then(null, function (e) { check('request', false, e && e.message); end(); });
 
+    // the in-memory Cache API
+    start();
+    window.caches.open('v1').then(function (c) {
+        return c.put('/a.json', new window.Response('{"x":2}')).then(function () { return c.match('/a.json'); }).then(function (r) {
+            return r.json();
+        }).then(function (j) {
+            check('caches put/match', j && j.x === 2);
+            return window.caches.has('v1');
+        }).then(function (has) {
+            check('caches has', has === true);
+            return c.keys();
+        }).then(function (keys) {
+            check('cache keys', keys.length === 1 && /\/a\.json$/.test(keys[0].url || keys[0]));
+            return c['delete']('/a.json');
+        }).then(function (gone) {
+            return c.match('/a.json').then(function (r) { check('cache delete', gone === true && r === undefined); end(); });
+        });
+    }).then(null, function (e) { check('caches', false, e && e.message); end(); });
     // looking at response.body does not read it (ofetch: if (response.body) ... response.json())
     start();
     var looked = new window.Response('{"a":1}', { headers: { 'Content-Type': 'application/json' } });

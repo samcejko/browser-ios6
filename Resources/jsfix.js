@@ -439,7 +439,7 @@
                 }
             }
             // a proxy of an empty object that hands every name to an object its trap reads them from (TikTok's device
-            // info: new Proxy({}, {get(e, t) {let i = p || (p = new c), r = i[t]; ...}}), whose names the page reads
+            // info: a proxy of {} whose get(e, t) is {let i = p || (p = new c), r = i[t]; ...}), whose names the page reads
             // (K.cF.isHevcTypeSupported() was undefined and the feed page fell over): one read of a name every object
             // answers, from Object.prototype, while it notes where it was read tells that object; its names (and its
             // prototypes') then read through the trap as they are used
@@ -1642,6 +1642,8 @@
                 break;
             case 'SequenceExpression': d = this.list(n.expressions, n, s); break;
             case 'CallExpression': case 'NewExpression':
+                // (a function called where it is written goes in parentheses when printed: see ExpressionStatement in P.S)
+                if (WRAPPED_FN[n.callee.type] === 1) n.callee.$wrap = true;
                 if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === 'eval' && !n.optional && n.arguments.length &&
                     n.arguments[0].type !== 'SpreadElement' && this.directEval(n)) d = true;
                 if (n.callee.type === 'Super') { d = true; n.callee.$p = n; } else if (this.v(n.callee, n, s)) d = true;
@@ -1651,6 +1653,7 @@
                 if (n.arguments.length && trailingComma(this.src, n.arguments[n.arguments.length - 1].end, n.end)) d = true;
                 break;
             case 'MemberExpression':
+                if (WRAPPED_FN[n.object.type] === 1) n.object.$wrap = true;
                 if (n.object.type === 'Super') { d = true; n.object.$p = n; } else if (this.v(n.object, n, s)) d = true;
                 if (n.computed) { if (this.v(n.property, n, s)) d = true; }
                 else { n.property.$p = n; if (n.property.type === 'PrivateIdentifier' || nameDirty(n.property)) d = true; }
@@ -2148,6 +2151,7 @@
         if (this.prec < min || n.$wrap) { code = '(' + code + ')'; this.prec = P_PRIMARY; }
         return code;
     };
+    var WRAPPED_FN = { FunctionExpression: 1, ArrowFunctionExpression: 1, ClassExpression: 1 };
     // the node an expression's text starts with (see ExpressionStatement)
     var leftmostNode = function (n) {
         for (var guard = 0; n && guard < 200; guard++) {
