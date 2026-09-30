@@ -44,6 +44,24 @@ pthread_t BRFindThreadNamed(const char *name)
     return found;
 }
 
+NSString *BRThreadNames(void)
+{
+    thread_act_array_t threads = NULL;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) return @"(no threads)";
+    NSMutableArray *names = [NSMutableArray array];
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+        pthread_t p = pthread_from_mach_thread_np(threads[i]);
+        char buf[64] = { 0 };
+        if (!p) [names addObject:@"(no pthread)"];
+        else if (pthread_getname_np(p, buf, sizeof(buf)) != 0) [names addObject:@"(no name)"];
+        else [names addObject:[NSString stringWithFormat:@"'%s'", buf]];
+        mach_port_deallocate(mach_task_self(), threads[i]);
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)threads, count * sizeof(thread_t));
+    return [names componentsJoinedByString:@", "];
+}
+
 @implementation BRWatchdog
 
 + (void)setPageLoading:(BOOL)loading

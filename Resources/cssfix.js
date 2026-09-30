@@ -3078,7 +3078,7 @@ var CSSFix = (function () {
                     // rule turning the same class into a row ("navbar-expand-lg .navbar-nav") makes it a box again
                     // (also a column that centres, ends or spreads its items: as boxes, seznam.cz's nested columns made its
                     // start take 41 s)
-                    var colBlock = columnFlex;
+                    var colBlock = columnFlex && !columnHasOwnHeight(decls);
                     if ((lv === 'flex' || lv === 'inline-flex') && colBlock && !wrap) rememberColumnFlex(ctx, lv === 'inline-flex');
                     if (lv === 'flex') push(out, 'display', (wrap || colBlock) ? 'block' : '-webkit-box', imp);
                     else if (lv === 'inline-flex') push(out, 'display', (wrap || colBlock) ? 'inline-block' : '-webkit-inline-box', imp);
@@ -4340,6 +4340,23 @@ var CSSFix = (function () {
         while ((m = re.exec(last)) !== null) out.push(m[1]);
         return out;
     }
+    // Whether a column flex container rule gives it a height of its own: a length of height (not a percentage, that of
+    // a parent often without one), or fixed / absolute between its top and bottom. Such a column stays a vertical box:
+    // its items that grow share that height (TikTok's page, position: fixed; top: 0; bottom: 0 around a flex: 1 player,
+    // was 0 px high as a block and showed no video); one only as high as its content stays a block (see columnFlex).
+    var OWN_HEIGHT = /^-?[\d.]+(px|vh|dvh|svh|lvh|vmin|vmax|em|rem)$|^(-webkit-)?calc\([^%]*\)$/;
+    function columnHasOwnHeight(decls) {
+        var height = false, fixed = false, top = false, bottom = false, inset = false;
+        for (var i = 0; i < decls.length; i++) {
+            var p = decls[i].p, v = trim(String(decls[i].v)).toLowerCase();
+            if (p === 'height' || p === 'block-size') height = OWN_HEIGHT.test(v) && !/^0(px)?$/.test(v);
+            else if (p === 'position') fixed = v === 'fixed' || v === 'absolute';
+            else if (p === 'top' || p === 'inset-block-start') top = v !== 'auto';
+            else if (p === 'bottom' || p === 'inset-block-end') bottom = v !== 'auto';
+            else if (p === 'inset' || p === 'inset-block') inset = v !== 'auto';
+        }
+        return height || (fixed && (inset || (top && bottom)));
+    }
     function rememberColumnFlex(ctx, inline) {
         if (!ctx.curSels) return;
         if (!ctx.colFlex) ctx.colFlex = {};
@@ -4538,7 +4555,7 @@ var CSSFix = (function () {
                     var fi = flexContainerInfo(r.decls, ctx);
                     if (rowWrap) { fi.flex = true; fi.wrap = true; fi.column = false; }
                     // (the flex containers, whose children the shim marks as items: fx 2 for a column that stays a block)
-                    if (fi.flex && !fi.wrap && g_manifest !== false) manifestAdd('mk', { h: manifestHash('mk|fx|' + sels.join(',')), s: sels.join(','), fx: fi.column ? 2 : 1 });
+                    if (fi.flex && !fi.wrap && g_manifest !== false) manifestAdd('mk', { h: manifestHash('mk|fx|' + sels.join(',')), s: sels.join(','), fx: fi.column && !columnHasOwnHeight(r.decls) ? 2 : 1 });
                     // (align-self: the old boxes align all their children alike; the shim aligns the items that differ, with
                     // the rule's specificity and media queries to find the winner, see alignFlexItems in shims-extra.js)
                     var asv = alignSelfOf(r.decls, ctx);
