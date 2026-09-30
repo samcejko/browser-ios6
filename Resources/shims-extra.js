@@ -717,6 +717,10 @@
     // Uncaught errors of the page reach the app's log (brlog: scheme) so that broken sites can be diagnosed over SSH
     var reportedErrors = 0;
     window.addEventListener('error', function (e) {
+        // (a script of its own URL that does not parse: the app drops its cached copy, so that the next visit gets it
+        // lowered again - IKEA's recommendation chunks sat in the cache as they came, with a year to live)
+        var file = e.filename || '';
+        if (/SyntaxError/.test(e.message || '') && /^https?:/.test(file) && file.split('#')[0] !== location.href.split('#')[0]) sendToApp('brevict', file);
         if (reportedErrors >= 5) return;
         reportedErrors++;
         var src = (e.filename || '').split('/').slice(-1)[0];

@@ -24,5 +24,6 @@ typedef void (^BRAuthenticationHandler)(NSString *host, NSString *realm, void (^
 + (NSURL *)lastMainDocumentURL;
 + (NSString *)lastMainDocumentTLSInfo;       // "TLSv1.2 TLS-ECDHE-..." or nil for plain http
 + (NSString *)lastMainDocumentContentType;
++ (void)evictCachedScript:(NSString *)urlString;   // a script the page could not parse: its cached copy goes (once per URL)
 
 @end

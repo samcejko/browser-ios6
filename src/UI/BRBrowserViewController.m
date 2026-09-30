@@ -2492,6 +2492,12 @@ static void BRWebThreadLock(void)
         BRLog(@"Page: %@", [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec);
         return NO;
     }
+    if ([scheme isEqualToString:@"brevict"]) {
+        // a script the page could not parse: its cached copy goes (see shims-extra.js)
+        NSString *spec = url.absoluteString.length > 8 ? [url.absoluteString substringFromIndex:8] : @"";
+        [BRURLProtocol evictCachedScript:[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec];
+        return NO;
+    }
     if ([scheme isEqualToString:@"brcopy"]) {
         // navigator.clipboard.writeText / execCommand('copy') from shims-extra.js
         NSString *spec = url.absoluteString.length > 7 ? [url.absoluteString substringFromIndex:7] : @"";

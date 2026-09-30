@@ -437,6 +437,27 @@ static NSHashTable *g_activeProtocols;
 + (NSString *)lastMainDocumentTLSInfo { @synchronized (self) { return g_lastMainTLS; } }
 + (NSString *)lastMainDocumentContentType { @synchronized (self) { return g_lastMainContentType; } }
 
+// A script the page could not parse (a SyntaxError from its own URL, see shims-extra.js): its cached copy goes, once per
+// URL and session, so that the next visit loads it and lowers it again. (IKEA's recommendation chunks were in the cache
+// as they came, with a year to live: every visit threw and the panels never came.)
++ (void)evictCachedScript:(NSString *)urlString
+{
+    NSURL *url = urlString.length ? [NSURL URLWithString:urlString] : nil;
+    if (!url || ![[url.scheme lowercaseString] hasPrefix:@"http"]) return;
+    static NSMutableSet *done;
+    @synchronized (self) {
+        if (!done) done = [NSMutableSet set];
+        if ([done containsObject:url.absoluteString] || done.count > 200) return;
+        [done addObject:url.absoluteString];
+    }
+    dispatch_async(BRCacheQueue(), ^{
+        NSURLRequest *request = [NSURLRequest requestWithURL:url];
+        BOOL had = [[NSURLCache sharedURLCache] cachedResponseForRequest:request] != nil;
+        [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
+        BRLog(@"Script that did not parse: %@ %@", had ? @"cached copy dropped" : @"not in the cache", url.absoluteString.length > 160 ? [url.absoluteString substringToIndex:160] : url.absoluteString);
+    });
+}
+
 // data:image/webp,... (placeholders of lazy images, feature tests): decoded here like WebP responses
 static BOOL BRIsWebPDataURL(NSURL *url)
 {
