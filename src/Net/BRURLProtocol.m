@@ -977,8 +977,10 @@ static BOOL BRIsFontDataURL(NSURL *url)
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (kind && declared > (long long)BRRewriteLimit(kind)) kind = nil;
     }
-    // ES modules requested by the page's module loader (marker ?__brmod=1): registrations for the loader
-    if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && BRIsModuleRequest(url) && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available) {
+    // ES modules requested by the page's module loader (marker ?__brmod=1): registrations for the loader (a JSON module,
+    // import ... with { type: 'json' }, goes to the loader as it is; a CSS module was rewritten as a stylesheet above)
+    if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"] && BRIsModuleRequest(url) && [BRSettings transpileEnabled] && [BRCSSRewriter shared].available &&
+        [ctype rangeOfString:@"json"].location == NSNotFound) {
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (declared <= (long long)BRMaxScriptRewriteBody) kind = @"jsmodule";
     }

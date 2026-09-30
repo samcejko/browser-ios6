@@ -12437,7 +12437,17 @@
                             done(r);
                             return;
                         }
-                        var code = x.responseText, unparsed = false;
+                        var code = x.responseText, unparsed = false, ctype = '';
+                        // a JSON module (import ... with { type: 'json' }; the app passes it as it came): the parsed value
+                        // as the default export
+                        try { ctype = String(x.getResponseHeader('Content-Type') || '').toLowerCase(); } catch (eH) {}
+                        if (!hook && ctype.indexOf('json') >= 0) {
+                            var value;
+                            try { value = JSON.parse(code); } catch (eJ) { r.error = eJ; done(r); return; }
+                            api.define(r.url, [], function (ex) { ex({ 'default': function () { return value; } }); return [[], function () {}]; });
+                            done(r);
+                            return;
+                        }
                         try { if (hook) code = hook(code, r.url); (0, eval)(code + '\n//# sourceURL=' + r.url); } catch (e) { r.error = e; unparsed = e instanceof SyntaxError; }
                         // the app had no room to lower it just now: its failure says so, or the module came as it is (the
                         // old engine meets import/export). Asked for again in a while, twice - what depends on it waits;
