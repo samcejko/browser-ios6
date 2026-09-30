@@ -361,6 +361,7 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @interface BRURLProtocol ()
 @property (nonatomic, strong) NSThread *clientThread;
 @property (nonatomic, strong) NSArray *clientModes;
+@property (nonatomic) BOOL loggedWait;          // a slow delivery to the client thread was logged (see performOnClientThread)
 @property (nonatomic, strong) BRHTTPRequest *httpRequest;
 @property (nonatomic) BOOL stopped;             // stopLoading was called
 @property (nonatomic) BOOL counted;             // counted as started in the page progress
@@ -503,7 +504,20 @@ static BOOL BRIsFontDataURL(NSURL *url)
 - (void)performOnClientThread:(dispatch_block_t)block
 {
     if (!self.clientThread || !block) return;
-    [self performSelector:@selector(br_runBlock:) onThread:self.clientThread withObject:(id)[block copy] waitUntilDone:NO modes:self.clientModes];
+    // (a response that waits long for that thread is logged once: what a page stands still for when its resources are
+    // at hand - IKEA loaded nothing for 12 s of a visit from the cache)
+    NSTimeInterval queued = [NSDate timeIntervalSinceReferenceDate];
+    dispatch_block_t timed = ^{
+        NSTimeInterval waited = [NSDate timeIntervalSinceReferenceDate] - queued;
+        if (waited > 1.5 && !self.loggedWait) {
+            self.loggedWait = YES;
+            NSThread *t = self.clientThread;
+            NSString *u = self.request.URL.absoluteString ?: @"?";
+            BRLog(@"Delivery waited %.1f s for the %@ thread: %@", waited, t.isMainThread ? @"main" : t.name.length ? t.name : @"loader", u.length > 120 ? [u substringToIndex:120] : u);
+        }
+        block();
+    };
+    [self performSelector:@selector(br_runBlock:) onThread:self.clientThread withObject:(id)[timed copy] waitUntilDone:NO modes:self.clientModes];
 }
 
 - (void)br_runBlock:(dispatch_block_t)block
@@ -568,6 +582,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
     // 1. Cache
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
         __block NSCachedURLResponse *cached = nil;
+        NSTimeInterval lookup0 = [NSDate timeIntervalSinceReferenceDate];
         dispatch_sync(BRCacheQueue(), ^{
             cached = [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
             if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data] ||
@@ -578,6 +593,8 @@ static BOOL BRIsFontDataURL(NSURL *url)
                 cached = nil;
             }
         });
+        NSTimeInterval lookup = [NSDate timeIntervalSinceReferenceDate] - lookup0;
+        if (lookup > 0.5) BRLog(@"Cache lookup took %.1f s (%@): %@", lookup, cached ? @"hit" : @"miss", url.absoluteString.length > 120 ? [url.absoluteString substringToIndex:120] : url.absoluteString);
         if (cached && [cached.response isKindOfClass:[NSHTTPURLResponse class]] && cached.userInfo[BRCacheStoredAtKey]) {
             if (BRCachedResponseIsFresh(cached) || policy == NSURLRequestReturnCacheDataElseLoad || policy == NSURLRequestReturnCacheDataDontLoad) {
                 [self serveCachedResponse:cached];
@@ -1079,12 +1096,16 @@ static BOOL BRIsFontDataURL(NSURL *url)
     if ([cachedType hasPrefix:@"text/html"] && (!self.request.mainDocumentURL || [self.request.URL isEqual:self.request.mainDocumentURL]))
         BRNotePageDocument(self.request.URL, data, data.length);
     if ([cachedType hasPrefix:@"text/css"] || [cachedType hasPrefix:@"text/html"]) {
+        NSTimeInterval m0 = [NSDate timeIntervalSinceReferenceDate];
         [[BRCSSRewriter shared] registerManifestInData:data pageURL:self.request.mainDocumentURL ?: self.request.URL sourceURL:self.request.URL];
         NSData *body = [BRCSSRewriter dataWithoutManifest:data];
         if (body.length != data.length) {
             BRSetHeaderField(f, @"Content-Length", [NSString stringWithFormat:@"%lu", (unsigned long)body.length]);
             data = body;
         }
+        NSTimeInterval took = [NSDate timeIntervalSinceReferenceDate] - m0;
+        if (took > 0.3) BRLog(@"Cached %@ manifest took %.1f s (%lu KB): %@", [cachedType hasPrefix:@"text/css"] ? @"stylesheet" : @"document", took,
+                              (unsigned long)(cached.data.length >> 10), self.request.URL.lastPathComponent ?: @"?");
     }
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:stored.URL ?: self.request.URL statusCode:stored.statusCode HTTPVersion:@"HTTP/1.1" headerFields:f];
     [self performOnClientThread:^{

@@ -191,11 +191,13 @@
     }
     if ([target hasPrefix:@"profile"]) {
         // browser:profile?secs=30 samples the WebThread for that long: where its time went, to tmp/profile.txt
+        // (&thread=main: the main thread, which the WebThread waits for on every delegate message)
         NSRange sr = [target rangeOfString:@"secs="];
         NSInteger secs = sr.location == NSNotFound ? 20 : MAX(1, MIN(120, [[target substringFromIndex:sr.location + sr.length] integerValue]));
-        BRLog(@"Profiling the WebThread for %ld s", (long)secs);
-        [BRProfiler profileThreadNamed:@"WebThread" seconds:secs completion:^(NSString *report) {
-            [report ?: @"(no profile: no WebThread, or one is running)" writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"profile.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        NSString *threadName = [target rangeOfString:@"thread=main"].location != NSNotFound ? @"main" : @"WebThread";
+        BRLog(@"Profiling the %@ thread for %ld s", threadName, (long)secs);
+        [BRProfiler profileThreadNamed:threadName seconds:secs completion:^(NSString *report) {
+            [report ?: @"(no profile: no such thread, or one is running)" writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"profile.txt"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
             BRLog(@"Profile: %@", report.length > 1500 ? [report substringToIndex:1500] : report);
         }];
         return YES;

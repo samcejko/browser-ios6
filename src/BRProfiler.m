@@ -156,7 +156,8 @@ static NSString *BRKindOf(NSString *image, NSString *name, BOOL top)
 
 + (void)profileThreadNamed:(NSString *)name seconds:(NSTimeInterval)seconds completion:(void (^)(NSString *report))completion
 {
-    pthread_t target = BRFindThreadNamed(name.UTF8String ?: "");
+    // ("main": the main thread, which has no name; asked for from it)
+    pthread_t target = [name isEqualToString:@"main"] ? ([NSThread isMainThread] ? pthread_self() : NULL) : BRFindThreadNamed(name.UTF8String ?: "");
     if (!target || !OSAtomicCompareAndSwap32(0, 1, &g_profiling)) {
         dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
         return;
