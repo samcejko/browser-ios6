@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>iface test</title>
+<script>
+// Interface globals the old engine lacks (Navigator, History, Performance...) and the Request wrapper over the fetch
+// polyfill, from shims-extra.js. Chrome's own are taken away first, the polyfill comes before the shims as in the bundle.
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+window.__names = ['Navigator', 'History', 'Location', 'Performance', 'Geolocation', 'Permissions', 'StorageManager', 'MediaDevices'];
+for (var i = 0; i < __names.length; i++) try { delete window[__names[i]]; } catch (e) { window.__errors.push('strip ' + __names[i]); }
+window.fetch = undefined;
+</script>
+<script src="babel-test/bundle-parts/fetch.js"></script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+(function () {
+    var results = [], pending = 0, done = false;
+    var check = function (name, ok, info) { results.push((ok ? 'PASS ' : 'FAIL ') + name + (info ? ' (' + info + ')' : '')); };
+    var finish = function () {
+        if (done || pending > 0) return;
+        done = true;
+        var fails = 0;
+        for (var i = 0; i < results.length; i++) if (results[i].indexOf('FAIL') === 0) fails++;
+        document.title = 'iface ' + (results.length - fails) + '/' + results.length + (window.__errors.length ? ' errors ' + window.__errors.length : '');
+        document.getElementById('out').textContent = document.title + '\n' + results.join('\n') + (window.__errors.length ? '\n' + window.__errors.join('\n') : '');
+    };
+    var start = function () { pending++; };
+    var end = function () { pending--; finish(); };
+
+    // interface objects: functions named after the interface, the instance's prototype, not constructible
+    var inst = { Navigator: navigator, History: history, Location: location, Performance: performance, Geolocation: navigator.geolocation,
+        Permissions: navigator.permissions, StorageManager: navigator.storage, MediaDevices: navigator.mediaDevices };
+    for (var n in inst) {
+        if (!inst[n]) continue;
+        var C = window[n], thrown = null;
+        try { new C(); } catch (e) { thrown = e; }
+        check(n, typeof C === 'function' && inst[n] instanceof C && C.prototype === Object.getPrototypeOf(inst[n]) && thrown instanceof TypeError,
+            typeof C + ' ' + (C && C.name));
+    }
+    check('typeof Navigator guard', typeof Navigator !== 'undefined' && navigator instanceof Navigator && navigator.userAgent === navigator.userAgent);
+
+    // Request over the polyfill: a read body can be replaced (the standard's rule), a read body alone cannot be reused
+    var R = window.Request;
+    check('polyfill active', !!(window.fetch && window.fetch.polyfill), String(window.fetch && window.fetch.polyfill));
+    var used = new R('xhr-test.json', { method: 'POST', body: 'first' });
+    start();
+    used.text().then(function (t) {
+        check('read body', t === 'first' && used.bodyUsed === true, t);
+        var threw = null;
+        try { new R(used); } catch (e) { threw = e; }
+        check('used body alone throws', threw instanceof TypeError, threw && threw.message);
+        var again = null, err = null;
+        try { again = new R(used, { body: 'second' }); } catch (e2) { err = e2; }
+        check('used body replaced', !!again && again.method === 'POST' && again.url === used.url && again instanceof R, err && err.message);
+        if (!again) { end(); return; }
+        return again.text().then(function (t2) {
+            check('new body read', t2 === 'second', t2);
+            var fresh = new R('xhr-test.json', { method: 'POST', body: 'x', headers: { 'X-Test': '1' } });
+            var copy = new R(fresh);
+            check('copy takes the body', fresh.bodyUsed === true && copy.headers.get('x-test') === '1', String(fresh.bodyUsed));
+            return window.fetch(used, { body: 'third' }).then(function () { return null; }, function (e3) { return e3; });
+        }).then(function (fe) {
+            check('fetch of used request with a body', !fe || !/Already read/.test(fe.message), fe && fe.message);
+            end();
+        });
+    }).then(null, function (e) { check('request', false, e && e.message); end(); });
+
+    setTimeout(function () { if (!done) { pending = 0; results.push('FAIL timed out'); finish(); } }, 8000);
+    finish();
+})();
+</script>
+</body>
+</html>

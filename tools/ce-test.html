@@ -14,6 +14,7 @@ try { Object.defineProperty(window, 'customElements', { value: undefined, config
 </head>
 <body>
 <my-greet name="static"></my-greet>
+<lit-like id="litLike"></lit-like>
 <div id="host"></div>
 <script>
 // a custom element written as a class (lowered like the network layer does), used in three ways: parsed markup,
@@ -28,12 +29,20 @@ var src = [
   '  attributeChangedCallback(n, o, v) { log.push("attr:" + n + "=" + v); }',
   '}',
   'customElements.define("my-greet", MyGreet);',
-  'window.__ceLog = log; window.MyGreet = MyGreet;'
+  'window.__ceLog = log; window.MyGreet = MyGreet;',
+  // Lit finalizes a class (its elementProperties) in `static get observedAttributes()`, which define reads
+  'class LitLike extends HTMLElement {',
+  '  static get observedAttributes() { if (!this.hasOwnProperty("elementProperties")) this.elementProperties = new Map([["label", {}]]); return ["label"]; }',
+  '  constructor() { super(); var seen = []; this.constructor.elementProperties.forEach(function (v, k) { seen.push(k); }); this.seen = seen.join(","); }',
+  '  attributeChangedCallback() {}',
+  '}',
+  'customElements.define("lit-like", LitLike);'
 ].join('\n');
 var lowered = JSFix.transpile(src, {});
 (0, eval)(lowered);
 var results = {};
 results.markup = document.querySelector('my-greet').textContent;
+results.litLike = document.getElementById('litLike').seen === 'label';
 var a = document.createElement('my-greet');
 results.createdHasGreeting = a.greeting === 'hi' && a instanceof MyGreet;
 a.setAttribute('name', 'created');

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fast tokens test</title>
+<script src="babel-test/acorn-8.14.0.js"></script>
+<script>window.acornStock = window.acorn; window.acorn = undefined;</script>
+<script src="babel-test/acorn-8.14.0.js"></script>
+<script>window.__brFastTokens = false;   // (jsfix patches only on demand here)</script>
+<script src="../Resources/jsfix.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+// jsfix.js's fast tokenizer (fastTokens) against stock acorn 8.14.0: the same tokens (type, value, start, end, and the
+// tokenizer's context after each) and the same trees or errors, on real bundles and on edge cases. ?files=a,b limits
+// the real files; ?quick skips the big ones.
+(function () {
+    var A = window.acornStock, B = window.acorn;
+    JSFix.fastTokens(B);
+    var results = [], fails = 0;
+    var check = function (name, ok, info) { if (!ok) fails++; results.push((ok ? 'PASS ' : 'FAIL ') + name + (info ? ' (' + info + ')' : '')); };
+    var OPTS = function (module) { return { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module, allowReserved: true, locations: false }; };
+    var valueText = function (v) {
+        if (v && typeof v === 'object') return '/' + v.pattern + '/' + v.flags;
+        if (typeof v === 'bigint') return v + 'n';
+        return typeof v + ':' + String(v);
+    };
+    // the token streams of both, first difference or null; n: tokens compared
+    var compareTokens = function (src, module) {
+        var pa = new A.Parser(OPTS(module), src), pb = new B.Parser(OPTS(module), src), n = 0, ea = null, eb = null;
+        try { pa.nextToken(); } catch (e) { ea = e; }
+        try { pb.nextToken(); } catch (e) { eb = e; }
+        for (;;) {
+            if (ea || eb) {
+                if (!ea || !eb || ea.message !== eb.message || ea.pos !== eb.pos) return { n: n, diff: 'error ' + (ea && ea.message) + ' vs ' + (eb && eb.message) };
+                return { n: n, diff: null, error: ea.message };
+            }
+            var ca = pa.context, cb = pb.context;
+            var sameCtx = ca.length === cb.length;
+            for (var ci = 0; sameCtx && ci < ca.length; ci++) sameCtx = ca[ci].token === cb[ci].token && ca[ci].isExpr === cb[ci].isExpr && !!ca[ci].generator === !!cb[ci].generator;
+            if (pa.type.label !== pb.type.label || pa.type.keyword !== pb.type.keyword || valueText(pa.value) !== valueText(pb.value) || pa.start !== pb.start || pa.end !== pb.end ||
+                pa.exprAllowed !== pb.exprAllowed || !sameCtx || pa.containsEsc !== pb.containsEsc || pa.pos !== pb.pos) {
+                return { n: n, diff: 'token ' + n + ' at ' + pa.start + ': ' + pa.type.label + ' ' + valueText(pa.value) + ' ' + pa.start + '-' + pa.end + ' ' + pa.exprAllowed + ' ctx' + ca.length +
+                         ' vs ' + pb.type.label + ' ' + valueText(pb.value) + ' ' + pb.start + '-' + pb.end + ' ' + pb.exprAllowed + ' ctx' + cb.length + ' ' + JSON.stringify(src.slice(Math.max(0, pa.start - 20), pa.start + 30)) };
+            }
+            if (pa.type === A.tokTypes.eof) return { n: n, diff: null };
+            n++;
+            try { pa.next(); } catch (e) { ea = e; }
+            try { pb.next(); } catch (e) { eb = e; }
+        }
+    };
+    var replacer = function (k, v) {
+        if (typeof v === 'bigint') return 'bigint:' + v;
+        if (v instanceof RegExp) return 'regexp:' + v;
+        return v;
+    };
+    var compareTrees = function (src, module) {
+        var ta = null, tb = null, ea = null, eb = null;
+        try { ta = JSON.stringify(A.parse(src, OPTS(module)), replacer); } catch (e) { ea = e; }
+        try { tb = JSON.stringify(B.parse(src, OPTS(module)), replacer); } catch (e) { eb = e; }
+        if (ea || eb) return ea && eb && ea.message === eb.message && ea.pos === eb.pos ? null : 'errors ' + (ea && ea.message) + ' vs ' + (eb && eb.message);
+        if (ta === tb) return null;
+        for (var i = 0; i < ta.length && ta.charCodeAt(i) === tb.charCodeAt(i); i++) {}
+        return 'trees differ at ' + i + ': ' + ta.slice(Math.max(0, i - 80), i + 40) + ' | ' + tb.slice(Math.max(0, i - 80), i + 40);
+    };
+    var CASES = [
+        'var a = 1, b = "x", c = \'y\';', 'a.b.c(d)[e] = f;', 'if (a) /re/g.test(b); else c / d / e;', 'x = a\n/b/g', 'return /x/ ; a++ / 2',
+        'a = `x${b}y${`z${c}`}w`;', 'tag`a${b}c`', 'a = "esc\\n\\u0041\\x41";', "a = 'it\\'s';", 'a = "\\u{1F600}";', 'var \\u0061bc = 1; \\u{62}c;',
+        'var ünïcode = 1; aéb = 2;', 'a = 1;', 'a b', '" "', 'x = 0x1F + 0o17 + 0b11 + 017 + 019 + 1e3 + 1.5e-3 + .5 + 5. + 1_000 + 10n + 0n + 0;',
+        'a = 1.toString', 'a = 1..toString(); b = 1 .x; c = 0.1.x;', '/* c */ a /* d */ = // e\n b; /** x */', '<!-- html comment\na = 1;\n--> also\nb = 2;',
+        'a.default; a.function(); b = {function: 1, class: 2, if: 3}; c.if = d.in;', 'for (x of y) of = 1;', 'function* g() { yield /re/; yield\n/a/g; }',
+        'async function f() { await x; } var async = 1, await = 2;', 'class A { #p = 1; static #q; m() { return this.#p in this; } }', 'a?.b?.[c]?.(d); a ?? b; a ??= b; a ||= c; a &&= d; a **= 2;',
+        'x => x; (a, b) => { return a + b }; async x => x;', 'label: for (;;) { break label; continue label; }', 'switch (a) { case 1: default: }', 'a = b ? c : d; e = {f: g};',
+        'let {a, b: [c, ...d]} = e; [...f] = g;', 'new.target; import.meta; import("x");', '#!/usr/bin/env node\na = 1;', 'var $ = _ = $$ = a$b_c = 1;', 'x\n++\ny', 'a = b\n(c)',
+        '"unterminated', '/* unterminated', 'a = `unterminated', 'a = 08; b = 09.5;', '"use strict"; a = 010;', 'a = "\\08";', 'var v = 1_2_3, w = 0.000_1;',
+        'x = y / z / w; x = (y) / z; x = [y] / z; x = {} / 1;', 'a = b in c; d = e instanceof f; typeof g; void h; delete i.j;', 'if(a){}else{}do{}while(b)', 'yield = 1; let = 2; static = 3;',
+        '}', ')', 'a = /[/]/.source; b = /\\//; c = /[\\]/]/;', 'a = "\\\r\n"', 'x = 1\r\ny = 2\rz = 3'
+    ];
+    for (var i = 0; i < CASES.length; i++) {
+        var r = compareTokens(CASES[i], false), t = compareTrees(CASES[i], false);
+        check('case ' + i + ' tokens', !r.diff, r.diff || (r.n + ' tokens' + (r.error ? ', error ' + r.error : '')));
+        check('case ' + i + ' tree', !t, t);
+        var rm = compareTokens(CASES[i], true);
+        check('case ' + i + ' module tokens', !rm.diff, rm.diff);
+    }
+    // real bundles
+    var FILES = ['real/twitch-49198.js', 'real/fb-IjITPJ35XfT.js', 'real/verge-1ij4ka6kwhw5z.js', 'real/gmaps-lite-app.js', 'real/vox-verge.umd.js', 'real/smap-jak.js', 'real/ig-sWttXoa.js',
+                 'real/verge-2qvexx1nlhzpa.js', 'real/o2-cz.js', 'real/ikea-rec-vendors-preact.js', 'aukro/main-Z4KXBTD3.js', 'aukro/chunk-XHEH6ENI.js', 'aukro/polyfills-7EDS5MOL.js',
+                 'idnes/ajm.js', 'idnes/uni.js', 'zone.js', 'alpine.js', 'didomi-sdk.js', 'acorn-8.14.0.js', 'bundle-parts/core-js-custom.js', 'bundle-parts/shims.js',
+                 'real/imdb-app-4c18.js', 'real/ig-wdsPgD2o.js', 'szn-asistent.js', 'cnn-inline-device.js', 'seznam-client.es5.js', 'userweb.js'];
+    var m = /[?&]files=([^&]+)/.exec(location.search);
+    if (m) FILES = decodeURIComponent(m[1]).split(',');
+    else if (/[?&]quick/.test(location.search)) FILES = FILES.slice(0, 12);
+    var times = [];
+    var next = function (k) {
+        if (k >= FILES.length) {
+            document.title = 'fast-tokens ' + (results.length - fails) + '/' + results.length;
+            document.getElementById('out').textContent = document.title + '\n' + times.join('\n') + '\n' + results.join('\n');
+            return;
+        }
+        var x = new XMLHttpRequest();
+        x.open('GET', 'babel-test/' + FILES[k] + '?' + Date.now());
+        x.onload = function () {
+            var src = x.responseText, module = /^\s*(import|export)\b|\bimport\s*\{|\bexport\s+(default|const|function|\{)/m.test(src) && FILES[k].indexOf('aukro') >= 0;
+            var r = compareTokens(src, module);
+            check(FILES[k] + ' tokens', !r.diff, r.diff || (r.n + ' tokens' + (r.error ? ', error ' + r.error : '')));
+            // (the tree of a very big file would be a string of hundreds of MB: its tokens say it)
+            if (src.length < 1600000) { var t = compareTrees(src, module); check(FILES[k] + ' tree', !t, t); }
+            // (speed here is a modern engine's: only a hint)
+            var t0 = performance.now(), pa = new A.Parser(OPTS(module), src);
+            try { pa.nextToken(); while (pa.type !== A.tokTypes.eof) pa.next(); } catch (e) {}
+            var t1 = performance.now(), pb = new B.Parser(OPTS(module), src);
+            try { pb.nextToken(); while (pb.type !== B.tokTypes.eof) pb.next(); } catch (e) {}
+            times.push(FILES[k] + ': stock ' + (t1 - t0).toFixed(1) + ' ms, fast ' + (performance.now() - t1).toFixed(1) + ' ms');
+            document.getElementById('out').textContent = 'running ' + k + '/' + FILES.length + '\n' + results.join('\n');
+            setTimeout(function () { next(k + 1); }, 0);
+        };
+        x.onerror = function () { check(FILES[k] + ' loaded', false); next(k + 1); };
+        x.send();
+    };
+    next(0);
+})();
+</script>
+</body>
+</html>

@@ -3654,6 +3654,139 @@
         throw new Unsupported('yield in ' + n.type);
     };
 
+    // ------------------------------------------------------------------------------------------------ fast tokens
+    // acorn's tokenizer on the old engine costs 5 to 14 us a token (twitch.js, 355k tokens: 4.8 s of its 10.7 s parse),
+    // a lexer keeping its state in locals 0.8 us: every character goes through method calls and properties of the
+    // parser there. nextToken gets a fast way for the common tokens (ASCII names and keywords, punctuation, plain
+    // strings and numbers, spaces and comments) that ends in the state acorn's own methods leave; anything else (escapes,
+    // other characters, templates, regular expressions, operators, a parser keeping locations or comments) is left to
+    // them. Only for the acorn these paths were checked against (tools/fast-tokens-test.html compares tokens and trees).
+    var fastTokens = function (acorn) {
+        var P = acorn && acorn.Parser && acorn.Parser.prototype;
+        if (!P || P.__brFastTokens || acorn.version !== '8.14.0' || !acorn.tokTypes || !acorn.keywordTypes) return;
+        var tt = acorn.tokTypes, kwTypes = acorn.keywordTypes, origNextToken = P.nextToken, origSkipSpace = P.skipSpace;
+        // (a regular expression without the u or v flag is not checked here: the engine the lowered script goes to
+        // judges it anyway, and acorn's check runs in script, 55 ms for twitch.tv's 4 KB list of React prop names; with
+        // those flags it is, jsfix lowers what they mean)
+        var origValidate = P.validateRegExpPattern;
+        if (origValidate) P.validateRegExpPattern = function (state) { if (state.switchU || state.switchV) return origValidate.call(this, state); };
+        var NAME = tt.name, DOT = tt.dot, STRING = tt.string, NUM = tt.num, EOF = tt.eof;
+        var PUNCT = [];
+        PUNCT[40] = tt.parenL; PUNCT[41] = tt.parenR; PUNCT[59] = tt.semi; PUNCT[44] = tt.comma; PUNCT[91] = tt.bracketL;
+        PUNCT[93] = tt.bracketR; PUNCT[123] = tt.braceL; PUNCT[125] = tt.braceR; PUNCT[58] = tt.colon;
+        // (the words any of acorn's keyword lists has: only these are asked of the parser's own list)
+        var kwCandidate = function (w) {
+            switch (w.length) {
+                case 2: return w === 'if' || w === 'in' || w === 'do';
+                case 3: return w === 'var' || w === 'new' || w === 'for' || w === 'try';
+                case 4: return w === 'this' || w === 'null' || w === 'true' || w === 'else' || w === 'case' || w === 'void' || w === 'with';
+                case 5: return w === 'false' || w === 'break' || w === 'const' || w === 'class' || w === 'throw' || w === 'while' || w === 'catch' || w === 'super';
+                case 6: return w === 'return' || w === 'typeof' || w === 'delete' || w === 'switch' || w === 'export' || w === 'import';
+                case 7: return w === 'default' || w === 'finally' || w === 'extends';
+                case 8: return w === 'function' || w === 'continue' || w === 'debugger';
+                case 10: return w === 'instanceof';
+            }
+            return false;
+        };
+        // finishToken and updateContext without locations
+        var finish = function (p, type, val) {
+            p.end = p.pos;
+            var prevType = p.type, update;
+            p.type = type;
+            p.value = val;
+            if (type.keyword && prevType === DOT) p.exprAllowed = false;
+            else if ((update = type.updateContext)) update.call(p, prevType);
+            else p.exprAllowed = type.beforeExpr;
+        };
+        // (tt.name's updateContext)
+        var finishName = function (p, word) {
+            p.end = p.pos;
+            var prevType = p.type, allowed = false;
+            p.type = NAME;
+            p.value = word;
+            if (p.options.ecmaVersion >= 6 && prevType !== DOT) {
+                if (word === 'of' && !p.exprAllowed || word === 'yield' && p.inGeneratorContext()) allowed = true;
+            }
+            p.exprAllowed = allowed;
+        };
+        P.nextToken = function () {
+            var stack = this.context, cur = stack[stack.length - 1], opts = this.options;
+            if (opts.locations || opts.onComment) return origNextToken.call(this);
+            var input = this.input, len = input.length, pos = this.pos, c, e;
+            if (!cur || !cur.preserveSpace) {
+                while (pos < len) {
+                    c = input.charCodeAt(pos);
+                    if (c === 32 || (c > 8 && c < 14)) { pos++; continue; }
+                    if (c === 47) {
+                        e = input.charCodeAt(pos + 1);
+                        if (e === 42) {
+                            e = input.indexOf('*/', pos + 2);
+                            if (e < 0) { this.pos = pos; origSkipSpace.call(this); pos = this.pos; break; }   // (acorn's error)
+                            pos = e + 2;
+                            continue;
+                        }
+                        if (e === 47) {
+                            for (pos += 2; pos < len; pos++) { c = input.charCodeAt(pos); if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) break; }
+                            continue;
+                        }
+                        break;
+                    }
+                    // (other space: acorn's own way on from here)
+                    if (c >= 128) { this.pos = pos; origSkipSpace.call(this); pos = this.pos; }
+                    break;
+                }
+            }
+            this.pos = pos;
+            this.start = pos;
+            if (pos >= len) return finish(this, EOF, undefined);
+            if (cur.override) return cur.override(this);
+            c = input.charCodeAt(pos);
+            if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 36 || c === 95) {
+                for (e = pos + 1; e < len; e++) {
+                    c = input.charCodeAt(e);
+                    if (!((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 36 || c === 95)) break;
+                }
+                // (an escape or another character in the name: acorn's readWord)
+                if (e < len && (c === 92 || c >= 128)) return this.readWord();
+                var word = input.slice(pos, e);
+                this.pos = e;
+                this.containsEsc = false;
+                if (e - pos > 1 && kwCandidate(word) && this.keywords.test(word)) return finish(this, kwTypes[word], word);
+                return finishName(this, word);
+            }
+            var type = c < 128 ? PUNCT[c] : undefined;
+            if (type !== undefined) { this.pos = pos + 1; return finish(this, type, undefined); }
+            if (c === 34 || c === 39) {
+                for (e = pos + 1; e < len; e++) {
+                    var q = input.charCodeAt(e);
+                    if (q === c) break;
+                    if (q === 92 || q === 10 || q === 13 || q === 0x2028 || q === 0x2029) return this.readString(c);
+                }
+                if (e >= len) return this.readString(c);   // (acorn's error)
+                this.pos = e + 1;
+                return finish(this, STRING, input.slice(pos + 1, e));
+            }
+            if (c === 46) {
+                e = input.charCodeAt(pos + 1);
+                if (e !== 46 && !(e >= 48 && e <= 57)) { this.pos = pos + 1; return finish(this, DOT, undefined); }
+                return this.getTokenFromCode(c);
+            }
+            if (c >= 48 && c <= 57) {
+                for (e = pos + 1; e < len; e++) { c = input.charCodeAt(e); if (!(c >= 48 && c <= 57)) break; }
+                // (not a plain decimal integer: a fraction, exponent, BigInt, separator, prefix, legacy octal, or a
+                // name right after it)
+                if ((e < len && ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 46 || c === 36 || c === 95 || c === 92 || c >= 128)) ||
+                    (e - pos > 1 && input.charCodeAt(pos) === 48)) return this.getTokenFromCode(input.charCodeAt(pos));
+                this.pos = e;
+                return finish(this, NUM, parseFloat(input.slice(pos, e)));
+            }
+            if (c === 92) return this.readWord();   // (a name starting with an escape)
+            if (c < 128) return this.getTokenFromCode(c);
+            return this.readToken(this.fullCharCodeAtPos());
+        };
+        P.__brFastTokens = true;
+    };
+
     // ------------------------------------------------------------------------------------------------ entry points
     // onFunction(node, strict, inClass): every `function` and arrow as soon as the parser completed it (the parser's
     // strictness is the surrounding code's again by then)
@@ -3662,6 +3795,7 @@
     var parse = function (src, module, onFunction, onImport, isl) {
         var acorn = root.acorn;
         if (!acorn || !acorn.parse) throw new Unsupported('acorn missing');
+        if (root.__brFastTokens !== false) fastTokens(acorn);
         var options = { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowHashBang: true, allowReturnOutsideFunction: !module,
                         allowReserved: true, locations: false };
         if (!onFunction) return acorn.parse(src, options);
@@ -4627,7 +4761,7 @@
     // (note: how the last run went where it did something unusual, for the app's log: islands)
     root.JSFix = { transpile: transpile, run: run, plan: plan, shape: shape, stats: stats, last: function () { return stats.last; }, note: function () { return stats.note; },
                    phases: function () { return stats.phases; },
-                   version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex, scanFunctions: scanFunctions, islandSkips: islandSkips,
+                   version: 1, Unsupported: Unsupported, lowerUnicode: lowerUnicodeRegex, scanFunctions: scanFunctions, islandSkips: islandSkips, fastTokens: fastTokens,
                    lazy: function () { return stats.lazy ? JSON.stringify(stats.lazy) : ''; }, lazyParts: lazyParts, helperSource: helperSource,
                    lazyScan: function (src) { var p = null; try { p = lazyParts(src); } catch (e) { p = null; } return p ? JSON.stringify(p) : ''; } };
 })(this);

@@ -1213,7 +1213,7 @@
             try { ctor.call(el); } catch (e2) { if (window.console && console.error) console.error(e2); }
         }
         try {
-            var observed = ctor.observedAttributes || [];
+            var observed = (Object.prototype.hasOwnProperty.call(ctor, '__brObservedAtDefine') ? ctor.__brObservedAtDefine : ctor.observedAttributes) || [];
             for (var i = 0; i < observed.length; i++) if (el.hasAttribute(observed[i]) && el.attributeChangedCallback) el.attributeChangedCallback(observed[i], null, el.getAttribute(observed[i]), null);
             // later changes of the observed attributes
             if (observed.length && el.attributeChangedCallback && window.MutationObserver) {
@@ -1253,6 +1253,10 @@
             define: function (name, ctor) {
                 name = String(name).toLowerCase();
                 if (registry[name]) throw domException('NotSupportedError', 'custom element already defined: ' + name);
+                // (read at the definition, as the native API does: Lit's `static get observedAttributes()` finalizes the
+                // class - its elementProperties - and an element made first found none: TikTok's "'undefined' is not an
+                // object (evaluating 'this.constructor.elementProperties.forEach')")
+                if (ctor && ctor.prototype && typeof ctor.prototype.attributeChangedCallback === 'function') try { ctor.__brObservedAtDefine = ctor.observedAttributes; } catch (e0) {}
                 registry[name] = ctor;
                 upgradeTree(document);
                 if (window.__brUndefinedActive) window.__brMarkUndefined(document);
@@ -9014,6 +9018,38 @@
     if (!navigator.scheduling) navigator.scheduling = { isInputPending: function () { return false; } };
     if (!window.scheduler) window.scheduler = { postTask: function (cb, opts) { var delay = opts && opts.delay || 0; return new P(function (res, rej) { setTimeout(function () { try { res(cb()); } catch (e) { rej(e); } }, delay); }); }, yield: function () { return new P(function (res) { setTimeout(res, 0); }); } };
     if (!navigator.cookieEnabled) try { navigator.cookieEnabled = true; } catch (e) {}
+    // Interface objects the old engine does not expose for objects it has (Navigator, History, Location...): a page's
+    // `navigator instanceof Navigator` or `Navigator.prototype` threw "Navigator is not defined" (TikTok's security
+    // SDK stopped there, and the feed with it). The prototype is the instance's own; a plain object of these shims
+    // gets a prototype of its own, so instanceof tells it apart from other objects.
+    var exposeInterface = function (name, instance) {
+        if (window[name] !== undefined || !instance || (typeof instance !== 'object' && typeof instance !== 'function')) return;
+        var C = function () { throw new TypeError('Illegal constructor'); }, proto = null;
+        try { proto = Object.getPrototypeOf(instance); } catch (e0) { proto = null; }
+        if (!proto || proto === Object.prototype) {
+            proto = {};
+            try { Object.setPrototypeOf ? Object.setPrototypeOf(instance, proto) : (instance.__proto__ = proto); } catch (e1) { return; }
+        }
+        C.prototype = proto;
+        try { Object.defineProperty(proto, 'constructor', { value: C, configurable: true, writable: true }); } catch (e2) {}
+        try { Object.defineProperty(C, 'name', { value: name, configurable: true }); } catch (e3) {}
+        try { Object.defineProperty(window, name, { value: C, configurable: true, writable: true }); } catch (e4) { window[name] = C; }
+    };
+    var perf = window.performance;
+    exposeInterface('Navigator', navigator);
+    exposeInterface('History', window.history);
+    exposeInterface('Location', window.location);
+    exposeInterface('BarProp', window.locationbar || window.menubar || window.toolbar);
+    exposeInterface('Performance', perf);
+    exposeInterface('PerformanceTiming', perf && perf.timing);
+    exposeInterface('PerformanceNavigation', perf && perf.navigation);
+    exposeInterface('Geolocation', navigator.geolocation);
+    exposeInterface('Permissions', navigator.permissions);
+    exposeInterface('StorageManager', navigator.storage);
+    exposeInterface('MediaDevices', navigator.mediaDevices);
+    exposeInterface('ServiceWorkerContainer', navigator.serviceWorker);
+    exposeInterface('NetworkInformation', navigator.connection);
+    exposeInterface('External', window.external);
     if (!window.cookieStore) window.cookieStore = {
         get: function (name) { var m = document.cookie.match(new RegExp('(?:^|; )' + String(typeof name === 'object' ? name.name : name).replace(/([.*+?^${}()|[\]\\])/g, '\\$1') + '=([^;]*)')); return resolved(m ? { name: typeof name === 'object' ? name.name : name, value: decodeURIComponent(m[1]) } : null); },
         getAll: function () { var out = [], parts = document.cookie ? document.cookie.split('; ') : []; for (var i = 0; i < parts.length; i++) { var eq = parts[i].indexOf('='); out.push({ name: parts[i].slice(0, eq), value: decodeURIComponent(parts[i].slice(eq + 1)) }); } return resolved(out); },
@@ -11536,6 +11572,32 @@
         };
         window.MessageChannel = function MessageChannel() { this.port1 = new window.MessagePort(); this.port2 = new window.MessagePort(); this.port1.__peer = this.port2; this.port2.__peer = this.port1; };
     }
+    // new Request(request, {body}) and fetch(request, {body}) of a request whose body was read: the new body replaces it,
+    // as the standard has it; the fetch polyfill (whatwg-fetch) throws "Already read" whenever the old body was read
+    // (TikTok's request signer reads bodies: "Feature access control initialization error TypeError: Already read")
+    (function () {
+        var R = window.Request, F = window.fetch;
+        if (!R || !F || !F.polyfill || R.__brReplaced) return;
+        var replaced = function (input, init) {
+            if (!(input instanceof R) || !input.bodyUsed || !init || init.body === undefined || init.body === null) return null;
+            var copy = { method: input.method, headers: input.headers, credentials: input.credentials, mode: input.mode, signal: input.signal, referrer: input.referrer };
+            for (var k in init) if (Object.prototype.hasOwnProperty.call(init, k) && init[k] !== undefined) copy[k] = init[k];
+            return [input.url, copy];
+        };
+        var Request = function Request(input, init) {
+            var r = replaced(input, init);
+            return r ? new R(r[0], r[1]) : new R(input, init);
+        };
+        Request.prototype = R.prototype;
+        Request.__brReplaced = true;
+        var fetch = function fetch(input, init) {
+            var r = replaced(input, init);
+            return r ? F.call(this, r[0], r[1]) : F.call(this, input, init);
+        };
+        fetch.polyfill = true;
+        window.Request = Request;
+        window.fetch = fetch;
+    })();
     // postMessage(message, {transfer}) and window.postMessage(message, {targetOrigin, transfer}): the old engine knows
     // the transfer list and the target origin as plain arguments only (Windy's workers got "Type error"), and a window's
     // target origin is required there. A transfer the engine refuses is left out: the data goes as a copy.
