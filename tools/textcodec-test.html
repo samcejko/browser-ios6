@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>textcodec test</title>
+<script>
+// TextEncoder / TextDecoder from shims.js against the desktop browser's own, on random input: valid and broken UTF-8,
+// streams cut at random places, fatal, BOM, UTF-16, the single-byte encodings, encodeInto.
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+window.NTE = window.TextEncoder; window.NTD = window.TextDecoder;
+delete window.TextEncoder; delete window.TextDecoder;
+</script>
+<script src="../Resources/shims.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+(function () {
+    var results = [], fails = 0;
+    var check = function (name, ok, info) { if (!ok) fails++; results.push((ok ? 'PASS ' : 'FAIL ') + name + (!ok && info !== undefined ? ' (' + info + ')' : '')); };
+    var TE = window.TextEncoder, TD = window.TextDecoder;
+    check('shims installed', TE !== NTE && TD !== NTD && TD.name === 'TextDecoder');
+    var seed = 12345;
+    var rnd = function (n) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    var esc = function (s) { return s.replace(/[^\x20-\x7e]/g, function (c) { return '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4); }); };
+    var run = function (fn) { try { return 'ok:' + fn(); } catch (e) { return 'throws ' + e.name; } };
+    var PIECES = ['a', 'Z', ' ', 'ě', 'š', 'č', 'ř', 'ž', 'ý', 'á', 'í', 'é', 'ů', 'ú', '€', ' ', '😀', '中', '﻿', '\n', '0'];
+    var randomString = function (n) { var s = ''; for (var i = 0; i < n; i++) s += PIECES[rnd(PIECES.length)]; return s; };
+    var randomBytes = function (n, valid) {
+        var b;
+        if (valid) b = new NTE().encode(randomString(n));
+        else { b = new Uint8Array(n); for (var i = 0; i < n; i++) b[i] = rnd(4) === 0 ? rnd(256) : [0x41, 0xC4, 0x9B, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80, 0xC0, 0xED, 0xA0, 0xF4, 0x90, 0xFF, 0xEF, 0xBB, 0xBF][rnd(19)]; }
+        return b;
+    };
+    // (one decoder decodes the chunks with stream, then the rest)
+    var streamed = function (D, label, opts, bytes, cuts) {
+        var d = new D(label, opts), out = '', last = 0;
+        for (var i = 0; i < cuts.length; i++) { out += d.decode(bytes.subarray(last, cuts[i]), { stream: true }); last = cuts[i]; }
+        return out + d.decode(bytes.subarray(last));
+    };
+    var cutsFor = function (n) { var c = [], k = rnd(5); for (var i = 0; i < k; i++) c.push(rnd(n + 1)); return c.sort(function (a, b) { return a - b; }); };
+
+    // UTF-8, whole and streamed, lenient and fatal
+    var bad = [];
+    for (var t = 0; t < 1500 && bad.length < 5; t++) {
+        var valid = t % 3 !== 0, bytes = randomBytes(1 + rnd(t < 1000 ? 12 : 300), valid), cuts = cutsFor(bytes.length);
+        var opts = t % 7 === 0 ? { ignoreBOM: true } : undefined;
+        var a = run(function () { return esc(new TD('utf-8', opts).decode(bytes)); }), b = run(function () { return esc(new NTD('utf-8', opts).decode(bytes)); });
+        var c = run(function () { return esc(streamed(TD, 'utf-8', opts, bytes, cuts)); }), d = run(function () { return esc(streamed(NTD, 'utf-8', opts, bytes, cuts)); });
+        var e = run(function () { return esc(new TD('utf-8', { fatal: true }).decode(bytes)); }), f = run(function () { return esc(new NTD('utf-8', { fatal: true }).decode(bytes)); });
+        var g = run(function () { return esc(streamed(TD, 'utf-8', { fatal: true }, bytes, cuts)); }), h = run(function () { return esc(streamed(NTD, 'utf-8', { fatal: true }, bytes, cuts)); });
+        if (a !== b || c !== d || e !== f || g !== h) bad.push('[' + Array.prototype.join.call(bytes, ',') + '] cuts ' + cuts + ': ' + [a, b, c, d, e, f, g, h].join(' | '));
+    }
+    check('utf-8 as the browser decodes it (1500 inputs, whole / streamed / fatal)', !bad.length, bad.join('\n'));
+
+    // UTF-16LE / BE
+    bad = [];
+    for (t = 0; t < 600 && bad.length < 5; t++) {
+        var label = t % 2 ? 'utf-16be' : 'utf-16le', raw = new Uint8Array(rnd(40));
+        for (var i = 0; i < raw.length; i++) raw[i] = rnd(3) === 0 ? [0xD8, 0xDC, 0xD8, 0x3D, 0xDE, 0x00, 0xFE, 0xFF][rnd(8)] : rnd(256);
+        cuts = cutsFor(raw.length);
+        a = run(function () { return esc(new TD(label).decode(raw)); }); b = run(function () { return esc(new NTD(label).decode(raw)); });
+        c = run(function () { return esc(streamed(TD, label, { fatal: true }, raw, cuts)); }); d = run(function () { return esc(streamed(NTD, label, { fatal: true }, raw, cuts)); });
+        e = run(function () { return esc(streamed(TD, label, undefined, raw, cuts)); }); f = run(function () { return esc(streamed(NTD, label, undefined, raw, cuts)); });
+        if (a !== b || c !== d || e !== f) bad.push(label + ' [' + Array.prototype.join.call(raw, ',') + '] cuts ' + cuts + ': ' + [a, b, c, d, e, f].join(' | '));
+    }
+    check('utf-16le/be as the browser decodes them', !bad.length, bad.join('\n'));
+
+    // single-byte encodings, every byte
+    var all = new Uint8Array(256);
+    for (i = 0; i < 256; i++) all[i] = i;
+    ['windows-1252', 'latin1', 'ascii', 'windows-1250', 'iso-8859-2', 'x-user-defined', 'cp1250', 'l2'].forEach(function (l) {
+        var ours = new TD(l), theirs = new NTD(l);
+        check('single-byte ' + l, ours.decode(all) === theirs.decode(all) && ours.encoding === theirs.encoding, ours.encoding + ' / ' + theirs.encoding);
+    });
+
+    // labels
+    check('labels', new TD(' UTF8 ').encoding === 'utf-8' && new TD().encoding === 'utf-8' && new TD('unicode').encoding === 'utf-16le' && new TD('latin1').encoding === 'windows-1252');
+    check('an unknown label throws RangeError', run(function () { return new TD('no-such-encoding'); }) === 'throws RangeError');
+    check('fatal and ignoreBOM attributes', new TD('utf-8', { fatal: true }).fatal === true && new TD('utf-8', { ignoreBOM: true }).ignoreBOM === true && new TD().fatal === false);
+
+    // BOM
+    var bom = new Uint8Array([0xEF, 0xBB, 0xBF, 0x7B, 0x7D]);
+    check('BOM removed', new TD().decode(bom) === '{}' && JSON.parse(new TD().decode(bom)) !== null);
+    check('BOM kept with ignoreBOM', new TD('utf-8', { ignoreBOM: true }).decode(bom) === '﻿{}');
+    var bd = new TD(), bs = bd.decode(bom.subarray(0, 2), { stream: true }) + bd.decode(bom.subarray(2));
+    check('BOM split between chunks', bs === '{}', esc(bs));
+    var bd2 = new TD(), second = bd2.decode(new Uint8Array([0x61]), { stream: true }) + bd2.decode(bom);
+    check('a BOM later in a stream stays', second === 'a﻿{}', esc(second));
+    check('a new decode after a finished one drops a BOM again', (function () { var x = new TD(); x.decode(bom); return x.decode(bom) === '{}'; })());
+
+    // views over part of a buffer
+    var buf = new NTE().encode('xxČeskýyy').buffer;
+    check('DataView within its bounds', new TD().decode(new DataView(buf, 2, 7)) === 'Český', new TD().decode(new DataView(buf, 2, 7)));
+    check('Int8Array subarray within its bounds', new TD().decode(new Int8Array(buf).subarray(2, 9)) === 'Český');
+    check('ArrayBuffer', new TD().decode(buf) === 'xxČeskýyy');
+    check('no input', new TD().decode() === '' && new TD().decode(undefined, { stream: true }) === '');
+
+    // TextEncoder
+    bad = [];
+    for (t = 0; t < 800 && bad.length < 5; t++) {
+        var s = randomString(rnd(30));
+        if (t % 4 === 0) s = s.slice(0, rnd(s.length + 1)) + ['\ud800', '\udc00', '\udbff'][rnd(3)] + s.slice(rnd(s.length + 1));
+        a = Array.prototype.join.call(new TE().encode(s), ','); b = Array.prototype.join.call(new NTE().encode(s), ',');
+        var room = rnd(40), d1 = new Uint8Array(room), d2 = new Uint8Array(room);
+        var r1 = new TE().encodeInto(s, d1), r2 = new NTE().encodeInto(s, d2);
+        if (a !== b || r1.read !== r2.read || r1.written !== r2.written || Array.prototype.join.call(d1, ',') !== Array.prototype.join.call(d2, ','))
+            bad.push(esc(s) + ': ' + a + ' / ' + b + ' into ' + room + ' ' + JSON.stringify(r1) + ' / ' + JSON.stringify(r2));
+    }
+    check('encode and encodeInto as the browser does (800 strings, lone surrogates too)', !bad.length, bad.join('\n'));
+    check('encode()', new TE().encode().length === 0 && new TE().encoding === 'utf-8');
+
+    // big input: the engine's decoder path
+    var big = randomString(50000), bigBytes = new NTE().encode(big), t0 = Date.now(), back = new TD().decode(bigBytes), ms = Date.now() - t0;
+    check('50000 characters round trip (' + ms + ' ms)', back === big);
+
+    document.title = 'textcodec ' + (results.length - fails) + '/' + results.length + (window.__errors.length ? ' errors ' + window.__errors.length : '');
+    document.getElementById('out').textContent = document.title + '\n' + results.join('\n') + (window.__errors.length ? '\n' + window.__errors.join('\n') : '');
+})();
+</script>
+</body>
+</html>

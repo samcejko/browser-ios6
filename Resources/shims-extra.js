@@ -1636,10 +1636,14 @@
         window.TransformStream = TransformStream;
         window.ByteLengthQueuingStrategy = function ByteLengthQueuingStrategy(o) { this.highWaterMark = o && o.highWaterMark; this.size = function (c) { return c.byteLength; }; };
         window.CountQueuingStrategy = function CountQueuingStrategy(o) { this.highWaterMark = o && o.highWaterMark; this.size = function () { return 1; }; };
-        window.TextDecoderStream = function TextDecoderStream(label) {
-            var dec = new TextDecoder(label);
-            var t = new TransformStream({ transform: function (chunk, c) { c.enqueue(dec.decode(chunk)); } });
-            this.readable = t.readable; this.writable = t.writable; this.encoding = dec.encoding;
+        // (a character split between two chunks is kept for the next one)
+        window.TextDecoderStream = function TextDecoderStream(label, options) {
+            var dec = new TextDecoder(label, options);
+            var t = new TransformStream({
+                transform: function (chunk, c) { var s = dec.decode(chunk, { stream: true }); if (s) c.enqueue(s); },
+                flush: function (c) { var s = dec.decode(); if (s) c.enqueue(s); }
+            });
+            this.readable = t.readable; this.writable = t.writable; this.encoding = dec.encoding; this.fatal = dec.fatal; this.ignoreBOM = dec.ignoreBOM;
         };
         window.TextEncoderStream = function TextEncoderStream() {
             var enc = new TextEncoder();

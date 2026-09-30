@@ -222,15 +222,34 @@
         self.PerformanceObserver.prototype.takeRecords = function () { return []; };
         self.PerformanceObserver.supportedEntryTypes = [];
     }
-    if (!self.TextEncoder) {
-        var utf8 = function (str) {
-            var out = [], i, c, c2;
-            for (i = 0; i < str.length; i++) {
-                c = str.charCodeAt(i);
-                if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str.length && (c2 = str.charCodeAt(i + 1)) >= 0xDC00 && c2 <= 0xDFFF) {
-                    c = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                    i++;
-                } else if (c >= 0xD800 && c <= 0xDFFF) c = 0xFFFD;
+    // TextEncoder / TextDecoder after the Encoding standard. UTF-8: a stream ({ stream: true }) keeps an incomplete
+    // sequence for the next call (a Czech letter split between two chunks turned the whole chunk into Latin-1 here),
+    // invalid bytes become U+FFFD each (or a TypeError with fatal), a leading BOM goes unless ignoreBOM (JSON.parse
+    // failed on it), views are read within their byteOffset/byteLength (a DataView or an Int8Array read its whole
+    // buffer). Also UTF-16LE/BE, the single-byte windows-1252 (its labels latin1, ascii...), windows-1250, iso-8859-2
+    // and x-user-defined; other labels throw RangeError as the standard says, so pages take their own fallback. encode
+    // turns lone surrogates into U+FFFD (it threw), encodeInto. Valid UTF-8 goes through the engine's own decoder
+    // (escape + decodeURIComponent), the rest through the standard's loop. (The same in shims.js.)
+    if (!self.TextEncoder) (function (G) {
+        var U8 = G.Uint8Array, slice = Array.prototype.slice, own = Object.prototype.hasOwnProperty, NON_ASCII = /[^\x00-\x7f]/;
+        var invalid = function () { return new TypeError('The encoded data was not valid.'); };
+        // (apply takes only so many arguments: 4096 code units at a time)
+        var codesToString = function (codes) {
+            if (codes.length <= 4096) return String.fromCharCode.apply(null, codes);
+            var s = '';
+            for (var i = 0; i < codes.length; i += 4096) s += String.fromCharCode.apply(null, codes.slice(i, i + 4096));
+            return s;
+        };
+        var latin1 = function (bytes, from, to) {
+            var s = '';
+            for (var i = from; i < to; i += 4096) s += String.fromCharCode.apply(null, slice.call(bytes, i, Math.min(to, i + 4096)));
+            return s;
+        };
+        var utf8Bytes = function (str, out) {
+            for (var i = 0; i < str.length; i++) {
+                var c = str.charCodeAt(i), c2;
+                if (c >= 0xD800 && c <= 0xDBFF && i + 1 < str.length && (c2 = str.charCodeAt(i + 1)) >= 0xDC00 && c2 <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00); i++; }
+                else if (c >= 0xD800 && c <= 0xDFFF) c = 0xFFFD;
                 if (c < 0x80) out.push(c);
                 else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));
                 else if (c < 0x10000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
@@ -238,44 +257,196 @@
             }
             return out;
         };
-        self.TextEncoder = function TextEncoder() { this.encoding = 'utf-8'; };
-        self.TextEncoder.prototype.encode = function (str) { return new Uint8Array(utf8(str === undefined ? '' : String(str))); };
-        self.TextEncoder.prototype.encodeInto = function (str, dest) {
-            var bytes = utf8(String(str)), n = Math.min(bytes.length, dest.length);
-            for (var i = 0; i < n; i++) dest[i] = bytes[i];
-            return { read: String(str).length, written: n };
+        function TextEncoder() {}
+        TextEncoder.prototype.encoding = 'utf-8';
+        TextEncoder.prototype.encode = function (str) {
+            str = str === undefined ? '' : String(str);
+            var bin = null;
+            if (!NON_ASCII.test(str)) bin = str;
+            else try { bin = unescape(encodeURIComponent(str)); } catch (e) { bin = null; }   // (a lone surrogate: the loop)
+            if (bin === null) return new U8(utf8Bytes(str, []));
+            var n = bin.length, out = new U8(n);
+            for (var i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+            return out;
         };
-        self.TextDecoder = function TextDecoder(label, options) {
-            this.encoding = String(label || 'utf-8').toLowerCase().replace('utf8', 'utf-8');
+        // (whole characters only, as many as fit)
+        TextEncoder.prototype.encodeInto = function (str, dest) {
+            str = String(str);
+            var read = 0, written = 0, room = dest.length, c, c2, units, need;
+            while (read < str.length) {
+                c = str.charCodeAt(read); units = 1;
+                if (c >= 0xD800 && c <= 0xDBFF && read + 1 < str.length && (c2 = str.charCodeAt(read + 1)) >= 0xDC00 && c2 <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00); units = 2; }
+                else if (c >= 0xD800 && c <= 0xDFFF) c = 0xFFFD;
+                need = c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+                if (written + need > room) break;
+                if (need === 1) dest[written++] = c;
+                else if (need === 2) { dest[written++] = 0xC0 | (c >> 6); dest[written++] = 0x80 | (c & 63); }
+                else if (need === 3) { dest[written++] = 0xE0 | (c >> 12); dest[written++] = 0x80 | ((c >> 6) & 63); dest[written++] = 0x80 | (c & 63); }
+                else { dest[written++] = 0xF0 | (c >> 18); dest[written++] = 0x80 | ((c >> 12) & 63); dest[written++] = 0x80 | ((c >> 6) & 63); dest[written++] = 0x80 | (c & 63); }
+                read += units;
+            }
+            return { read: read, written: written };
+        };
+        var LABELS = {
+            'utf-8': ['unicode-1-1-utf-8', 'unicode11utf8', 'unicode20utf8', 'utf-8', 'utf8', 'x-unicode20utf8'],
+            'utf-16le': ['csunicode', 'iso-10646-ucs-2', 'ucs-2', 'unicode', 'unicodefeff', 'utf-16', 'utf-16le'],
+            'utf-16be': ['unicodefffe', 'utf-16be'],
+            'windows-1252': ['ansi_x3.4-1968', 'ascii', 'cp1252', 'cp819', 'csisolatin1', 'ibm819', 'iso-8859-1', 'iso-ir-100', 'iso8859-1', 'iso88591',
+                'iso_8859-1', 'iso_8859-1:1987', 'l1', 'latin1', 'us-ascii', 'windows-1252', 'x-cp1252'],
+            'windows-1250': ['cp1250', 'windows-1250', 'x-cp1250'],
+            'iso-8859-2': ['csisolatin2', 'iso-8859-2', 'iso-ir-101', 'iso8859-2', 'iso88592', 'iso_8859-2', 'iso_8859-2:1987', 'l2', 'latin2'],
+            'x-user-defined': ['x-user-defined']
+        };
+        var byLabel = {}, enc, li;
+        for (enc in LABELS) for (li = 0; li < LABELS[enc].length; li++) byLabel[LABELS[enc][li]] = enc;
+        // bytes 0x80-0xFF of the single-byte encodings (the desktop browser's own decoders wrote them out)
+        var HIGH = {
+            'windows-1252': '20ac,81,201a,192,201e,2026,2020,2021,2c6,2030,160,2039,152,8d,17d,8f,90,2018,2019,201c,201d,2022,2013,2014,2dc,2122,161,203a,153,9d,17e,178',
+            'windows-1250': '20ac,81,201a,83,201e,2026,2020,2021,88,2030,160,2039,15a,164,17d,179,90,2018,2019,201c,201d,2022,2013,2014,98,2122,161,203a,15b,165,17e,17a,' +
+                'a0,2c7,2d8,141,a4,104,a6,a7,a8,a9,15e,ab,ac,ad,ae,17b,b0,b1,2db,142,b4,b5,b6,b7,b8,105,15f,bb,13d,2dd,13e,17c,154,c1,c2,102,c4,139,106,c7,10c,c9,118,cb,11a,cd,ce,10e,' +
+                '110,143,147,d3,d4,150,d6,d7,158,16e,da,170,dc,dd,162,df,155,e1,e2,103,e4,13a,107,e7,10d,e9,119,eb,11b,ed,ee,10f,111,144,148,f3,f4,151,f6,f7,159,16f,fa,171,fc,fd,163,2d9',
+            'iso-8859-2': '80,81,82,83,84,85,86,87,88,89,8a,8b,8c,8d,8e,8f,90,91,92,93,94,95,96,97,98,99,9a,9b,9c,9d,9e,9f,' +
+                'a0,104,2d8,141,a4,13d,15a,a7,a8,160,15e,164,179,ad,17d,17b,b0,105,2db,142,b4,13e,15b,2c7,b8,161,15f,165,17a,2dd,17e,17c,154,c1,c2,102,c4,139,106,c7,10c,c9,118,cb,11a,cd,ce,10e,' +
+                '110,143,147,d3,d4,150,d6,d7,158,16e,da,170,dc,dd,162,df,155,e1,e2,103,e4,13a,107,e7,10d,e9,119,eb,11b,ed,ee,10f,111,144,148,f3,f4,151,f6,f7,159,16f,fa,171,fc,fd,163,2d9'
+        };
+        var tables = {};
+        var tableOf = function (e) {
+            var t = tables[e];
+            if (t) return t;
+            t = tables[e] = [];
+            var h = e === 'x-user-defined' ? [] : HIGH[e].split(',');
+            for (var i = 0; i < 128; i++) t[i] = e === 'x-user-defined' ? 0xF780 + i : i < h.length ? parseInt(h[i], 16) : 0x80 + i;
+            return t;
+        };
+        var newState = function () { return { cp: 0, need: 0, seen: 0, lower: 0x80, upper: 0xBF, bom: false, lead: -1, hi: -1 }; };
+        // the standard's UTF-8 decoder over bytes[i..end), the state carried in st
+        var step = function (bytes, i, end, st, fatal, out) {
+            var cp = st.cp, need = st.need, seen = st.seen, lower = st.lower, upper = st.upper, b;
+            while (i < end) {
+                b = bytes[i];
+                if (need === 0) {
+                    i++;
+                    if (b < 0x80) out.push(b);
+                    else if (b >= 0xC2 && b <= 0xDF) { need = 1; cp = b & 0x1F; }
+                    else if (b >= 0xE0 && b <= 0xEF) { if (b === 0xE0) lower = 0xA0; else if (b === 0xED) upper = 0x9F; need = 2; cp = b & 0xF; }
+                    else if (b >= 0xF0 && b <= 0xF4) { if (b === 0xF0) lower = 0x90; else if (b === 0xF4) upper = 0x8F; need = 3; cp = b & 7; }
+                    else { if (fatal) throw invalid(); out.push(0xFFFD); }
+                    continue;
+                }
+                if (b < lower || b > upper) {
+                    // (the byte is not taken: it starts over)
+                    cp = need = seen = 0; lower = 0x80; upper = 0xBF;
+                    if (fatal) throw invalid();
+                    out.push(0xFFFD);
+                    continue;
+                }
+                i++;
+                lower = 0x80; upper = 0xBF;
+                cp = (cp << 6) | (b & 0x3F);
+                if (++seen === need) {
+                    if (cp > 0xFFFF) { cp -= 0x10000; out.push(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF)); } else out.push(cp);
+                    cp = need = seen = 0;
+                }
+            }
+            st.cp = cp; st.need = need; st.seen = seen; st.lower = lower; st.upper = upper;
+        };
+        // (where an incomplete last sequence starts, for a stream)
+        var tailStart = function (bytes, from, end) {
+            for (var k = end - 1; k >= from && k >= end - 3; k--) {
+                var b = bytes[k];
+                if ((b & 0xC0) === 0x80) continue;
+                return k + (b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1) > end ? k : end;
+            }
+            return end;
+        };
+        var utf8 = function (bytes, st, fatal, stream) {
+            var end = bytes.length, i = 0, codes = [], head = '', mid = '';
+            while (i < end && st.need) { step(bytes, i, i + 1, st, fatal, codes); i++; }   // (the rest of the last chunk's sequence)
+            if (codes.length) { head = codesToString(codes); codes = []; }
+            var cut = stream ? tailStart(bytes, i, end) : end;
+            if (cut > i) {
+                var bin = latin1(bytes, i, cut), t = null;
+                if (!NON_ASCII.test(bin)) t = bin;
+                else try { t = decodeURIComponent(escape(bin)); } catch (e) { t = null; }
+                if (t === null) { step(bytes, i, cut, st, fatal, codes); mid = codesToString(codes); codes = []; }
+                else mid = t;
+            }
+            if (cut < end) step(bytes, cut, end, st, fatal, codes);
+            if (!stream && st.need) {
+                st.cp = st.need = st.seen = 0; st.lower = 0x80; st.upper = 0xBF;
+                if (fatal) throw invalid();
+                codes.push(0xFFFD);
+            }
+            return head + mid + (codes.length ? codesToString(codes) : '');
+        };
+        var utf16 = function (bytes, st, fatal, stream, be) {
+            var codes = [], unit, hi;
+            for (var i = 0; i < bytes.length; i++) {
+                if (st.lead < 0) { st.lead = bytes[i]; continue; }
+                unit = be ? (st.lead << 8) | bytes[i] : (bytes[i] << 8) | st.lead;
+                st.lead = -1;
+                if (st.hi >= 0) {
+                    hi = st.hi; st.hi = -1;
+                    if (unit >= 0xDC00 && unit <= 0xDFFF) { codes.push(hi, unit); continue; }
+                    if (fatal) throw invalid();
+                    codes.push(0xFFFD);
+                }
+                if (unit >= 0xD800 && unit <= 0xDBFF) { st.hi = unit; continue; }
+                if (unit >= 0xDC00 && unit <= 0xDFFF) { if (fatal) throw invalid(); codes.push(0xFFFD); continue; }
+                codes.push(unit);
+            }
+            if (!stream && (st.lead >= 0 || st.hi >= 0)) {
+                st.lead = st.hi = -1;
+                if (fatal) throw invalid();
+                codes.push(0xFFFD);
+            }
+            return codesToString(codes);
+        };
+        var single = function (bytes, e) {
+            var t = tableOf(e), codes = [], s = '', b;
+            for (var i = 0; i < bytes.length; i++) {
+                b = bytes[i];
+                codes.push(b < 0x80 ? b : t[b - 0x80]);
+                if (codes.length === 4096) { s += String.fromCharCode.apply(null, codes); codes = []; }
+            }
+            return s + (codes.length ? String.fromCharCode.apply(null, codes) : '');
+        };
+        var bytesOf = function (input) {
+            if (input === undefined || input === null) return new U8(0);
+            if (input instanceof U8) return input;
+            if (G.ArrayBuffer && input instanceof G.ArrayBuffer) return new U8(input);
+            if (input.buffer && typeof input.byteLength === 'number') return new U8(input.buffer, input.byteOffset || 0, input.byteLength);
+            if (typeof input.byteLength === 'number') return new U8(input);   // (an ArrayBuffer of another frame)
+            if (typeof input.length === 'number') return new U8(input);
+            throw new TypeError("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'");
+        };
+        function TextDecoder(label, options) {
+            var l = label === undefined ? 'utf-8' : String(label).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '').toLowerCase();
+            if (!own.call(byLabel, l)) throw new RangeError("The encoding label provided ('" + label + "') is invalid.");
+            this.encoding = byLabel[l];
             this.fatal = !!(options && options.fatal);
             this.ignoreBOM = !!(options && options.ignoreBOM);
-        };
-        self.TextDecoder.prototype.decode = function (input) {
-            if (!input) return '';
-            var b = input instanceof Uint8Array ? input : input.buffer ? new Uint8Array(input.buffer, input.byteOffset || 0, input.byteLength) : new Uint8Array(input);
-            var out = '', i = 0, c, n, cp;
-            if (this.encoding !== 'utf-8') {
-                for (i = 0; i < b.length; i++) out += String.fromCharCode(b[i]);
-                return out;
+            this.__st = null;
+            this.__dnf = false;
+        }
+        TextDecoder.prototype.decode = function (input, options) {
+            var stream = !!(options && options.stream), bytes = bytesOf(input), e = this.encoding, out;
+            if (!this.__dnf || !this.__st) this.__st = newState();
+            this.__dnf = stream;
+            var st = this.__st;
+            if (e === 'utf-8') out = utf8(bytes, st, this.fatal, stream);
+            else if (e === 'utf-16le' || e === 'utf-16be') out = utf16(bytes, st, this.fatal, stream, e === 'utf-16be');
+            else out = single(bytes, e);
+            // (the BOM: the stream's first code point, if it is U+FEFF, for UTF-8 and UTF-16)
+            if (!st.bom && out.length) {
+                st.bom = true;
+                if (!this.ignoreBOM && out.charCodeAt(0) === 0xFEFF && e.slice(0, 4) === 'utf-') out = out.slice(1);
             }
-            if (!this.ignoreBOM && b.length >= 3 && b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF) i = 3;
-            var chunk = [];
-            for (; i < b.length; i++) {
-                c = b[i];
-                if (c < 0x80) { cp = c; n = 0; } else if (c >= 0xF0) { cp = c & 7; n = 3; } else if (c >= 0xE0) { cp = c & 15; n = 2; } else if (c >= 0xC0) { cp = c & 31; n = 1; } else { cp = 0xFFFD; n = 0; }
-                for (var k = 0; k < n; k++) {
-                    var nb = b[i + 1];
-                    if (nb === undefined || (nb & 0xC0) !== 0x80) { cp = 0xFFFD; break; }
-                    cp = (cp << 6) | (nb & 63);
-                    i++;
-                }
-                if (cp === 0xFFFD && this.fatal) throw new TypeError('The encoded data was not valid');
-                if (cp > 0xFFFF) { cp -= 0x10000; chunk.push(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF)); } else chunk.push(cp);
-                if (chunk.length > 4096) { out += String.fromCharCode.apply(null, chunk); chunk = []; }
-            }
-            return out + String.fromCharCode.apply(null, chunk);
+            return out;
         };
-    }
+        G.TextEncoder = TextEncoder;
+        G.TextDecoder = TextDecoder;
+    })(self);
     var crypto = self.crypto;
     if (!crypto) { crypto = {}; try { self.crypto = crypto; } catch (e) {} }
     if (!crypto.getRandomValues) crypto.getRandomValues = function (arr) { for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; };
