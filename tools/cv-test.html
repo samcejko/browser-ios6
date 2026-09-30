@@ -54,6 +54,11 @@ var page = [
   '*, ::before, ::after { --tw-rotate: 0; --tw-scale-x: 1; }',
   '.rot { --tw-rotate: 45deg; }',
   '.twbox { transform: rotate(var(--tw-rotate)) scaleX(var(--tw-scale-x)); width: 10px; height: 10px; }',
+  // rivals the rival check settles without an engine call: an id around the element, a state no element has
+  '.rv-scope { --rvc: rgb(10, 20, 30); }',
+  '.rv-use { color: var(--rvc); }',
+  '#rv-box span.rv-use { color: rgb(200, 100, 0); }',
+  '.rv-hov:hover .rv-use { color: rgb(0, 200, 0); }',
   '</style>',
   '<ul><li id="l1" class="imp">a</li><li id="l2">b</li><li id="l3" class="imp">c</li><li id="l4" class="imp">d</li></ul>',
   '<table><colgroup><col><col class="sel"></colgroup><tr><td id="c1">1</td><td id="c2">2</td><td id="c3">3</td></tr><tr><td id="c4" colspan="2">4</td><td id="c5">5</td></tr></table>',
@@ -72,7 +77,9 @@ var page = [
   '<div class="tie-scope"><span class="tie-a tie-b" id="t1">tie</span> <span class="tie-a" id="t2">scoped</span></div>',
   '<input type="checkbox" class="fck" id="ck1"><div class="fbox" id="fb1"><span id="fs1">state scope</span></div>',
   '<div class="fscope"><input type="checkbox" class="fck" id="ck2"><span class="fuse" id="fu1">state use</span></div>',
-  '<div class="twbox" id="tw1"></div><div class="twbox rot" id="tw2"></div><div class="rot"><div class="twbox" id="tw3"></div></div>'
+  '<div class="twbox" id="tw1"></div><div class="twbox rot" id="tw2"></div><div class="rot"><div class="twbox" id="tw3"></div></div>',
+  '<div class="rv-scope" id="rv-box"><span class="rv-use" id="rv1">in</span></div><div class="rv-scope"><span class="rv-use" id="rv2">out</span></div>',
+  '<div class="rv-scope rv-hov" style="position:absolute;left:-9999px"><span class="rv-use" id="rv3">not hovered</span></div>'
 ].join('\n');
 var result = JSON.parse(CSSFix.run('html', '<html><head></head><body>' + page + '</body></html>', null, '{"viewportWidth":1024}'));
 var html = result.out;
@@ -96,6 +103,7 @@ var run = function () {
   check('second variant', cs('b2').backgroundColor === 'rgb(220, 53, 69)', cs('b2').backgroundColor);
   check('equal static value: the more specific site rule wins', cs('t1').color === 'rgb(0, 0, 255)' && cs('t2').color === 'rgb(255, 0, 0)', cs('t1').color + ' ' + cs('t2').color);
   check('site rule wins over the var() rule', cs('b3').backgroundColor === 'rgb(1, 2, 3)' && cs('b3').color === 'rgb(255, 255, 255)', cs('b3').backgroundColor + ' ' + cs('b3').color);
+  check('rivals: an id around, a state nobody has', cs('rv1').color === 'rgb(200, 100, 0)' && cs('rv2').color === 'rgb(10, 20, 30)' && cs('rv3').color === 'rgb(10, 20, 30)', cs('rv1').color + ' ' + cs('rv2').color + ' ' + cs('rv3').color);
   check('::before through a generated rule', document.getElementById('r1').offsetHeight === 90 && document.getElementById('r2').offsetHeight === 160, document.getElementById('r1').offsetHeight + ' ' + document.getElementById('r2').offsetHeight);
   check('definition inside @media', cs('g1').marginLeft === '20px', cs('g1').marginLeft);
   check('style attribute definition, fallback outside', document.getElementById('w1').offsetWidth === 123 && document.getElementById('w2').offsetWidth === 10, document.getElementById('w1').offsetWidth + ' ' + document.getElementById('w2').offsetWidth);

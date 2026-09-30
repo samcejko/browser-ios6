@@ -7818,6 +7818,92 @@
             return { cls: cls, id: id ? unescapeCSS(id[1]) : null, tag: tag ? tag[1].toLowerCase() : null, attrs: attrs, pe: /::|:(before|after|first-line|first-letter)\b/i.test(outer) };
         };
         var SIMPLE_SEL = /^(?:[.#](?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)+$/;
+        // the compounds of a selector that need a state (:hover, :active, :focus outside :not() and the like), or null:
+        // a selector whose state compound no element in that state matches cannot match at all - tried once a pass on
+        // those few elements, not on every candidate (IKEA's buttons have a rule per state: 3,700 engine calls, 2.7 s)
+        var STATE_PSEUDO = /:(hover|active|focus|disabled|checked)(?![\w-])/i, FUNC_PSEUDO = /:(?:not|is|where|matches|-webkit-any|has)\((?:[^()]|\([^()]*\))*\)/gi;
+        // (one id, then a subject of a tag and classes: nothing the checks before the engine call leave open)
+        var EXACT_ANC = /^#[\w-]+\s+(?:[a-zA-Z][\w-]*(?:\.[\w-]+)*|(?:\.[\w-]+)+)$/;
+        // ({text, state, subject}; sib: the selector has sibling combinators, where no compound encloses the element)
+        var stateCompounds = function (sel) {
+            var s = String(sel), out = null, depth = 0, start = 0, q = null, sib = false;
+            // (the subject's own classes and tag were looked at before; every compound before it, and a subject with a
+            // state or an attribute selector: [aria-disabled="true"], `.grid > *` - such compounds hold for few elements)
+            var take = function (end, subject) {
+                var comp = trim(s.slice(start, end)), bare = comp.replace(FUNC_PSEUDO, '');
+                if (comp && comp !== '*' && (!subject || STATE_PSEUDO.test(bare) || bare.indexOf('[') >= 0)) (out || (out = [])).push({ text: comp, subject: subject });
+            };
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '\\') i++;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && (c === ' ' || c === '>' || c === '+' || c === '~')) { if (c === '+' || c === '~') sib = true; take(i, false); start = i + 1; }
+            }
+            take(s.length, true);
+            if (out) out.sib = sib;
+            return out;
+        };
+        // the ids a selector needs on the element's ancestors (`#onetrust-banner-sdk span`: every span of IKEA's page was
+        // matched against such rules, 6,800 engine calls a pass), or null; only for selectors joined by descendant and
+        // child combinators, where the element sits inside them (a walk up its parents instead of an engine call)
+        var ancestorIds = function (sel) {
+            var s = String(sel), ids = null, depth = 0, start = 0, q = null, comps = [];
+            for (var i = 0; i < s.length; i++) {
+                var c = s.charAt(i);
+                if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+                if (c === '"' || c === "'") q = c;
+                else if (c === '\\') i++;
+                else if (c === '(' || c === '[') depth++;
+                else if (c === ')' || c === ']') depth--;
+                else if (!depth && (c === '+' || c === '~')) return null;
+                else if (!depth && (c === ' ' || c === '>')) { comps.push(s.slice(start, i)); start = i + 1; }
+            }
+            // (the subject's own id is looked at elsewhere, see subjectNeeds)
+            for (var k = 0; k < comps.length; k++) {
+                var m = /#((?:\\[0-9a-fA-F]{1,6}\s?|\\.|[\w-])+)/.exec(comps[k].replace(FUNC_PSEUDO, '').replace(/\[[^\]]*\]/g, ''));
+                if (m) (ids || (ids = [])).push(unescapeCSS(m[1]));
+            }
+            return ids;
+        };
+        var insideIds = function (el, ids) {
+            for (var k = 0; k < ids.length; k++) {
+                var p = el.parentNode;
+                while (p && p.nodeType === 1 && p.id !== ids[k]) p = p.parentNode;
+                if (!p || p.nodeType !== 1) return false;
+            }
+            return true;
+        };
+        var statePass = null, stateUses = null;
+        // the elements that match the compound, once a pass (null: too many to be worth it, or a selector the engine
+        // refuses). A search of the document costs about what a few element matches do: a compound gets one from its
+        // fourth use in the pass on (IKEA has hundreds of compounds used once or twice: searching them all cost more)
+        var stateMatches = function (comp) {
+            if (!statePass) { statePass = Object.create(null); stateUses = Object.create(null); }
+            var got = statePass[comp.text];
+            if (got !== undefined) return got;
+            var n = (stateUses[comp.text] || 0) + 1;
+            stateUses[comp.text] = n;
+            if (n < 4) return null;
+            try { got = document.querySelectorAll(comp.text); } catch (e) { got = null; }
+            if (got && got.length > 64) got = null;
+            return (statePass[comp.text] = got ? Array.prototype.slice.call(got) : null);
+        };
+        // can the element match, as far as its state compounds say: the subject one must be the element itself, one
+        // before it must enclose it (with sibling combinators only that some element is in the state)
+        var stateMayMatch = function (sel, el) {
+            for (var i = 0; i < sel.stc.length; i++) {
+                var comp = sel.stc[i], ms = stateMatches(comp), hit = false;
+                if (ms === null) continue;
+                if (!ms.length) return false;
+                if (sel.stc.sib) continue;
+                for (var j = 0; j < ms.length && !hit; j++) hit = comp.subject ? ms[j] === el : ms[j] !== el && ms[j].contains(el);
+                if (!hit) return false;
+            }
+            return true;
+        };
         var classSet = function (el) {
             var set = {}, c = el.className;
             if (typeof c !== 'string') c = c && typeof c.baseVal === 'string' ? c.baseVal : '';
@@ -7881,6 +7967,11 @@
                     for (k = 0; k < need.attrs.length && !miss; k++) if (!el.hasAttribute(need.attrs[k])) miss = true;
                     if (miss) continue;
                     if (sel.simple) return sel.s;
+                    if (sel.anc === undefined) { sel.anc = ancestorIds(sel.s); sel.exact = sel.anc !== null && EXACT_ANC.test(trim(sel.s)); }
+                    if (sel.anc !== null && !insideIds(el, sel.anc)) continue;
+                    if (sel.exact) return sel.s;   // (`#id tag.class`: what was checked above is all it asks)
+                    if (sel.stc === undefined) sel.stc = stateCompounds(sel.s);
+                    if (sel.stc !== null && !stateMayMatch(sel, el)) continue;
                     matchCalls++;
                     if (rivalSelCount) rivalSelCount[sel.s] = (rivalSelCount[sel.s] || 0) + 1;
                     if (matchesEl(el, sel.s)) return sel.s;
@@ -7897,6 +7988,7 @@
         var rivalCheck = function (work) {
             var i, k, it, t0 = Date.now(), key = cssomFingerprint();
             rivalSelCount = window.__brNoteSlow ? {} : null;
+            statePass = null;
             if (key !== cssomKey) { cssomList = null; cssomKey = key; }
             var t1 = Date.now();
             cssomRules();
