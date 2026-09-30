@@ -1410,30 +1410,23 @@ static BOOL BRIsFontDataURL(NSURL *url)
     } else if ([path isEqualToString:@"/lower"]) {
         // the text of a classic script a page inserts (shims-extra.js lowerClassic): lowered by the transpiler, which keeps
         // it by the text; an empty body when it needs nothing, an error when it could not be lowered (the page tries itself).
-        // Answered from a queue of its own: the lowering waits for the transpiler, and this thread (WebKit's loader
-        // thread) delivers every response of the page meanwhile
+        // Answered here, blocking: the page asks synchronously, and a synchronous request runs on the WebThread, whose
+        // loop would otherwise time the request out after some 10 s (Discord's 5.5 MB lazy factory: NETWORK_ERR 101)
         NSData *src = self.request.HTTPBody ?: BRReadBodyStream(self.request.HTTPBodyStream);
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            BOOL failed = NO;
-            NSData *lowered = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
-            if (!lowered && !failed) lowered = [NSData data];
-            [self deliverInternalBody:lowered type:@"text/plain; charset=utf-8" cacheControl:@"no-store"];
-        });
-        return;
+        BOOL failed = NO;
+        body = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
+        if (!body && !failed) body = [NSData data];
+        type = @"text/plain; charset=utf-8";
+        cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/lazy/"]) {
         // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request
-        // of the page's stub, answered when it is lowered; from a queue of its own, as /lower)
+        // of the page's stub, answered when it is lowered; blocking, as /lower)
         NSArray *comps = [[path substringFromIndex:6] componentsSeparatedByString:@"/"];
         NSString *base = comps.count == 2 ? comps[0] : nil;
         NSString *file = comps.count == 2 ? comps[1] : nil;
         if (base.length && [base rangeOfString:@"^[0-9a-f]+-[0-9a-f]+$" options:NSRegularExpressionSearch].location != NSNotFound &&
-            [file rangeOfString:@"^[0-9]+\\.js$" options:NSRegularExpressionSearch].location != NSNotFound) {
-            NSInteger index = [file integerValue];
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                [self deliverInternalBody:[[BRCSSRewriter shared] lazyModuleForBase:base index:index] type:@"text/javascript; charset=utf-8" cacheControl:@"no-store"];
-            });
-            return;
-        }
+            [file rangeOfString:@"^[0-9]+\\.js$" options:NSRegularExpressionSearch].location != NSNotFound)
+            body = [[BRCSSRewriter shared] lazyModuleForBase:base index:[file integerValue]];
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/indexeddbshim"] && [path hasSuffix:@".js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
