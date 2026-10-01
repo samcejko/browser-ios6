@@ -87,6 +87,8 @@ static NSString * const BRVerifyTLSKey = @"BRVerifyTLS";
     switch (mode) {
         case 1: return L(@"Desktop (Safari 6)");
         case 2: return L(@"Modern iPad (Safari 17)");
+        case 3: return L(@"iPhone with iOS 6 (lighter pages)");
+        case 4: return L(@"Modern iPhone (Safari 17)");
     }
     return L(@"iPad with iOS 6");
 }
@@ -129,14 +131,42 @@ static NSInteger BRBuiltInUserAgentMode(NSString *hostKey)
     NSInteger global = [self userAgentMode];
     if (global != 0) return global;
     NSInteger builtIn = BRBuiltInUserAgentMode(BRHostKey(host));
-    return builtIn >= 0 ? builtIn : global;
+    if (builtIn >= 0) return builtIn;
+    return [self lighterVersionForHost:host] ? 3 : global;
+}
+
+// Sites too heavy for the iPad: iOS closed the app while one was loading, or it sent a script no iPad 2 can take.
+// For a month they are asked for the version a phone gets (YouTube's desktop channel pages - 1.9 MB of HTML and a
+// 10.8 MB script - against m.youtube.com).
+static const NSTimeInterval BRLighterVersionDays = 30;
+
++ (BOOL)lighterVersionForHost:(NSString *)host
+{
+    NSString *key = BRHostKey(host);
+    if (!key.length) return NO;
+    NSNumber *since = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"BRLighterHosts"][key];
+    return since && [[NSDate date] timeIntervalSince1970] - since.doubleValue < BRLighterVersionDays * 86400;
+}
+
++ (BOOL)noteHostTooHeavy:(NSString *)host
+{
+    NSString *key = BRHostKey(host);
+    if (!key.length || [self lighterVersionForHost:host]) return NO;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSMutableDictionary *hosts = [[d dictionaryForKey:@"BRLighterHosts"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    for (NSString *k in [hosts allKeys]) if (now - [hosts[k] doubleValue] >= BRLighterVersionDays * 86400) [hosts removeObjectForKey:k];
+    hosts[key] = @(now);
+    [d setObject:hosts forKey:@"BRLighterHosts"];
+    [d synchronize];
+    return YES;
 }
 
 + (NSInteger)userAgentModeForHost:(NSString *)host
 {
     NSDictionary *overrides = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"BRUserAgentHosts"];
     NSNumber *m = overrides[BRHostKey(host)];
-    if (m && [m integerValue] >= 0 && [m integerValue] <= 2) return [m integerValue];
+    if (m && [m integerValue] >= 0 && [m integerValue] <= 4) return [m integerValue];
     return [self defaultUserAgentModeForHost:host];
 }
 
@@ -159,6 +189,10 @@ static NSInteger BRBuiltInUserAgentMode(NSString *hostKey)
             return @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_5) AppleWebKit/536.30.1 (KHTML, like Gecko) Version/6.0.5 Safari/536.30.1";
         case 2:   // a current iPad: modern pages, which may or may not survive the old engine
             return @"Mozilla/5.0 (iPad; CPU OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1";
+        case 3:   // an iPhone of the same generation: the lighter pages servers send phones
+            return @"Mozilla/5.0 (iPhone; CPU iPhone OS 6_1_2 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Version/6.0 Mobile/10B146 Safari/8536.25";
+        case 4:   // a current iPhone (a phone page that refused the old one)
+            return @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1";
     }
     return nil;
 }

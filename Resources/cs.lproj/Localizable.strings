@@ -154,4 +154,8 @@
 "Page too large" = "Stránka je pro iPad moc velká";
 "Load Again" = "Načíst znovu";
 "The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the page again?" = "iOS aplikaci zavřel během načítání %@ – iPadu došla paměť. Načíst stránku znovu?";
+"The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the lighter version phones get?" = "iOS aplikaci zavřel během načítání %@ – iPadu došla paměť. Načíst lehčí verzi pro telefony?";
+"This page is too big for the iPad: loading the lighter version phones get." = "Stránka je pro iPad moc velká: načítám lehčí verzi pro telefony.";
+"iPhone with iOS 6 (lighter pages)" = "iPhone s iOS 6 (lehčí stránky)";
+"Modern iPhone (Safari 17)" = "Moderní iPhone (Safari 17)";
 "The iPad was running out of memory: the page was loaded again so that the app stays open." = "iPadu docházela paměť: stránka se načetla znovu, aby aplikace zůstala otevřená.";

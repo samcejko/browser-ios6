@@ -426,6 +426,7 @@ static NSString *BRQueryEscape(NSString *s)
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(graphicsMemoryHigh:) name:BRMemoryGraphicsNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(memoryReload:) name:BRMemoryReloadNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageDocumentArrived:) name:BRPageDocumentNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageTooHeavy:) name:BRPageTooHeavyNotification object:nil];
     [self privateModeChanged:nil];
     [self updateNavigationState];
 
@@ -1201,6 +1202,12 @@ static void BRWebThreadLock(void)
 
 - (void)loadURL:(NSURL *)url
 {
+    [self loadURL:url ignoringCache:NO];
+}
+
+// (ignoring the cache: the page asked for as another device, whose cached copy would come back otherwise)
+- (void)loadURL:(NSURL *)url ignoringCache:(BOOL)fresh
+{
     if (!url) return;
     if ([[url.scheme lowercaseString] isEqualToString:@"javascript"]) {
         [self runBookmarklet:url.absoluteString];
@@ -1218,7 +1225,7 @@ static void BRWebThreadLock(void)
         tab[@"url"] = [BRSettings isHomeURL:url] ? @"" : (url.absoluteString ?: @"");
         [self updateTabsButton];
     }
-    [self.webView loadRequest:[NSURLRequest requestWithURL:url cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:60]];
+    [self.webView loadRequest:[NSURLRequest requestWithURL:url cachePolicy:fresh ? NSURLRequestReloadIgnoringLocalCacheData : NSURLRequestUseProtocolCachePolicy timeoutInterval:60]];
 }
 
 - (void)navigateToTypedText:(NSString *)text
@@ -1421,12 +1428,31 @@ static void BRWebThreadLock(void)
     [self setAcceleratedCompositing:!off reason:why ?: @"a light page"];
 }
 
+// The page asked for a script no iPad 2 can take (see BRNoteTooBigScript): before iOS closes the app, the site is
+// asked again for the version phones get (once: a site whose phone version is as heavy stays as it is)
+- (void)pageTooHeavy:(NSNotification *)note
+{
+    NSURL *page = [note.userInfo[@"url"] isKindOfClass:[NSURL class]] ? note.userInfo[@"url"] : nil;
+    NSURL *current = self.webView.request.mainDocumentURL ?: self.currentURL;
+    if (!page.host.length || ![[page.host lowercaseString] isEqualToString:[current.host lowercaseString]]) return;
+    if (![BRSettings noteHostTooHeavy:page.host]) return;
+    BRLog(@"%@ is too heavy for the iPad: loading its phone version", page.host);
+    [self.webView stopLoading];
+    [self loadURL:page ignoringCache:YES];
+    [self showNote:L(@"This page is too big for the iPad: loading the lighter version phones get.")];
+}
+
 // the previous run ended (killed by iOS, as a rule for lack of memory) while this page was loading: the tab keeps it
 // but it only loads again when asked
 - (void)offerCrashedPage:(NSURL *)url
 {
     self.crashedURL = url;
-    NSString *message = [NSString stringWithFormat:L(@"The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the page again?"), url.host ?: url.absoluteString];
+    // (the site is asked for the version phones get from now on: lighter, as a rule - YouTube's desktop pages against
+    // m.youtube.com)
+    BOOL lighter = [BRSettings noteHostTooHeavy:url.host] || [BRSettings lighterVersionForHost:url.host];
+    if (lighter) BRLog(@"%@ closed the app for lack of memory: its phone version from now on", url.host);
+    NSString *message = [NSString stringWithFormat:lighter ? L(@"The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the lighter version phones get?") :
+                                                    L(@"The app was closed by iOS while %@ was loading – the iPad ran out of memory. Load the page again?"), url.host ?: url.absoluteString];
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Page too large") message:message delegate:self
                                           cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Load Again"), nil];
     alert.tag = 510;
@@ -1785,6 +1811,18 @@ static void BRWebThreadLock(void)
             else if ([lurl rangeOfString:t].location != NSNotFound) score = 1;
             else if ([[title lowercaseString] rangeOfString:t].location != NSNotFound) score = 2;
             else continue;
+            // the site's front page first when the text starts its name ("youtube" offered youtube.com/youtube, a
+            // channel page of the desktop site, ahead of the site itself)
+            NSURL *u = score == 0 ? [NSURL URLWithString:url] : nil;
+            NSString *bareHost = [u.host lowercaseString];
+            if ([bareHost hasPrefix:@"www."]) bareHost = [bareHost substringFromIndex:4];
+            if (u.host.length && [bareHost hasPrefix:t] && u.path.length > 1) {
+                NSString *front = [NSString stringWithFormat:@"%@://%@/", [u.scheme lowercaseString] ?: @"https", u.host];
+                if (![seen containsObject:front]) {
+                    [seen addObject:front];
+                    [scored addObject:@{ @"title": u.host, @"url": front, @"kind": s == 0 ? @"bookmark" : @"history", @"score": @(-1) }];
+                }
+            }
             [seen addObject:url];
             [scored addObject:@{ @"title": title, @"url": url, @"kind": s == 0 ? @"bookmark" : @"history", @"score": @(score + (NSInteger)s) }];
             if (scored.count >= 40) break;
@@ -2009,7 +2047,7 @@ static void BRWebThreadLock(void)
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
 {
     if (alertView.tag == 510) {
-        if (buttonIndex != alertView.cancelButtonIndex && self.crashedURL) [self loadURL:self.crashedURL];
+        if (buttonIndex != alertView.cancelButtonIndex && self.crashedURL) [self loadURL:self.crashedURL ignoringCache:YES];
         self.crashedURL = nil;
         return;
     }
@@ -2603,7 +2641,9 @@ static void BRWebThreadLock(void)
 - (void)checkForUnsupportedBrowserPage:(NSString *)title url:(NSURL *)url
 {
     if (![[url.scheme lowercaseString] hasPrefix:@"http"] || !url.host.length) return;
-    if ([BRSettings userAgentModeForHost:url.host] != 0) return;
+    // (the iOS 6 iPad becomes a current iPad, the iOS 6 iPhone of a site too heavy for the iPad a current iPhone)
+    NSInteger mode = [BRSettings userAgentModeForHost:url.host];
+    if (mode != 0 && mode != 3) return;
     NSInteger nodes = [[self.webView stringByEvaluatingJavaScriptFromString:@"document.getElementsByTagName('*').length"] integerValue];
     if (nodes > 400) return;   // real pages are bigger than a refusal notice
     NSString *text = [NSString stringWithFormat:@"%@ %@", title ?: @"", [self.webView stringByEvaluatingJavaScriptFromString:@"(document.body?document.body.innerText:'').slice(0,800)"] ?: @""];
@@ -2617,8 +2657,8 @@ static void BRWebThreadLock(void)
     NSString *host = [url.host lowercaseString];
     if ([retried containsObject:host]) return;
     [retried addObject:host];
-    BRLog(@"Unsupported-browser page on %@: retrying as a current iPad", host);
-    [BRSettings setUserAgentMode:2 forHost:host];
+    BRLog(@"Unsupported-browser page on %@: retrying as a current %@", host, mode == 3 ? @"iPhone" : @"iPad");
+    [BRSettings setUserAgentMode:mode == 3 ? 4 : 2 forHost:host];
     [[NSURLCache sharedURLCache] removeAllCachedResponses];
     [self reloadIgnoringCache];
 }

@@ -91,6 +91,21 @@ static void BRNotePageDocument(NSURL *url, NSData *html, unsigned long long byte
     });
 }
 
+// A script too big for the iPad 2 (past the rewrite limit: it would reach WebKit as it came, and parsing it alone runs
+// the iPad out of memory - YouTube's 10.8 MB desktop bundle): the page's site is told to the main thread, which asks it
+// for the version phones get (see BRSettings noteHostTooHeavy) before iOS closes the app.
+NSString * const BRPageTooHeavyNotification = @"BRPageTooHeavyNotification";
+static void BRNoteTooBigScript(NSURLRequest *request, unsigned long long bytes)
+{
+    NSURL *page = request.mainDocumentURL;
+    if (!page.host.length || [BRSettings lighterVersionForHost:page.host]) return;
+    BRLog(@"Script of %llu KB for %@ is too big for the iPad: %@", bytes >> 10, page.host, request.URL.absoluteString);
+    NSDictionary *info = @{ @"url": page, @"script": request.URL ?: [NSNull null] };
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:BRPageTooHeavyNotification object:nil userInfo:info];
+    });
+}
+
 #pragma mark - Page progress and main document facts
 
 static NSURL *g_lastMainURL;
@@ -992,6 +1007,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
             ([path hasSuffix:@".js"] || [path hasSuffix:@".mjs"])) script = YES;
         long long declared = [r.responseHeaders[@"content-length"] longLongValue];
         if (script && declared <= (long long)BRMaxScriptRewriteBody) kind = @"js";
+        else if (script) BRNoteTooBigScript(self.request, (unsigned long long)declared);
     }
     // WOFF2 fonts are decoded to TTF (no JavaScript involved, so this works even without the rewriter)
     if (!kind && status >= 200 && status < 300 && ![method isEqualToString:@"HEAD"]) {
@@ -1044,6 +1060,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
     NSData *buffered = self.rewriteBuffer;
     if ([self.rewriteKind isEqualToString:@"html"] && (!self.request.mainDocumentURL || [self.request.URL isEqual:self.request.mainDocumentURL]))
         BRNotePageDocument(self.request.URL, buffered, buffered.length);
+    if ([self.rewriteKind hasPrefix:@"js"]) BRNoteTooBigScript(self.request, buffered.length);
     self.rewriteBuffer = nil;
     self.rewriteKind = nil;
     NSHTTPURLResponse *response = self.response;

@@ -15,7 +15,8 @@
 + (void)setJSFixEnabled:(BOOL)enabled;
 + (BOOL)transpileEnabled;                // default YES: scripts in ES2015+ syntax are lowered to ES5 (jsfix.js)
 + (void)setTranspileEnabled:(BOOL)enabled;
-// 0 = iPad with iOS 6 (the engine's own identity), 1 = desktop Safari 6, 2 = a current iPad (Safari 17)
+// 0 = iPad with iOS 6 (the engine's own identity), 1 = desktop Safari 6, 2 = a current iPad (Safari 17);
+// per host only: 3 = iPhone with iOS 6 (sites too heavy for the iPad), 4 = a current iPhone
 + (NSInteger)userAgentMode;
 + (void)setUserAgentMode:(NSInteger)mode;
 + (NSString *)userAgentOverride;         // nil for mode 0
@@ -24,6 +25,10 @@
 + (NSInteger)userAgentModeForHost:(NSString *)host;
 + (void)setUserAgentMode:(NSInteger)mode forHost:(NSString *)host;   // -1 removes the override
 + (NSString *)userAgentOverrideForURL:(NSURL *)url;                  // nil when the engine's own identity applies
+// a site that closed the app for lack of memory (or sent a script too big for it) gets the phone version (mode 3) for
+// a month; YES when the host was not noted yet
++ (BOOL)noteHostTooHeavy:(NSString *)host;
++ (BOOL)lighterVersionForHost:(NSString *)host;
 
 + (BOOL)darkTheme;                       // default NO
 + (void)setDarkTheme:(BOOL)dark;
