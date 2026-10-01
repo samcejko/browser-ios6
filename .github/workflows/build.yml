@@ -194,6 +194,11 @@ jobs:
           node tools/minify-page-scripts.js Resources/shims.js Resources/js/shims.js Resources/shims-extra.js Resources/js/shims-extra.js \
             Resources/page-prelude.js Resources/js/page-prelude.js Resources/regexp-shim.js Resources/js/regexp-shim.js
           node tools/gen-helpers.js > Resources/js/jsfix-helpers.js
+          # (the polyfills of the bundle as they come from npm, and the helpers: every page parses them, and keeps their
+          # text - about 200 KB of comments and white space down to some 80)
+          for f in regenerator-runtime fetch intersection-observer resize-observer dialog-polyfill jsfix-helpers; do
+            node tools/minify-page-scripts.js Resources/js/$f.js Resources/js/$f.js
+          done
           ls -la Resources/js/jsfix-helpers.js
           node tools/check-es5.js Resources/page-prelude.js Resources/shims.js Resources/shims-extra.js Resources/cssfix.js Resources/jsfix.js Resources/browserscore.js Resources/worker-shims.js Resources/regexp-shim.js Resources/js/*.js
           node tools/jsfix-ci.js
