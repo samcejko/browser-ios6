@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>compression test</title>
+<script>
+// CompressionStream / DecompressionStream from shims-extra.js against the desktop browser's own: each way round, on
+// random, repetitive and text input, broken data (the same outcome as the browser's), junk after the data, gzip headers
+// with a file name.
+window.__errors = [];
+window.onerror = function (msg, src, line) { window.__errors.push(msg + ' @' + (src || '').split('/').pop() + ':' + line); };
+window.NC = window.CompressionStream; window.ND = window.DecompressionStream;
+delete window.CompressionStream; delete window.DecompressionStream;
+</script>
+<script src="babel-test/bundle-parts/fetch.js"></script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<pre id="out">running</pre>
+<script>
+(function () {
+    var results = [], fails = 0;
+    var check = function (name, ok, info) { if (!ok) fails++; results.push((ok ? 'PASS ' : 'FAIL ') + name + (!ok && info !== undefined ? ' (' + info + ')' : '')); };
+    var finish = function () {
+        document.title = 'compression ' + (results.length - fails) + '/' + results.length + (window.__errors.length ? ' errors ' + window.__errors.length : '');
+        document.getElementById('out').textContent = document.title + '\n' + results.join('\n') + (window.__errors.length ? '\n' + window.__errors.join('\n') : '');
+    };
+    var OC = window.CompressionStream, OD = window.DecompressionStream;
+    check('installed', typeof OC === 'function' && OC !== NC && typeof OD === 'function' && OD !== ND);
+    var seed = 777;
+    var rnd = function (n) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    // (the stream's output, or 'error'; the input in pieces)
+    var run = function (Ctor, format, bytes) {
+        return new Promise(function (resolve) {
+            var s;
+            try { s = new Ctor(format); } catch (e) { resolve('throws ' + e.name); return; }
+            var w = s.writable.getWriter(), r = s.readable.getReader(), parts = [], total = 0;
+            var pump = function () {
+                r.read().then(function (x) {
+                    if (x.done) { var out = new Uint8Array(total), at = 0; parts.forEach(function (p) { out.set(p, at); at += p.length; }); resolve(out); return; }
+                    parts.push(new Uint8Array(x.value)); total += x.value.length; pump();
+                }, function () { resolve('error'); });
+            };
+            pump();
+            var at = 0;
+            while (at < bytes.length) { var n = 1 + rnd(Math.max(1, bytes.length)); w.write(bytes.subarray(at, at + n)).catch(function () {}); at += n; }
+            w.close().catch(function () {});
+        });
+    };
+    var same = function (a, b) {
+        if (typeof a === 'string' || typeof b === 'string') return a === b;
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+    };
+    var show = function (x) { return typeof x === 'string' ? x : x.length + ' bytes'; };
+    var inputs = [];
+    inputs.push(new Uint8Array(0), new Uint8Array([65]));
+    for (var t = 0; t < 14; t++) {
+        var n = rnd(t < 7 ? 300 : 20000), b = new Uint8Array(n), kind = t % 3;
+        for (var i = 0; i < n; i++) b[i] = kind === 0 ? rnd(256) : kind === 1 ? 97 + rnd(4) : (i % 37) + (rnd(50) === 0 ? 1 : 0);
+        inputs.push(b);
+    }
+    inputs.push(new TextEncoder().encode(new Array(3000).join('Příliš žluťoučký kůň úpěl ďábelské ódy. ')));
+    var FORMATS = ['gzip', 'deflate', 'deflate-raw'], jobs = [];
+    FORMATS.forEach(function (f) {
+        var bad = [], smaller = 0;
+        inputs.forEach(function (input, k) {
+            jobs.push(function () {
+                return run(OC, f, input).then(function (ours) {
+                    if (typeof ours !== 'string' && input.length > 1000 && k > 0 && ours.length < input.length * 0.9 && (k % 3 !== 2)) smaller++;
+                    return run(ND, f, ours).then(function (back) { if (!same(back, input)) bad.push('ours->native #' + k + ' ' + show(back)); });
+                }).then(function () {
+                    return run(NC, f, input).then(function (theirs) {
+                        return run(OD, f, theirs).then(function (back) {
+                            if (!same(back, input)) bad.push('native->ours #' + k + ' ' + show(back));
+                            // the browser's data broken in one byte, and with junk after it: the same outcome as the browser's
+                            if (theirs.length > 4) {
+                                var broken = new Uint8Array(theirs);
+                                broken[rnd(broken.length)] ^= 1 << rnd(8);
+                                return Promise.all([run(OD, f, broken), run(ND, f, broken)]).then(function (pair) {
+                                    if (!same(pair[0], pair[1])) bad.push('broken #' + k + ' ours ' + show(pair[0]) + ' native ' + show(pair[1]));
+                                    var junk = new Uint8Array(theirs.length + 3);
+                                    junk.set(theirs);
+                                    junk.set([1, 2, 3], theirs.length);
+                                    return Promise.all([run(OD, f, junk), run(ND, f, junk)]).then(function (p2) {
+                                        if (!same(p2[0], p2[1])) bad.push('junk #' + k + ' ours ' + show(p2[0]) + ' native ' + show(p2[1]));
+                                    });
+                                });
+                            }
+                        });
+                    });
+                });
+            });
+        });
+        jobs.push(function () {
+            check(f + ' as the browser makes and reads it (' + inputs.length + ' inputs, broken data, junk)', !bad.length, bad.slice(0, 6).join('; '));
+            check(f + ' compresses', smaller >= 3, smaller);
+            return Promise.all([run(OD, f, new Uint8Array(0)), run(ND, f, new Uint8Array(0))]).then(function (p) {
+                check(f + ' empty input as the browser', same(p[0], p[1]), show(p[0]) + ' / ' + show(p[1]));
+            });
+        });
+    });
+    // a gzip header with a file name and a comment
+    jobs.push(function () {
+        var text = new TextEncoder().encode('hello hello hello gzip');
+        return run(NC, 'gzip', text).then(function (g) {
+            var name = new TextEncoder().encode('a.txt\u0000note\u0000'), out = new Uint8Array(g.length + name.length);
+            out.set(g.subarray(0, 10)); out[3] = 8 | 16; out.set(name, 10); out.set(g.subarray(10), 10 + name.length);
+            return run(OD, 'gzip', out).then(function (back) { check('gzip with a file name and a comment', same(back, text), show(back)); });
+        });
+    });
+    jobs.push(function () {
+        var e1 = null;
+        try { new OD('br'); } catch (e) { e1 = e; }
+        check('unknown format throws TypeError', e1 instanceof TypeError);
+        // a Response over the decompressed stream, the usual way pages read it
+        return run(NC, 'gzip', new TextEncoder().encode('{"ok":true}')).then(function (g) {
+            var s = new Blob([g]).stream().pipeThrough(new OD('gzip'));
+            return new Response(s).json().then(function (j) { check('Response over a DecompressionStream', j && j.ok === true); });
+        });
+    });
+    var next = function () {
+        if (!jobs.length) { finish(); return; }
+        Promise.resolve().then(jobs.shift()).then(next, function (e) { check('job', false, String(e)); next(); });
+    };
+    next();
+})();
+</script>
+</body>
+</html>

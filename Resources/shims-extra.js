@@ -12753,6 +12753,252 @@
         watchInsert(ElementP, 'after');
         watchInsert(ElementP, 'replaceWith');
     })();
+    // ---- CompressionStream / DecompressionStream (gzip, deflate, deflate-raw): inflate after RFC 1951 in the manner of
+    // zlib's puff, deflate with LZ77 matches in the fixed Huffman code (smaller, if not as small as zlib's); the bytes
+    // are collected and come out when the stream closes
+    (function () {
+        var TS = window.TransformStream;
+        if (!TS || (window.CompressionStream && window.DecompressionStream)) return;
+        var LBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+        var LEXT = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+        var DBASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+        var DEXT = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+        var ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+        var bad = function (why) { return new TypeError(why || 'The compressed data was not valid.'); };
+        var CRC = null;
+        var crc32 = function (b) {
+            var i, c;
+            if (!CRC) { CRC = []; for (var n = 0; n < 256; n++) { c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; CRC[n] = c >>> 0; } }
+            c = 0xFFFFFFFF;
+            for (i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8);
+            return (c ^ 0xFFFFFFFF) >>> 0;
+        };
+        var adler32 = function (b) {
+            var a = 1, s = 0, i = 0;
+            while (i < b.length) {
+                var end = Math.min(b.length, i + 5552);
+                for (; i < end; i++) { a += b[i]; s += a; }
+                a %= 65521; s %= 65521;
+            }
+            return ((s * 65536) + a) >>> 0;
+        };
+        // a canonical Huffman code from code lengths: how many codes of each length, the symbols in code order, and
+        // what is left of the code space (negative: over-subscribed, positive: incomplete)
+        var huffman = function (lengths, n) {
+            var count = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], offs = [0, 0], symbol = [], i, left = 1;
+            for (i = 0; i < n; i++) count[lengths[i]]++;
+            if (count[0] === n) return { count: count, symbol: symbol, left: 0, empty: true };
+            for (i = 1; i < 16; i++) { left = left * 2 - count[i]; if (left < 0) return { count: count, symbol: symbol, left: left }; }
+            for (i = 1; i < 15; i++) offs[i + 1] = offs[i] + count[i];
+            for (i = 0; i < n; i++) if (lengths[i]) symbol[offs[lengths[i]]++] = i;
+            return { count: count, symbol: symbol, left: left };
+        };
+        var FIXED = null;
+        // the deflate data of src from pos: the bytes, and where the data ended
+        var inflate = function (src, pos) {
+            var bitbuf = 0, bitcnt = 0, out = new Uint8Array(Math.max(1024, src.length * 3)), outLen = 0;
+            var need = function (n) {
+                var val = bitbuf;
+                while (bitcnt < n) { if (pos >= src.length) throw bad(); val |= src[pos++] << bitcnt; bitcnt += 8; }
+                bitbuf = val >>> n; bitcnt -= n;
+                return val & ((1 << n) - 1);
+            };
+            var grow = function (min) { var o = new Uint8Array(Math.max(out.length * 2, min)); o.set(out.subarray(0, outLen)); out = o; };
+            var decode = function (h) {
+                var code = 0, first = 0, index = 0;
+                for (var len = 1; len < 16; len++) {
+                    code |= need(1);
+                    var count = h.count[len];
+                    if (code - count < first) return h.symbol[index + (code - first)];
+                    index += count; first += count; first <<= 1; code <<= 1;
+                }
+                throw bad();
+            };
+            var codes = function (lc, dc) {
+                for (;;) {
+                    var sym = decode(lc);
+                    if (sym < 256) { if (outLen === out.length) grow(outLen + 1); out[outLen++] = sym; continue; }
+                    if (sym === 256) return;
+                    sym -= 257;
+                    if (sym >= 29) throw bad();
+                    var len = LBASE[sym] + need(LEXT[sym]), d = decode(dc);
+                    if (d >= 30) throw bad();
+                    var dist = DBASE[d] + need(DEXT[d]);
+                    if (dist > outLen) throw bad();
+                    if (outLen + len > out.length) grow(outLen + len);
+                    for (var k = 0; k < len; k++) { out[outLen] = out[outLen - dist]; outLen++; }
+                }
+            };
+            var lengths, i, last;
+            do {
+                last = need(1);
+                var type = need(2);
+                if (type === 0) {
+                    bitbuf = 0; bitcnt = 0;   // (to the byte boundary)
+                    if (pos + 4 > src.length) throw bad();
+                    var slen = src[pos] | (src[pos + 1] << 8), nlen = src[pos + 2] | (src[pos + 3] << 8);
+                    pos += 4;
+                    if (slen !== (~nlen & 0xFFFF) || pos + slen > src.length) throw bad();
+                    if (outLen + slen > out.length) grow(outLen + slen);
+                    out.set(src.subarray(pos, pos + slen), outLen);
+                    outLen += slen; pos += slen;
+                } else if (type === 1) {
+                    if (!FIXED) {
+                        var fl = [], fd = [];
+                        for (i = 0; i < 288; i++) fl[i] = i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8;
+                        for (i = 0; i < 30; i++) fd[i] = 5;
+                        FIXED = [huffman(fl, 288), huffman(fd, 30)];
+                    }
+                    codes(FIXED[0], FIXED[1]);
+                } else if (type === 2) {
+                    var nl = need(5) + 257, nd = need(5) + 1, nc = need(4) + 4;
+                    if (nl > 286 || nd > 30) throw bad();
+                    lengths = [];
+                    for (i = 0; i < 19; i++) lengths[i] = 0;
+                    for (i = 0; i < nc; i++) lengths[ORDER[i]] = need(3);
+                    var cl = huffman(lengths, 19);
+                    if (cl.left !== 0 || cl.empty) throw bad();
+                    lengths = [];
+                    var at = 0;
+                    while (at < nl + nd) {
+                        var s = decode(cl), rep, val = 0;
+                        if (s < 16) { lengths[at++] = s; continue; }
+                        if (s === 16) { if (at === 0) throw bad(); val = lengths[at - 1]; rep = 3 + need(2); }
+                        else if (s === 17) rep = 3 + need(3);
+                        else rep = 11 + need(7);
+                        if (at + rep > nl + nd) throw bad();
+                        while (rep--) lengths[at++] = val;
+                    }
+                    if (!lengths[256]) throw bad();
+                    var lc = huffman(lengths, nl), dc = huffman(lengths.slice(nl), nd);
+                    // (an incomplete code only as a single code of length 1)
+                    if (lc.left < 0 || (lc.left > 0 && nl !== lc.count[0] + lc.count[1])) throw bad();
+                    if (dc.left < 0 || (dc.left > 0 && nd !== dc.count[0] + dc.count[1])) throw bad();
+                    codes(lc, dc);
+                } else throw bad();
+            } while (!last);
+            return { out: out.subarray(0, outLen), end: pos };
+        };
+        // deflate data in one fixed-code block: LZ77 matches over a 32 KB window (hash chains of 32 at most)
+        var deflate = function (src) {
+            var out = [], bitbuf = 0, bitcnt = 0, n = src.length, i = 0, k;
+            var put = function (v, nb) { bitbuf |= v << bitcnt; bitcnt += nb; while (bitcnt >= 8) { out.push(bitbuf & 255); bitbuf >>>= 8; bitcnt -= 8; } };
+            // (Huffman codes go top bit first)
+            var rev = function (code, len) { var r = 0; for (var j = 0; j < len; j++) { r = (r << 1) | (code & 1); code >>>= 1; } return r; };
+            var sym = function (c) {
+                if (c < 144) put(rev(0x30 + c, 8), 8);
+                else if (c < 256) put(rev(0x190 + c - 144, 9), 9);
+                else if (c < 280) put(rev(c - 256, 7), 7);
+                else put(rev(0xC0 + c - 280, 8), 8);
+            };
+            put(1, 1); put(1, 2);   // (the last block, fixed codes)
+            var HSIZE = 32768, head = [], prev = [];
+            for (k = 0; k < HSIZE; k++) head[k] = -1;
+            var hash = function (p) { return ((src[p] << 10) ^ (src[p + 1] << 5) ^ src[p + 2]) & (HSIZE - 1); };
+            var insert = function (p) { var h = hash(p); prev[p & 32767] = head[h]; head[h] = p; };
+            while (i < n) {
+                var bestLen = 0, bestDist = 0;
+                if (i + 2 < n) {
+                    var cand = head[hash(i)], chain = 0, max = Math.min(258, n - i);
+                    while (cand >= 0 && i - cand <= 32768 && chain++ < 32) {
+                        if (src[cand + bestLen] === src[i + bestLen]) {
+                            var l = 0;
+                            while (l < max && src[cand + l] === src[i + l]) l++;
+                            if (l > bestLen) { bestLen = l; bestDist = i - cand; if (l === max) break; }
+                        }
+                        cand = prev[cand & 32767];
+                    }
+                }
+                if (bestLen >= 3) {
+                    var li = 0, di = 0;
+                    while (li < 28 && LBASE[li + 1] <= bestLen) li++;
+                    sym(257 + li); put(bestLen - LBASE[li], LEXT[li]);
+                    while (di < 29 && DBASE[di + 1] <= bestDist) di++;
+                    put(rev(di, 5), 5); put(bestDist - DBASE[di], DEXT[di]);
+                    for (var stop = i + bestLen; i < stop; i++) if (i + 2 < n) insert(i);
+                } else {
+                    sym(src[i]);
+                    if (i + 2 < n) insert(i);
+                    i++;
+                }
+            }
+            sym(256);
+            if (bitcnt > 0) out.push(bitbuf & 255);
+            return out;
+        };
+        var u32le = function (b, p) { return (b[p] | (b[p + 1] << 8) | (b[p + 2] << 16) | (b[p + 3] << 24)) >>> 0; };
+        var pack = function (format, src) {
+            var body = deflate(src), out;
+            if (format === 'deflate-raw') return new Uint8Array(body);
+            if (format === 'deflate') {
+                var a = adler32(src);
+                out = [0x78, 0x9C].concat(body, [(a >>> 24) & 255, (a >>> 16) & 255, (a >>> 8) & 255, a & 255]);
+            } else {
+                var c = crc32(src), size = src.length >>> 0;
+                out = [0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 255].concat(body, [c & 255, (c >>> 8) & 255, (c >>> 16) & 255, (c >>> 24) & 255,
+                    size & 255, (size >>> 8) & 255, (size >>> 16) & 255, (size >>> 24) & 255]);
+            }
+            return new Uint8Array(out);
+        };
+        var unpack = function (format, src) {
+            var r, p = 0;
+            if (format === 'deflate-raw') r = inflate(src, 0);
+            else if (format === 'deflate') {
+                if (src.length < 2 || (src[0] & 15) !== 8 || ((src[0] << 8) | src[1]) % 31 || (src[1] & 32)) throw bad();
+                r = inflate(src, 2);
+                if (r.end + 4 > src.length) throw bad();
+                if (((src[r.end] << 24) | (src[r.end + 1] << 16) | (src[r.end + 2] << 8) | src[r.end + 3]) >>> 0 !== adler32(r.out)) throw bad();
+                r.end += 4;
+            } else {
+                if (src.length < 10 || src[0] !== 0x1F || src[1] !== 0x8B || src[2] !== 8) throw bad();
+                var flags = src[3];
+                p = 10;
+                if (flags & 4) { if (p + 2 > src.length) throw bad(); p += 2 + (src[p] | (src[p + 1] << 8)); }
+                if (flags & 8) { while (p < src.length && src[p] !== 0) p++; p++; }
+                if (flags & 16) { while (p < src.length && src[p] !== 0) p++; p++; }
+                if (flags & 2) p += 2;
+                if (p > src.length) throw bad();
+                r = inflate(src, p);
+                if (r.end + 8 > src.length || u32le(src, r.end) !== crc32(r.out) || u32le(src, r.end + 4) !== (r.out.length >>> 0)) throw bad();
+                r.end += 8;
+            }
+            if (r.end !== src.length) throw bad('Junk found after end of compressed data.');
+            return r.out;
+        };
+        var bytesOf = function (chunk) {
+            if (chunk instanceof Uint8Array) return chunk;
+            if (window.ArrayBuffer && chunk instanceof window.ArrayBuffer) return new Uint8Array(chunk);
+            if (chunk && chunk.buffer && typeof chunk.byteLength === 'number') return new Uint8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength);
+            throw new TypeError("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'");
+        };
+        var FORMATS = { gzip: 1, deflate: 1, 'deflate-raw': 1 };
+        var make = function (self, format, compress, name) {
+            format = String(format);
+            if (!FORMATS.hasOwnProperty(format)) throw new TypeError("Failed to construct '" + name + "': Unsupported compression format: '" + format + "'");
+            var parts = [], total = 0;
+            var t = new TS({
+                transform: function (chunk) {
+                    var b = bytesOf(chunk);
+                    if (b.length) { parts.push(new Uint8Array(b)); total += b.length; }
+                },
+                flush: function (c) {
+                    var all = new Uint8Array(total), at = 0;
+                    for (var i = 0; i < parts.length; i++) { all.set(parts[i], at); at += parts[i].length; }
+                    parts = [];
+                    try {
+                        var out = compress ? pack(format, all) : unpack(format, all);
+                        if (out.length) c.enqueue(out);
+                    } catch (e) { c.error(e); throw e; }
+                }
+            });
+            self.readable = t.readable;
+            self.writable = t.writable;
+        };
+        function CompressionStream(format) { make(this, format, true, 'CompressionStream'); }
+        function DecompressionStream(format) { make(this, format, false, 'DecompressionStream'); }
+        if (!window.CompressionStream) window.CompressionStream = CompressionStream;
+        if (!window.DecompressionStream) window.DecompressionStream = DecompressionStream;
+    })();
     // ---- input.showPicker() (the old engine opens its pickers on focus, a file chooser on click), Response.json(),
     // setHTMLUnsafe() / getHTML() (no declarative shadow roots here: plain markup)
     (function () {
