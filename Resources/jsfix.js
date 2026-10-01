@@ -3969,6 +3969,31 @@
             return head + '__br_dsdel(' + target + ',' + (name ? quote(name) : '(' + key + ')') + ')';
         });
     };
+    // `key in obj` in a script the engine takes as it is that makes symbols (YouTube's es5 build tests `_.lsa in a` with
+    // a symbol of core-js, whose setter on Object.prototype answers that for every object: its signals saw a reactive
+    // context everywhere and threw "[Patch failed]", m.youtube.com stayed blank): a key and an object of plain names,
+    // the test standing on its own (an operator of lower precedence or the end of an expression around it), go through
+    // __br_in in the text. Not the head of a for-in; and only a key that looks like minified code (a name with . _ $ or
+    // of two letters at most), so that words in strings stay as they are ("(only in English)").
+    var SYM_IN = /([(,&|?:=;{}\[]|\breturn\s)(\s*)((?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Za-z_$][\w$]*)\s+in\s+((?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Za-z_$][\w$]*)(?=\s*(?:[)\];,:?}]|&&|\|\||[!=]==?|$))/g;
+    var SYM_IN_KEYWORDS = { 'typeof': 1, 'void': 1, 'delete': 1, 'new': 1, 'in': 1, 'instanceof': 1, 'var': 1, 'let': 1, 'const': 1, 'return': 1, 'this': 0 };
+    var needsSymIn = function (src) {
+        if (src.indexOf('Symbol(') < 0 || src.indexOf(' in ') < 0) return false;
+        SYM_IN.lastIndex = 0;
+        var found = SYM_IN.test(src);
+        SYM_IN.lastIndex = 0;
+        return found;
+    };
+    var symIns = function (src) {
+        SYM_IN.lastIndex = 0;
+        return src.replace(SYM_IN, function (whole, head, space, key, obj, at) {
+            if (SYM_IN_KEYWORDS[key] || SYM_IN_KEYWORDS[obj]) return whole;
+            if (key.length > 2 && !/[._$]/.test(key)) return whole;
+            // (for (k in o) / for (var k in o): a loop, not a test)
+            if (head === '(' && /\bfor\s*$/.test(src.slice(Math.max(0, at - 8), at))) return whole;
+            return head + space + '__br_in(' + key + ',' + obj + ')';
+        });
+    };
     // a script the engine parses that only needs the stand-ins: `new Proxy(` / `BigInt(` replaced in the text (no
     // parse of a big bundle for that), unless the script has a Proxy or BigInt of its own
     var STANDIN_OWN = /\b(?:class|function|var|let|const)\s+(?:Proxy|BigInt)\b|[(,]\s*(?:Proxy|BigInt)\s*[,)=]/;
@@ -4670,6 +4695,9 @@
                 // in another group)
                 if (st.ctor === undefined) st.ctor = needsCtor(src);
                 if (st.ctor) { CTOR_THIS.lastIndex = 0; if (CTOR_THIS.test(piece)) { var cp = ctorReads(piece); if (engineTakes(prefix + cp)) { piece = cp; use('__br_ctor'); } } }
+                // (key in obj with symbols: the script makes them, maybe in another group)
+                if (st.symIn === undefined) st.symIn = src.indexOf('Symbol(') >= 0;
+                if (st.symIn && piece.indexOf(' in ') >= 0) { var sip = symIns(piece); if (sip !== piece && engineTakes(prefix + sip)) { piece = sip; use('__br_in'); } }
                 st.out.push(piece);
                 continue;
             }
@@ -4698,7 +4726,7 @@
         var parses = !opts.force && engineParses(src);
         if (parses) {
             var evals = src.length < 300 * 1024 && DIRECT_EVAL.test(src);
-            if (!needsProxy(src) && !needsBigInt(src) && !evals && !needsDsDelete(src) && !needsCtor(src)) return 'es5';
+            if (!needsProxy(src) && !needsBigInt(src) && !evals && !needsDsDelete(src) && !needsCtor(src) && !needsSymIn(src)) return 'es5';
             memo = { src: src, parses: true, prep: null, note: '' };
             return evals ? 'full' : 'stand-in';
         }
@@ -4759,11 +4787,11 @@
         var tc = new Date().getTime(), parsesAsIs = !opts.force && (planned ? planned.parses : engineParses(src)), evals = false;
         stats.checks = new Date().getTime() - tc;
         if (parsesAsIs) {
-            var np = needsProxy(src), nb = needsBigInt(src), nd = needsDsDelete(src), nc = needsCtor(src);
+            var np = needsProxy(src), nb = needsBigInt(src), nd = needsDsDelete(src), nc = needsCtor(src), ns = needsSymIn(src);
             // (a direct eval of ES2015+ text needs the tree even in a script the engine takes; not worth a big
             // script's parse)
             evals = src.length < 300 * 1024 && DIRECT_EVAL.test(src);
-            if (!np && !nb && !nd && !nc && !evals) { stats.skipped++; stats.last = 'es5'; return ''; }
+            if (!np && !nb && !nd && !nc && !ns && !evals) { stats.skipped++; stats.last = 'es5'; return ''; }
             if (!evals && (!(np || nb) || !STANDIN_OWN.test(src))) {
                 // (the helpers go at the end: a directive prologue stays first, declarations are hoisted)
                 var text = src, used = [];
@@ -4780,6 +4808,10 @@
                 if (nc) {
                     var ctext = ctorReads(text);
                     if (engineParses(ctext)) { text = ctext; used.push('__br_ctor'); }
+                }
+                if (ns) {
+                    var stext = symIns(text);
+                    if (stext !== text && engineParses(stext)) { text = stext; used.push('__br_in'); }
                 }
                 if (!used.length) { stats.skipped++; stats.last = 'es5'; return ''; }
                 stats.lowered++;
