@@ -471,24 +471,26 @@ static NSString *BRResponseHead(NSInteger status, NSDictionary *headers, BOOL ke
     BRLog(@"WebSocket proxy: %@ open (%@)", host, secure ? (up.tlsVersion ?: @"TLS") : @"plain");
     // (a record that started arriving is complete within this; between frames the sockets wait in poll)
     [up setReadTimeoutMs:15000];
+    // (a pool per round: a socket stays open for hours, and what a round autoreleases must not pile up till then)
     while (ok) {
-        if ([up hasBufferedData]) {
-            NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
-            if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) break;
-            continue;
-        }
-        struct pollfd p[2] = { { fd, POLLIN, 0 }, { up.fileDescriptor, POLLIN, 0 } };
-        int r = poll(p, 2, 60000);
-        if (r < 0) { if (errno == EINTR) continue; break; }
-        if (r == 0) continue;
-        if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
-            ssize_t n = recv(fd, buf, sizeof(buf), 0);
-            if (n <= 0) break;
-            if (![up writeData:[NSData dataWithBytesNoCopy:buf length:(NSUInteger)n freeWhenDone:NO] error:NULL]) break;
-        }
-        if (p[1].revents & (POLLIN | POLLHUP | POLLERR)) {
-            NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
-            if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) break;
+        @autoreleasepool {
+            if ([up hasBufferedData]) {
+                NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
+                if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) ok = NO;
+                continue;
+            }
+            struct pollfd p[2] = { { fd, POLLIN, 0 }, { up.fileDescriptor, POLLIN, 0 } };
+            int r = poll(p, 2, 60000);
+            if (r < 0) { if (errno != EINTR) ok = NO; continue; }
+            if (r == 0) continue;
+            if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+                ssize_t n = recv(fd, buf, sizeof(buf), 0);
+                if (n <= 0 || ![up writeData:[NSData dataWithBytesNoCopy:buf length:(NSUInteger)n freeWhenDone:NO] error:NULL]) { ok = NO; continue; }
+            }
+            if (p[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+                NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
+                if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) ok = NO;
+            }
         }
     }
     BRLog(@"WebSocket proxy: %@ closed", host);
