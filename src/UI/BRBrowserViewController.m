@@ -1214,6 +1214,9 @@ static void BRWebThreadLock(void)
         return;
     }
     if (self.loading) [self.webView stopLoading];   // a page still loading must not steal the tab with a late redirect
+    // (rewrites and lowerings queued for the page being left are skipped: YouTube's desktop stylesheet, 3.5 MB, went
+    // on being rewritten after the switch to its phone version and took the app to 301 MB)
+    [BRCSSRewriter cancelPendingWork];
     self.currentURL = url;
     self.readerShown = NO;
     [self updateAddressFieldWithURL:url];
