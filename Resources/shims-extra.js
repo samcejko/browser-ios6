@@ -12753,6 +12753,33 @@
         watchInsert(ElementP, 'after');
         watchInsert(ElementP, 'replaceWith');
     })();
+    // ---- input.showPicker() (the old engine opens its pickers on focus, a file chooser on click), Response.json(),
+    // setHTMLUnsafe() / getHTML() (no declarative shadow roots here: plain markup)
+    (function () {
+        var IP = window.HTMLInputElement && window.HTMLInputElement.prototype;
+        if (IP && !IP.showPicker) IP.showPicker = function () {
+            if (this.disabled || this.readOnly) throw domException('InvalidStateError', "Failed to execute 'showPicker' on 'HTMLInputElement': HTMLInputElement::showPicker() cannot be used on immutable controls.");
+            try { this.focus(); if (String(this.type).toLowerCase() === 'file') this.click(); } catch (e) {}
+        };
+        var SP = window.HTMLSelectElement && window.HTMLSelectElement.prototype;
+        if (SP && !SP.showPicker) SP.showPicker = function () { try { this.focus(); } catch (e) {} };
+        var R = window.Response;
+        if (R && !R.json && window.Headers) R.json = function (data, init) {
+            var body = JSON.stringify(data);
+            if (body === undefined) throw new TypeError("Failed to execute 'json' on 'Response': The data is not JSON serializable");
+            init = init || {};
+            var headers = new window.Headers(init.headers || {});
+            if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+            return new R(body, { status: init.status === undefined ? 200 : init.status, statusText: init.statusText || '', headers: headers });
+        };
+        var owners = [window.Element && window.Element.prototype, window.ShadowRoot && window.ShadowRoot.prototype];
+        for (var i = 0; i < owners.length; i++) {
+            var O = owners[i];
+            if (!O) continue;
+            if (!O.setHTMLUnsafe) O.setHTMLUnsafe = function (html) { this.innerHTML = html; };
+            if (!O.getHTML) O.getHTML = function () { return this.innerHTML; };
+        }
+    })();
     // ---- WebSockets through the app's network layer: WebCore opens wss:// with the system's TLS, which knows neither
     // today's ciphers nor today's root certificates (Let's Encrypt), so most secure sockets never opened. A wss://
     // socket asks the app for a local ws:// address (BRMediaProxy), which opens the real one with the app's own TLS and

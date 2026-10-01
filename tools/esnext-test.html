@@ -17,6 +17,8 @@ window.__native = { fromAsync: Array.fromAsync, fromBase64: U8.fromBase64, fromH
 delete Array.fromAsync; delete U8.fromBase64; delete U8.fromHex; delete UP.toBase64; delete UP.toHex; delete UP.setFromBase64; delete UP.setFromHex;
 delete Error.isError;
 if (window.Iterator) delete Iterator.concat;
+delete HTMLInputElement.prototype.showPicker; delete HTMLSelectElement.prototype.showPicker; delete Response.json;
+delete Element.prototype.setHTMLUnsafe; delete Element.prototype.getHTML; delete ShadowRoot.prototype.setHTMLUnsafe; delete ShadowRoot.prototype.getHTML;
 // (the shims' AbortController, as on the old engine)
 window.__nativeAbort = { AC: window.AbortController, AS: window.AbortSignal };
 delete window.AbortController; delete window.AbortSignal;
@@ -143,6 +145,19 @@ delete window.AbortController; delete window.AbortSignal;
     start();
     var ts = AbortSignal.timeout(10);
     setTimeout(function () { check('AbortSignal.timeout', ts.aborted && ts.reason && ts.reason.name === 'TimeoutError', ts.reason && ts.reason.name); end(); }, 80);
+
+    // showPicker, Response.json, setHTMLUnsafe / getHTML
+    check('showPicker', typeof HTMLInputElement.prototype.showPicker === 'function' && typeof HTMLSelectElement.prototype.showPicker === 'function' &&
+        (function () { var i = document.createElement('input'); i.disabled = true; try { i.showPicker(); return false; } catch (e) { return e.name === 'InvalidStateError'; } })());
+    var div = document.createElement('div');
+    div.setHTMLUnsafe('<b>x</b>');
+    check('setHTMLUnsafe / getHTML', div.getHTML() === '<b>x</b>' && typeof ShadowRoot.prototype.getHTML === 'function');
+    start();
+    var rj = Response.json({ a: 1 }, { status: 201, headers: { 'X-A': 'b' } });
+    rj.json().then(function (j) {
+        check('Response.json', j.a === 1 && rj.status === 201 && rj.headers.get('content-type') === 'application/json' && rj.headers.get('x-a') === 'b', rj.status + ' ' + rj.headers.get('content-type'));
+        end();
+    }, function (e) { check('Response.json', false, String(e)); end(); });
 
     // WebSocket: the wrapper (the app's local proxy is not there on the desktop, so sockets stay the browser's own)
     var wsOk = false, wsInfo = '';
