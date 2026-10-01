@@ -12756,9 +12756,11 @@
     // ---- WebSockets through the app's network layer: WebCore opens wss:// with the system's TLS, which knows neither
     // today's ciphers nor today's root certificates (Let's Encrypt), so most secure sockets never opened. A wss://
     // socket asks the app for a local ws:// address (BRMediaProxy), which opens the real one with the app's own TLS and
-    // passes the frames through. Relative and http(s) URLs are taken too, as today's browsers take them.
-    (function () {
-        var Native = window.WebSocket;
+    // passes the frames through; should that socket fail before it opens, the engine's own is tried as before. The page
+    // gets a socket object of the shims (the real URL, its events re-sent). Relative and http(s) URLs are taken too, as
+    // today's browsers take them. (The same in worker-shims.js.)
+    (function (G) {
+        var Native = G.WebSocket;
         if (!Native || (typeof Native !== 'function' && typeof Native !== 'object') || Native.__brLocal || !Native.prototype) return;
         var resolve = function (u) {
             var s = String(u);
@@ -12769,6 +12771,7 @@
         };
         var local = function (target) {
             if (!/^wss:/i.test(target)) return null;
+            if (G.__brTestWsProxy) return G.__brTestWsProxy(target);   // (tools/esnext-test.html)
             try {
                 var x = new XMLHttpRequest();
                 x.open('GET', 'https://ios6-browser.invalid/wsproxy?u=' + encodeURIComponent(target), false);
@@ -12776,16 +12779,80 @@
                 return x.status === 200 ? JSON.parse(x.responseText).url : null;
             } catch (e) { return null; }
         };
+        var noop = function () {};
+        var make = function (url, protocols) { return protocols === undefined ? new Native(url) : new Native(url, protocols); };
+        var fire = function (self, type, props) {
+            var e = { type: type, target: self, currentTarget: self, srcElement: self, bubbles: false, cancelable: false, defaultPrevented: false,
+                eventPhase: 2, isTrusted: true, timeStamp: Date.now(), preventDefault: noop, stopPropagation: noop, stopImmediatePropagation: noop };
+            for (var k in props) e[k] = props[k];
+            var h = self['on' + type], list = (self.__l[type] || []).slice();
+            if (typeof h === 'function') try { h.call(self, e); } catch (err) { setTimeout(function () { throw err; }, 0); }
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].once) self.removeEventListener(type, list[i].f);
+                try { if (typeof list[i].f === 'function') list[i].f.call(self, e); else list[i].f.handleEvent(e); } catch (err2) { (function (x) { setTimeout(function () { throw x; }, 0); })(err2); }
+            }
+        };
         function WebSocket(url, protocols) {
-            var target = resolve(url), via = local(target) || target;
-            return protocols === undefined ? new Native(via) : new Native(via, protocols);
+            if (!(this instanceof WebSocket)) throw new TypeError("Failed to construct 'WebSocket': Please use the 'new' operator");
+            var self = this, target = resolve(url), via = local(target), origin = target.replace(/^(wss?:\/\/[^\/?#]+).*$/i, '$1');
+            self.url = target; self.readyState = 0; self.protocol = ''; self.extensions = '';
+            self.onopen = self.onmessage = self.onerror = self.onclose = null;
+            self.__l = {}; self.__type = 'blob'; self.__byPage = false;
+            var attach = function (ws, proxied) {
+                var opened = false;
+                try { ws.binaryType = self.__type; } catch (e) {}
+                ws.onopen = function () { opened = true; self.readyState = 1; self.protocol = ws.protocol || ''; self.extensions = ws.extensions || ''; fire(self, 'open', {}); };
+                ws.onmessage = function (e) { fire(self, 'message', { data: e.data, origin: origin, lastEventId: '', ports: [] }); };
+                ws.onerror = function () { if (!(proxied && !opened)) fire(self, 'error', {}); };
+                ws.onclose = function (e) {
+                    if (proxied && !opened && !self.__byPage) {
+                        try { self.__ws = attach(make(target, protocols), false); return; } catch (e2) {}
+                        fire(self, 'error', {});
+                    }
+                    self.readyState = 3;
+                    fire(self, 'close', { code: e.code, reason: e.reason || '', wasClean: !!e.wasClean });
+                };
+                return ws;
+            };
+            self.__ws = attach(make(via || target, protocols), !!via);
         }
-        WebSocket.prototype = Native.prototype;
-        WebSocket.CONNECTING = 0; WebSocket.OPEN = 1; WebSocket.CLOSING = 2; WebSocket.CLOSED = 3;
+        // (not below the engine's prototype: its url, readyState... can be getters there, which our own fields cannot pass)
+        var WP = WebSocket.prototype = Object.create(G.EventTarget && G.EventTarget.prototype || Object.prototype);
+        WP.constructor = WebSocket;
+        WP.send = function (data) {
+            if (this.readyState === 0) throw domException('InvalidStateError', "Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.");
+            return this.__ws.send(data);
+        };
+        WP.close = function (code, reason) {
+            this.__byPage = true;
+            if (this.readyState < 2) this.readyState = 2;
+            return code === undefined ? this.__ws.close() : reason === undefined ? this.__ws.close(code) : this.__ws.close(code, reason);
+        };
+        WP.addEventListener = function (type, f, opts) {
+            if (!f) return;
+            var list = this.__l[type] || (this.__l[type] = []);
+            for (var i = 0; i < list.length; i++) if (list[i].f === f) return;
+            list.push({ f: f, once: !!(opts && typeof opts === 'object' && opts.once) });
+        };
+        WP.removeEventListener = function (type, f) {
+            var list = this.__l[type] || [];
+            for (var i = 0; i < list.length; i++) if (list[i].f === f) { list.splice(i, 1); return; }
+        };
+        WP.dispatchEvent = function (e) { fire(this, e.type, e); return true; };
+        try {
+            Object.defineProperty(WP, 'bufferedAmount', { configurable: true, get: function () { return this.__ws ? this.__ws.bufferedAmount : 0; } });
+            Object.defineProperty(WP, 'binaryType', { configurable: true, get: function () { return this.__type; },
+                set: function (v) { if (v === 'blob' || v === 'arraybuffer') { this.__type = v; try { this.__ws.binaryType = v; } catch (e) {} } } });
+        } catch (eP) {}
+        var states = { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
+        // (own properties: the engine's prototype below has them read-only, and assigning one in strict code throws)
+        for (var s in states) {
+            WebSocket[s] = states[s];
+            try { Object.defineProperty(WP, s, { value: states[s], enumerable: true, configurable: true }); } catch (eS) {}
+        }
         WebSocket.__brLocal = true;
-        try { Native.prototype.constructor = WebSocket; } catch (e) {}
-        try { window.WebSocket = WebSocket; } catch (e2) {}
-    })();
+        try { G.WebSocket = WebSocket; } catch (e2) {}
+    })(window);
     // ---- Library additions of ES2024-2026 that core-js 3.41 still counts among its proposals (the bundle leaves those
     // out, see build.yml): Array.fromAsync (Baseline 2024: bundles call it as it is), Uint8Array base64/hex,
     // Error.isError, Iterator.concat, and Symbol.dispose / Symbol.asyncDispose for TypeScript's lowered `using`
