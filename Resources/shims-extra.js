@@ -11791,7 +11791,13 @@
     // ---- CSS Typed OM (css-typed-om-1): a working subset. Values parse into CSSUnitValue / CSSKeywordValue /
     // CSSMathSum ... / CSSTransformValue / CSSRGB / CSSImageValue / CSSUnparsedValue, computedStyleMap() and
     // attributeStyleMap wrap the style declarations, and CSS.px() & co. make unit values.
-    if (!window.CSSStyleValue || !window.CSSStyleValue.parse) try { (function () {
+    // Set up on first use (a page touches it through CSS.px() & co., an element's computedStyleMap / attributeStyleMap
+    // or one of the main interface objects): compiling and running the setup took 8-11 ms of every page.
+    var typedOMSetup = null;
+    var TYPED_OM_UNITS = ['number', 'percent', 'em', 'ex', 'ch', 'ic', 'rem', 'lh', 'rlh', 'vw', 'vh', 'vi', 'vb', 'vmin', 'vmax', 'svw', 'svh', 'svi', 'svb', 'svmin',
+        'svmax', 'lvw', 'lvh', 'lvi', 'lvb', 'lvmin', 'lvmax', 'dvw', 'dvh', 'dvi', 'dvb', 'dvmin', 'dvmax', 'cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax', 'cm', 'mm',
+        'Q', 'in', 'pt', 'pc', 'px', 'deg', 'grad', 'rad', 'turn', 's', 'ms', 'Hz', 'kHz', 'dpi', 'dpcm', 'dppx', 'fr', 'cap', 'rcap', 'rex', 'rch', 'ric'];
+    if (!window.CSSStyleValue || !window.CSSStyleValue.parse) typedOMSetup = function () { try { (function () {
         // instances inherit through the prototypes, the interface objects themselves as WebIDL (and class extends) have it
         var extend = function (Child, Parent) { Child.prototype = Object.create(Parent.prototype); Child.prototype.constructor = Child; try { Child.__proto__ = Parent; } catch (e) {} return Child; };
         var UNIT_SUFFIX = { number: '', percent: '%' };
@@ -12083,7 +12089,7 @@
             Ep.computedStyleMap = function () { return new StylePropertyMapReadOnly(window.getComputedStyle(this), true); };
             try { Object.defineProperty(Ep, 'attributeStyleMap', { get: function () { if (!this.__brStyleMap) this.__brStyleMap = new StylePropertyMap(this.style); return this.__brStyleMap; }, configurable: true }); } catch (e) {}
         }
-        var units = ['number', 'percent', 'em', 'ex', 'ch', 'ic', 'rem', 'lh', 'rlh', 'vw', 'vh', 'vi', 'vb', 'vmin', 'vmax', 'svw', 'svh', 'svi', 'svb', 'svmin', 'svmax', 'lvw', 'lvh', 'lvi', 'lvb', 'lvmin', 'lvmax', 'dvw', 'dvh', 'dvi', 'dvb', 'dvmin', 'dvmax', 'cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax', 'cm', 'mm', 'Q', 'in', 'pt', 'pc', 'px', 'deg', 'grad', 'rad', 'turn', 's', 'ms', 'Hz', 'kHz', 'dpi', 'dpcm', 'dppx', 'fr', 'cap', 'rcap', 'rex', 'rch', 'ric'];
+        var units = TYPED_OM_UNITS;
         for (var ui = 0; ui < units.length; ui++) (function (u) { window.CSS[u] = function (v) { return new CSSUnitValue(v, u); }; })(units[ui]);
         var expose = { CSSStyleValue: CSSStyleValue, CSSKeywordValue: CSSKeywordValue, CSSUnparsedValue: CSSUnparsedValue, CSSVariableReferenceValue: CSSVariableReferenceValue, CSSNumericValue: CSSNumericValue, CSSUnitValue: CSSUnitValue,
             CSSMathValue: CSSMathValue, CSSMathSum: CSSMathSum, CSSMathProduct: CSSMathProduct, CSSMathNegate: CSSMathNegate, CSSMathInvert: CSSMathInvert, CSSMathMin: CSSMathMin, CSSMathMax: CSSMathMax, CSSMathClamp: CSSMathClamp,
@@ -12091,7 +12097,39 @@
             CSSSkewY: CSSSkewY, CSSPerspective: CSSPerspective, CSSMatrixComponent: CSSMatrixComponent, CSSImageValue: CSSImageValue, CSSColorValue: CSSColorValue, CSSRGB: CSSRGB, CSSHSL: CSSHSL, CSSHWB: CSSHWB, CSSLab: CSSLab, CSSLCH: CSSLCH,
             CSSOKLab: CSSOKLab, CSSOKLCH: CSSOKLCH, CSSColor: CSSColor, StylePropertyMapReadOnly: StylePropertyMapReadOnly, StylePropertyMap: StylePropertyMap };
         for (var ek in expose) if (expose.hasOwnProperty(ek)) window[ek] = expose[ek];
-    })(); } catch (eTypedOM) {}
+    })(); } catch (eTypedOM) {} };
+    // (the stand-ins call the real thing once the setup put it in place; nothing when the setup failed)
+    if (typedOMSetup) (function () {
+        var LAZY = ['CSSStyleValue', 'CSSUnitValue', 'CSSNumericValue', 'CSSKeywordValue', 'CSSUnparsedValue', 'CSSTransformValue', 'CSSMathSum',
+                    'StylePropertyMap', 'StylePropertyMapReadOnly'];
+        var ensure = function () {
+            var setup = typedOMSetup;
+            if (!setup) return;
+            typedOMSetup = null;
+            for (var i = 0; i < LAZY.length; i++) try { delete window[LAZY[i]]; } catch (e) {}
+            setup();
+        };
+        for (var i = 0; i < LAZY.length; i++) (function (name) {
+            try {
+                Object.defineProperty(window, name, { get: function () { ensure(); return window[name]; }, set: function (v) { ensure(); window[name] = v; },
+                                                      configurable: true, enumerable: false });
+            } catch (e) {}
+        })(LAZY[i]);
+        if (Ep) {
+            var lazyMap = function () { ensure(); return Ep.computedStyleMap !== lazyMap ? Ep.computedStyleMap.call(this) : undefined; };
+            Ep.computedStyleMap = lazyMap;
+            var lazyAttrMap = function () {
+                ensure();
+                var d = Object.getOwnPropertyDescriptor(Ep, 'attributeStyleMap');
+                return d && d.get && d.get !== lazyAttrMap ? d.get.call(this) : undefined;
+            };
+            try { Object.defineProperty(Ep, 'attributeStyleMap', { get: lazyAttrMap, configurable: true }); } catch (e2) {}
+        }
+        if (window.CSS) for (var u = 0; u < TYPED_OM_UNITS.length; u++) (function (unit) {
+            var lazyUnit = function (v) { ensure(); var f = window.CSS[unit]; return f !== lazyUnit ? f(v) : undefined; };
+            window.CSS[unit] = lazyUnit;
+        })(TYPED_OM_UNITS[u]);
+    })();
 
     // ---- CSSOM rule classes with their members, view extras, event handler attributes, view transitions
     try {

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>typedom test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script>
+// the old engine has no CSS Typed OM: the desktop one goes before the shims load
+window.CSSStyleValue = undefined;
+</script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>CSS Typed OM, set up on first use</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<div id="box" style="width: 50px; display: block"></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+var box = document.getElementById('box');
+show('feature test sees it before the setup', 'CSSUnitValue' in window && typeof CSS.px === 'function' && 'attributeStyleMap' in box);
+var px = CSS.px(5);
+show('CSS.px() makes a unit value', String(px) === '5px' && px.value === 5 && px.unit === 'px', String(px));
+show('the value is a CSSUnitValue', px instanceof CSSUnitValue && px instanceof CSSNumericValue && px instanceof CSSStyleValue);
+show('CSS.px is the real one now', CSS.px(2).add(CSS.px(3)).toString() === '5px', CSS.px(2).add(CSS.px(3)).toString());
+box.attributeStyleMap.set('width', CSS.px(80));
+show('attributeStyleMap.set', box.style.width === '80px', box.style.width);
+var d = box.computedStyleMap().get('display');
+show('computedStyleMap().get', d && d.value === 'block', d && d.value);
+show('CSSStyleValue.parse', CSSStyleValue.parse('width', 'calc(100% - 20px)') instanceof CSSMathSum, String(CSSStyleValue.parse('width', 'calc(100% - 20px)')));
+show('the other interfaces are there', typeof CSSRGB === 'function' && typeof CSSTranslate === 'function' && typeof StylePropertyMap === 'function');
+document.getElementById('summary').textContent = pass + ' / ' + total;
+document.title = 'typedom ' + pass + '/' + total;
+window.__typedResults = results;
+</script>
+</body>
+</html>
