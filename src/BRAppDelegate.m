@@ -160,6 +160,20 @@
         }
         return YES;
     }
+    if ([target hasPrefix:@"ua?"]) {
+        // browser:ua?host=m.youtube.com&mode=2  (a site's identity, as the "request desktop/mobile version" buttons set it;
+        // mode -1 removes it)
+        NSString *host = nil, *mode = nil;
+        for (NSString *pair in [[target substringFromIndex:3] componentsSeparatedByString:@"&"]) {
+            if ([pair hasPrefix:@"host="]) host = [pair substringFromIndex:5];
+            else if ([pair hasPrefix:@"mode="]) mode = [pair substringFromIndex:5];
+        }
+        if (host.length && mode.length) {
+            [BRSettings setUserAgentMode:[mode integerValue] forHost:host];
+            BRLog(@"Identity of %@ set to mode %@", host, mode);
+        }
+        return YES;
+    }
     if ([target isEqualToString:@"dump"]) {
         // browser:dump writes the current DOM to tmp/dump.html
         NSString *html = [self.browserViewController evaluateJavaScript:@"document.documentElement.outerHTML"];

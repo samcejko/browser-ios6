@@ -29,7 +29,7 @@ typedef void (^BRHTTPCompleteBlock)(NSError *error);
 @property (nonatomic, readonly) NSArray *responseHeaderPairs;     // @[@[name, value], ...] in wire order, original case
 @property (nonatomic, readonly) NSArray *setCookieHeaders;        // every Set-Cookie value separately
 @property (nonatomic, readonly) NSData *responseBody;             // only when onData is nil
-@property (nonatomic, readonly) BOOL decodedContentEncoding;      // YES when gzip/deflate was removed by this client
+@property (nonatomic, readonly) BOOL decodedContentEncoding;      // YES when gzip/deflate/br was removed by this client
 @property (nonatomic, readonly) NSString *tlsInfo;                // "TLSv1.2 TLS-ECDHE-..." once connected
 @property (nonatomic, readonly) BOOL isCancelled;
 @property (nonatomic, readonly) BOOL isFinished;

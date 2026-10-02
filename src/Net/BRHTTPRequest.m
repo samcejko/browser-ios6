@@ -5,6 +5,7 @@
 #import "BRCommon.h"
 
 #include <zlib.h>
+#include <brotli/decode.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -63,6 +64,8 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 @end
 
 @implementation BRHTTPRequest {
+    BrotliDecoderState *_br;  // Content-Encoding: br (https only; 15-25 % less than gzip on the wire)
+    BOOL _bremoved;           // the brotli stream has ended
     z_stream _zstream;
     BOOL _zinit;
     BOOL _zactive;
@@ -89,6 +92,7 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 - (void)dealloc
 {
     if (_zinit) inflateEnd(&_zstream);
+    if (_br) BrotliDecoderDestroyInstance(_br);
     free(_zout);
 }
 
@@ -192,7 +196,7 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     if (![given containsObject:@"accept"]) [s appendString:@"Accept: */*\r\n"];
     if (![given containsObject:@"accept-language"]) [s appendFormat:@"Accept-Language: %@\r\n", [BRHTTPRequest acceptLanguage]];
     if ([BRSettings doNotTrack] && ![given containsObject:@"dnt"]) [s appendString:@"DNT: 1\r\nSec-GPC: 1\r\n"];
-    [s appendString:@"Accept-Encoding: gzip, deflate\r\n"];
+    [s appendString:[self isSecure] ? @"Accept-Encoding: gzip, deflate, br\r\n" : @"Accept-Encoding: gzip, deflate\r\n"];
     [s appendString:@"Connection: keep-alive\r\n"];
     if (self.body || [self.method isEqualToString:@"POST"] || [self.method isEqualToString:@"PUT"] || [self.method isEqualToString:@"PATCH"]) {
         [s appendFormat:@"Content-Length: %lu\r\n", (unsigned long)self.body.length];
@@ -265,6 +269,33 @@ static dispatch_semaphore_t BRConnectionSlots(void)
 {
     if (!length) return YES;
     self.bodyReceived += length;
+    if (_br) {
+        const uint8_t *nextIn = (const uint8_t *)bytes;
+        size_t availIn = length;
+        for (;;) {
+            uint8_t *nextOut = _zout;
+            size_t availOut = BRInflateBufferSize;
+            BrotliDecoderResult r = BrotliDecoderDecompressStream(_br, &availIn, &nextIn, &availOut, &nextOut, NULL);
+            NSUInteger produced = BRInflateBufferSize - availOut;
+            if (produced) {
+                _zproduced += produced;
+                [self deliverDecodedBytes:_zout length:produced];
+            }
+            if (r == BROTLI_DECODER_RESULT_ERROR) {
+                BRLog(@"brotli failed (%s) for %@", BrotliDecoderErrorString(BrotliDecoderGetErrorCode(_br)), self.url);
+                return NO;
+            }
+            if (r == BROTLI_DECODER_RESULT_SUCCESS) {   // (anything after the end of the stream is ignored)
+                BrotliDecoderDestroyInstance(_br);
+                _br = NULL;
+                _bremoved = YES;
+                break;
+            }
+            if (r == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) break;
+        }
+        return YES;
+    }
+    if (_bremoved) return YES;
     if (!_zactive) {
         [self deliverDecodedBytes:bytes length:length];
         return YES;
@@ -434,6 +465,10 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     NSString *ce = [[headers[@"content-encoding"] lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (!self.noBody && ([ce isEqualToString:@"gzip"] || [ce isEqualToString:@"x-gzip"] || [ce isEqualToString:@"deflate"])) {
         if ([self setupInflate]) self.decodedContentEncoding = YES;
+    } else if (!self.noBody && [ce isEqualToString:@"br"]) {
+        if (!_zout) _zout = (uint8_t *)malloc(BRInflateBufferSize);
+        _br = _zout ? BrotliDecoderCreateInstance(NULL, NULL, NULL) : NULL;
+        if (_br) self.decodedContentEncoding = YES;
     }
     return 1;
 }
@@ -456,6 +491,8 @@ static dispatch_semaphore_t BRConnectionSlots(void)
     self.decodedContentEncoding = NO;
     if (_zinit) { inflateEnd(&_zstream); _zinit = NO; }
     _zactive = NO;
+    if (_br) { BrotliDecoderDestroyInstance(_br); _br = NULL; }
+    _bremoved = NO;
 }
 
 #pragma mark - Worker

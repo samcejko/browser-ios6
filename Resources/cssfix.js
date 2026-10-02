@@ -119,6 +119,30 @@ var CSSFix = (function () {
     }
 
     // split by whitespace at depth 0
+    // A shadow's blur is the costliest thing this engine draws (WebCore::boxBlur took 7.6 % of the WebThread on
+    // m.youtube.com, growing with the radius and the box): past BLUR_CAP px it is drawn as BLUR_CAP, a soft shadow
+    // turning a little firmer
+    var BLUR_CAP = 8;
+    function capBlur(len) {
+        var m = /^([\d.]+)(px|em|rem)?$/.exec(len);
+        if (!m) return len;
+        var px = parseFloat(m[1]) * (m[2] === 'em' || m[2] === 'rem' ? 16 : 1);
+        return px > BLUR_CAP ? BLUR_CAP + 'px' : len;
+    }
+    // (the third length of each shadow of a box-shadow list; values with var() stay as they are)
+    function capShadowBlurs(v) {
+        if (v.indexOf('var(') >= 0 || v.indexOf('(') < 0 && !/\d/.test(v)) return v;
+        var shadows = splitTop(v, ','), changed = false;
+        for (var i = 0; i < shadows.length; i++) {
+            var toks = splitWS(trim(shadows[i])), n = 0;
+            for (var j = 0; j < toks.length; j++) {
+                if (!/^-?[\d.]+(px|em|rem|pt|%|vw|vh)?$/.test(toks[j])) continue;
+                if (++n === 3) { var c = capBlur(toks[j]); if (c !== toks[j]) { toks[j] = c; changed = true; } }
+            }
+            shadows[i] = toks.join(' ');
+        }
+        return changed ? shadows.join(', ') : v;
+    }
     function splitWS(s) {
         var parts = [], i = 0, n = s.length, start = -1, depth = 0;
         while (i < n) {
@@ -3382,19 +3406,21 @@ var CSSFix = (function () {
                     pushDecorationColor(out, v, imp);
                     push(out, p, v, imp);
                     continue;
-                case 'text-shadow': case 'box-shadow': {
-                    // a fourth length (spread) in text-shadow is CSS Text Decoration 4: the old parser rejects the whole value
+                case 'text-shadow': case 'box-shadow': case '-webkit-box-shadow': {
+                    // a fourth length (spread) in text-shadow is CSS Text Decoration 4: the old parser rejects the whole value;
+                    // and a blur past BLUR_CAP px is drawn as BLUR_CAP (see capBlur)
                     if (p === 'text-shadow') {
                         var shadows = splitTop(v, ','), fixedShadows = [];
                         for (var shi = 0; shi < shadows.length; shi++) {
                             var stoks = splitWS(trim(shadows[shi])), lens = [], others = [];
                             for (var sti = 0; sti < stoks.length; sti++) { if (/^-?[\d.]+(px|em|rem|pt|%|vw|vh)?$/.test(stoks[sti]) && lens.length < 3) lens.push(stoks[sti]); else if (/^-?[\d.]+(px|em|rem|pt|%|vw|vh)?$/.test(stoks[sti])) { /* spread dropped */ } else others.push(stoks[sti]); }
+                            if (lens.length === 3) lens[2] = capBlur(lens[2]);
                             fixedShadows.push(lens.concat(others).join(' '));
                         }
                         push(out, p, fixedShadows.join(', '), imp);
                         continue;
                     }
-                    push(out, p, v, imp);
+                    push(out, p, capShadowBlurs(v), imp);
                     continue;
                 }
                 case 'list-style-type': {
