@@ -24,6 +24,37 @@
         }
         return { text: text, longParas: longParas };
     }
+    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function words(s) { var m = String(s).match(/\S+/g); return m ? m.length : 0; }
+    // the article as the page describes it for search engines (JSON-LD articleBody): plain text, paragraphs by line
+    function structuredArticle() {
+        var scripts = doc.querySelectorAll('script[type="application/ld+json"]'), found = null;
+        var visit = function (o, depth) {
+            if (!o || typeof o !== 'object' || depth > 4 || found) return;
+            if (o instanceof Array) { for (var k = 0; k < o.length; k++) visit(o[k], depth + 1); return; }
+            var type = String(o['@type'] || '');
+            if (/Article|BlogPosting|Report|NewsArticle/.test(type) && typeof o.articleBody === 'string' && o.articleBody.length > 500) { found = o; return; }
+            if (o['@graph']) visit(o['@graph'], depth + 1);
+            if (o.mainEntity) visit(o.mainEntity, depth + 1);
+        };
+        for (var s = 0; s < scripts.length && !found; s++) {
+            try { visit(JSON.parse(scripts[s].textContent || ''), 0); } catch (e) {}
+        }
+        if (!found) return null;
+        var paras = found.articleBody.replace(/\r/g, '').split(/\n+/), out = '';
+        for (var q = 0; q < paras.length; q++) { var t = paras[q].replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''); if (t) out += '<p>' + esc(t) + '</p>'; }
+        var author = found.author, name = '';
+        if (author instanceof Array) author = author[0];
+        if (author) name = typeof author === 'string' ? author : (author.name || '');
+        return { title: String(found.headline || found.name || ''), byline: String(name), html: out, text: found.articleBody };
+    }
+    var structured = null;
+    try { structured = structuredArticle(); } catch (eS) { structured = null; }
+    var fromStructured = function () {
+        if (!structured) return '';
+        return JSON.stringify({ title: (structured.title || doc.title || '').replace(/\s+/g, ' ').slice(0, 300), byline: structured.byline.slice(0, 120),
+                                html: structured.html, url: location.href, minutes: Math.max(1, Math.round(words(structured.text) / 200)) });
+    };
     var candidates = [], all = doc.body ? doc.body.getElementsByTagName('*') : [];
     for (var i = 0; i < all.length; i++) {
         var el = all[i], tag = el.tagName;
@@ -37,7 +68,7 @@
         if (tag === 'ARTICLE' || tag === 'MAIN') score *= 1.5;
         candidates.push({ el: el, score: score, text: pt.text });
     }
-    if (!candidates.length) return '';
+    if (!candidates.length) return fromStructured();
     candidates.sort(function (a, b) { return b.score - a.score; });
     var best = candidates[0].el;
     // descend while one child still holds nearly all of the paragraph text (drops page wrappers)
@@ -108,7 +139,10 @@
     }
     var bylineEl = doc.querySelector('[rel="author"], .author, .byline, [itemprop="author"], meta[name="author"]');
     var byline = bylineEl ? (bylineEl.content || bylineEl.textContent || '').replace(/\s+/g, ' ').slice(0, 120) : '';
-    var html = clone.innerHTML;
-    if (html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').length < 300) return '';
-    return JSON.stringify({ title: (title || doc.title || '').replace(/\s+/g, ' ').slice(0, 300), byline: byline, html: html, url: location.href });
+    var html = clone.innerHTML, text = clone.textContent || '';
+    // (what the page found is short next to the article it describes: the described one, which is whole)
+    if (structured && words(text) < words(structured.text) * 0.6) return fromStructured();
+    if (html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').length < 300) return fromStructured();
+    return JSON.stringify({ title: (title || doc.title || '').replace(/\s+/g, ' ').slice(0, 300), byline: byline, html: html, url: location.href,
+                            minutes: Math.max(1, Math.round(words(text) / 200)) });
 })()

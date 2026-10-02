@@ -20,7 +20,7 @@
 "New tab" = "Nový panel";
 "Close all" = "Zavřít vše";
 "Close all %lu tabs" = "Zavřít všech %lu panelů";
-"Recently closed" = "Nedávno zavřené";
+"%ld min read" = "%ld min čtení";
 "Appearance" = "Vzhled";
 "Dark theme" = "Tmavý vzhled";
 "Pages" = "Stránky";

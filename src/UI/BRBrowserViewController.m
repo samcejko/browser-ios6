@@ -2305,26 +2305,43 @@ static void BRWebThreadLock(void)
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"No article was found on this page.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
         return;
     }
-    BOOL dark = [BRTheme shared].isDark;
+    // the reader's own settings (the bar at its top: smaller / bigger type, serif / sans, sepia / white / dark), kept by
+    // the app through brreader: addresses
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSInteger size = [d integerForKey:@"BRReaderSize"] ?: 19;
+    BOOL sans = [d boolForKey:@"BRReaderSans"];
+    NSInteger theme = [d objectForKey:@"BRReaderTheme"] ? [d integerForKey:@"BRReaderTheme"] : ([BRTheme shared].isDark ? 2 : 0);
     NSURL *pageURL = [NSURL URLWithString:[article[@"url"] isKindOfClass:[NSString class]] ? article[@"url"] : @""] ?: self.currentURL;
+    NSInteger minutes = [article[@"minutes"] integerValue];
     NSMutableString *html = [NSMutableString string];
     [html appendString:@"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"];
     [html appendFormat:@"<title>%@</title>", BRHTMLEscape(article[@"title"] ?: @"")];
-    [html appendFormat:@"<style>body{font-family:Georgia,'Times New Roman',serif;font-size:19px;line-height:1.55;margin:0;padding:24px 20px 60px;background:%@;color:%@;-webkit-text-size-adjust:100%%}"
-                        ".wrap{max-width:680px;margin:0 auto}h1{font-family:'Helvetica Neue',Helvetica,sans-serif;font-size:30px;line-height:1.2;margin:0 0 8px}"
-                        ".meta{font-family:'Helvetica Neue',Helvetica,sans-serif;font-size:13px;color:#888;margin-bottom:24px}.meta a{color:#888}"
-                        "img{max-width:100%%;height:auto;display:block;margin:16px auto}figure{margin:16px 0}figcaption,small{font-size:14px;color:#888}"
-                        "p{margin:0 0 1em}h2,h3,h4{font-family:'Helvetica Neue',Helvetica,sans-serif;line-height:1.25;margin:1.4em 0 0.5em}a{color:%@}"
-                        "blockquote{margin:1em 0;padding-left:16px;border-left:3px solid #ccc;color:#666}pre,code{font-family:Menlo,Courier,monospace;font-size:14px;white-space:pre-wrap}"
-                        "table{border-collapse:collapse;font-size:15px}td,th{border:1px solid #ccc;padding:4px 8px}ul,ol{padding-left:24px}</style></head><body><div class=\"wrap\">",
-                        dark ? @"#1c1c1e" : @"#fbf8f2", dark ? @"#e6e6e6" : @"#222", dark ? @"#8ab4f8" : @"#1a5db0"];
+    [html appendString:@"<style>body{font-family:Georgia,'Times New Roman',serif;line-height:1.55;margin:0;padding:12px 20px 60px;-webkit-text-size-adjust:100%}"
+                        "body.t0{background:#fbf8f2;color:#222}body.t1{background:#fff;color:#111}body.t2{background:#1c1c1e;color:#e6e6e6}"
+                        "body.t0 a,body.t1 a{color:#1a5db0}body.t2 a{color:#8ab4f8}body.sans{font-family:'Helvetica Neue',Helvetica,sans-serif}"
+                        ".wrap{max-width:680px;margin:0 auto}h1{font-family:'Helvetica Neue',Helvetica,sans-serif;font-size:1.55em;line-height:1.2;margin:0 0 8px}"
+                        ".meta{font-family:'Helvetica Neue',Helvetica,sans-serif;font-size:13px;color:#888;margin-bottom:24px}.meta a{color:#888 !important}"
+                        ".bar{text-align:right;font-family:'Helvetica Neue',Helvetica,sans-serif;margin:0 auto 14px;max-width:680px}"
+                        ".bar a{display:inline-block;min-width:38px;padding:6px 8px;margin-left:6px;border:1px solid #999;border-radius:8px;text-align:center;font-size:16px;text-decoration:none;color:#888 !important}"
+                        "img{max-width:100%;height:auto;display:block;margin:16px auto}figure{margin:16px 0}figcaption,small{font-size:0.75em;color:#888}"
+                        "p{margin:0 0 1em}h2,h3,h4{font-family:'Helvetica Neue',Helvetica,sans-serif;line-height:1.25;margin:1.4em 0 0.5em}"
+                        "blockquote{margin:1em 0;padding-left:16px;border-left:3px solid #ccc;color:#777}pre,code{font-family:Menlo,Courier,monospace;font-size:0.75em;white-space:pre-wrap}"
+                        "table{border-collapse:collapse;font-size:0.8em}td,th{border:1px solid #ccc;padding:4px 8px}ul,ol{padding-left:24px}</style></head>"];
+    [html appendFormat:@"<body class=\"t%ld%@\" style=\"font-size:%ldpx\">", (long)MAX(0, MIN(2, theme)), sans ? @" sans" : @"", (long)MAX(14, MIN(30, size))];
+    [html appendString:@"<div class=\"bar\"><a href=\"#\" onclick=\"return br('size',-1)\">A&minus;</a><a href=\"#\" onclick=\"return br('size',1)\">A+</a>"
+                        "<a href=\"#\" onclick=\"return br('font')\">Aa</a><a href=\"#\" onclick=\"return br('theme')\">&#9681;</a></div><div class=\"wrap\">"];
     [html appendFormat:@"<h1>%@</h1>", BRHTMLEscape(article[@"title"] ?: @"")];
-    [html appendFormat:@"<div class=\"meta\">%@%@<a href=\"%@\">%@</a></div>", BRHTMLEscape(article[@"byline"] ?: @""), [article[@"byline"] length] ? @" · " : @"",
-                        BRHTMLEscape(pageURL.absoluteString ?: @""), BRHTMLEscape(pageURL.host ?: @"")];
+    NSString *readTime = minutes > 0 ? [NSString stringWithFormat:L(@"%ld min read"), (long)minutes] : @"";
+    [html appendFormat:@"<div class=\"meta\">%@%@<a href=\"%@\">%@</a>%@%@</div>", BRHTMLEscape(article[@"byline"] ?: @""), [article[@"byline"] length] ? @" · " : @"",
+                        BRHTMLEscape(pageURL.absoluteString ?: @""), BRHTMLEscape(pageURL.host ?: @""), readTime.length ? @" · " : @"", BRHTMLEscape(readTime)];
     [html appendString:article[@"html"]];
-    // images that fail to load (lazy-loading placeholders, blocked hosts) leave no gaps
-    [html appendString:@"</div><script>(function(){var imgs=document.images;for(var i=0;i<imgs.length;i++){imgs[i].onerror=function(){if(this.parentNode)this.parentNode.removeChild(this);};"
-                        "if(imgs[i].complete&&imgs[i].naturalWidth===0&&imgs[i].parentNode)imgs[i].parentNode.removeChild(imgs[i]);}})();</script></body></html>"];
+    // images that fail to load (lazy-loading placeholders, blocked hosts) leave no gaps; the bar's choices go to the app
+    [html appendFormat:@"</div><script>(function(){var imgs=document.images;for(var i=0;i<imgs.length;i++){imgs[i].onerror=function(){if(this.parentNode)this.parentNode.removeChild(this);};"
+                        "if(imgs[i].complete&&imgs[i].naturalWidth===0&&imgs[i].parentNode)imgs[i].parentNode.removeChild(imgs[i]);}})();"
+                        "var S={size:%ld,sans:%d,theme:%ld};function br(k,d){if(k==='size')S.size=Math.max(14,Math.min(30,S.size+d*2));if(k==='font')S.sans=S.sans?0:1;"
+                        "if(k==='theme')S.theme=(S.theme+1)%%3;document.body.style.fontSize=S.size+'px';document.body.className='t'+S.theme+(S.sans?' sans':'');"
+                        "location.href='brreader:'+S.size+','+S.sans+','+S.theme;return false;}</script></body></html>",
+                        (long)MAX(14, MIN(30, size)), sans ? 1 : 0, (long)MAX(0, MIN(2, theme))];
     self.readerShown = YES;
     [self.webView loadHTMLString:html baseURL:pageURL];
     BRLog(@"Reader: %@ (%lu chars)", article[@"title"], (unsigned long)[article[@"html"] length]);
@@ -2585,6 +2602,17 @@ static void BRWebThreadLock(void)
         NSString *spec = url.absoluteString.length > 7 ? [url.absoluteString substringFromIndex:7] : @"";
         NSString *text = [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec;
         if (text.length) [UIPasteboard generalPasteboard].string = text;
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brreader"]) {
+        // the reader's bar: brreader:<size>,<sans>,<theme>
+        NSArray *v = [(url.resourceSpecifier ?: @"") componentsSeparatedByString:@","];
+        if (v.count == 3) {
+            NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+            [d setInteger:[v[0] integerValue] forKey:@"BRReaderSize"];
+            [d setBool:[v[1] integerValue] != 0 forKey:@"BRReaderSans"];
+            [d setInteger:[v[2] integerValue] forKey:@"BRReaderTheme"];
+        }
         return NO;
     }
     if ([scheme isEqualToString:@"brprint"]) {
