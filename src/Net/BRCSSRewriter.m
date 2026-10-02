@@ -120,7 +120,7 @@ static NSString *BRTranspileTag(void)
 
 // a checksum of both rewriters (jsfix.js and cssfix.js): the HTTP cache keeps bodies as they were rewritten, so a
 // changed rewriter needs a cache of its own (see BRAppDelegate)
-+ (NSString *)rewriterTag
+static NSString *BRRewriterTag(void)
 {
     static NSString *tag;
     static dispatch_once_t once;
@@ -832,6 +832,11 @@ static NSArray *BRManifestKinds(void)
 + (void)cancelPendingWork
 {
     g_workGeneration++;
+}
+
++ (NSString *)rewriterTag
+{
+    return BRRewriterTag();
 }
 
 + (void)runTranspileTest:(NSDictionary *)params
