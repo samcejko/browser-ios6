@@ -12753,6 +12753,76 @@
         watchInsert(ElementP, 'after');
         watchInsert(ElementP, 'replaceWith');
     })();
+    // ---- Saved passwords (kept by the app in the keychain): a login's name and password go to the app when the form is
+    // sent - submit, Enter in the password field, or a click on a button of its form (pages that log in by script) -
+    // and the app offers to keep them; when a password or name field gets the focus on a site with kept logins the app
+    // offers to fill them in (window.__brFillLogin, on the user's tap only)
+    (function () {
+        var isPassword = function (el) { return !!el && el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password'; };
+        var isName = function (el) {
+            if (!el || el.tagName !== 'INPUT') return false;
+            var t = String(el.type || 'text').toLowerCase(), ac = String(el.getAttribute('autocomplete') || '').toLowerCase();
+            return (t === 'text' || t === 'email' || t === 'tel') && (ac.indexOf('username') >= 0 || ac === 'email' || t === 'email' || /user|login|mail|name|jmeno|ucet/i.test((el.name || '') + ' ' + (el.id || '')));
+        };
+        var scope = function (el) { return el.form || document; };
+        // the password field of a form or of the page with something typed in it, and the name field before it
+        var findLogin = function (root) {
+            var inputs = root.getElementsByTagName('input'), pass = null, user = null, i;
+            for (i = 0; i < inputs.length; i++) if (isPassword(inputs[i]) && inputs[i].value) { pass = inputs[i]; break; }
+            if (!pass) return null;
+            for (i = 0; i < inputs.length && inputs[i] !== pass; i++) {
+                var t = String(inputs[i].type || 'text').toLowerCase();
+                if ((t === 'text' || t === 'email' || t === 'tel') && inputs[i].value) user = inputs[i];
+            }
+            return { pass: pass, user: user };
+        };
+        var lastSent = '', lastTime = 0;
+        var offer = function (root) {
+            var login = findLogin(root);
+            if (!login) return;
+            var user = login.user ? login.user.value : '', key = user + '\n' + login.pass.value, now = Date.now();
+            if (key === lastSent && now - lastTime < 10000) return;
+            lastSent = key; lastTime = now;
+            sendToApp('brpw', JSON.stringify({ h: location.host, u: user, p: login.pass.value }));
+        };
+        document.addEventListener('submit', function (e) { if (e.target && e.target.tagName === 'FORM') offer(e.target); }, true);
+        document.addEventListener('keydown', function (e) { if ((e.keyCode === 13) && isPassword(e.target)) offer(scope(e.target)); }, true);
+        document.addEventListener('click', function (e) {
+            for (var el = e.target, n = 0; el && el.nodeType === 1 && n < 4; el = el.parentNode, n++) {
+                var t = el.tagName;
+                if (t === 'BUTTON' || (t === 'INPUT' && /^(submit|button|image)$/i.test(el.type)) || el.getAttribute('role') === 'button') { offer(el.form || document); return; }
+            }
+        }, true);
+        var asked = false;
+        document.addEventListener('focusin', function (e) {
+            if (asked || !(isPassword(e.target) || isName(e.target))) return;
+            asked = true;
+            sendToApp('brpwfocus', location.host);
+        }, true);
+        // (from the app, after the user's tap: the fields get the values and the events a typing user would give)
+        window.__brFillLogin = function (user, pass) {
+            var active = document.activeElement, inputs = document.getElementsByTagName('input'), pw = isPassword(active) ? active : null, i;
+            for (i = 0; !pw && i < inputs.length; i++) if (isPassword(inputs[i]) && inputs[i].offsetWidth > 0) pw = inputs[i];
+            var name = null;
+            for (i = 0; i < inputs.length; i++) {
+                if (inputs[i] === pw) break;
+                var t = String(inputs[i].type || 'text').toLowerCase();
+                if ((t === 'text' || t === 'email' || t === 'tel') && inputs[i].offsetWidth > 0) name = inputs[i];
+            }
+            var set = function (el, v) {
+                if (!el || v === undefined || v === null) return;
+                el.focus();
+                el.value = v;
+                var ev = document.createEvent('Event');
+                ev.initEvent('input', true, true); el.dispatchEvent(ev);
+                ev = document.createEvent('Event');
+                ev.initEvent('change', true, true); el.dispatchEvent(ev);
+            };
+            if (name && user) set(name, user);
+            if (pw) set(pw, pass);
+            return pw ? 'filled' : (name ? 'name' : 'none');
+        };
+    })();
     // ---- CompressionStream / DecompressionStream (gzip, deflate, deflate-raw): inflate after RFC 1951 in the manner of
     // zlib's puff, deflate with LZ77 matches in the fixed Huffman code (smaller, if not as small as zlib's); the bytes
     // are collected and come out when the stream closes

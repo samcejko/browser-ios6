@@ -8,5 +8,9 @@
 	<true/>
 	<key>get-task-allow</key>
 	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>com.samcejko.browser</string>
+	</array>
 </dict>
 </plist>

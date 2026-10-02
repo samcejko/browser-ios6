@@ -144,6 +144,14 @@
 "Rename" = "Přejmenovat";
 "Edit address" = "Upravit adresu";
 "Save" = "Uložit";
+"Save password?" = "Uložit heslo?";
+"Not now" = "Teď ne";
+"Never for this site" = "Nikdy pro tento web";
+"Password saved." = "Heslo bylo uloženo.";
+"(no name)" = "(bez jména)";
+"Fill in login" = "Vyplnit přihlášení";
+"Fill in login: %@" = "Vyplnit přihlášení: %@";
+"Fill in login (%lu accounts)" = "Vyplnit přihlášení (%lu účty)";
 "Source of %@" = "Zdrojový kód – %@";
 "Home page" = "Domovská stránka";
 "Start page" = "Úvodní stránka";

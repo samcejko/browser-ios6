@@ -5,6 +5,7 @@
 #import "BRConnectionPool.h"
 #import "BRJSEngine.h"
 #import "BRURLProtocol.h"
+#import "BRPasswords.h"
 #import "BRCommon.h"
 
 typedef NS_ENUM(NSInteger, BRSettingsSection) {
@@ -355,6 +356,7 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cookies cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     } else {
         [BRURLProtocol forgetCredentials];
+        [BRPasswords deleteAll];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Site passwords forgotten.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     }
     [self.tableView reloadData];

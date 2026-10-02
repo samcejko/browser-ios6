@@ -21,6 +21,7 @@
 #import "BRConnectionPool.h"
 #import "BRCommon.h"
 #import "BRSettings.h"
+#import "BRPasswords.h"
 
 static const CGFloat BRBarHeight = 44;
 static const CGFloat BRTabBarHeight = 30;
@@ -41,6 +42,10 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) NSMutableArray *closedTabs;              // recently closed tabs (url, title), newest last
 @property (nonatomic) NSInteger pendingScrollY;                        // a tab opened again: where its page was scrolled to
 @property (nonatomic, strong) NSURL *pendingScrollURL;
+@property (nonatomic, strong) NSDictionary *pendingLogin;              // h, u, p of a login waiting for "Save password?"
+@property (nonatomic, strong) UIButton *fillButton;                    // "fill in login" over the page
+@property (nonatomic, strong) NSArray *fillAccounts;                   // kept accounts of fillHost
+@property (nonatomic, copy) NSString *fillHost;
 @property (nonatomic, strong) UIPanGestureRecognizer *edgePan;         // swipe from the screen edge: back / forward
 @property (nonatomic) NSInteger edgePanDirection;                      // -1 back, 1 forward while a swipe is in progress
 @property (nonatomic, strong) NSArray *historyItems;                   // WebHistoryItem objects behind the history menu
@@ -1420,6 +1425,99 @@ static void BRWebThreadLock(void)
     [UIView animateWithDuration:0.4 delay:4 options:0 animations:^{ note.alpha = 0; } completion:^(BOOL finished) { [note removeFromSuperview]; }];
 }
 
+#pragma mark - Saved passwords
+
+// a login form of the page was sent (shims-extra.js): offer to keep it - only for the site on screen, so a frame of
+// another site cannot put its login under this one
+- (void)offerToKeepLogin:(NSDictionary *)login
+{
+    NSString *user = [login[@"u"] isKindOfClass:[NSString class]] ? login[@"u"] : @"";
+    NSString *pass = [login[@"p"] isKindOfClass:[NSString class]] ? login[@"p"] : @"";
+    NSString *host = [login[@"h"] isKindOfClass:[NSString class]] ? login[@"h"] : @"";
+    NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
+    if (!pass.length || !page.length || self.pendingLogin || [BRSettings privateMode]) return;
+    NSRange colon = [host rangeOfString:@":"];
+    if (colon.location != NSNotFound) host = [host substringToIndex:colon.location];
+    if (![[BRPasswords siteForHost:host] isEqualToString:[BRPasswords siteForHost:page]]) return;
+    if ([BRPasswords neverForHost:page] || [BRPasswords hasPassword:pass account:user host:page]) return;
+    self.pendingLogin = @{ @"h": page, @"u": user, @"p": pass };
+    NSString *who = user.length ? user : L(@"(no name)");
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Save password?")
+                                                    message:[NSString stringWithFormat:@"%@ – %@", who, [BRPasswords siteForHost:page]]
+                                                   delegate:self cancelButtonTitle:L(@"Not now")
+                                          otherButtonTitles:L(@"Save"), L(@"Never for this site"), nil];
+    alert.tag = 520;
+    [alert show];
+}
+
+// a name or password field got the focus: a button over the page fills in a kept login of the site on screen
+- (void)offerKeptLogins
+{
+    NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
+    if (!page.length || self.fillButton.superview) return;
+    NSArray *accounts = [BRPasswords accountsForHost:page];
+    if (!accounts.count) return;
+    self.fillAccounts = accounts;
+    self.fillHost = page;
+    NSString *title;
+    if (accounts.count == 1) {
+        NSString *only = [accounts[0] length] ? accounts[0] : L(@"(no name)");
+        title = [NSString stringWithFormat:L(@"Fill in login: %@"), only];
+    } else {
+        title = [NSString stringWithFormat:L(@"Fill in login (%lu accounts)"), (unsigned long)accounts.count];
+    }
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    [button setTitle:[@"\U0001F511 " stringByAppendingString:title] forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    button.backgroundColor = [UIColor colorWithRed:0.16 green:0.45 blue:0.92 alpha:0.95];
+    button.layer.cornerRadius = 10;
+    button.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 14);
+    CGFloat width = MIN(self.webView.bounds.size.width - 40, 420);
+    button.frame = CGRectMake(roundf((self.webView.bounds.size.width - width) / 2), 12, width, 40);
+    button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+    [button addTarget:self action:@selector(fillButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [self.webView addSubview:button];
+    self.fillButton = button;
+    __weak UIButton *weakButton = button;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIButton *b = weakButton;
+        if (!b.superview) return;
+        [UIView animateWithDuration:0.3 animations:^{ b.alpha = 0; } completion:^(BOOL finished) { [b removeFromSuperview]; }];
+    });
+}
+
+- (void)fillButtonTapped:(UIButton *)button
+{
+    [button removeFromSuperview];
+    if (self.fillAccounts.count == 1) {
+        [self fillLoginAccount:self.fillAccounts[0]];
+        return;
+    }
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:L(@"Fill in login") delegate:self cancelButtonTitle:nil
+                                         destructiveButtonTitle:nil otherButtonTitles:nil];
+    for (NSString *account in self.fillAccounts) [sheet addButtonWithTitle:account.length ? account : L(@"(no name)")];
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:L(@"Cancel")];
+    sheet.tag = 530;
+    [sheet showFromRect:button.frame inView:self.webView animated:YES];
+}
+
+// (the page must still be the site the logins belong to: it may have gone on while the button was up)
+- (void)fillLoginAccount:(NSString *)account
+{
+    NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
+    if (!self.fillHost || ![[BRPasswords siteForHost:page] isEqualToString:[BRPasswords siteForHost:self.fillHost]]) return;
+    NSString *pass = [BRPasswords passwordForHost:self.fillHost account:account];
+    if (!pass) return;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:@[ account ?: @"", pass ] options:0 error:NULL];
+    NSString *args = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : nil;
+    if (args.length < 2) return;
+    // ([a,b] -> a,b: the JSON array's text is the argument list; U+2028/9 are not valid in old JS string literals)
+    args = [[args substringWithRange:NSMakeRange(1, args.length - 2)] stringByReplacingOccurrencesOfString:@" " withString:@"\\u2028"];
+    args = [args stringByReplacingOccurrencesOfString:@" " withString:@"\\u2029"];
+    [self.webView stringByEvaluatingJavaScriptFromString:[NSString stringWithFormat:@"window.__brFillLogin && window.__brFillLogin(%@)", args]];
+}
+
 // (a site is remembered for a week: pages change, and without compositing it has no WebGL and no 3D transforms -
 // html5test.co lost its 3D points for good after one heavy visit)
 - (BOOL)compositingOffForHost:(NSString *)host
@@ -2090,6 +2188,16 @@ static void BRWebThreadLock(void)
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
 {
+    if (alertView.tag == 520) {
+        NSDictionary *login = self.pendingLogin;
+        self.pendingLogin = nil;   // (the password is not held a moment longer than the answer)
+        if (buttonIndex == alertView.firstOtherButtonIndex) {
+            if ([BRPasswords savePassword:login[@"p"] account:login[@"u"] host:login[@"h"]]) [self showNote:L(@"Password saved.")];
+        } else if (buttonIndex == alertView.firstOtherButtonIndex + 1) {
+            [BRPasswords setNeverForHost:login[@"h"]];
+        }
+        return;
+    }
     if (alertView.tag == 510) {
         if (buttonIndex != alertView.cancelButtonIndex && self.crashedURL) [self loadURL:self.crashedURL ignoringCache:YES];
         self.crashedURL = nil;
@@ -2502,6 +2610,10 @@ static void BRWebThreadLock(void)
 - (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index
 {
     if (index < 0 || index == sheet.cancelButtonIndex) return;
+    if (sheet.tag == 530) {
+        if ((NSUInteger)index < self.fillAccounts.count) [self fillLoginAccount:self.fillAccounts[(NSUInteger)index]];
+        return;
+    }
     if (sheet.tag == 102) {
         [self handleTabMenuChoice:[sheet buttonTitleAtIndex:index]];
         return;
@@ -2602,6 +2714,18 @@ static void BRWebThreadLock(void)
         NSString *spec = url.absoluteString.length > 7 ? [url.absoluteString substringFromIndex:7] : @"";
         NSString *text = [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec;
         if (text.length) [UIPasteboard generalPasteboard].string = text;
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brpw"]) {
+        // a login the page sent (see shims-extra.js): never logged
+        NSString *spec = url.absoluteString.length > 5 ? [url.absoluteString substringFromIndex:5] : @"";
+        NSData *data = [[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *login = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        if ([login isKindOfClass:[NSDictionary class]]) [self offerToKeepLogin:login];
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brpwfocus"]) {
+        [self offerKeptLogins];
         return NO;
     }
     if ([scheme isEqualToString:@"brreader"]) {
