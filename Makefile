@@ -25,7 +25,7 @@ Browser_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm
                  $(wildcard vendor/mbedtls/library/*.c) \
                  $(WOFF2_FILES) $(BROTLI_FILES) $(WEBP_FILES)
 
-Browser_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security
+Browser_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security ImageIO
 
 # Flags for every C-family file (also the vendored mbedTLS sources)
 Browser_CFLAGS := -Isrc -Isrc/Net -Isrc/UI -Isrc/Model \

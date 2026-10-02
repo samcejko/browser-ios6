@@ -1,5 +1,6 @@
 #import "BRImageConverter.h"
 #import "BRCommon.h"
+#import <ImageIO/ImageIO.h>
 
 #include "webp/decode.h"
 #include "webp/demux.h"
@@ -105,6 +106,48 @@ static uint8_t *BRFirstAnimationFrame(const uint8_t *bytes, size_t length, int *
     BRLog(@"WebP -> %@: %lu -> %lu bytes (%dx%d) in %ld ms", opaque ? @"JPEG" : @"PNG", (unsigned long)data.length, (unsigned long)out.length, width, height,
           (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
     return out;
+}
+
+// A photo far bigger than the screen costs WebKit width x height x 4 bytes once decoded (48 MB for 12 megapixels,
+// whatever size it is shown at): JPEGs and opaque PNGs past BRBigImagePixels come as BRBigImageSide px on their long
+// side (ImageIO decodes a JPEG straight at a fraction of its size), upright as current browsers show them (EXIF).
+// Pictures with transparency stay as they are (encoding a PNG took seconds here), as do animations.
+static const double BRBigImagePixels = 2.6e6, BRBigImageSide = 1600;
+
++ (NSData *)downscaledImageData:(NSData *)data mimeType:(NSString **)mimeType
+{
+    if (data.length < 1024) return nil;
+    // (one at a time: a page of big photos on six connections would hold six decoded pictures at once)
+    static dispatch_semaphore_t one;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ one = dispatch_semaphore_create(1); });
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!src) return nil;
+    dispatch_semaphore_wait(one, DISPATCH_TIME_FOREVER);
+    NSData *out = nil;
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    NSString *type = (__bridge NSString *)CGImageSourceGetType(src);
+    BOOL jpeg = [type isEqualToString:@"public.jpeg"], png = [type isEqualToString:@"public.png"];
+    NSDictionary *props = (jpeg || png) && CGImageSourceGetCount(src) == 1 ? (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(src, 0, NULL) : nil;
+    double w = [props[(__bridge id)kCGImagePropertyPixelWidth] doubleValue], h = [props[(__bridge id)kCGImagePropertyPixelHeight] doubleValue];
+    BOOL alpha = [props[(__bridge id)kCGImagePropertyHasAlpha] boolValue];
+    // (a PNG is decoded whole first: not past 8 megapixels)
+    if (props && w * h > BRBigImagePixels && MAX(w, h) > BRBigImageSide && !(png && (alpha || w * h > 8e6))) {
+        NSDictionary *opts = @{ (__bridge id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                                (__bridge id)kCGImageSourceThumbnailMaxPixelSize: @(BRBigImageSide),
+                                (__bridge id)kCGImageSourceCreateThumbnailWithTransform: @YES };
+        CGImageRef thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)opts);
+        if (thumb) {
+            out = UIImageJPEGRepresentation([UIImage imageWithCGImage:thumb], 0.85);
+            BRLog(@"Big picture %.0fx%.0f -> %zux%zu: %lu -> %lu bytes in %ld ms", w, h, CGImageGetWidth(thumb), CGImageGetHeight(thumb),
+                  (unsigned long)data.length, (unsigned long)out.length, (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+            CGImageRelease(thumb);
+        }
+        if (out.length && mimeType) *mimeType = @"image/jpeg";
+    }
+    CFRelease(src);
+    dispatch_semaphore_signal(one);
+    return out.length ? out : nil;
 }
 
 @end

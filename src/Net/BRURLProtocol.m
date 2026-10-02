@@ -23,7 +23,7 @@ static NSUInteger BRRewriteLimit(NSString *kind)
     if ([kind hasPrefix:@"js"]) return BRMaxScriptRewriteBody;
     if ([kind isEqualToString:@"html"]) return BRMaxDocumentRewriteBody;
     if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"]) return BRMaxFontRewriteBody;
-    if ([kind isEqualToString:@"webp"]) return BRMaxImageRewriteBody;
+    if ([kind isEqualToString:@"webp"] || [kind isEqualToString:@"bigimage"]) return BRMaxImageRewriteBody;
     return BRMaxRewriteBody;
 }
 
@@ -1032,6 +1032,11 @@ static BOOL BRIsFontDataURL(NSURL *url)
             // (a picture of another declared type is converted only when its bytes are WebP)
             long long declared = [r.responseHeaders[@"content-length"] longLongValue];
             if (declared <= (long long)BRMaxImageRewriteBody) kind = @"webp";
+        } else if ([ctype hasPrefix:@"image/jpeg"] || [ctype hasPrefix:@"image/jpg"] || [ctype hasPrefix:@"image/pjpeg"] || [ctype hasPrefix:@"image/png"]) {
+            // a photo far bigger than the screen comes smaller (see BRImageConverter downscaledImageData); the files of
+            // ordinary pictures are too small to hold one and pass as they come
+            long long declared = [r.responseHeaders[@"content-length"] longLongValue];
+            if (declared >= 200 * 1024 && declared <= (long long)BRMaxImageRewriteBody) kind = @"bigimage";
         }
     }
     // (told from the network's own headers: the response object is WebKit's once it has it, and reading its headers
@@ -1096,7 +1101,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
             if (![sniffed isEqualToString:@"webp"]) self.fontBody = YES;
         }
     }
-    if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"] || [kind isEqualToString:@"webp"]) {
+    if ([kind isEqualToString:@"font"] || [kind isEqualToString:@"woff"] || [kind isEqualToString:@"sfnt"] || [kind isEqualToString:@"webp"] || [kind isEqualToString:@"bigimage"]) {
         // synchronous, on the worker thread
         BOOL isFont = [kind isEqualToString:@"font"];
         BOOL isWOFF = [kind isEqualToString:@"woff"];
@@ -1104,7 +1109,9 @@ static BOOL BRIsFontDataURL(NSURL *url)
         NSString *imageType = nil;
         NSData *converted = isFont ? [BRFontConverter ttfDataFromWOFF2:buffered] :
                             isWOFF ? [BRFontConverter ttfDataFromWOFF:buffered] :
-                            isSFNT ? [BRFontConverter staticFontDataFromSFNT:buffered] : [BRImageConverter imageDataFromWebP:buffered mimeType:&imageType];
+                            isSFNT ? [BRFontConverter staticFontDataFromSFNT:buffered] :
+                            [kind isEqualToString:@"bigimage"] ? [BRImageConverter downscaledImageData:buffered mimeType:&imageType] :
+                            [BRImageConverter imageDataFromWebP:buffered mimeType:&imageType];
         NSMutableDictionary *f = [self.pendingHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
         NSData *out = converted ?: buffered;
         if (converted && !isSFNT) BRSetHeaderField(f, @"Content-Type", (isFont || isWOFF) ? @"font/ttf" : imageType ?: @"image/png");
