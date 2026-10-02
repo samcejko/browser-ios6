@@ -3,30 +3,79 @@
 
 #include <libkern/OSAtomic.h>
 
-static NSSet *g_domains = nil;
+#include <stdlib.h>
+#include <string.h>
+
+// The domains as C strings in one buffer, their offsets sorted: a lookup is a binary search. (OISD's list brought
+// 57 000 domains; as an NSSet of strings they took some 6 MB of the iPad's memory, here about 1.3.)
+static char *g_buf = NULL;
+static uint32_t *g_offs = NULL;
+static NSUInteger g_count = 0;
 static dispatch_once_t g_once;
 static volatile int32_t g_blocked = 0;
 
+static int BRCompareDomainOffsets(const void *a, const void *b)
+{
+    return strcmp(g_buf + *(const uint32_t *)a, g_buf + *(const uint32_t *)b);
+}
+
 static void BRLoadDomains(void)
 {
-    NSMutableSet *set = [NSMutableSet set];
-    for (NSString *name in @[@"adblock-base", @"adblock"]) {
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    NSMutableData *buf = [NSMutableData data], *offs = [NSMutableData data];
+    // (adblock-base: bundled; adblock: Peter Lowe's list; adblock-oisd: OISD small, "block, don't break")
+    for (NSString *name in @[@"adblock-base", @"adblock", @"adblock-oisd"]) {
         NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"txt"];
-        if (!path) continue;
-        NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
-        if (!text.length) continue;
-        for (NSString *rawLine in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
-            NSString *line = [[rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
-            if (!line.length || [line hasPrefix:@"#"]) continue;
+        NSData *data = path ? [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL] : nil;
+        const char *p = data.bytes, *end = p + data.length;
+        while (p && p < end) {
+            const char *nl = memchr(p, '\n', (size_t)(end - p));
+            const char *lineEnd = nl ?: end, *s = p;
+            p = nl ? nl + 1 : end;
+            while (s < lineEnd && (*s == ' ' || *s == '\t')) s++;
+            const char *e = lineEnd;
+            while (e > s && (e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t')) e--;
+            if (s >= e || *s == '#' || *s == '!') continue;
             // hosts-file style lines ("0.0.0.0 domain") are tolerated
-            NSRange space = [line rangeOfString:@" "];
-            if (space.location != NSNotFound) line = [line substringFromIndex:space.location + 1];
-            if ([line isEqualToString:@"localhost"] || [line rangeOfString:@"."].location == NSNotFound) continue;
-            [set addObject:line];
+            const char *sp = memchr(s, ' ', (size_t)(e - s));
+            if (sp) { s = sp + 1; while (s < e && *s == ' ') s++; }
+            size_t len = (size_t)(e - s);
+            if (len < 3 || len > 253 || !memchr(s, '.', len) || (len == 9 && !strncmp(s, "localhost", 9))) continue;
+            uint32_t at = (uint32_t)buf.length;
+            [offs appendBytes:&at length:sizeof(at)];
+            char lower[256];
+            for (size_t i = 0; i < len; i++) { char c = s[i]; lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+            lower[len] = 0;
+            [buf appendBytes:lower length:len + 1];
         }
     }
-    g_domains = set;
-    BRLog(@"Ad block list loaded: %lu domains", (unsigned long)set.count);
+    NSUInteger n = offs.length / sizeof(uint32_t);
+    char *b = malloc(buf.length ?: 1);
+    uint32_t *o = malloc((n ?: 1) * sizeof(uint32_t));
+    if (!b || !o) { free(b); free(o); return; }
+    memcpy(b, buf.bytes, buf.length);
+    memcpy(o, offs.bytes, n * sizeof(uint32_t));
+    g_buf = b;
+    qsort(o, n, sizeof(uint32_t), BRCompareDomainOffsets);
+    // (the same domain in two lists once)
+    NSUInteger kept = 0;
+    for (NSUInteger i = 0; i < n; i++) if (!kept || strcmp(b + o[i], b + o[kept - 1])) o[kept++] = o[i];
+    g_offs = o;
+    g_count = kept;
+    BRLog(@"Ad block list loaded: %lu domains (%lu KB) in %ld ms", (unsigned long)kept, (unsigned long)((buf.length + kept * 4) >> 10),
+          (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000));
+}
+
+static BOOL BRHasDomain(const char *d)
+{
+    NSUInteger lo = 0, hi = g_count;
+    while (lo < hi) {
+        NSUInteger mid = (lo + hi) / 2;
+        int c = strcmp(g_buf + g_offs[mid], d);
+        if (c == 0) return YES;
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return NO;
 }
 
 @implementation BRAdBlock
@@ -46,23 +95,24 @@ static void BRLoadDomains(void)
 + (NSUInteger)domainCount
 {
     [self ensureLoaded];
-    return g_domains.count;
+    return g_count;
 }
 
 + (BOOL)shouldBlockHost:(NSString *)host
 {
     if (!host.length) return NO;
     [self ensureLoaded];
-    NSSet *domains = g_domains;
-    if (!domains.count) return NO;
-    NSString *h = [host lowercaseString];
-    for (;;) {
-        if ([domains containsObject:h]) return YES;
-        NSRange dot = [h rangeOfString:@"."];
-        if (dot.location == NSNotFound) return NO;
-        h = [h substringFromIndex:dot.location + 1];
-        if ([h rangeOfString:@"."].location == NSNotFound) return NO;   // never match a bare TLD
+    if (!g_count) return NO;
+    char h[256];
+    if (![[host lowercaseString] getCString:h maxLength:sizeof(h) encoding:NSUTF8StringEncoding]) return NO;
+    // the host and each parent domain, never a bare TLD
+    for (const char *d = h; d; ) {
+        if (!strchr(d, '.')) return NO;
+        if (BRHasDomain(d)) return YES;
+        const char *dot = strchr(d, '.');
+        d = dot ? dot + 1 : NULL;
     }
+    return NO;
 }
 
 + (void)noteBlockedRequest

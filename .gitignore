@@ -9,6 +9,7 @@ Resources/Icon*.png
 Resources/Default*.png
 Resources/cacert.pem
 Resources/adblock.txt
+Resources/adblock-oisd.txt
 Resources/js/
 *.ipa
 *.deb
