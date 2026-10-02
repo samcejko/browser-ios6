@@ -32,7 +32,9 @@
     // its own and the old one is deleted in the background. (Emptying a full cache on the main thread took longer than
     // iOS allows for a launch: the app was killed at its first start after an update.)
     static const NSInteger BRCacheFormatVersion = 22;   // percentage heights marked (br-pcth), grid-auto-flow column strips
-    NSString *cacheName = [NSString stringWithFormat:@"browser-cache-%ld", (long)BRCacheFormatVersion];
+    // (the rewriters' checksum too: a fixed jsfix.js went unused while the cache kept serving the scripts the old one
+    // had lowered - YouTube's es5 build stayed blank after the symbol `in` fix until the cache was emptied)
+    NSString *cacheName = [NSString stringWithFormat:@"browser-cache-%ld-%@", (long)BRCacheFormatVersion, [BRCSSRewriter rewriterTag]];
     NSURLCache *cache = [[BRURLCache alloc] initWithMemoryCapacity:4 * 1024 * 1024 diskCapacity:1536 * 1024 * 1024 diskPath:cacheName];
     [NSURLCache setSharedURLCache:cache];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
@@ -151,7 +153,9 @@
             else if ([type isEqualToString:@"remove"]) [d removeObjectForKey:key];
             else [d setObject:value forKey:key];
             [d synchronize];
-            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+            // (switches of what the rewriters do make the cached rewritten bodies stale; logging and the like do not -
+            // turning BRDebugJSErrors off emptied the cache, and every page loaded as on its first visit)
+            if (![key hasPrefix:@"BRDebug"] && ![key hasPrefix:@"BRDump"]) [[NSURLCache sharedURLCache] removeAllCachedResponses];
             BRLog(@"Setting %@ = %@ (%@)", key, value, type);
         }
         return YES;

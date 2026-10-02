@@ -2060,7 +2060,7 @@ static void BRWebThreadLock(void)
         if (buttonIndex != alertView.cancelButtonIndex && self.challengeURL) {
             NSString *host = [self.challengeURL.host lowercaseString] ?: @"";
             [BRSettings setUserAgentMode:[BRSettings userAgentModeForHost:host] == 0 ? 2 : 0 forHost:host];
-            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+            // (the page itself is fetched again; the rest of the cache stays: emptying it made every site load as on a first visit)
             [self reloadIgnoringCache];
         }
         self.challengeURL = nil;
@@ -2468,7 +2468,7 @@ static void BRWebThreadLock(void)
             // per site, like Safari's "request desktop website"
             NSString *host = (self.webView.request.URL ?: self.currentURL).host;
             [BRSettings setUserAgentMode:[BRSettings userAgentModeForHost:host] == 0 ? 1 : 0 forHost:host];
-            [[NSURLCache sharedURLCache] removeAllCachedResponses];
+            // (the page itself is fetched again; the rest of the cache stays: emptying it made every site load as on a first visit)
             [self reloadIgnoringCache];
         }
         return;
@@ -2662,7 +2662,7 @@ static void BRWebThreadLock(void)
     [retried addObject:host];
     BRLog(@"Unsupported-browser page on %@: retrying as a current %@", host, mode == 3 ? @"iPhone" : @"iPad");
     [BRSettings setUserAgentMode:mode == 3 ? 4 : 2 forHost:host];
-    [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    // (the page itself is fetched again; the rest of the cache stays: emptying it made every site load as on a first visit)
     [self reloadIgnoringCache];
 }
 

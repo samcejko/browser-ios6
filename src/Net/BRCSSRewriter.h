@@ -31,6 +31,7 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 + (NSString *)rewriteTag;
 // Work queued so far is dropped (the originals go back): the page load was stopped for lack of memory. Any thread.
 + (void)cancelPendingWork;
++ (NSString *)rewriterTag;     // checksum of jsfix.js and cssfix.js (the HTTP cache keeps rewritten bodies: one per tag)
 // Debugging (browser:jsfixtest): lowers the file params[@"input"] on a fresh transpiler context (jsfix.js from
 // params[@"jsfix"] when given, options params[@"opts"]), sampling the resident size every 50 ms; logs time, sizes,
 // the peak and what stays after GC and after the context is gone, and writes the report to tmp/eval.txt.

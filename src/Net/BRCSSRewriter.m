@@ -118,6 +118,24 @@ static NSString *BRTranspileTag(void)
     return tag;
 }
 
+// a checksum of both rewriters (jsfix.js and cssfix.js): the HTTP cache keeps bodies as they were rewritten, so a
+// changed rewriter needs a cache of its own (see BRAppDelegate)
++ (NSString *)rewriterTag
+{
+    static NSString *tag;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        unsigned long crc = crc32(0L, Z_NULL, 0);
+        for (NSString *name in @[@"jsfix", @"cssfix"]) {
+            NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"js"];
+            NSData *d = path ? [NSData dataWithContentsOfFile:path] : nil;
+            if (d.length) crc = crc32(crc, (const Bytef *)d.bytes, (uInt)d.length);
+        }
+        tag = [NSString stringWithFormat:@"%08lx", crc];
+    });
+    return tag;
+}
+
 // the text of factory n of a webpack chunk kept for later (base = "<crc>-<length>" of the chunk; see jsfix.js LAZY_*)
 static NSString *BRLazyPartPath(NSString *base, long n)
 {
