@@ -453,7 +453,9 @@
         try { nativeDP(probe, 'length', { value: 2, configurable: true }); } catch (e) { fixed = true; }
         // (the checks written out, and the try in a function of its own: a call more costs a few microseconds here, and
         // a function with a try makes a scope object on every call)
-        var fixedName = function (o, k, d) { try { return nativeDP(o, k, d); } catch (e) { return o; } };
+        // (not even tried: the engine refuses every change of them with an exception, 125 us here - esbuild's keepNames
+        // and TypeScript's __name helper name every function and class of a bundle that way)
+        var fixedName = function (o) { return o; };
         // A non-enumerable data property under a core-js symbol (libraries mark their objects so: seznam.cz defined one
         // on 150 000 arrays, 6.5 s at 42 us each through core-js, which turns the symbol into its key string four times
         // over): what core-js does, written out - the key's string, the object's list of hidden (non-enumerable)

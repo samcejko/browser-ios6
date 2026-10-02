@@ -1470,9 +1470,11 @@ static BOOL BRIsFontDataURL(NSURL *url)
         NSString *file = [[NSBundle mainBundle] pathForResource:@"indexeddbshim" ofType:@"js" inDirectory:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
     } else if ([path isEqualToString:@"/browserscore.js"] || [path isEqualToString:@"/cssfix.js"] || [path isEqualToString:@"/jsfix.js"]) {
-        // the browserscore runner, the CSS rewriter itself (the runner asks it what a page would get) and the
-        // transpiler (for tests on the device)
-        NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"js"];
+        // the browserscore runner, the CSS rewriter itself (the runner asks it what a page would get; a page loads it
+        // when its scripts insert styles: the minified copy in js/, half the text to parse) and the transpiler (for
+        // tests on the device)
+        NSString *name = [path.lastPathComponent stringByDeletingPathExtension];
+        NSString *file = [[NSBundle mainBundle] pathForResource:name ofType:@"js" inDirectory:@"js"] ?: [[NSBundle mainBundle] pathForResource:name ofType:@"js"];
         body = file ? [NSData dataWithContentsOfFile:file] : nil;
     } else if ([path isEqualToString:@"/acorn.js"] || [path isEqualToString:@"/unicode-props.js"]) {
         NSString *file = [[NSBundle mainBundle] pathForResource:[path.lastPathComponent stringByDeletingPathExtension] ofType:@"js" inDirectory:@"js"];

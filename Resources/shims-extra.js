@@ -161,17 +161,30 @@
             else if (!on && has) el.className = cur.replace(' ' + cls + ' ', ' ').replace(/^\s+|\s+$/g, '');
         } catch (e) {}
     }
-    // One observer for everything that reacts to new DOM nodes
-    var addedCallbacks = [], settledCallbacks = [], settleTimer = null;
+    // One observer for everything that reacts to new DOM nodes. observeAdded: every element added; observeAddedTree:
+    // callbacks that go through an element's whole subtree get only the topmost elements of a batch - one under an
+    // element of the same batch was covered by that one's pass. (The parser reports every element it adds: each
+    // subtree query ran for the parent, the child, the grandchild..., 0.1-0.2 ms an element, 800 on example.com.)
+    var addedCallbacks = [], treeCallbacks = [], settledCallbacks = [], settleTimer = null;
     function observeAdded(fn) { addedCallbacks.push(fn); }
+    function observeAddedTree(fn) { treeCallbacks.push(fn); }
     function onSettled(fn) { settledCallbacks.push(fn); }
     if (window.MutationObserver) {
         var mo = new MutationObserver(function (records) {
+            var tops = [], nTree = treeCallbacks.length, el, c, t, covered;
             for (var r = 0; r < records.length; r++) {
                 var added = records[r].addedNodes;
                 for (var i = 0; i < added.length; i++) {
-                    if (added[i].nodeType !== 1) continue;
-                    for (var c = 0; c < addedCallbacks.length; c++) try { addedCallbacks[c](added[i]); } catch (e) {}
+                    el = added[i];
+                    if (el.nodeType !== 1) continue;
+                    for (c = 0; c < addedCallbacks.length; c++) try { addedCallbacks[c](el); } catch (e) {}
+                    if (!nTree) continue;
+                    // (the last few tops: the parser adds a subtree in document order)
+                    covered = false;
+                    for (t = tops.length - 1; t >= 0 && t >= tops.length - 4; t--) if (tops[t].contains(el)) { covered = true; break; }
+                    if (covered) continue;
+                    tops.push(el);
+                    for (c = 0; c < nTree; c++) try { treeCallbacks[c](el); } catch (e2) {}
                 }
                 var removed = records[r].removedNodes;
                 for (var j = 0; j < removed.length; j++) if (removed[j].nodeType === 1 && removed[j].__brUpgraded) disconnectTree(removed[j]);
@@ -1285,7 +1298,7 @@
             upgrade: function (root) { upgradeTree(root); }
         };
         try { window.customElements = registryAPI; } catch (e) { try { Object.defineProperty(window, 'customElements', { value: registryAPI, configurable: true }); } catch (e2) {} }
-        observeAdded(function (el) { if (Object.keys(registry).length) upgradeTree(el, true); });
+        observeAddedTree(function (el) { for (var k in registry) { upgradeTree(el, true); return; } });
         // document.createElement('my-el') of a defined element runs its constructor at once (as the native API does)
         var ceCreate = document.createElement, ceNativeCreate = ceCreate;
         // (no arguments object and no lower-casing for a name without a dash: this runs for every element a page makes,
@@ -1304,7 +1317,7 @@
             var all = root && root.getElementsByTagName ? root.getElementsByTagName('*') : [];
             for (var i = 0; i < all.length; i++) mark(all[i]);
         };
-        observeAdded(function (el) { if (window.__brUndefinedActive) window.__brMarkUndefined(el); });
+        observeAddedTree(function (el) { if (window.__brUndefinedActive) window.__brMarkUndefined(el); });
         window.CustomElementRegistry = function CustomElementRegistry() {};
         // ES5 subclasses call HTMLElement.call(this): make the base constructor callable
         (function () {
@@ -1350,7 +1363,8 @@
         };
         var registerDialogs = function registerDialogs(root) {
             if (root.nodeType === 1 && root.tagName === 'DIALOG') registerDialog(root);
-            var list = root.querySelectorAll ? root.querySelectorAll('dialog') : [];
+            if (root.nodeType === 1 && !root.firstElementChild) return;
+            var list = root.getElementsByTagName ? root.getElementsByTagName('dialog') : [];
             for (var i = 0; i < list.length; i++) registerDialog(list[i]);
         };
         var origCreateElement = document.createElement;
@@ -1360,7 +1374,7 @@
             return el;
         };
         onReady(function () { registerDialogs(document); });
-        observeAdded(registerDialogs);
+        observeAddedTree(registerDialogs);
         if (!window.HTMLDialogElement) window.HTMLDialogElement = function HTMLDialogElement() {};
     }
 
@@ -4782,7 +4796,7 @@
         onSettled(function () { scheduleLoad(); if (manifest) schedule(); });
         window.addEventListener('resize', function () { if (manifest && (manifest.cq.length || manifest.dv.length || (manifest.gd && manifest.gd.length))) schedule(); }, false);
         var reevaluate = function () { if (manifest && manifest.has.length) schedule(); };
-        observeAdded(function () { if (manifest && ((manifest.sc && manifest.sc.length) || manifest.has.length)) schedule(); });
+        observeAddedTree(function () { if (manifest && ((manifest.sc && manifest.sc.length) || manifest.has.length)) schedule(); });
         document.addEventListener('input', reevaluate, true);
         document.addEventListener('change', reevaluate, true);
         document.addEventListener('click', reevaluate, true);
@@ -9400,10 +9414,14 @@
             try { el.__proto__ = proto; } catch (e) {}
             if (el.tagName === 'PROGRESS' || el.tagName === 'METER') paintBar(el);
         };
+        var upgradeSelector = null;
         var upgradeKnownTree = function (root) {
-            if (root.nodeType === 1) upgradeKnownElement(root);
+            if (root.nodeType === 1) {
+                upgradeKnownElement(root);
+                if (!root.firstElementChild) return;
+            }
             if (!root.querySelectorAll) return;
-            var list = root.querySelectorAll(Object.keys(upgrades).join(','));
+            var list = root.querySelectorAll(upgradeSelector || (upgradeSelector = Object.keys(upgrades).join(',')));
             for (var i = 0; i < list.length; i++) upgradeKnownElement(list[i]);
         };
         if (Object.keys(upgrades).length) {
@@ -9413,7 +9431,7 @@
                 return el;
             };
             onReady(function () { upgradeKnownTree(document); });
-            observeAdded(upgradeKnownTree);
+            observeAddedTree(upgradeKnownTree);
         }
         if (window.MutationObserver) {
             var barObserver = new MutationObserver(function (records) {

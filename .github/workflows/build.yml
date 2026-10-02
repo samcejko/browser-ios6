@@ -196,7 +196,9 @@ jobs:
           # (constructors keep their names - pages read Map.name, Promise.name - other function expressions lose them: a
           # named one costs every call on iOS 6, see the script. The app takes js/<name>.js before <name>.js.)
           node tools/minify-page-scripts.js Resources/shims.js Resources/js/shims.js Resources/shims-extra.js Resources/js/shims-extra.js \
-            Resources/page-prelude.js Resources/js/page-prelude.js Resources/regexp-shim.js Resources/js/regexp-shim.js
+            Resources/page-prelude.js Resources/js/page-prelude.js Resources/regexp-shim.js Resources/js/regexp-shim.js \
+            Resources/cssfix.js Resources/js/cssfix.js
+          # (cssfix: the copy a page loads when its scripts insert styles; the app's own rewriter keeps the source)
           node tools/gen-helpers.js > Resources/js/jsfix-helpers.js
           # (the polyfills of the bundle as they come from npm, and the helpers: every page parses them, and keeps their
           # text - about 200 KB of comments and white space down to some 80)
