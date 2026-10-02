@@ -833,7 +833,7 @@ static NSArray *BRManifestKinds(void)
 // Didomi's 64 KB consent styles took 0.74 s on idnes.cz - and the same styles come back on every visit)
 - (NSData *)runtimeStyleResult:(NSData *)request
 {
-    if (request.length < 8) return nil;
+    if (request.length < 8) { BRLog(@"Inserted style: no text came (%lu bytes)", (unsigned long)request.length); return nil; }
     unsigned long crc = crc32(0L, Z_NULL, 0);
     crc = crc32(crc, (const Bytef *)request.bytes, (uInt)request.length);
     NSString *key = [NSString stringWithFormat:@"css-%08lx-%lx-%@-%@", crc, (unsigned long)request.length, BRRewriterTag(), BRTranspileTag()];
@@ -850,7 +850,7 @@ static NSArray *BRManifestKinds(void)
     if (cached.length) return cached;
     // (not behind a stylesheet or document of the page: the page would wait longer than doing it itself)
     BRJSEngine *engine = [BRJSEngine shared];
-    if (engine.pending > 0) return nil;
+    if (engine.pending > 0) { BRLog(@"Inserted style (%lu KB) left to the page: the rewriter has %ld jobs", (unsigned long)(request.length >> 10), (long)engine.pending); return nil; }
     __block NSData *out = nil;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
@@ -861,6 +861,7 @@ static NSArray *BRManifestKinds(void)
             for (NSUInteger i = 0; ok && i < 3; i++) ok = [args[i] isKindOfClass:[NSString class]];
             NSString *result = ok && [self ensureLoaded] ? [engine callFunction:@"CSSFix.run" arguments:@[@"css", args[0], args[1], args[2]]] : nil;
             if (result.length) out = [result dataUsingEncoding:NSUTF8StringEncoding];
+            else BRLog(@"Inserted style (%lu KB): %@", (unsigned long)(request.length >> 10), ok ? @"the rewriter gave nothing" : @"not a [css, vars, options] request");
         }
         dispatch_semaphore_signal(done);
     }];
