@@ -13,6 +13,7 @@
 #import "BRWatchdog.h"
 #import "BRProfiler.h"
 #import "BRMemory.h"
+#import "BRPasswords.h"
 #import "BRCommon.h"
 #include <dlfcn.h>
 
@@ -280,6 +281,45 @@
         if ([target hasPrefix:@"goback?"]) [self.browserViewController goToHistoryItemAtIndex:[q[@"n"] integerValue]];
         else if ([target hasPrefix:@"type?"]) [self.browserViewController navigateToTypedText:q[@"text"] ?: @""];
         else [self.browserViewController answerAuthenticationWithUser:q[@"user"] ?: @"" password:q[@"password"] ?: @""];
+        return YES;
+    }
+    if ([target hasPrefix:@"press?"]) {
+        // browser:press?n=<index> presses a button of the alert or action sheet on screen, browser:press?title=<text> a
+        // button whose title holds the text (checking the UI over SSH)
+        NSString *query = [target substringFromIndex:6];
+        NSString *value = [[query substringFromIndex:MIN(query.length, [query rangeOfString:@"="].location + 1)] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @"";
+        BOOL byTitle = [query hasPrefix:@"title="];
+        NSMutableArray *views = [NSMutableArray array];
+        for (UIWindow *w in [UIApplication sharedApplication].windows) [views addObject:w];
+        BOOL pressed = NO;
+        for (NSUInteger i = 0; i < views.count && !pressed; i++) {
+            UIView *v = views[i];
+            if (!byTitle && [v isKindOfClass:[UIAlertView class]] && ((UIAlertView *)v).visible) {
+                UIAlertView *alert = (UIAlertView *)v;
+                NSInteger n = value.integerValue;
+                if ([alert.delegate respondsToSelector:@selector(alertView:clickedButtonAtIndex:)]) [alert.delegate alertView:alert clickedButtonAtIndex:n];
+                [alert dismissWithClickedButtonIndex:n animated:NO];
+                pressed = YES;
+            } else if (!byTitle && [v isKindOfClass:[UIActionSheet class]] && ((UIActionSheet *)v).visible) {
+                UIActionSheet *sheet = (UIActionSheet *)v;
+                NSInteger n = value.integerValue;
+                if ([sheet.delegate respondsToSelector:@selector(actionSheet:clickedButtonAtIndex:)]) [sheet.delegate actionSheet:sheet clickedButtonAtIndex:n];
+                [sheet dismissWithClickedButtonIndex:n animated:NO];
+                pressed = YES;
+            } else if (byTitle && [v isKindOfClass:[UIButton class]] && !v.hidden && value.length
+                       && [((UIButton *)v).currentTitle rangeOfString:value].location != NSNotFound) {
+                [(UIButton *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
+                pressed = YES;
+            } else {
+                [views addObjectsFromArray:v.subviews];
+            }
+        }
+        BRLog(@"Press %@: %@", query, pressed ? @"done" : @"nothing found");
+        return YES;
+    }
+    if ([target isEqualToString:@"forgetpasswords"]) {
+        [BRPasswords deleteAll];
+        BRLog(@"Saved passwords deleted");
         return YES;
     }
     if ([target isEqualToString:@"screen"]) {
