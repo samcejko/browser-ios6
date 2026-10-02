@@ -518,6 +518,7 @@
                 return;
             }
             this.__fake = null;
+            this.__ct = false;
             var opened = this.__x.open.apply(this.__x, arguments);
             // (what was set before open, see withCredentials)
             if (this.__wc !== undefined) try { this.__x.withCredentials = this.__wc; } catch (e1) {}
@@ -547,6 +548,13 @@
                 this.__timer = setTimeout(function () { self.__timer = null; if (x.readyState !== 4) { self.__timedOut = true; x.abort(); } }, this.__timeout);
             }
             if (FormDataTools && body) body = FormDataTools.forSending(body);
+            // the type today's browsers give a text or URLSearchParams body the page did not type (the old engine sends
+            // text as application/xml, URLSearchParams as its text the same way; servers parse by the type)
+            if (!this.__ct && body !== null && body !== undefined) {
+                var USP = window.URLSearchParams;
+                if (typeof body === 'string') { try { x.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8'); } catch (e3) {} }
+                else if (USP && body instanceof USP) { body = String(body); try { x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded;charset=UTF-8'); } catch (e4) {} }
+            }
             return arguments.length ? x.send(body) : x.send();
         };
         XP.abort = function () {
@@ -574,7 +582,11 @@
             if (user) return s;
             try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
         };
-        XP.setRequestHeader = function () { if (!this.__fake) return this.__x.setRequestHeader.apply(this.__x, arguments); };
+        XP.setRequestHeader = function (name) {
+            if (this.__fake) return;
+            if (String(name).toLowerCase() === 'content-type') this.__ct = true;
+            return this.__x.setRequestHeader.apply(this.__x, arguments);
+        };
         XP.overrideMimeType = function (m) { if (this.__fake) { this.__fake.mime = String(m); return; } return this.__x.overrideMimeType.apply(this.__x, arguments); };
         XP.getResponseHeader = function (name) {
             var f = this.__fake;
@@ -10735,6 +10747,7 @@
                 try {
                     var x = new XMLHttpRequest();
                     x.open('POST', 'https://ios6-browser.invalid/cssrun', false);
+                    x.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');   // (without one the app got no body)
                     x.send(JSON.stringify([css, JSON.stringify(pv), JSON.stringify(opts)]));
                     if (x.status === 200 && x.responseText) return JSON.parse(x.responseText);
                 } catch (e) {}
