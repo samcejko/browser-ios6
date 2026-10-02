@@ -1508,14 +1508,18 @@ static void BRWebThreadLock(void)
     NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
     if (!self.fillHost || ![[BRPasswords siteForHost:page] isEqualToString:[BRPasswords siteForHost:self.fillHost]]) return;
     NSString *pass = [BRPasswords passwordForHost:self.fillHost account:account];
-    if (!pass) return;
+    if (!pass) {
+        BRLog(@"No kept password to fill in for %@", [BRPasswords siteForHost:self.fillHost]);
+        return;
+    }
     NSData *json = [NSJSONSerialization dataWithJSONObject:@[ account ?: @"", pass ] options:0 error:NULL];
     NSString *args = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : nil;
     if (args.length < 2) return;
     // ([a,b] -> a,b: the JSON array's text is the argument list; U+2028/9 are not valid in old JS string literals)
     args = [[args substringWithRange:NSMakeRange(1, args.length - 2)] stringByReplacingOccurrencesOfString:@" " withString:@"\\u2028"];
     args = [args stringByReplacingOccurrencesOfString:@" " withString:@"\\u2029"];
-    [self.webView stringByEvaluatingJavaScriptFromString:[NSString stringWithFormat:@"window.__brFillLogin && window.__brFillLogin(%@)", args]];
+    NSString *answer = [self.webView stringByEvaluatingJavaScriptFromString:[NSString stringWithFormat:@"window.__brFillLogin ? window.__brFillLogin(%@) : 'no filler'", args]];
+    BRLog(@"Login filled in on %@: %@", [BRPasswords siteForHost:self.fillHost], answer.length ? answer : @"script error");
 }
 
 // (a site is remembered for a week: pages change, and without compositing it has no WebGL and no 3D transforms -
