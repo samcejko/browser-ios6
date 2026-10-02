@@ -39,6 +39,8 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic) NSUInteger pressedTabIndex;                      // tab under the long press menu
 @property (nonatomic, strong) UIRefreshControl *refreshControl;         // pull to refresh on the page
 @property (nonatomic, strong) NSMutableArray *closedTabs;              // recently closed tabs (url, title), newest last
+@property (nonatomic) NSInteger pendingScrollY;                        // a tab opened again: where its page was scrolled to
+@property (nonatomic, strong) NSURL *pendingScrollURL;
 @property (nonatomic, strong) UIPanGestureRecognizer *edgePan;         // swipe from the screen edge: back / forward
 @property (nonatomic) NSInteger edgePanDirection;                      // -1 back, 1 forward while a swipe is in progress
 @property (nonatomic, strong) NSArray *historyItems;                   // WebHistoryItem objects behind the history menu
@@ -713,7 +715,7 @@ static BOOL BRShouldInterruptJavaScript(id self, SEL _cmd, id webView)
 - (void)saveTabs
 {
     NSMutableArray *plain = [NSMutableArray array];
-    for (NSDictionary *t in self.tabs) [plain addObject:@{ @"url": t[@"url"] ?: @"", @"title": t[@"title"] ?: @"" }];
+    for (NSDictionary *t in self.tabs) [plain addObject:@{ @"url": t[@"url"] ?: @"", @"title": t[@"title"] ?: @"", @"scrollY": t[@"scrollY"] ?: @0 }];
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     [d setObject:plain forKey:@"BRTabs"];
     [d setInteger:(NSInteger)self.currentTab forKey:@"BRCurrentTab"];
@@ -822,6 +824,8 @@ static NSCache *BRFaviconCache(void)
     NSURL *url = self.webView.request.URL ?: self.currentURL;
     tab[@"url"] = ([BRSettings isHomeURL:url] || !url) ? @"" : (url.absoluteString ?: @"");
     tab[@"title"] = self.currentTitle ?: @"";
+    // (where the page was scrolled to: the tab comes back there, see restoreTabScroll)
+    tab[@"scrollY"] = @(MAX(0, [[self.webView stringByEvaluatingJavaScriptFromString:@"Math.round(window.pageYOffset||0)"] integerValue]));
     UIImage *snapshot = [self snapshotOfWebView];
     if (snapshot) tab[@"snapshot"] = snapshot;
     else [tab removeObjectForKey:@"snapshot"];
@@ -834,10 +838,25 @@ static NSCache *BRFaviconCache(void)
     NSDictionary *tab = self.tabs[index];
     NSURL *url = [NSURL URLWithString:tab[@"url"] ?: @""];
     self.currentTitle = tab[@"title"];
+    self.pendingScrollY = [tab[@"scrollY"] integerValue];
+    self.pendingScrollURL = url;
     [self updateTabsButton];
     [self saveTabs];
     if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [self loadURL:url];
     else [self goHome];
+}
+
+// A tab opened again goes back to where its page was scrolled (a tab's page is loaded again when it is opened: one
+// page lives at a time), once the page has loaded and again a little later for content that comes late
+- (void)restoreTabScroll:(NSURL *)loaded
+{
+    NSInteger y = self.pendingScrollY;
+    NSURL *want = self.pendingScrollURL;
+    self.pendingScrollY = 0;
+    self.pendingScrollURL = nil;
+    if (y <= 0 || !want || ![[want.host lowercaseString] isEqualToString:[loaded.host lowercaseString]] || ![want.path ?: @"" isEqualToString:loaded.path ?: @""]) return;
+    NSString *js = [NSString stringWithFormat:@"(function(y){window.scrollTo(0,y);setTimeout(function(){if(window.pageYOffset<y-40)window.scrollTo(0,y)},1200);})(%ld)", (long)y];
+    [self.webView stringByEvaluatingJavaScriptFromString:js];
 }
 
 - (void)presentModal:(UIViewController *)controller
@@ -854,6 +873,7 @@ static NSCache *BRFaviconCache(void)
     BRTabsViewController *tabsController = [[BRTabsViewController alloc] init];
     tabsController.delegate = self;
     tabsController.tabs = self.tabs;
+    tabsController.closedTabs = self.closedTabs;
     tabsController.currentIndex = self.currentTab;
     [self presentModal:tabsController];
 }
@@ -920,6 +940,27 @@ static NSCache *BRFaviconCache(void)
 - (void)tabsViewControllerDidRequestNewTab:(BRTabsViewController *)controller
 {
     [self openNewTab];
+}
+
+- (void)tabsViewController:(BRTabsViewController *)controller didReopenClosedTabAtIndex:(NSUInteger)index
+{
+    if (index >= self.closedTabs.count || self.tabs.count >= 12) return;
+    NSDictionary *closed = self.closedTabs[index];
+    [self.closedTabs removeObjectAtIndex:index];
+    [self storeCurrentTabState];
+    NSUInteger at = MIN(self.currentTab + 1, self.tabs.count);
+    [self.tabs insertObject:[closed mutableCopy] atIndex:at];
+    [self openTabAtIndex:at];
+}
+
+// every tab goes (into the recently closed ones), one empty tab stays
+- (void)tabsViewControllerDidCloseAllTabs:(BRTabsViewController *)controller
+{
+    [self storeCurrentTabState];
+    for (NSDictionary *tab in self.tabs) [self rememberClosedTab:tab];
+    [self.tabs removeAllObjects];
+    [self.tabs addObject:[@{ @"url": @"", @"title": @"" } mutableCopy]];
+    [self openTabAtIndex:0];
 }
 
 #pragma mark - BRTabBarDelegate (tab strip)
@@ -2612,6 +2653,7 @@ static void BRWebThreadLock(void)
         [self detectArticle];
         [self updateLockIcon];
         [self applyTextSize];
+        [self restoreTabScroll:url];
         if ([BRSettings pagesDark]) [self applyPageStyle];
         NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
         self.currentTitle = title;

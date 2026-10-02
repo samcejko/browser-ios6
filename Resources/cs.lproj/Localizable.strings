@@ -18,6 +18,9 @@
 "Tabs" = "Panely";
 "Close" = "Zavřít";
 "New tab" = "Nový panel";
+"Close all" = "Zavřít vše";
+"Close all %lu tabs" = "Zavřít všech %lu panelů";
+"Recently closed" = "Nedávno zavřené";
 "Appearance" = "Vzhled";
 "Dark theme" = "Tmavý vzhled";
 "Pages" = "Stránky";
