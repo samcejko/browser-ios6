@@ -10,7 +10,7 @@
 		<string>cs</string>
 	</array>
 	<key>CFBundleDisplayName</key>
-	<string>Browser</string>
+	<string>Surfari</string>
 	<key>CFBundleExecutable</key>
 	<string>Browser</string>
 	<key>CFBundleIdentifier</key>
@@ -62,7 +62,7 @@
 	<key>UIStatusBarStyle</key>
 	<string>UIStatusBarStyleDefault</string>
 	<key>UIPrerenderedIcon</key>
-	<false/>
+	<true/>
 	<key>CFBundleIconFiles</key>
 	<array>
 		<string>Icon.png</string>
@@ -90,7 +90,7 @@
 				<string>Icon-Small-50@2x.png</string>
 			</array>
 			<key>UIPrerenderedIcon</key>
-			<false/>
+			<true/>
 		</dict>
 	</dict>
 	<key>UIFileSharingEnabled</key>

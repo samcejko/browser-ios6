@@ -21,9 +21,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential fakeroot rsync curl perl zip unzip git libxml2 xz-utils python3-pil fonts-dejavu-core libplist-utils libtinfo5 || \
+            build-essential fakeroot rsync curl perl zip unzip git libxml2 xz-utils python3-pil fonts-dejavu-core librsvg2-bin libplist-utils libtinfo5 || \
           sudo apt-get install -y --no-install-recommends \
-            build-essential fakeroot rsync curl perl zip unzip git libxml2 xz-utils python3-pil fonts-dejavu-core libplist-utils
+            build-essential fakeroot rsync curl perl zip unzip git libxml2 xz-utils python3-pil fonts-dejavu-core librsvg2-bin libplist-utils
 
       - name: Restore Theos cache
         id: theos-cache

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Surfari app icon (master, full-bleed square: iOS rounds the corners). Rendered by tools/gen_assets.py
+     with rsvg-convert. The icon carries its own gloss (UIPrerenderedIcon is on in Info.plist). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 160 160">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cdf3b4"/>
+      <stop offset="0.46" stop-color="#7fd566"/>
+      <stop offset="0.5" stop-color="#3cae36"/>
+      <stop offset="1" stop-color="#a9ec92"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.12"/>
+    </linearGradient>
+    <radialGradient id="cap" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#8a95a5"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="160" height="160" fill="url(#bg)"/>
+
+  <!-- the sea: a wave band, a breaking wave and a crest line where Safari has its map -->
+  <path d="M0,128 q10,-9 20,0 t20,0 t20,0 t20,0 t20,0 t20,0 t20,0 t20,0 L160,160 L0,160 Z" fill="#ffffff" fill-opacity="0.16"/>
+  <path d="M60,160 C70,132 96,112 126,118 C110,124 104,136 112,146 C120,138 134,138 144,146 L160,160 Z" fill="#ffffff" fill-opacity="0.22"/>
+  <path d="M0,112 q10,-8 20,0 t20,0 t20,0 t20,0 t20,0 t20,0 t20,0 t20,0" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="2"/>
+
+  <g transform="translate(80,80)">
+    <!-- ticks -->
+    <circle r="68" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="7" stroke-dasharray="1.7 4.24"/>
+    <!-- cardinal points -->
+    <circle cx="0" cy="-57" r="14" fill="#ffffff" fill-opacity="0.16"/>
+    <circle cx="0" cy="57" r="14" fill="#ffffff" fill-opacity="0.16"/>
+    <circle cx="57" cy="0" r="14" fill="#ffffff" fill-opacity="0.16"/>
+    <circle cx="-57" cy="0" r="14" fill="#ffffff" fill-opacity="0.16"/>
+    <g font-family="DejaVu Serif, Georgia, Times New Roman, serif" font-weight="bold" font-size="19" fill="#ffffff" text-anchor="middle">
+      <text x="0" y="-50">N</text>
+      <text x="0" y="64">S</text>
+      <text transform="translate(57,0) rotate(90)" x="0" y="7">E</text>
+      <text transform="translate(-57,0) rotate(-90)" x="0" y="7">W</text>
+    </g>
+    <!-- compass rose -->
+    <g fill="#ffffff">
+      <polygon points="0,-43 6,-6 -6,-6"/>
+      <polygon points="0,43 6,6 -6,6"/>
+      <polygon points="43,0 6,6 6,-6"/>
+      <polygon points="-43,0 -6,6 -6,-6"/>
+      <g transform="rotate(45)">
+        <polygon points="0,-28 5,-5 -5,-5"/>
+        <polygon points="0,28 5,5 -5,5"/>
+        <polygon points="28,0 5,5 5,-5"/>
+        <polygon points="-28,0 -5,5 -5,-5"/>
+      </g>
+    </g>
+    <circle r="19" fill="#57c04b" stroke="#ffffff" stroke-width="4"/>
+    <path d="M-17,6 q4,-5 8,0 t8,0 t8,0 t8,0 t8,0 L19,19 L-17,19 Z" fill="#ffffff" fill-opacity="0.45"/>
+    <!-- the needle: a surfboard (shadow, then the two halves, each lit on one side) -->
+    <path transform="translate(2.5,3.5) rotate(45)" d="M0,-64 C9,-38 10,-14 10,0 C10,14 9,38 0,64 C-9,38 -10,14 -10,0 C-10,-14 -9,-38 0,-64 Z" fill="#0d3d12" fill-opacity="0.3"/>
+    <g transform="rotate(45)">
+      <path d="M0,-64 C-9,-38 -10,-14 -10,0 L0,0 Z" fill="#f28a4c"/>
+      <path d="M0,-64 C9,-38 10,-14 10,0 L0,0 Z" fill="#c24e1c"/>
+      <path d="M0,64 C-9,38 -10,14 -10,0 L0,0 Z" fill="#ffffff"/>
+      <path d="M0,64 C9,38 10,14 10,0 L0,0 Z" fill="#b7c1ce"/>
+    </g>
+    <!-- pin -->
+    <circle r="7" fill="#7e8998"/>
+    <circle r="5.5" fill="url(#cap)"/>
+    <circle cx="-1.6" cy="-1.8" r="1.6" fill="#ffffff"/>
+  </g>
+
+  <!-- gloss -->
+  <path d="M0,0 L160,0 L160,72 Q80,78 0,72 Z" fill="url(#gloss)"/>
+</svg>
