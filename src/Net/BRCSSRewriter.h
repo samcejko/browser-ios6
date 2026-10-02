@@ -61,6 +61,10 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 // its ES5 text, nil when it needs nothing or could not be lowered (*failed says which). Blocks; any thread but the
 // transpiler engine's.
 - (NSData *)loweredPageScript:(NSData *)text failed:(BOOL *)failed;
+// A style a page's script inserted (shims-extra.js runtimeCSS, through https://ios6-browser.invalid/cssrun): the JSON
+// array [css, page variables JSON, options JSON] in, CSSFix.run's JSON result out, kept by the text. nil while the
+// rewriter's engine has other work (the page then rewrites it itself). Blocks; any thread but the rewriter engine's.
+- (NSData *)runtimeStyleResult:(NSData *)request;
 // NO when a lowered chunk keeps factories for later whose texts are gone (it must be lowered again); any thread
 + (BOOL)lazyPartsPresentIn:(NSData *)lowered;
 // The transpiler's kept result for a script of this text goes (a script the page could not parse, see BRURLProtocol)

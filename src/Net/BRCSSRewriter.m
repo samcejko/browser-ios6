@@ -829,6 +829,53 @@ static NSArray *BRManifestKinds(void)
     return finished ? out : nil;
 }
 
+// (here the rewriter's code is compiled and warm: a page's own copy loads, compiles and runs it three times as slowly -
+// Didomi's 64 KB consent styles took 0.74 s on idnes.cz - and the same styles come back on every visit)
+- (NSData *)runtimeStyleResult:(NSData *)request
+{
+    if (request.length < 8) return nil;
+    unsigned long crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (const Bytef *)request.bytes, (uInt)request.length);
+    NSString *key = [NSString stringWithFormat:@"css-%08lx-%lx-%@-%@", crc, (unsigned long)request.length, BRRewriterTag(), BRTranspileTag()];
+    NSString *path = [BRTranspiledDirectory() stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]];
+    BOOL private = [BRSettings privateMode];
+    NSData *cached = [_transpiled objectForKey:key];
+    if (!cached && !private) {
+        cached = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
+        if (cached) {
+            [[NSFileManager defaultManager] setAttributes:@{ NSFileModificationDate: [NSDate date] } ofItemAtPath:path error:NULL];
+            [_transpiled setObject:cached forKey:key cost:cached.length];
+        }
+    }
+    if (cached.length) return cached;
+    // (not behind a stylesheet or document of the page: the page would wait longer than doing it itself)
+    BRJSEngine *engine = [BRJSEngine shared];
+    if (engine.pending > 0) return nil;
+    __block NSData *out = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
+    [engine performAsync:^{
+        @autoreleasepool {
+            NSArray *args = [NSJSONSerialization JSONObjectWithData:request options:0 error:NULL];
+            BOOL ok = [args isKindOfClass:[NSArray class]] && args.count == 3;
+            for (NSUInteger i = 0; ok && i < 3; i++) ok = [args[i] isKindOfClass:[NSString class]];
+            NSString *result = ok && [self ensureLoaded] ? [engine callFunction:@"CSSFix.run" arguments:@[@"css", args[0], args[1], args[2]]] : nil;
+            if (result.length) out = [result dataUsingEncoding:NSUTF8StringEncoding];
+        }
+        dispatch_semaphore_signal(done);
+    }];
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC))) != 0) return nil;
+    long ms = (long)(([NSDate timeIntervalSinceReferenceDate] - t0) * 1000);
+    if (ms > 100) BRLog(@"Inserted style (%lu KB) rewritten for the page in %ld ms", (unsigned long)(request.length >> 10), ms);
+    if (!out) return nil;
+    [_transpiled setObject:out forKey:key cost:out.length + 64];
+    if (!private) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:BRTranspiledDirectory() withIntermediateDirectories:YES attributes:nil error:NULL];
+        [out writeToFile:path atomically:YES];
+    }
+    return out;
+}
+
 + (void)cancelPendingWork
 {
     g_workGeneration++;

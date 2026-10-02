@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>style-cut test</title>
+<style>
+body { font: 13px/1.4 -apple-system, Segoe UI, sans-serif; margin: 16px; }
+.pass { color: #080; } .fail { color: #c00; }
+</style>
+<script src="../Resources/cssfix.js"></script>
+<script src="../Resources/shims.js"></script>
+<script src="../Resources/shims-extra.js"></script>
+</head>
+<body>
+<h1>A long style text the parser cut into pieces of 65,536 characters is rewritten as one text</h1>
+<div id="summary"></div>
+<div id="out"></div>
+<script>
+var results = [], pass = 0, total = 0;
+var show = function (name, ok, detail) {
+  total++; if (ok) pass++;
+  var div = document.createElement('div');
+  div.innerHTML = '<b class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'PASS' : 'FAIL') + '</b> ' + name + (detail ? ' - ' + detail : '');
+  document.getElementById('out').appendChild(div);
+  results.push({ name: name, ok: ok, detail: detail });
+};
+// filler up to just before 65,536 characters, then a rule the cut falls into (as the parser splits a long text)
+var css = '';
+for (var i = 0; css.length < 65500; i++) css += '.cut-filler-' + i + '{margin-left:' + (i % 50) + 'px}\n';
+css += '.cut-target{display:flex;-webkit-box-pack:center}\n.cut-after{display:flex}\n';
+var at = 65536;
+var st = document.createElement('style');
+st.appendChild(document.createTextNode(css.slice(0, at)));
+st.appendChild(document.createTextNode(css.slice(at)));
+var cutText = css.slice(at - 6, at + 6);
+// two pieces of a script that appends rules one by one (no cut): each rewritten alone, as before
+var st2 = document.createElement('style');
+st2.appendChild(document.createTextNode('.own-a{display:flex}'));
+st2.appendChild(document.createTextNode('.own-b{display:flex}'));
+document.head.appendChild(st);
+document.head.appendChild(st2);
+setTimeout(function () {
+  var a = st.childNodes[0].data, b = st.childNodes[1].data;
+  show('the cut rule is whole in the first piece', a.indexOf('.cut-target{') >= 0 && a.indexOf('.cut-after') >= 0, 'cut at ' + JSON.stringify(cutText));
+  show('the second piece is empty', b === '', b.length + ' characters');
+  show('the text was rewritten (display:flex)', a !== css && /-webkit-box/.test(a.slice(a.indexOf('.cut-target'))), a.slice(a.indexOf('.cut-target'), a.indexOf('.cut-target') + 120));
+  show('the filler is all there', a.indexOf('.cut-filler-0{') >= 0 && a.indexOf('.cut-filler-' + (i - 1) + '{') >= 0);
+  var a2 = st2.childNodes[0].data, b2 = st2.childNodes[1].data;
+  show('pieces without a cut are rewritten one by one', /^\s*\.own-a/.test(a2) && /\.own-b/.test(b2) && a2.indexOf('.own-b') < 0, JSON.stringify([a2.slice(0, 60), b2.slice(0, 60)]));
+  // a third piece the parser adds later: rewritten with the others
+  st.appendChild(document.createTextNode('.cut-late{display:flex}'));
+  setTimeout(function () {
+    var a3 = st.childNodes[0].data;
+    show('a piece added later joins the text', a3.indexOf('.cut-late') >= 0 && st.childNodes[2].data === '' && a3.indexOf('.cut-target{') >= 0);
+    show('the source is not rewritten twice', (a3.match(/\.cut-target\{/g) || []).length === 1, (a3.match(/\.cut-target\{/g) || []).length + 'x');
+    document.getElementById('summary').textContent = pass + ' / ' + total;
+    document.title = 'style-cut ' + pass + '/' + total;
+    window.__cutResults = results;
+  }, 100);
+}, 100);
+</script>
+</body>
+</html>

@@ -1456,6 +1456,13 @@ static BOOL BRIsFontDataURL(NSURL *url)
         if (!body && !failed) body = [NSData data];
         type = @"text/plain; charset=utf-8";
         cacheControl = @"no-store";
+    } else if ([path isEqualToString:@"/cssrun"]) {
+        // a style a page's script inserted, rewritten by the app's rewriter (blocking, as /lower); an error status while
+        // the rewriter is busy: the page does it itself
+        NSData *src = self.request.HTTPBody ?: BRReadBodyStream(self.request.HTTPBodyStream);
+        body = [[BRCSSRewriter shared] runtimeStyleResult:src];
+        type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/lazy/"]) {
         // /lazy/<crc>-<length>/<n>.js: factory n of a webpack chunk the transpiler kept for later (a synchronous request
         // of the page's stub, answered when it is lowered; blocking, as /lower)

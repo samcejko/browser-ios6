@@ -10726,9 +10726,23 @@
             return true;
         };
         var addEntries = function (add) { if (add && window.__brManifestAdd) { try { window.__brManifestAdd(add); } catch (e) {} } };
-        var fixText = function (css, hostScope) {
+        // A big text goes to the app's rewriter, whose code is compiled and warm and which keeps what it did (a copy
+        // loaded here took three times as long: Didomi's 64 KB consent styles 0.74 s on idnes.cz); a small one, or one
+        // while the app is busy with the page's stylesheets, is done here.
+        var APP_MIN = 4096;
+        var runFix = function (css, pv, opts) {
+            if (css.length >= APP_MIN) {
+                try {
+                    var x = new XMLHttpRequest();
+                    x.open('POST', 'https://ios6-browser.invalid/cssrun', false);
+                    x.send(JSON.stringify([css, JSON.stringify(pv), JSON.stringify(opts)]));
+                    if (x.status === 200 && x.responseText) return JSON.parse(x.responseText);
+                } catch (e) {}
+            }
             var lib = loadCSSFix();
-            if (!lib || !lib.run) return null;
+            return lib && lib.run ? JSON.parse(lib.run('css', css, pv, opts)) : null;
+        };
+        var fixText = function (css, hostScope) {
             var pv = pageVars(), land = window.orientation === 90 || window.orientation === -90, ck = null;
             if (hostScope && css.length > 256) {
                 ck = (land ? 'L|' : 'P|') + css;
@@ -10742,13 +10756,14 @@
                 orientation: land ? 'landscape' : 'portrait' };
             try {
                 if (hostScope) opts.hostScope = ck !== null ? HOST_MARK : hostScope;   // (a stylesheet inside an emulated shadow root, see hostSelector)
-                r = JSON.parse(lib.run('css', css, pv, opts));
-                if (ck !== null && r.manifest && !hostSafe(r.manifest)) {
+                r = runFix(css, pv, opts);
+                if (r && ck !== null && r.manifest && !hostSafe(r.manifest)) {
                     ck = null;
                     opts.hostScope = hostScope;
-                    r = JSON.parse(lib.run('css', css, pv, opts));
+                    r = runFix(css, pv, opts);
                 }
             } catch (e) { return null; }
+            if (!r) return null;
             noteState(r.vars);
             // (with the custom properties this text defines, see extraVars)
             var add = r.manifest || null, rv = r.vars, defs = null;
@@ -10872,13 +10887,41 @@
             }
             return null;
         };
-        var fixNode = function (node) {
-            var data = node.data;
-            if (!data || node.__brOut === data || !/[{:]/.test(data)) return;
-            if (node.parentNode && nativeStyle(node.parentNode)) return;
-            var out = null;
-            try { out = runtimeCSS.fixText(data, node.parentNode ? shadowHost(node.parentNode) : null); } catch (e) { out = null; }
+        // The parser splits a long style text into nodes of 65,536 characters, cut anywhere (Didomi's 86 KB on idnes.cz
+        // mid-selector): such pieces are rewritten as one text, which goes into the first; the others are emptied.
+        // __brIn keeps what a node held before it was rewritten (only where it can matter).
+        var PIECE = 65536;
+        var sourceOf = function (n) { return n.__brOut === n.data && n.__brIn !== undefined ? n.__brIn : n.data; };
+        var cutPieces = function (el) {
+            for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3 && n.nextSibling && sourceOf(n).length === PIECE) return true;
+            return false;
+        };
+        var fixJoined = function (el) {
+            var list = [], src = '', n, i, out = null;
+            for (n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) { list.push(n); src += sourceOf(n); }
+            el.__brJoined = true;
+            if (!/[{:]/.test(src)) return;
+            try { out = runtimeCSS.fixText(src, shadowHost(el)); } catch (e) { out = null; }
             if (out === null) return;
+            for (i = 0; i < list.length; i++) {
+                list[i].__brIn = i ? '' : src;
+                list[i].__brOut = i ? '' : out;
+                if (list[i].data !== list[i].__brOut) list[i].data = list[i].__brOut;
+            }
+        };
+        var fixNode = function (node) {
+            var data = node.data, el = node.parentNode;
+            if (node.__brOut === data) return;
+            if (el && el.nodeName === 'STYLE' && (el.__brJoined || ((node.nextSibling || node.previousSibling) && cutPieces(el)))) {
+                if (!nativeStyle(el)) fixJoined(el);
+                return;
+            }
+            if (!data || !/[{:]/.test(data)) return;
+            if (el && nativeStyle(el)) return;
+            var out = null;
+            try { out = runtimeCSS.fixText(data, el ? shadowHost(el) : null); } catch (e) { out = null; }
+            if (out === null) return;
+            if (data.length === PIECE) node.__brIn = data;
             node.__brOut = out;
             if (out !== data) node.data = out;
         };
