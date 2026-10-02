@@ -2576,7 +2576,6 @@ static void BRWebThreadLock(void)
                    [scheme isEqualToString:@"about"] || [scheme isEqualToString:@"data"] || [scheme isEqualToString:@"applewebdata"];
     if (handled) {
         BOOL mainFrame = [url isEqual:request.mainDocumentURL] || navigationType != UIWebViewNavigationTypeOther;
-        if (mainFrame && [self redirectedToUnsupportedBrowserPage:url]) return NO;
         if (mainFrame && ![scheme isEqualToString:@"about"] && ![scheme isEqualToString:@"applewebdata"]) {
             [self compositingForNavigationTo:url];
             self.currentURL = url;
@@ -2641,42 +2640,6 @@ static void BRWebThreadLock(void)
     }
 }
 
-// A site that sends the old engine to a page of its own for outdated browsers (m.youtube.com/supported_browsers, and
-// with that interstitial passed once, YouTube's legacy es5 build: blank, and 25-30 s where its current build had taken
-// 8): the site is asked again as a current device (iPad, or iPhone for a site that gets the phone version), going on
-// to where the redirect came from.
-- (BOOL)redirectedToUnsupportedBrowserPage:(NSURL *)url
-{
-    if (![[url.scheme lowercaseString] hasPrefix:@"http"] || !url.host.length) return NO;
-    static NSRegularExpression *re;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        re = [NSRegularExpression regularExpressionWithPattern:
-              @"(^|/)(supported[-_]?browsers?|unsupported[-_]?browsers?|browsers?[-_]?(not[-_]?)?supported|outdated[-_]?browsers?|old[-_]?browsers?|"
-               "incompatible[-_]?browsers?|(upgrade|update)[-_]?(your[-_]?)?browser|browser[-_]?(upgrade|update))(/|\\.|$)"
-                                                       options:NSRegularExpressionCaseInsensitive error:NULL];
-    });
-    NSString *path = url.path ?: @"";
-    if (![re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)]) return NO;
-    NSInteger mode = [BRSettings userAgentModeForHost:url.host];
-    if (mode != 0 && mode != 3) return NO;   // (already a current device: the page is shown)
-    [BRSettings setUserAgentMode:mode == 3 ? 4 : 2 forHost:url.host];
-    // where to go: the address the redirect names (next_url, continue, return...) on the same site, else the page asked for
-    NSURL *next = nil;
-    for (NSString *pair in [(url.query ?: @"") componentsSeparatedByString:@"&"]) {
-        NSRange eq = [pair rangeOfString:@"="];
-        if (eq.location == NSNotFound) continue;
-        NSString *name = [[pair substringToIndex:eq.location] lowercaseString];
-        if (![@[@"next_url", @"next", @"continue", @"return", @"return_url", @"returnurl", @"redirect", @"redirect_url", @"url"] containsObject:name]) continue;
-        NSURL *u = [NSURL URLWithString:[[pair substringFromIndex:eq.location + 1] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @""];
-        if ([[u.scheme lowercaseString] hasPrefix:@"http"] && [[u.host lowercaseString] isEqualToString:[url.host lowercaseString]]) { next = u; break; }
-    }
-    if (!next) next = [[self.currentURL.host lowercaseString] isEqualToString:[url.host lowercaseString]] ? self.currentURL : [NSURL URLWithString:@"/" relativeToURL:url].absoluteURL;
-    BRLog(@"%@ sent this browser to %@: asking it again as a current %@ (%@)", url.host, url.path, mode == 3 ? @"iPhone" : @"iPad", next.absoluteString);
-    dispatch_async(dispatch_get_main_queue(), ^{ [self loadURL:next ignoringCache:YES]; });   // (not from inside WebKit's decision)
-    return YES;
-}
-
 // "Your browser is no longer supported": once per host, the page is fetched again as a current iPad
 - (void)checkForUnsupportedBrowserPage:(NSString *)title url:(NSURL *)url
 {
@@ -2692,10 +2655,25 @@ static void BRWebThreadLock(void)
          "browser (is )?(no longer|not) supported|unsupported browser|update your browser|upgrade your browser|browser is out of date|outdated browser"
         options:NSRegularExpressionCaseInsensitive error:NULL];
     if (![re firstMatchInString:text options:0 range:NSMakeRange(0, text.length)]) return;
-    static NSMutableSet *retried;
-    if (!retried) retried = [NSMutableSet set];
+    static NSMutableSet *retried, *continued;
+    if (!retried) { retried = [NSMutableSet set]; continued = [NSMutableSet set]; }
     NSString *host = [url.host lowercaseString];
     if ([retried containsObject:host]) return;
+    // A notice that lets old browsers go on ("Přejít na YouTube": a link into the same site) is followed first: what
+    // such a site sends old browsers then is made for them and lighter on this iPad (YouTube's es5 build: the feed after
+    // 28-36 s, its current build lowered here 55-66 s). Once per host: should it come back, the identity changes.
+    if (![continued containsObject:host]) {
+        [continued addObject:host];
+        NSString *js = @"(function(){var h=location.host,a=document.querySelectorAll('a[href]'),re=/continue|proceed|anyway|go to|take me|enter|pokra[\\u010dc]ovat|p[\\u0159r]ej[\\u00edi]t|p[\\u0159r]esto|vstoupit/i;"
+                        "for(var i=0;i<a.length;i++){var l=a[i];if(l.host===h&&l.href!==location.href&&re.test(l.textContent||''))return l.href;}return '';})()";
+        NSString *next = [self.webView stringByEvaluatingJavaScriptFromString:js];
+        NSURL *nextURL = next.length ? [NSURL URLWithString:next] : nil;
+        if (nextURL) {
+            BRLog(@"Unsupported-browser page on %@ lets old browsers go on: following %@", host, nextURL.absoluteString);
+            [self loadURL:nextURL];
+            return;
+        }
+    }
     [retried addObject:host];
     BRLog(@"Unsupported-browser page on %@: retrying as a current %@", host, mode == 3 ? @"iPhone" : @"iPad");
     [BRSettings setUserAgentMode:mode == 3 ? 4 : 2 forHost:host];
