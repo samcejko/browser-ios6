@@ -10,8 +10,32 @@
     return [h hasPrefix:@"www."] ? [h substringFromIndex:4] : h;
 }
 
+// Logins kept before 1.0 carried no protocol and could leave the iPad in a backup: brought to the current form
+// (https, this device only) once. Should that fail, nothing is lost: the lookups below find both forms.
+static void BRPasswordsUpdateOldItems(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        if ([d boolForKey:@"BRPasswordsHTTPSOnly"]) return;
+        NSDictionary *all = @{ (__bridge id)kSecClass: (__bridge id)kSecClassInternetPassword };
+        NSDictionary *now = @{ (__bridge id)kSecAttrProtocol: (__bridge id)kSecAttrProtocolHTTPS,
+                               (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly };
+        OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)all, (__bridge CFDictionaryRef)now);
+        if (status == errSecSuccess || status == errSecItemNotFound) {
+            [d setBool:YES forKey:@"BRPasswordsHTTPSOnly"];
+            [d synchronize];
+        } else {
+            BRLog(@"Updating the kept logins failed (%d)", (int)status);
+        }
+    });
+}
+
+// Lookups go by the site alone (no protocol): every login is kept for https (see savePassword), and one kept by an
+// older version without a protocol is still found
 static NSMutableDictionary *BRPasswordQuery(NSString *site)
 {
+    BRPasswordsUpdateOldItems();
     return [@{ (__bridge id)kSecClass: (__bridge id)kSecClassInternetPassword, (__bridge id)kSecAttrServer: site } mutableCopy];
 }
 
@@ -25,10 +49,12 @@ static NSMutableDictionary *BRPasswordQuery(NSString *site)
     CFTypeRef result = NULL;
     if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) != errSecSuccess || !result) return @[];
     NSArray *items = (__bridge_transfer NSArray *)result;
+    if (![items isKindOfClass:[NSArray class]]) return @[];
     NSMutableArray *accounts = [NSMutableArray array];
     for (NSDictionary *item in items) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
         NSString *account = item[(__bridge id)kSecAttrAccount];
-        if ([account isKindOfClass:[NSString class]]) [accounts addObject:account];
+        if ([account isKindOfClass:[NSString class]] && ![accounts containsObject:account]) [accounts addObject:account];
     }
     return accounts;
 }
@@ -44,6 +70,7 @@ static NSMutableDictionary *BRPasswordQuery(NSString *site)
     CFTypeRef result = NULL;
     if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) != errSecSuccess || !result) return nil;
     NSData *data = (__bridge_transfer NSData *)result;
+    if (![data isKindOfClass:[NSData class]]) return nil;
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 }
 
@@ -60,9 +87,11 @@ static NSMutableDictionary *BRPasswordQuery(NSString *site)
     if (!site.length || !data.length) return NO;
     NSMutableDictionary *q = BRPasswordQuery(site);
     q[(__bridge id)kSecAttrAccount] = account ?: @"";
-    SecItemDelete((__bridge CFDictionaryRef)q);
+    SecItemDelete((__bridge CFDictionaryRef)q);   // (both forms: an older one without a protocol goes too)
+    // kept for https pages only (the browser offers and fills them on verified https pages alone), never in a backup
+    q[(__bridge id)kSecAttrProtocol] = (__bridge id)kSecAttrProtocolHTTPS;
     q[(__bridge id)kSecValueData] = data;
-    q[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlocked;
+    q[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
     q[(__bridge id)kSecAttrLabel] = site;
     OSStatus status = SecItemAdd((__bridge CFDictionaryRef)q, NULL);
     if (status != errSecSuccess) BRLog(@"Keeping a login for %@ failed (%d)", site, (int)status);
@@ -92,7 +121,7 @@ static NSMutableDictionary *BRPasswordQuery(NSString *site)
     CFTypeRef result = NULL;
     if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &result) != errSecSuccess || !result) return 0;
     NSArray *items = (__bridge_transfer NSArray *)result;
-    return items.count;
+    return [items isKindOfClass:[NSArray class]] ? items.count : 0;
 }
 
 + (void)deleteAll

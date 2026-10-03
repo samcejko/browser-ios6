@@ -1,5 +1,6 @@
 #import "BRConnectionPool.h"
 #import "BRTLSSocket.h"
+#import "BRSettings.h"
 #import "BRCommon.h"
 
 static const NSTimeInterval BRIdleTimeout = 25;     // most servers drop idle connections after 5 to 60 s
@@ -18,6 +19,7 @@ static const NSUInteger BRMaxIdleTotal = 24;
     NSMutableDictionary *_idle;     // key -> NSMutableArray<BRPooledConnection>
     NSUInteger _count;
     NSUInteger _reuses;
+    uint32_t _firstSerial;          // sockets made before this one (see closeAllConnections) are not taken back
 }
 
 + (instancetype)shared
@@ -58,6 +60,8 @@ static const NSUInteger BRMaxIdleTotal = 24;
 - (BRTLSSocket *)checkoutSocketForKey:(NSString *)key
 {
     if (!key) return nil;
+    // (one made while certificates were not checked is no connection for a request that checks them)
+    BOOL verifying = [BRSettings verifyTLS];
     NSMutableArray *dead = [NSMutableArray array];
     BRTLSSocket *result = nil;
     @synchronized (self) {
@@ -67,7 +71,8 @@ static const NSUInteger BRMaxIdleTotal = 24;
             BRPooledConnection *c = [list lastObject];
             [list removeLastObject];
             _count--;
-            if ([c.socket isLikelyAlive]) result = c.socket;
+            BOOL fits = c.socket.plain || c.socket.verified || !verifying;
+            if (fits && [c.socket isLikelyAlive]) result = c.socket;
             else [dead addObject:c.socket];
         }
         if (result) _reuses++;
@@ -87,7 +92,7 @@ static const NSUInteger BRMaxIdleTotal = 24;
             list = [NSMutableArray array];
             _idle[key] = list;
         }
-        if (list.count >= BRMaxIdlePerKey || _count >= BRMaxIdleTotal) {
+        if (socket.serial < _firstSerial || list.count >= BRMaxIdlePerKey || _count >= BRMaxIdleTotal) {
             [dead addObject:socket];
         } else {
             BRPooledConnection *c = [[BRPooledConnection alloc] init];
@@ -112,6 +117,14 @@ static const NSUInteger BRMaxIdleTotal = 24;
     }
     for (BRTLSSocket *s in dead) [s close];
     if (dead.count) BRLog(@"Connection pool drained (%lu closed)", (unsigned long)dead.count);
+}
+
++ (void)closeAllConnections
+{
+    BRConnectionPool *pool = [self shared];
+    // (the requests under way give their sockets back when they finish: those are closed then, see checkinSocket)
+    @synchronized (pool) { pool->_firstSerial = [BRTLSSocket latestSerial] + 1; }
+    [pool drain];
 }
 
 - (NSUInteger)idleCount

@@ -184,9 +184,10 @@
         G.AbortController = AbortController;
         G.AbortSignal = AbortSignal;
     })(self);
-    // wss:// WebSockets through the app's TLS, as in shims-extra.js (a local ws:// address from /wsproxy, the engine's
-    // own socket when that fails before opening; a socket object of the shims); relative and http(s) URLs taken as
-    // today's browsers take them
+    // wss:// WebSockets through the app's TLS, as in shims-extra.js (a local ws:// address from /wsproxy; the engine's
+    // own socket only when the app gives none - once the relay has the socket, a failure before opening is 'error' and
+    // 'close', never a second try over the system's TLS; a socket object of the shims); relative and http(s) URLs taken
+    // as today's browsers take them
     if (self.WebSocket && self.WebSocket.prototype && !self.WebSocket.__brLocal && typeof XMLHttpRequest !== 'undefined') (function (G) {
         var Native = G.WebSocket;
         var domException = function (name, msg) {
@@ -241,12 +242,14 @@
                 ws.onmessage = function (e) { fire(self, 'message', { data: e.data, origin: origin, lastEventId: '', ports: [] }); };
                 ws.onerror = function () { if (!(proxied && !opened)) fire(self, 'error', {}); };
                 ws.onclose = function (e) {
-                    if (proxied && !opened && !self.__byPage) {
-                        try { self.__ws = attach(make(target, protocols), false); return; } catch (e2) {}
-                        fire(self, 'error', {});
-                    }
+                    var code = e.code, reason = e.reason || '', clean = !!e.wasClean;
+                    // (a server the app's TLS refused: the relay's 4015 "tls" becomes the error and 1015 of a failed TLS
+                    // handshake, as in shims-extra.js. The relay failed before the socket opened: the page's one error, no
+                    // second try - see above.)
+                    if (proxied && code === 4015 && reason === 'tls' && !self.__byPage) { fire(self, 'error', {}); code = 1015; clean = false; }
+                    else if (proxied && !opened && !self.__byPage) fire(self, 'error', {});
                     self.readyState = 3;
-                    fire(self, 'close', { code: e.code, reason: e.reason || '', wasClean: !!e.wasClean });
+                    fire(self, 'close', { code: code, reason: reason, wasClean: clean });
                 };
                 return ws;
             };
@@ -554,7 +557,54 @@
     })(self);
     var crypto = self.crypto;
     if (!crypto) { crypto = {}; try { self.crypto = crypto; } catch (e) {} }
-    if (!crypto.getRandomValues) crypto.getRandomValues = function (arr) { for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; };
+    // crypto.getRandomValues: the values come from the app's generator (SecRandomCopyBytes), 4 KB at a time as hex from
+    // https://ios6-browser.invalid/random by a synchronous request, and are not kept once handed out. Should that fail the
+    // call throws: never Math.random, whose next outputs a few observed ones give away - crypto libraries make keys,
+    // nonces and IVs in workers, and without a generator they stop instead of making guessable ones.
+    if (!crypto.getRandomValues && typeof XMLHttpRequest !== 'undefined' && self.Uint8Array) (function (G) {
+        var POOL = 4096, pool = null, used = POOL;
+        var named = function (name, msg) {
+            try { var e = new G.DOMException(msg, name); if (e.name === name) return e; } catch (eD) {}
+            var err = new Error(msg);
+            err.name = name;
+            return err;
+        };
+        var nibble = function (c) { return c >= 48 && c <= 57 ? c - 48 : c >= 97 && c <= 102 ? c - 87 : c >= 65 && c <= 70 ? c - 55 : -1; };
+        var refill = function () {
+            var text = '', bytes, i, hi, lo;
+            try {
+                var x = new XMLHttpRequest();
+                x.open('GET', 'https://ios6-browser.invalid/random?n=' + POOL, false);
+                x.send(null);
+                if (x.status === 200) text = String(x.responseText || '').replace(/\s+/g, '');
+            } catch (e) { text = ''; }
+            if (text.length !== POOL * 2) throw named('OperationError', 'No secure random source is available');
+            bytes = new Uint8Array(POOL);
+            for (i = 0; i < POOL; i++) {
+                hi = nibble(text.charCodeAt(2 * i)); lo = nibble(text.charCodeAt(2 * i + 1));
+                if (hi < 0 || lo < 0) throw named('OperationError', 'No secure random source is available');
+                bytes[i] = (hi << 4) | lo;
+            }
+            pool = bytes;
+            used = 0;
+        };
+        crypto.getRandomValues = function (arr) {
+            // (integer typed arrays only, at most 65536 bytes, as the standard has it)
+            if (!arr || typeof arr.byteLength !== 'number' || typeof arr.length !== 'number' || !arr.buffer || (G.DataView && arr instanceof G.DataView) ||
+                (G.Float32Array && arr instanceof G.Float32Array) || (G.Float64Array && arr instanceof G.Float64Array))
+                throw named('TypeMismatchError', "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is of type 'Float' or not an integer array.");
+            if (arr.byteLength > 65536) throw named('QuotaExceededError', "Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (" + arr.byteLength + ') exceeds the number of bytes of entropy available via this API (65536).');
+            var out = new Uint8Array(arr.buffer, arr.byteOffset || 0, arr.byteLength), n = out.length, at = 0, take, k;
+            while (at < n) {
+                if (used >= POOL) refill();
+                take = Math.min(n - at, POOL - used);
+                for (k = 0; k < take; k++) { out[at + k] = pool[used + k]; pool[used + k] = 0; }
+                used += take;
+                at += take;
+            }
+            return arr;
+        };
+    })(self);
     if (!crypto.subtle && self.Promise) {
         var rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
         var rotl = function (x, n) { return (x << n) | (x >>> (32 - n)); };

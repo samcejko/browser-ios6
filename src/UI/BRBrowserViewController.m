@@ -3,6 +3,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <dlfcn.h>
+#import <Security/Security.h>
 #import "BRWebView.h"
 #import "BRSettingsViewController.h"
 #import "BRLibraryViewController.h"
@@ -86,7 +87,18 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) NSURL *currentURL;               // last main frame URL that was navigated to
 @property (nonatomic, strong) NSURL *crashedURL;               // the page the previous run died loading (offered again)
 @property (nonatomic) BOOL compositingOff;                     // accelerated compositing is off (the page's graphics were too big)
-@property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https fails
+@property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https is refused
+@property (nonatomic, strong) NSURL *pendingExternalURL;       // another app's address waiting for "Open in another app?"
+@property (nonatomic) NSTimeInterval externalDeclinedAt;       // when the user last said no to that question
+@property (nonatomic) NSTimeInterval lastUserTap;              // the user's last tap on the page (see recentUserTap)
+@property (nonatomic, strong) NSMutableSet *tapUses;           // kinds of the page's requests granted for that tap (see takeUserTapFor:)
+@property (nonatomic, copy) NSString *loginToken;              // the main frame's key for the saved-login messages (see giveLoginTokenToMainFrame)
+@property (nonatomic, copy) NSString *loginTokenSite;          // https site of the document that got it (nil for any other)
+@property (nonatomic) BOOL loginTokenQueued;                   // a brpwtoken: request waits for the main queue
+@property (nonatomic) NSTimeInterval loginTokenAskedAt;        // when the last one was answered
+@property (nonatomic, copy) NSString *safariKey;               // one-time key of the error page's "Open in Safari" link
+@property (nonatomic, strong) NSURL *safariURL;                // and the address it opens
+@property (nonatomic) BOOL privateSession;                     // the tabs are private ones: nothing of them is written
 @property (nonatomic) BOOL editingAddress;
 @property (nonatomic) BOOL loading;
 @property (nonatomic) NSInteger loadCount;
@@ -247,6 +259,127 @@ static NSString *BRQueryEscape(NSString *s)
     return (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, (__bridge CFStringRef)(s ?: @""), NULL, CFSTR("!*'();:@&=+$,/?%#[]"), kCFStringEncodingUTF8);
 }
 
+// Requests of the page that act outside it (a new tab, the clipboard, the share and print sheets, another app) count
+// only this long after the user's own tap on the page, and one of each kind per tap: a script, an ad's frame or a
+// timer cannot make them by itself. As long as current browsers keep a tap (5 s): on this engine the page's click
+// comes some 300 ms after the finger lifts and only once the page's thread is free, which on a heavy page takes
+// seconds (the page shim's own popup check, 2 s from that click, stays within it).
+static const NSTimeInterval BRUserActivationWindow = 5;
+
+// n random bytes (at most 32) as lowercase hex, from the system's secure generator
+static NSString *BRRandomHex(NSUInteger n)
+{
+    uint8_t bytes[32];
+    if (n > sizeof(bytes)) n = sizeof(bytes);
+    if (SecRandomCopyBytes(kSecRandomDefault, n, bytes) != 0) {
+        for (NSUInteger i = 0; i < n; i++) bytes[i] = (uint8_t)arc4random_uniform(256);
+    }
+    NSMutableString *hex = [NSMutableString stringWithCapacity:n * 2];
+    for (NSUInteger i = 0; i < n; i++) [hex appendFormat:@"%02x", bytes[i]];
+    return hex;
+}
+
+// A page's title as the app keeps it (tab strip, history, PDF names): no control characters and none of those that
+// turn the direction of the text (with them a title reads as something else than it is), at most 300 characters
+static NSString *BRCleanTitle(NSString *title)
+{
+    if (![title isKindOfClass:[NSString class]] || !title.length) return @"";
+    static NSCharacterSet *unwanted;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableCharacterSet *set = [[NSMutableCharacterSet alloc] init];
+        [set addCharactersInRange:NSMakeRange(0, 0x20)];      // control characters (WebKit has made white space of tabs and line breaks)
+        [set addCharactersInRange:NSMakeRange(0x7F, 0x21)];
+        [set addCharactersInRange:NSMakeRange(0x200E, 2)];   // left-to-right and right-to-left marks
+        [set addCharactersInRange:NSMakeRange(0x2028, 2)];   // line and paragraph separators (they end a string literal of the old engine)
+        [set addCharactersInRange:NSMakeRange(0x202A, 5)];   // embeddings and overrides
+        [set addCharactersInRange:NSMakeRange(0x2066, 4)];   // isolates
+        unwanted = [set copy];
+    });
+    NSString *clean = title;
+    if ([title rangeOfCharacterFromSet:unwanted].location != NSNotFound) {
+        clean = [[title componentsSeparatedByCharactersInSet:unwanted] componentsJoinedByString:@""];
+        clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    }
+    if (clean.length > 300) clean = [clean substringToIndex:[clean rangeOfComposedCharacterSequenceAtIndex:300].location];
+    return clean;
+}
+
+// A failure of the TLS connection itself or of the server's certificate: what an attacker on the way can cause, so
+// nothing is ever tried again over plain http after one
+static BOOL BRIsSecureConnectionError(NSError *error)
+{
+    for (int depth = 0; depth < 2 && [error isKindOfClass:[NSError class]]; depth++) {
+        if ([error.domain isEqualToString:NSURLErrorDomain] && error.code <= NSURLErrorSecureConnectionFailed &&
+            error.code >= NSURLErrorClientCertificateRequired) return YES;
+        if ([error.domain isEqualToString:BRErrorDomain] && (error.code == BRErrorTLS || error.code == BRErrorCertificate)) return YES;
+        error = error.userInfo[NSUnderlyingErrorKey];   // (BRURLErrorFromError keeps the app's own error there)
+    }
+    return NO;
+}
+
+// location.host of a page as the logins are kept under: lower case, the port only when it is not https' own
+static NSString *BRLoginHostKey(NSString *host)
+{
+    NSString *h = [host isKindOfClass:[NSString class]] ? [host lowercaseString] : @"";
+    return [h hasSuffix:@":443"] ? [h substringToIndex:h.length - 4] : h;
+}
+
+// JSON text put into a script: U+2028/9 may stand in JSON strings, but they end a string literal of the old engine
+// (one such character in a kept title made the whole call a SyntaxError)
+static NSString *BRScriptSafeJSON(NSString *json)
+{
+    if (!json.length) return json;
+    return [[json stringByReplacingOccurrencesOfString:@"\u2028" withString:@"\\u2028"] stringByReplacingOccurrencesOfString:@"\u2029" withString:@"\\u2029"];
+}
+
+// http or https exactly (a scheme that only starts with "http" is another app's)
+static BOOL BRIsWebURL(NSURL *url)
+{
+    NSString *scheme = [url.scheme lowercaseString];
+    return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+}
+
+// The same scheme, host and port (the scheme's default port written or not)
+static BOOL BRSameOrigin(NSURL *a, NSURL *b)
+{
+    NSString *scheme = [a.scheme lowercaseString], *host = [a.host lowercaseString];
+    if (!scheme.length || !host.length || ![scheme isEqualToString:[b.scheme lowercaseString]] || ![host isEqualToString:[b.host lowercaseString]]) return NO;
+    NSInteger defaultPort = [scheme isEqualToString:@"https"] ? 443 : 80;
+    return (a.port ? a.port.integerValue : defaultPort) == (b.port ? b.port.integerValue : defaultPort);
+}
+
+// scheme://host:port of an address a page reports (its path and query left out: NSURL refuses some characters
+// WebKit leaves in them, such as | and {})
+static NSURL *BROriginOfAddress(NSString *address)
+{
+    NSRange slashes = [address rangeOfString:@"://"];
+    if (slashes.location == NSNotFound) return nil;
+    NSUInteger from = slashes.location + 3;
+    NSRange end = [address rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/?#"] options:0 range:NSMakeRange(from, address.length - from)];
+    return [NSURL URLWithString:end.location == NSNotFound ? address : [address substringToIndex:end.location]];
+}
+
+// An IP address, localhost or a name no public domain has (.local, .lan, .home ...): a router, a NAS or a printer,
+// which rarely has a certificate a browser accepts. Typed without a scheme it starts over http, as in Chrome, which
+// does not move those to https either.
+static BOOL BRIsAddressOrLocalName(NSString *host)
+{
+    NSString *h = [host lowercaseString];
+    if ([h hasSuffix:@"."]) h = [h substringToIndex:h.length - 1];
+    if (!h.length) return NO;
+    if ([h hasPrefix:@"["] || [h rangeOfString:@"."].location == NSNotFound) return YES;   // IPv6, a single name (localhost)
+    static NSCharacterSet *notIPv4;
+    static NSSet *localTLDs;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        notIPv4 = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789."] invertedSet];
+        localTLDs = [NSSet setWithObjects:@"local", @"localhost", @"localdomain", @"lan", @"home", @"internal", @"intranet", @"corp", @"arpa", @"test", nil];
+    });
+    if ([h rangeOfCharacterFromSet:notIPv4].location == NSNotFound) return YES;
+    return [localTLDs containsObject:[h componentsSeparatedByString:@"."].lastObject];
+}
+
 @implementation BRBrowserViewController
 
 #pragma mark - Building the UI
@@ -380,6 +513,14 @@ static NSString *BRQueryEscape(NSString *s)
     self.edgePan.delegate = self;
     self.edgePan.maximumNumberOfTouches = 1;
     [self.webView addGestureRecognizer:self.edgePan];
+    // the user's taps on the page, noted for the page's requests that act outside it (see BRUserActivationWindow); it
+    // takes nothing from the page: no touch is held back or cancelled, and it recognizes along with every other one
+    UITapGestureRecognizer *tapNote = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(noteUserTap:)];
+    tapNote.cancelsTouchesInView = NO;
+    tapNote.delaysTouchesBegan = NO;
+    tapNote.delaysTouchesEnded = NO;
+    tapNote.delegate = self;
+    [self.webView addGestureRecognizer:tapNote];
     // long press on back / forward: the history behind the button
     for (UIButton *b in @[self.backButton, self.forwardButton]) {
         UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(historyMenu:)];
@@ -440,7 +581,7 @@ static NSString *BRQueryEscape(NSString *s)
     NSURL *restored = [NSURL URLWithString:self.tabs[self.currentTab][@"url"] ?: @""];
     NSString *crashed = [[NSUserDefaults standardUserDefaults] stringForKey:@"BRLoadingURL"];
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"BRLoadingURL"];
-    if (self.skipRestore) { /* the launch URL arrives right after this and takes the tab */ }
+    if (self.skipRestore) { /* the launch URL, or the safe start's start page, arrives right after this and takes the tab */ }
     else if (crashed.length && restored && [[crashed lowercaseString] isEqualToString:[restored.absoluteString lowercaseString]]) {
         [self goHome];
         [self offerCrashedPage:restored];
@@ -717,7 +858,15 @@ static BOOL BRShouldInterruptJavaScript(id self, SEL _cmd, id webView)
     [self updateTabsButton];
 }
 
+// (private browsing: the tabs live in memory alone; the ones on disk are those of before, back when it ends - see
+// privateModeChanged)
 - (void)saveTabs
+{
+    if ([BRSettings privateMode]) return;
+    [self writeTabs];
+}
+
+- (void)writeTabs
 {
     NSMutableArray *plain = [NSMutableArray array];
     for (NSDictionary *t in self.tabs) [plain addObject:@{ @"url": t[@"url"] ?: @"", @"title": t[@"title"] ?: @"", @"scrollY": t[@"scrollY"] ?: @0 }];
@@ -780,6 +929,9 @@ static NSCache *BRFaviconCache(void)
                     "if(/apple-touch/.test(l.rel))s=Math.min(s||180,64);if(!best||(s>=16&&s<=64&&s>bestSize)){best=l.href;bestSize=s;}}return best;})()";
     NSString *iconString = [self.webView stringByEvaluatingJavaScriptFromString:js];
     NSURL *iconURL = iconString.length ? [NSURL URLWithString:iconString] : nil;
+    // (the page names it: a web or data: address alone, never a file of the app or of the device)
+    NSString *iconScheme = [iconURL.scheme lowercaseString];
+    if (![iconScheme isEqualToString:@"http"] && ![iconScheme isEqualToString:@"https"] && ![iconScheme isEqualToString:@"data"]) iconURL = nil;
     if (!iconURL) iconURL = [NSURL URLWithString:[NSString stringWithFormat:@"%@://%@/favicon.ico", pageURL.scheme, pageURL.host]];
     if (!iconURL) return;
     [BRFaviconCache() setObject:[NSNull null] forKey:host];   // fetch in progress; replaced by the image or left as a marker
@@ -1172,6 +1324,30 @@ static void BRWebThreadLock(void)
     self.edgePanDirection = 0;
 }
 
+// (the tap is noted when the finger lifts, before the page gets its click: iOS 6 sends that some 300 ms later)
+- (void)noteUserTap:(UITapGestureRecognizer *)recognizer
+{
+    if (recognizer.state != UIGestureRecognizerStateEnded) return;
+    self.lastUserTap = [NSDate timeIntervalSinceReferenceDate];
+    [self.tapUses removeAllObjects];
+}
+
+- (BOOL)recentUserTap
+{
+    NSTimeInterval since = [NSDate timeIntervalSinceReferenceDate] - self.lastUserTap;
+    return since >= 0 && since < BRUserActivationWindow;
+}
+
+// A recent tap, used up for this kind of request: a frame that keeps asking gets one new tab (one copy, one share
+// sheet...) per tap, no more than the page's own button would; a button that copies and opens a tab still works
+- (BOOL)takeUserTapFor:(NSString *)kind
+{
+    if (![self recentUserTap] || [self.tapUses containsObject:kind]) return NO;
+    if (!self.tapUses) self.tapUses = [NSMutableSet set];
+    [self.tapUses addObject:kind];
+    return YES;
+}
+
 - (void)reloadOrStop
 {
     if (self.loading) [self stop];
@@ -1264,7 +1440,7 @@ static void BRWebThreadLock(void)
     // on being rewritten after the switch to its phone version and took the app to 301 MB)
     [BRCSSRewriter cancelPendingWork];
     self.currentURL = url;
-    self.readerShown = NO;
+    [self forgetReaderOfPage];
     [self updateAddressFieldWithURL:url];
     if (self.currentTab < self.tabs.count) {
         // show the new host in the tab strip right away; the title follows when the page has loaded
@@ -1322,8 +1498,13 @@ static void BRWebThreadLock(void)
     if (!hasSpace && hasScheme) {
         url = [NSURL URLWithString:[t stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
     } else if (!hasSpace && looksLikeHost) {
-        url = [NSURL URLWithString:[[@"https://" stringByAppendingString:t] stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
-        self.httpFallbackURL = [NSURL URLWithString:[[@"http://" stringByAppendingString:t] stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
+        NSURL *plain = [NSURL URLWithString:[[@"http://" stringByAppendingString:t] stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
+        if (BRIsAddressOrLocalName(plain.host)) {
+            url = plain;   // (see BRIsAddressOrLocalName)
+        } else {
+            url = [NSURL URLWithString:[[@"https://" stringByAppendingString:t] stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
+            self.httpFallbackURL = plain;
+        }
     }
     if (!url || !url.host.length) {
         url = [BRSettings searchURLForQuery:t];
@@ -1368,18 +1549,19 @@ static void BRWebThreadLock(void)
     if (loading != was) {
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         NSString *url = self.currentURL.absoluteString;
-        if (loading && url.length && ![BRSettings isHomeURL:self.currentURL]) [d setObject:url forKey:@"BRLoadingURL"];
+        // (not in private browsing: its pages leave nothing on disk, and its tabs are not restored anyway)
+        if (loading && url.length && ![BRSettings isHomeURL:self.currentURL] && ![BRSettings privateMode]) [d setObject:url forKey:@"BRLoadingURL"];
         else [d removeObjectForKey:@"BRLoadingURL"];
         [d synchronize];
     }
 }
 
 // the page's composited layers eat the iPad's memory: it is drawn without them from now on (and the site is
-// remembered, so that its next visit starts that way instead of getting near the limit again)
+// remembered, so that its next visit starts that way instead of getting near the limit again - not in private browsing)
 - (void)graphicsMemoryHigh:(NSNotification *)note
 {
     NSString *host = [self.currentURL.host lowercaseString];
-    if (host.length) {
+    if (host.length && ![BRSettings privateMode]) {
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         NSMutableArray *hosts = [[d arrayForKey:@"BRHeavyGraphicsHosts"] mutableCopy] ?: [NSMutableArray array];
         [hosts removeObject:host];
@@ -1427,17 +1609,56 @@ static void BRWebThreadLock(void)
 
 #pragma mark - Saved passwords
 
+// The site logins may be kept, offered and filled in for: the document WebKit holds in the main frame - never an
+// address a page reports, nor the one last navigated to - when it came over https with the certificate verified
+// (host in lower case, with the port when it is not 443); nil otherwise
+- (NSString *)loginSiteOfMainDocument
+{
+    if (![BRSettings verifyTLS]) return nil;
+    NSURL *document = self.webView.request.mainDocumentURL;
+    NSString *host = [document.host lowercaseString];
+    if (![[document.scheme lowercaseString] isEqualToString:@"https"] || !host.length) return nil;
+    NSNumber *port = document.port;
+    return (port && port.integerValue != 443) ? [NSString stringWithFormat:@"%@:%ld", host, (long)port.integerValue] : host;
+}
+
+// The page shim's saved-login messages (brpw:, brpwfocus:) carry a key that the main frame's document alone gets: a
+// frame of another site cannot read it, so it can neither put its own login under the site on screen nor call up the
+// fill button. The key goes with the site of the document that got it, read there in the same call: the address
+// WebKit gives for the main document may still be the previous page's while the next one already runs, and a key is
+// good only while the two agree. A main document that does not hold the current key is a new one and gets a new key
+// (the page before it, which knew the old one, is gone). Main thread.
+- (void)giveLoginTokenToMainFrame
+{
+    NSString *current = self.loginToken ?: BRRandomHex(16), *fresh = BRRandomHex(16);
+    NSString *answer = [self.webView stringByEvaluatingJavaScriptFromString:[NSString stringWithFormat:
+        @"(function(t,n){var k=n,l=location;if(window.__brLoginToken===t)k=t;else{try{Object.defineProperty(window,'__brLoginToken',{value:n,configurable:true,writable:true,enumerable:false});}"
+         "catch(e){window.__brLoginToken=n;}}return k+'\\n'+l.protocol+'\\n'+l.host;})('%@','%@')", current, fresh]];
+    NSArray *parts = [answer componentsSeparatedByString:@"\n"];
+    BOOL held = parts.count == 3 && [parts[0] isEqualToString:current];
+    self.loginToken = held ? current : fresh;
+    self.loginTokenSite = (parts.count == 3 && [parts[1] isEqualToString:@"https:"]) ? BRLoginHostKey(parts[2]) : nil;
+}
+
+// (a message of another site's frame, or of a document other than the one the main document's address names, is
+// ignored)
+- (BOOL)isLoginMessageFromMainFrame:(NSDictionary *)message
+{
+    NSString *token = [message isKindOfClass:[NSDictionary class]] && [message[@"t"] isKindOfClass:[NSString class]] ? message[@"t"] : nil;
+    if (!token.length || !self.loginToken.length || ![token isEqualToString:self.loginToken]) return NO;
+    NSString *site = [self loginSiteOfMainDocument];
+    return site.length && [self.loginTokenSite isEqualToString:site];
+}
+
 // a login form of the page was sent (shims-extra.js): offer to keep it - only for the site on screen, so a frame of
 // another site cannot put its login under this one
 - (void)offerToKeepLogin:(NSDictionary *)login
 {
     NSString *user = [login[@"u"] isKindOfClass:[NSString class]] ? login[@"u"] : @"";
     NSString *pass = [login[@"p"] isKindOfClass:[NSString class]] ? login[@"p"] : @"";
-    NSString *host = [login[@"h"] isKindOfClass:[NSString class]] ? login[@"h"] : @"";
-    NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
+    NSString *host = BRLoginHostKey(login[@"h"]);
+    NSString *page = [self loginSiteOfMainDocument];
     if (!pass.length || !page.length || self.pendingLogin || [BRSettings privateMode]) return;
-    NSRange colon = [host rangeOfString:@":"];
-    if (colon.location != NSNotFound) host = [host substringToIndex:colon.location];
     if (![[BRPasswords siteForHost:host] isEqualToString:[BRPasswords siteForHost:page]]) return;
     if ([BRPasswords neverForHost:page] || [BRPasswords hasPassword:pass account:user host:page]) return;
     self.pendingLogin = @{ @"h": page, @"u": user, @"p": pass };
@@ -1453,7 +1674,7 @@ static void BRWebThreadLock(void)
 // a name or password field got the focus: a button over the page fills in a kept login of the site on screen
 - (void)offerKeptLogins
 {
-    NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
+    NSString *page = [self loginSiteOfMainDocument];
     if (!page.length || self.fillButton.superview) return;
     NSArray *accounts = [BRPasswords accountsForHost:page];
     if (!accounts.count) return;
@@ -1502,11 +1723,13 @@ static void BRWebThreadLock(void)
     [sheet showFromRect:button.frame inView:self.webView animated:YES];
 }
 
-// (the page must still be the site the logins belong to: it may have gone on while the button was up)
+// (the page must still be the site the logins belong to: it may have gone on while the button was up. Checked again
+// in the call that fills in, against the running document's own location - its scripts cannot change that on this
+// engine - so that a page the main document's address does not name yet gets nothing)
 - (void)fillLoginAccount:(NSString *)account
 {
-    NSString *page = self.webView.request.mainDocumentURL.host ?: self.currentURL.host;
-    if (!self.fillHost || ![[BRPasswords siteForHost:page] isEqualToString:[BRPasswords siteForHost:self.fillHost]]) return;
+    NSString *page = [self loginSiteOfMainDocument];
+    if (!page.length || !self.fillHost || ![[BRPasswords siteForHost:page] isEqualToString:[BRPasswords siteForHost:self.fillHost]]) return;
     NSString *pass = [BRPasswords passwordForHost:self.fillHost account:account];
     if (!pass) {
         BRLog(@"No kept password to fill in for %@", [BRPasswords siteForHost:self.fillHost]);
@@ -1518,7 +1741,10 @@ static void BRWebThreadLock(void)
     // ([a,b] -> a,b: the JSON array's text is the argument list; U+2028/9 are not valid in old JS string literals)
     args = [[args substringWithRange:NSMakeRange(1, args.length - 2)] stringByReplacingOccurrencesOfString:@" " withString:@"\\u2028"];
     args = [args stringByReplacingOccurrencesOfString:@" " withString:@"\\u2029"];
-    NSString *answer = [self.webView stringByEvaluatingJavaScriptFromString:[NSString stringWithFormat:@"window.__brFillLogin ? window.__brFillLogin(%@) : 'no filler'", args]];
+    // (only comparisons there: a method the page can replace could answer anything)
+    NSString *answer = [self.webView stringByEvaluatingJavaScriptFromString:[NSString stringWithFormat:
+        @"(function(h,u,p){var l=location;if(l.protocol!=='https:'||(l.host!==h&&l.host!==h+':443'))return 'wrong page';"
+         "return window.__brFillLogin?window.__brFillLogin(u,p):'no filler';})(%@,%@)", [self jsStringLiteral:page], args]];
     BRLog(@"Login filled in on %@: %@", [BRPasswords siteForHost:self.fillHost], answer.length ? answer : @"script error");
 }
 
@@ -1533,17 +1759,24 @@ static void BRWebThreadLock(void)
     NSMutableDictionary *since = [[d dictionaryForKey:@"BRHeavyGraphicsSince"] mutableCopy] ?: [NSMutableDictionary dictionary];
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSNumber *when = since[host];
+    // (private browsing gets the answer and writes nothing: a date set or an entry gone would tell that the site was
+    // visited, and when)
+    BOOL write = ![BRSettings privateMode];
     if (!when) {   // (remembered before the dates were kept: from now on)
-        since[host] = @(now);
-        [d setObject:since forKey:@"BRHeavyGraphicsSince"];
+        if (write) {
+            since[host] = @(now);
+            [d setObject:since forKey:@"BRHeavyGraphicsSince"];
+        }
         return YES;
     }
     if (now - when.doubleValue < 7 * 86400) return YES;
-    NSMutableArray *hosts = [[d arrayForKey:@"BRHeavyGraphicsHosts"] mutableCopy];
-    [hosts removeObject:host];
-    [since removeObjectForKey:host];
-    [d setObject:hosts forKey:@"BRHeavyGraphicsHosts"];
-    [d setObject:since forKey:@"BRHeavyGraphicsSince"];
+    if (write) {
+        NSMutableArray *hosts = [[d arrayForKey:@"BRHeavyGraphicsHosts"] mutableCopy];
+        [hosts removeObject:host];
+        [since removeObjectForKey:host];
+        [d setObject:hosts forKey:@"BRHeavyGraphicsHosts"];
+        [d setObject:since forKey:@"BRHeavyGraphicsSince"];
+    }
     return NO;
 }
 
@@ -1581,7 +1814,14 @@ static void BRWebThreadLock(void)
     NSURL *page = [note.userInfo[@"url"] isKindOfClass:[NSURL class]] ? note.userInfo[@"url"] : nil;
     NSURL *current = self.webView.request.mainDocumentURL ?: self.currentURL;
     if (!page.host.length || ![[page.host lowercaseString] isEqualToString:[current.host lowercaseString]]) return;
-    if (![BRSettings noteHostTooHeavy:page.host]) return;
+    // (the phone version is chosen by a list of such sites on disk, which private browsing does not add to: there the
+    // site gets it as a choice in memory, which ends with private browsing - see BRSettings setUserAgentMode:forHost:)
+    if ([BRSettings privateMode]) {
+        if ([BRSettings userAgentModeForHost:page.host] != 0) return;   // (another identity already, the phone one too)
+        [BRSettings setUserAgentMode:3 forHost:page.host];
+    } else if (![BRSettings noteHostTooHeavy:page.host]) {
+        return;
+    }
     BRLog(@"%@ is too heavy for the iPad: loading its phone version", page.host);
     [self.webView stopLoading];
     [self loadURL:page ignoringCache:YES];
@@ -1639,7 +1879,8 @@ static void BRWebThreadLock(void)
     NSString *message = error.localizedDescription ?: @"";
     BOOL dark = [BRTheme shared].isDark;
     NSMutableString *html = [NSMutableString string];
-    [html appendString:@"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"];
+    // (data-br-error: the padlock stays off on this page, which takes the failing address - see updateLockIcon)
+    [html appendString:@"<!DOCTYPE html><html data-br-error=\"1\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"];
     [html appendFormat:@"<title>%@</title>", BRHTMLEscape(L(@"Page could not be loaded"))];
     [html appendFormat:@"<style>body{font-family:Helvetica,Arial,sans-serif;background:%@;color:%@;margin:0;padding:24px}"
                         "h1{font-size:22px;margin:0 0 12px}p{font-size:15px;line-height:1.4}.url{word-break:break-all;color:#888;font-size:13px}"
@@ -1649,12 +1890,19 @@ static void BRWebThreadLock(void)
     [html appendFormat:@"<p>%@</p>", BRHTMLEscape(message)];
     [html appendFormat:@"<p class=\"url\">%@</p>", BRHTMLEscape(urlString)];
     [html appendFormat:@"<p><a class=\"btn\" href=\"%@\">%@</a>", BRHTMLEscape(urlString), BRHTMLEscape(L(@"Try again"))];
-    if ([[url.scheme lowercaseString] isEqualToString:@"https"] && urlString.length > 5) {
+    // (never after a failed TLS connection or a certificate the app refused: that is what an attacker on the way
+    // causes, and the plain http page would be wholly in his hands - unless it is a device of the local network, whose
+    // certificate is its own as a rule, see BRIsAddressOrLocalName)
+    if ([[url.scheme lowercaseString] isEqualToString:@"https"] && urlString.length > 5 && (!BRIsSecureConnectionError(error) || BRIsAddressOrLocalName(url.host))) {
         NSString *httpURL = [@"http" stringByAppendingString:[urlString substringFromIndex:5]];
         [html appendFormat:@"<a class=\"btn\" href=\"%@\">%@</a>", BRHTMLEscape(httpURL), BRHTMLEscape(L(@"Open via http://"))];
     }
-    if ([[url.scheme lowercaseString] hasPrefix:@"http"]) {
-        [html appendFormat:@"<a class=\"btn\" href=\"brsafari:%@\">%@</a>", BRHTMLEscape([urlString stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: urlString), BRHTMLEscape(L(@"Open in Safari"))];
+    // (the link carries a key for this page alone, not the address: brsafari: from any other page or frame opens
+    // nothing - see webView:shouldStartLoadWithRequest:)
+    if (BRIsWebURL(url)) {
+        self.safariKey = BRRandomHex(16);
+        self.safariURL = url;
+        [html appendFormat:@"<a class=\"btn\" href=\"brsafari:%@\">%@</a>", self.safariKey, BRHTMLEscape(L(@"Open in Safari"))];
     }
     [html appendString:@"</p></body></html>"];
     [self.webView loadHTMLString:html baseURL:url];
@@ -1743,12 +1991,18 @@ static void BRWebThreadLock(void)
     if (p > [self currentProgress]) [self setProgress:p animated:YES];
 }
 
-// Padlock and reader button at the left end of the address field
+// Padlock and reader button at the left end of the address field. The padlock means a verified connection: none
+// while certificate verification is off, and none on the app's error page (it carries the failing https address).
 - (void)updateLockIcon
 {
     NSURL *url = self.webView.request.URL ?: self.currentURL;
-    BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"https"] && [[BRURLProtocol lastMainDocumentTLSInfo] length] > 0;
-    BOOL reader = self.readerAvailable && !self.readerShown;
+    BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"https"] && [BRSettings verifyTLS] && [[BRURLProtocol lastMainDocumentTLSInfo] length] > 0;
+    if (secure) secure = ![[self.webView stringByEvaluatingJavaScriptFromString:@"document.documentElement?document.documentElement.getAttribute('data-br-error')||'':''"] length];
+    [self showLock:secure reader:self.readerAvailable && !self.readerShown];
+}
+
+- (void)showLock:(BOOL)secure reader:(BOOL)reader
+{
     CGFloat x = 6;
     self.lockButton.hidden = !secure;
     self.readerButton.hidden = !reader;
@@ -1770,6 +2024,15 @@ static void BRWebThreadLock(void)
     NSInteger n = http ? [[self.webView stringByEvaluatingJavaScriptFromString:
         @"(function(){var p=document.getElementsByTagName('p'),n=0;for(var i=0;i<p.length&&n<6;i++){if((p[i].textContent||'').replace(/\\s+/g,' ').length>140)n++;}return n;})()"] integerValue] : 0;
     self.readerAvailable = n >= 4;
+}
+
+// A new page in the main frame: the previous one's reader button goes at once (no script call: this runs while
+// WebKit asks whether to load)
+- (void)forgetReaderOfPage
+{
+    self.readerShown = NO;
+    self.readerAvailable = NO;
+    if (!self.readerButton.hidden) [self showLock:!self.lockButton.hidden reader:NO];
 }
 
 - (void)showConnectionInfo
@@ -1834,14 +2097,56 @@ static void BRWebThreadLock(void)
     BOOL priv = [BRSettings privateMode];
     self.urlField.placeholder = priv ? L(@"Private browsing: search or enter address") : L(@"Search or enter address");
     self.urlField.textColor = priv ? [UIColor colorWithRed:0.45 green:0.2 blue:0.6 alpha:1] : [[BRTheme shared] fieldTextColor];
+    // The tabs of private browsing are never written (see saveTabs). When it starts, the tabs as they are go to disk
+    // once more; when it ends, the private ones go and those come back - nothing visited privately stays open or
+    // reaches the saved tabs afterwards. (At launch the tabs on disk are the normal ones whatever the mode.)
+    BOOL wasPrivate = self.privateSession;
+    self.privateSession = priv;
+    if (!note || priv == wasPrivate) return;
+    if (priv) {
+        // (the back list stays: the pages in it are the normal session's, and going back to them writes nothing now)
+        [self storeCurrentTabState];
+        [self writeTabs];
+        return;
+    }
+    // the one web view's back and forward list holds every page visited privately (Back, the edge swipe and the
+    // history menu would load them again, now into the history and the saved tabs): it goes before the tabs come back
+    [self.webView stopLoading];
+    [self clearBackForwardList];
+    [BRFaviconCache() removeAllObjects];
+    [self loadTabs];
+    [self openTabAtIndex:self.currentTab];
+    [self updateNavigationState];
+}
+
+// Empties WebKit's back and forward list (private API, guarded); its pages leave the page cache with it
+- (void)clearBackForwardList
+{
+    self.historyItems = nil;
+    id inner = [self innerWebView];
+    SEL listSel = NSSelectorFromString(@"backForwardList");
+    if (!inner || ![inner respondsToSelector:listSel]) return;
+    BRWebThreadLock();
+    id list = ((id (*)(id, SEL))objc_msgSend)(inner, listSel);
+    SEL capacitySel = NSSelectorFromString(@"capacity"), setCapacitySel = NSSelectorFromString(@"setCapacity:");
+    if (!list || ![list respondsToSelector:capacitySel] || ![list respondsToSelector:setCapacitySel]) return;
+    int capacity = ((int (*)(id, SEL))objc_msgSend)(list, capacitySel);
+    // (capacity 0 drops every entry, the current one too: WebKit's own way when the list is switched off)
+    ((void (*)(id, SEL, int))objc_msgSend)(list, setCapacitySel, 0);
+    ((void (*)(id, SEL, int))objc_msgSend)(list, setCapacitySel, capacity > 0 ? capacity : 100);
+    BRLog(@"Back and forward list emptied (capacity %d)", capacity);
 }
 
 #pragma mark - Search suggestions from the search engine
 
+// (what is typed goes to the search engine: only with the setting on, never in private browsing, and never an address -
+// a link pasted into the field may carry a private token)
 - (void)fetchSearchSuggestionsForText:(NSString *)text
 {
     NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (t.length < 2 || [BRSettings privateMode]) return;
+    if (t.length < 2 || [BRSettings privateMode] || ![BRSettings searchSuggestions]) return;
+    if ([t rangeOfString:@" "].location == NSNotFound && ([t rangeOfString:@"."].location != NSNotFound || [t rangeOfString:@"://"].location != NSNotFound ||
+                                                          [[t lowercaseString] hasPrefix:@"localhost"])) return;
     NSString *q = BRQueryEscape(t);
     // the chosen engine's own suggestions (Google and Bing answer in the same OpenSearch JSON shape as DuckDuckGo)
     NSInteger engine = [BRSettings searchEngine];
@@ -1887,18 +2192,20 @@ static void BRWebThreadLock(void)
 {
     BRLibrary *lib = [BRLibrary shared];
     NSMutableDictionary *byHost = [NSMutableDictionary dictionary];
+    // (entries of another shape - a damaged file, a later version's format - are passed over: this runs at every launch)
     for (NSDictionary *e in lib.history) {
+        if (![e isKindOfClass:[NSDictionary class]]) continue;
         NSURL *u = [NSURL URLWithString:[e[@"url"] isKindOfClass:[NSString class]] ? e[@"url"] : @""];
         NSString *host = [u.host lowercaseString];
         if (!host.length) continue;
         if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+        NSString *title = [e[@"title"] isKindOfClass:[NSString class]] ? e[@"title"] : @"";
         NSMutableDictionary *entry = byHost[host];
         if (!entry) {
             NSString *scheme = [u.scheme lowercaseString] ?: @"https";
-            entry = [@{ @"url": [NSString stringWithFormat:@"%@://%@/", scheme, u.host], @"title": [e[@"title"] isKindOfClass:[NSString class]] && [e[@"title"] length] ? e[@"title"] : host,
-                        @"count": @0 } mutableCopy];
+            entry = [@{ @"url": [NSString stringWithFormat:@"%@://%@/", scheme, u.host], @"title": title.length ? title : host, @"count": @0 } mutableCopy];
             // the newest visit of the host's front page gives the nicest title
-            if ([u.path length] <= 1 && [e[@"title"] length]) entry[@"title"] = e[@"title"];
+            if ([u.path length] <= 1 && title.length) entry[@"title"] = title;
             byHost[host] = entry;
         }
         entry[@"count"] = @([entry[@"count"] integerValue] + 1);
@@ -1908,7 +2215,8 @@ static void BRWebThreadLock(void)
     NSMutableArray *bookmarks = [NSMutableArray array];
     for (NSDictionary *b in lib.bookmarks) {
         if (bookmarks.count >= 12) break;
-        [bookmarks addObject:@{ @"url": b[@"url"] ?: @"", @"title": b[@"title"] ?: @"" }];
+        if (![b isKindOfClass:[NSDictionary class]]) continue;
+        [bookmarks addObject:@{ @"url": [b[@"url"] isKindOfClass:[NSString class]] ? b[@"url"] : @"", @"title": [b[@"title"] isKindOfClass:[NSString class]] ? b[@"title"] : @"" }];
     }
     NSURL *searchURL = [BRSettings searchURLForQuery:@""];
     NSString *action = searchURL.absoluteString ?: @"";
@@ -1918,7 +2226,8 @@ static void BRWebThreadLock(void)
                             @"top": top, @"bookmarks": bookmarks };
     NSData *json = [NSJSONSerialization dataWithJSONObject:data options:0 error:NULL];
     if (!json) return;
-    NSString *js = [NSString stringWithFormat:@"window.brSetHome && window.brSetHome(%@)", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]];
+    // (titles kept by older versions may hold U+2028/9: see BRScriptSafeJSON)
+    NSString *js = [NSString stringWithFormat:@"window.brSetHome && window.brSetHome(%@)", BRScriptSafeJSON([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding])];
     [self.webView stringByEvaluatingJavaScriptFromString:js];
 }
 
@@ -1932,7 +2241,8 @@ static void BRWebThreadLock(void)
     if (!t.length) {
         for (NSDictionary *b in lib.bookmarks) {
             if (out.count >= 8) break;
-            [out addObject:@{ @"title": b[@"title"] ?: @"", @"url": b[@"url"] ?: @"", @"kind": @"bookmark" }];
+            if (![b isKindOfClass:[NSDictionary class]] || ![b[@"url"] isKindOfClass:[NSString class]]) continue;
+            [out addObject:@{ @"title": [b[@"title"] isKindOfClass:[NSString class]] ? b[@"title"] : @"", @"url": b[@"url"], @"kind": @"bookmark" }];
         }
         return out;
     }
@@ -1944,6 +2254,7 @@ static void BRWebThreadLock(void)
     NSArray *sources = @[lib.bookmarks, lib.history];
     for (NSUInteger s = 0; s < sources.count; s++) {
         for (NSDictionary *e in sources[s]) {
+            if (![e isKindOfClass:[NSDictionary class]]) continue;
             NSString *url = [e[@"url"] isKindOfClass:[NSString class]] ? e[@"url"] : @"";
             NSString *title = [e[@"title"] isKindOfClass:[NSString class]] ? e[@"title"] : @"";
             if (!url.length || [seen containsObject:url]) continue;
@@ -2004,7 +2315,7 @@ static void BRWebThreadLock(void)
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(fetchSearchSuggestionsForText:) object:nil];
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(fetchSearchSuggestionsForText:) object:self.pendingSuggestionText];
     self.pendingSuggestionText = text;
-    if (text.length >= 2) [self performSelector:@selector(fetchSearchSuggestionsForText:) withObject:text afterDelay:0.35];
+    if (text.length >= 2 && [BRSettings searchSuggestions]) [self performSelector:@selector(fetchSearchSuggestionsForText:) withObject:text afterDelay:0.35];
 }
 
 - (void)hideSuggestions
@@ -2139,7 +2450,7 @@ static void BRWebThreadLock(void)
 {
     NSData *d = [NSJSONSerialization dataWithJSONObject:@[s ?: @""] options:0 error:NULL];
     NSString *json = d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : @"[\"\"]";
-    return [json substringWithRange:NSMakeRange(1, json.length - 2)];   // strip the array brackets
+    return BRScriptSafeJSON([json substringWithRange:NSMakeRange(1, json.length - 2)]);   // strip the array brackets
 }
 
 - (void)findTextChanged
@@ -2192,6 +2503,14 @@ static void BRWebThreadLock(void)
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
 {
+    if (alertView.tag == 540) {
+        // "Open in another app?" (iOS answers Cancel for the user when it takes the question away)
+        NSURL *external = self.pendingExternalURL;
+        self.pendingExternalURL = nil;
+        if (buttonIndex != alertView.cancelButtonIndex && external) [[UIApplication sharedApplication] openURL:external];
+        else self.externalDeclinedAt = [NSDate timeIntervalSinceReferenceDate];
+        return;
+    }
     if (alertView.tag == 520) {
         NSDictionary *login = self.pendingLogin;
         self.pendingLogin = nil;   // (the password is not held a moment longer than the answer)
@@ -2406,28 +2725,40 @@ static void BRWebThreadLock(void)
 #pragma mark - Reader
 
 // Shows the current page's article in a clean, light layout (reader.js finds the main content).
+// reader.js runs in the page's own world, so everything it returns is the page's to choose: the article document gets
+// the address of the document WebKit holds in the main frame (its HTML comes from that page and must not get any other
+// site's origin), and every value is checked for its type. That address may still be the previous page's while the
+// next one runs: the running document's own address comes back in the same call (reader.js is one expression, its
+// value follows), and an article of another origin is not shown.
 - (void)showReader
 {
+    NSURL *pageURL = self.webView.request.mainDocumentURL;
     NSString *path = [[NSBundle mainBundle] pathForResource:@"reader" ofType:@"js"];
-    NSString *script = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
-    if (!script.length) return;
-    NSString *json = [self.webView stringByEvaluatingJavaScriptFromString:script];
-    NSDictionary *article = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
-    if (![article isKindOfClass:[NSDictionary class]] || ![article[@"html"] length]) {
+    NSString *script = path && BRIsWebURL(pageURL) ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
+    NSString *answer = script.length ? [self.webView stringByEvaluatingJavaScriptFromString:[@"document.URL+'\\n'+" stringByAppendingString:script]] : nil;
+    NSRange newline = answer ? [answer rangeOfString:@"\n"] : NSMakeRange(NSNotFound, 0);
+    NSURL *running = newline.location != NSNotFound ? BROriginOfAddress([answer substringToIndex:newline.location]) : nil;
+    NSString *json = BRSameOrigin(running, pageURL) ? [answer substringFromIndex:newline.location + 1] : nil;
+    if (running && !json) BRLog(@"Reader refused: the running document is not %@", pageURL.host);
+    id parsed = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+    NSDictionary *article = [parsed isKindOfClass:[NSDictionary class]] ? parsed : nil;
+    NSString *body = [article[@"html"] isKindOfClass:[NSString class]] ? article[@"html"] : @"";
+    if (!body.length) {
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"No article was found on this page.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
         return;
     }
+    NSString *articleTitle = BRCleanTitle(article[@"title"]);
+    NSString *byline = [article[@"byline"] isKindOfClass:[NSString class]] ? article[@"byline"] : @"";
+    NSInteger minutes = [article[@"minutes"] isKindOfClass:[NSNumber class]] ? [article[@"minutes"] integerValue] : 0;
     // the reader's own settings (the bar at its top: smaller / bigger type, serif / sans, sepia / white / dark), kept by
     // the app through brreader: addresses
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSInteger size = [d integerForKey:@"BRReaderSize"] ?: 19;
     BOOL sans = [d boolForKey:@"BRReaderSans"];
     NSInteger theme = [d objectForKey:@"BRReaderTheme"] ? [d integerForKey:@"BRReaderTheme"] : ([BRTheme shared].isDark ? 2 : 0);
-    NSURL *pageURL = [NSURL URLWithString:[article[@"url"] isKindOfClass:[NSString class]] ? article[@"url"] : @""] ?: self.currentURL;
-    NSInteger minutes = [article[@"minutes"] integerValue];
     NSMutableString *html = [NSMutableString string];
     [html appendString:@"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"];
-    [html appendFormat:@"<title>%@</title>", BRHTMLEscape(article[@"title"] ?: @"")];
+    [html appendFormat:@"<title>%@</title>", BRHTMLEscape(articleTitle)];
     [html appendString:@"<style>body{font-family:Georgia,'Times New Roman',serif;line-height:1.55;margin:0;padding:12px 20px 60px;-webkit-text-size-adjust:100%}"
                         "body.t0{background:#fbf8f2;color:#222}body.t1{background:#fff;color:#111}body.t2{background:#1c1c1e;color:#e6e6e6}"
                         "body.t0 a,body.t1 a{color:#1a5db0}body.t2 a{color:#8ab4f8}body.sans{font-family:'Helvetica Neue',Helvetica,sans-serif}"
@@ -2442,11 +2773,11 @@ static void BRWebThreadLock(void)
     [html appendFormat:@"<body class=\"t%ld%@\" style=\"font-size:%ldpx\">", (long)MAX(0, MIN(2, theme)), sans ? @" sans" : @"", (long)MAX(14, MIN(30, size))];
     [html appendString:@"<div class=\"bar\"><a href=\"#\" onclick=\"return br('size',-1)\">A&minus;</a><a href=\"#\" onclick=\"return br('size',1)\">A+</a>"
                         "<a href=\"#\" onclick=\"return br('font')\">Aa</a><a href=\"#\" onclick=\"return br('theme')\">&#9681;</a></div><div class=\"wrap\">"];
-    [html appendFormat:@"<h1>%@</h1>", BRHTMLEscape(article[@"title"] ?: @"")];
+    [html appendFormat:@"<h1>%@</h1>", BRHTMLEscape(articleTitle)];
     NSString *readTime = minutes > 0 ? [NSString stringWithFormat:L(@"%ld min read"), (long)minutes] : @"";
-    [html appendFormat:@"<div class=\"meta\">%@%@<a href=\"%@\">%@</a>%@%@</div>", BRHTMLEscape(article[@"byline"] ?: @""), [article[@"byline"] length] ? @" · " : @"",
+    [html appendFormat:@"<div class=\"meta\">%@%@<a href=\"%@\">%@</a>%@%@</div>", BRHTMLEscape(byline), byline.length ? @" · " : @"",
                         BRHTMLEscape(pageURL.absoluteString ?: @""), BRHTMLEscape(pageURL.host ?: @""), readTime.length ? @" · " : @"", BRHTMLEscape(readTime)];
-    [html appendString:article[@"html"]];
+    [html appendString:body];
     // images that fail to load (lazy-loading placeholders, blocked hosts) leave no gaps; the bar's choices go to the app
     [html appendFormat:@"</div><script>(function(){var imgs=document.images;for(var i=0;i<imgs.length;i++){imgs[i].onerror=function(){if(this.parentNode)this.parentNode.removeChild(this);};"
                         "if(imgs[i].complete&&imgs[i].naturalWidth===0&&imgs[i].parentNode)imgs[i].parentNode.removeChild(imgs[i]);}})();"
@@ -2456,7 +2787,7 @@ static void BRWebThreadLock(void)
                         (long)MAX(14, MIN(30, size)), sans ? 1 : 0, (long)MAX(0, MIN(2, theme))];
     self.readerShown = YES;
     [self.webView loadHTMLString:html baseURL:pageURL];
-    BRLog(@"Reader: %@ (%lu chars)", article[@"title"], (unsigned long)[article[@"html"] length]);
+    BRLog(@"Reader: %@ (%lu chars)", articleTitle, (unsigned long)body.length);
 }
 
 - (void)shareItems:(NSArray *)items fromRect:(CGRect)rect inView:(UIView *)view
@@ -2489,7 +2820,8 @@ static void BRWebThreadLock(void)
         source.icon = BRActivityIconCode;
         source.action = ^{ [weakSelf showSource]; };
         // read aloud with the system voices (the page shim's __brReadAloud; CSS Speech properties of the page apply)
-        BOOL reading = [[self.webView stringByEvaluatingJavaScriptFromString:@"window.__brReadAloud && window.__brReadAloud.state() ? '1' : ''"] length] > 0;
+        // (only a hint for the entry's title: the page could answer anything)
+        BOOL reading = [[self.webView stringByEvaluatingJavaScriptFromString:@"window.__brReadAloud && window.__brReadAloud.state() ? '1' : ''"] isEqualToString:@"1"];
         BRActionActivity *speak = [[BRActionActivity alloc] init];
         speak.title = reading ? L(@"Stop reading") : L(@"Read aloud");
         speak.type = @"com.samcejko.browser.readaloud";
@@ -2569,7 +2901,7 @@ static void BRWebThreadLock(void)
     if (![info isKindOfClass:[NSDictionary class]]) return;
     NSString *href = [info[@"href"] isKindOfClass:[NSString class]] ? info[@"href"] : @"";
     NSString *img = [info[@"img"] isKindOfClass:[NSString class]] ? info[@"img"] : @"";
-    if (![href hasPrefix:@"http"]) href = @"";
+    if (!BRIsWebURL([NSURL URLWithString:href])) href = @"";   // ("Open in Safari" hands it to the system as it is)
     if (![img hasPrefix:@"http"] && ![img hasPrefix:@"data:"]) img = @"";
     if (!href.length && !img.length) return;
     self.pressedLink = @{ @"href": href, @"img": img, @"text": [info[@"text"] isKindOfClass:[NSString class]] ? info[@"text"] : @"" };
@@ -2689,20 +3021,44 @@ static void BRWebThreadLock(void)
     [self openTabAtIndex:self.tabs.count - 1];
 }
 
+// Another app's address (mailto:, tel:, facetime:, maps, the App Store, Cydia) opens only when the user says so: on
+// iOS 6 an app's tel: or facetime: starts the call at once, and a page or an ad's frame could throw the user out of the
+// browser at will. One question at a time.
+- (void)askToOpenExternalURL:(NSURL *)url
+{
+    self.pendingExternalURL = url;
+    NSString *shown = url.absoluteString ?: @"";
+    if (shown.length > 200) shown = [[shown substringToIndex:[shown rangeOfComposedCharacterSequenceAtIndex:197].location] stringByAppendingString:@"..."];
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Open in another app?") message:shown delegate:self
+                                          cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Open"), nil];
+    alert.tag = 540;
+    [alert show];
+}
+
 - (BOOL)webView:(UIWebView *)webView shouldStartLoadWithRequest:(NSURLRequest *)request navigationType:(UIWebViewNavigationType)navigationType
 {
     NSURL *url = request.URL;
     NSString *scheme = [url.scheme lowercaseString];
+    // The page shim's requests to the app (br...: addresses of hidden frames) can come from any frame of any site.
+    // Those that act outside the page - a new tab, the clipboard, the share and print sheets - count only right after
+    // the user's own tap on the page, one of each kind per tap (see BRUserActivationWindow); the saved-login ones carry
+    // the main frame's key, the error page's Safari link a key of its own.
     if ([scheme isEqualToString:@"brtab"]) {
         NSString *spec = url.absoluteString.length > 6 ? [url.absoluteString substringFromIndex:6] : @"";
         NSURL *target = [NSURL URLWithString:[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: @""];
-        if (target && [[target.scheme lowercaseString] hasPrefix:@"http"]) {
+        if (BRIsWebURL(target)) {
+            if (![self takeUserTapFor:@"tab"]) {
+                BRLog(@"New tab without a tap refused: %@", target.absoluteString);
+                return NO;
+            }
             BRLog(@"New tab requested by the page: %@", target.absoluteString);
             [self openURLInNewTab:target];
         }
         return NO;
     }
     if ([scheme isEqualToString:@"brlog"]) {
+        // (the page's diagnostics: for the developer's log alone)
+        if (!BRDebugEnabled()) return NO;
         NSString *spec = url.absoluteString.length > 6 ? [url.absoluteString substringFromIndex:6] : @"";
         BRLog(@"Page: %@", [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec);
         return NO;
@@ -2717,19 +3073,42 @@ static void BRWebThreadLock(void)
         // navigator.clipboard.writeText / execCommand('copy') from shims-extra.js
         NSString *spec = url.absoluteString.length > 7 ? [url.absoluteString substringFromIndex:7] : @"";
         NSString *text = [spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec;
-        if (text.length) [UIPasteboard generalPasteboard].string = text;
+        if (text.length && [self takeUserTapFor:@"copy"]) [UIPasteboard generalPasteboard].string = text;
+        return NO;
+    }
+    if ([scheme isEqualToString:@"brpwtoken"]) {
+        // the page shim asks for the saved-login key before the page has loaded (a login field focused or a form sent
+        // early: the load of a heavy page may take a minute). It goes to the main frame's document alone, whichever
+        // frame asks, and only that document can read it - see giveLoginTokenToMainFrame. Answered after this call, one
+        // at a time and twice a second at most: a frame that keeps asking costs the page's thread no more.
+        if (!self.loginTokenQueued) {
+            self.loginTokenQueued = YES;
+            NSTimeInterval wait = MAX(0, self.loginTokenAskedAt + 0.5 - [NSDate timeIntervalSinceReferenceDate]);
+            __weak BRBrowserViewController *weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                BRBrowserViewController *strongSelf = weakSelf;
+                if (!strongSelf) return;
+                strongSelf.loginTokenQueued = NO;
+                strongSelf.loginTokenAskedAt = [NSDate timeIntervalSinceReferenceDate];
+                [strongSelf giveLoginTokenToMainFrame];
+            });
+        }
         return NO;
     }
     if ([scheme isEqualToString:@"brpw"]) {
-        // a login the page sent (see shims-extra.js): never logged
+        // a login the page sent (see shims-extra.js): brpw:<JSON {h, u, p, t}>, never logged
         NSString *spec = url.absoluteString.length > 5 ? [url.absoluteString substringFromIndex:5] : @"";
         NSData *data = [[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] dataUsingEncoding:NSUTF8StringEncoding];
-        NSDictionary *login = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
-        if ([login isKindOfClass:[NSDictionary class]]) [self offerToKeepLogin:login];
+        id login = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        if ([login isKindOfClass:[NSDictionary class]] && [self isLoginMessageFromMainFrame:login]) [self offerToKeepLogin:login];
         return NO;
     }
     if ([scheme isEqualToString:@"brpwfocus"]) {
-        [self offerKeptLogins];
+        // a name or password field got the focus: brpwfocus:<JSON {h, t}>
+        NSString *spec = url.absoluteString.length > 10 ? [url.absoluteString substringFromIndex:10] : @"";
+        NSData *data = [[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] dataUsingEncoding:NSUTF8StringEncoding];
+        id info = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        if ([info isKindOfClass:[NSDictionary class]] && [self isLoginMessageFromMainFrame:info]) [self offerKeptLogins];
         return NO;
     }
     if ([scheme isEqualToString:@"brreader"]) {
@@ -2744,14 +3123,19 @@ static void BRWebThreadLock(void)
         return NO;
     }
     if ([scheme isEqualToString:@"brprint"]) {
-        [self printPage];
+        if ([self takeUserTapFor:@"print"]) [self printPage];
         return NO;
     }
     if ([scheme isEqualToString:@"brsafari"]) {
-        // the error page's "Open in Safari" button
-        NSString *spec = url.absoluteString.length > 9 ? [url.absoluteString substringFromIndex:9] : @"";
-        NSURL *target = [NSURL URLWithString:[spec stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] ?: spec];
-        if (target && [[target.scheme lowercaseString] hasPrefix:@"http"]) [[UIApplication sharedApplication] openURL:target];
+        // the error page's "Open in Safari" button: brsafari:<its key>, once (see showErrorPageForURL); the address is
+        // the app's own, never one a page names
+        NSString *key = url.absoluteString.length > 9 ? [url.absoluteString substringFromIndex:9] : @"";
+        NSURL *target = self.safariURL;
+        if (self.safariKey.length && [key isEqualToString:self.safariKey] && BRIsWebURL(target)) {
+            self.safariKey = nil;
+            self.safariURL = nil;
+            [[UIApplication sharedApplication] openURL:target];
+        }
         return NO;
     }
     if ([scheme isEqualToString:@"brshare"]) {
@@ -2763,10 +3147,18 @@ static void BRWebThreadLock(void)
             NSString *urlString = [info[@"url"] isKindOfClass:[NSString class]] ? info[@"url"] : @"";
             NSString *text = [info[@"text"] isKindOfClass:[NSString class]] && [info[@"text"] length] ? info[@"text"] : ([info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : @"");
             NSURL *shared = urlString.length ? [NSURL URLWithString:urlString] : nil;
+            if (!BRIsWebURL(shared)) shared = nil;   // (a web address alone)
             CGRect rect = CGRectMake(self.webView.bounds.size.width / 2, 40, 1, 1);
-            if (shared) [self shareURL:shared title:text fromRect:rect inView:self.webView];
-            else if (text.length) [self shareItems:@[text] fromRect:rect inView:self.webView];
+            if ((shared || text.length) && [self takeUserTapFor:@"share"]) {
+                if (shared) [self shareURL:shared title:text fromRect:rect inView:self.webView];
+                else [self shareItems:@[text] fromRect:rect inView:self.webView];
+            }
         }
+        return NO;
+    }
+    // the app's own scheme (its debug commands among others) is never reached from web content
+    if ([scheme isEqualToString:@"surfari"] || [scheme isEqualToString:@"browser"]) {
+        BRLog(@"The app's own scheme from web content refused");
         return NO;
     }
     BOOL handled = [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"file"] ||
@@ -2776,12 +3168,19 @@ static void BRWebThreadLock(void)
         if (mainFrame && ![scheme isEqualToString:@"about"] && ![scheme isEqualToString:@"applewebdata"]) {
             [self compositingForNavigationTo:url];
             self.currentURL = url;
-            self.readerShown = NO;
+            [self forgetReaderOfPage];
             [self updateAddressFieldWithURL:url];
         }
         return YES;
     }
-    if (url && [[UIApplication sharedApplication] canOpenURL:url]) [[UIApplication sharedApplication] openURL:url];   // mailto:, tel:, cydia:
+    // another app (see askToOpenExternalURL): asked for the main frame's navigations (a link, a redirect) and for a
+    // frame's right after a tap (once per tap) - hidden frames that probe for installed apps while a page loads are let
+    // go without a word; after a "no" the page can ask again only after a new tap
+    BOOL mainDocument = [url isEqual:request.mainDocumentURL];
+    if (url && !self.pendingExternalURL && self.externalDeclinedAt <= self.lastUserTap && (mainDocument || [self recentUserTap]) &&
+        [[UIApplication sharedApplication] canOpenURL:url] && (mainDocument || [self takeUserTapFor:@"app"])) {
+        [self askToOpenExternalURL:url];
+    }
     return NO;
 }
 
@@ -2798,6 +3197,9 @@ static void BRWebThreadLock(void)
     self.loadCount = MAX(0, self.loadCount - 1);
     if (self.loadCount == 0) [self setLoading:NO];
     [self updateNavigationState];
+    // the saved-login key (see giveLoginTokenToMainFrame) at every load, a frame's too: the main document has it early
+    // (and earlier still when the page shim asks for it, brpwtoken:)
+    [self giveLoginTokenToMainFrame];
     NSURL *url = webView.request.URL;
     if (url.absoluteString.length) {
         [self updateAddressFieldWithURL:url];
@@ -2811,7 +3213,7 @@ static void BRWebThreadLock(void)
         [self applyTextSize];
         [self restoreTabScroll:url];
         if ([BRSettings pagesDark]) [self applyPageStyle];
-        NSString *title = [webView stringByEvaluatingJavaScriptFromString:@"document.title"] ?: @"";
+        NSString *title = BRCleanTitle([webView stringByEvaluatingJavaScriptFromString:@"document.title"]);
         self.currentTitle = title;
         if (url && [[url.scheme lowercaseString] hasPrefix:@"http"]) [[BRLibrary shared] recordVisit:url title:title];
         if (self.currentTab < self.tabs.count) {
@@ -2828,11 +3230,7 @@ static void BRWebThreadLock(void)
               title.length > 80 ? [title substringToIndex:80] : title, (unsigned long)[BRAdBlock blockedRequestCount],
               (unsigned long)[BRConnectionPool shared].reuseCount, (unsigned long)[BRConnectionPool shared].idleCount, (long)BRResidentMemoryMB(),
               [BRMemory peakMB]);
-        if ([BRSettings isHomeURL:url]) {
-            [self populateHomePage];
-            NSString *info = [webView stringByEvaluatingJavaScriptFromString:@"document.getElementById('info').innerText"];
-            BRLog(@"Home page: %@", info ?: @"");
-        }
+        if ([BRSettings isHomeURL:url]) [self populateHomePage];
         [self checkForBrowserChallenge:title url:url];
         [self checkForUnsupportedBrowserPage:title url:url];
     }
@@ -2866,12 +3264,15 @@ static void BRWebThreadLock(void)
                         "for(var i=0;i<a.length;i++){var l=a[i];if(l.host===h&&l.href!==location.href&&re.test(l.textContent||''))return l.href;}return '';})()";
         NSString *next = [self.webView stringByEvaluatingJavaScriptFromString:js];
         NSURL *nextURL = next.length ? [NSURL URLWithString:next] : nil;
+        // (the filter above runs in the page's world: the link must be a web address of the same host here too)
+        if (![[nextURL.scheme lowercaseString] hasPrefix:@"http"] || ![[nextURL.host lowercaseString] isEqualToString:host]) nextURL = nil;
         if (nextURL) {
             BRLog(@"Unsupported-browser page on %@ lets old browsers go on: following %@", host, nextURL.absoluteString);
             [self loadURL:nextURL];
             return;
         }
     }
+    // (the other identity is kept per host: on disk, in private browsing in memory until it ends - see BRSettings)
     [retried addObject:host];
     BRLog(@"Unsupported-browser page on %@: retrying as a current %@", host, mode == 3 ? @"iPhone" : @"iPad");
     [BRSettings setUserAgentMode:mode == 3 ? 4 : 2 forHost:host];
@@ -2932,10 +3333,14 @@ static void BRWebThreadLock(void)
     }
     BRLog(@"Main frame failed (%@ %ld): %@", error.domain, (long)error.code, error.localizedDescription);
 
+    // A typed host goes to http only when its https port refused the connection (the app's connect: BRErrorConnect,
+    // to WebKit NSURLErrorCannotConnectToHost): a site without https at all, as a rule. Never after a TLS or
+    // certificate failure, a timeout or a dropped connection, and never for a site the history or the bookmarks know
+    // over https: an attacker on the way causes a refusal as easily (one forged reset), and the http page would be his.
+    // (Otherwise the error page offers http, for the user to choose.)
     if (self.httpFallbackURL && [[failingURL.scheme lowercaseString] isEqualToString:@"https"] &&
         [[failingURL.host lowercaseString] isEqualToString:[self.httpFallbackURL.host lowercaseString]] &&
-        (error.code == NSURLErrorSecureConnectionFailed || error.code == NSURLErrorCannotConnectToHost ||
-         error.code == NSURLErrorTimedOut || error.code == NSURLErrorNetworkConnectionLost)) {
+        [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCannotConnectToHost && ![self knownOverHTTPS:failingURL.host]) {
         NSURL *fallback = self.httpFallbackURL;
         self.httpFallbackURL = nil;
         BRLog(@"Retrying over http: %@", fallback.absoluteString);
@@ -2944,6 +3349,25 @@ static void BRWebThreadLock(void)
     }
     self.httpFallbackURL = nil;
     [self showErrorPageForURL:failingURL error:error];
+}
+
+// The history or a bookmark has an https address of this site ("www." or not)
+- (BOOL)knownOverHTTPS:(NSString *)host
+{
+    NSString *want = [host lowercaseString];
+    if ([want hasPrefix:@"www."]) want = [want substringFromIndex:4];
+    if (!want.length) return NO;
+    BRLibrary *lib = [BRLibrary shared];
+    for (NSArray *list in @[lib.history ?: @[], lib.bookmarks ?: @[]]) {
+        for (NSDictionary *e in list) {
+            NSString *s = [e isKindOfClass:[NSDictionary class]] && [e[@"url"] isKindOfClass:[NSString class]] ? e[@"url"] : nil;
+            if (!s || [s rangeOfString:@"https://" options:NSAnchoredSearch | NSCaseInsensitiveSearch].location == NSNotFound) continue;
+            NSString *h = [[NSURL URLWithString:s].host lowercaseString];
+            if ([h hasPrefix:@"www."]) h = [h substringFromIndex:4];
+            if ([h isEqualToString:want]) return YES;
+        }
+    }
+    return NO;
 }
 
 @end

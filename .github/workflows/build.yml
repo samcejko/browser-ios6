@@ -1,18 +1,49 @@
-name: Build Browser (iOS 6, armv7)
+name: Build Surfari (iOS 6, armv7)
 
+# Pushes to main and pull requests build the packages (Actions artifacts, kept 14 days); a tag v<version> builds them
+# and publishes them as a GitHub Release.
 on:
   push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
+# (building only reads the repository; the release job alone may write, to create the release)
+permissions:
+  contents: read
+
+# What the build fetches is pinned, so that a release is built from known inputs: Theos and the sources below by
+# commit, release files by SHA-256. (A tag or "latest" can change under a build; a commit cannot.) The Theos cache key
+# names the Theos, toolchain and SDK pins: a new pin makes a new cache.
 env:
   THEOS: /home/runner/theos
+  THEOS_COMMIT: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
+  # L1ghtmann/llvm-project, release v11.1.0-L3 (clang 11)
+  TOOLCHAIN_RELEASE: test-210562a
+  # theos/sdks, "SDK Release 1"
+  SDK_RELEASE: master-146e41f
+  # (GitHub publishes no checksum for these two files: while one is empty, a build prints the SHA-256 it got as a
+  # warning, to be pinned here, and a release build refuses to start - see the Version step)
+  TOOLCHAIN_SHA256: ""
+  SDK_SHA256: ""
+  THEOS_CACHE_KEY: theos-linux-v2
   MBEDTLS_VERSION: "3.6.7"
-  THEOS_CACHE_KEY: theos-linux-clang11-sdk93-v1
+  MBEDTLS_SHA256: a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+  # the tags v1.0.2, v1.1.0, v1.3.2 and the main branch of 13 December 2025, by commit
+  WOFF2_COMMIT: 1bccf208bca986e53a647dfe4811322adb06ecf8
+  BROTLI_COMMIT: ed738e842d2fbdf2d6459e39267a633c4a9b2f5d
+  LIBWEBP_COMMIT: ca332209cb5567c9b249c86788cb2dbf8847e760
+  BROWSERSCORE_COMMIT: 41f9d3a7fac260819cb081859787e4021ad93c49
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      cacert: ${{ steps.cacert.outputs.date }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,17 +61,29 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/theos
-          key: ${{ env.THEOS_CACHE_KEY }}
+          key: ${{ env.THEOS_CACHE_KEY }}-${{ env.THEOS_COMMIT }}-${{ env.TOOLCHAIN_RELEASE }}-${{ env.TOOLCHAIN_SHA256 }}-${{ env.SDK_RELEASE }}-${{ env.SDK_SHA256 }}
 
       - name: Install Theos, toolchain and iOS 9.3 SDK
         if: steps.theos-cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          # file, expected SHA-256 (empty: not pinned yet), name of the pin
+          check_sha256() {
+            ACTUAL=$(sha256sum "$1" | cut -d' ' -f1)
+            echo "$1: SHA-256 $ACTUAL"
+            if [ -z "$2" ]; then echo "::warning::$3 is not pinned: set $3 to $ACTUAL in build.yml"; return 0; fi
+            if [ "$ACTUAL" != "$2" ]; then echo "::error::$1 has the SHA-256 $ACTUAL, $3 says $2"; return 1; fi
+          }
+          git clone https://github.com/theos/theos.git "$THEOS"
+          git -C "$THEOS" checkout --quiet "$THEOS_COMMIT"
+          git -C "$THEOS" submodule update --init --recursive
           mkdir -p "$THEOS/toolchain" "$THEOS/sdks"
 
           echo "== toolchain =="
-          curl -sSL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          curl -sSfL "https://github.com/L1ghtmann/llvm-project/releases/download/${TOOLCHAIN_RELEASE}/iOSToolchain-x86_64.tar.xz" -o /tmp/toolchain.tar.xz
+          check_sha256 /tmp/toolchain.tar.xz "$TOOLCHAIN_SHA256" TOOLCHAIN_SHA256
+          tar -xJf /tmp/toolchain.tar.xz -C "$THEOS/toolchain/"
+          rm -f /tmp/toolchain.tar.xz
           if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
             CLANG=$(find "$THEOS/toolchain" -type f -name clang -path '*/bin/*' | head -n1)
             echo "clang found at: $CLANG"
@@ -51,18 +94,11 @@ jobs:
           ls -la "$THEOS/toolchain/linux/iphone/bin" | head -n 40
 
           echo "== SDK =="
-          SDK_URL=$(curl -sS https://api.github.com/repos/theos/sdks/releases/latest | grep -o 'https://[^"]*iPhoneOS9\.3\.sdk[^"]*' | head -n1 || true)
-          echo "SDK asset: $SDK_URL"
-          if [ -n "$SDK_URL" ]; then
-            curl -sSL "$SDK_URL" -o /tmp/sdk.archive
-            (tar -xJf /tmp/sdk.archive -C "$THEOS/sdks/" 2>/dev/null || tar -xzf /tmp/sdk.archive -C "$THEOS/sdks/" 2>/dev/null || unzip -q /tmp/sdk.archive -d "$THEOS/sdks/")
-          fi
-          if [ ! -d "$THEOS/sdks/iPhoneOS9.3.sdk" ]; then
-            echo "Falling back to sparse checkout of theos/sdks"
-            git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-            (cd /tmp/sdks && git sparse-checkout set iPhoneOS9.3.sdk)
-            mv /tmp/sdks/iPhoneOS9.3.sdk "$THEOS/sdks/"
-          fi
+          curl -sSfL "https://github.com/theos/sdks/releases/download/${SDK_RELEASE}/iPhoneOS9.3.sdk.tar.xz" -o /tmp/sdk.tar.xz
+          check_sha256 /tmp/sdk.tar.xz "$SDK_SHA256" SDK_SHA256
+          tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks/"
+          rm -f /tmp/sdk.tar.xz
+          test -d "$THEOS/sdks/iPhoneOS9.3.sdk"
           ls "$THEOS/sdks"
 
       - name: Toolchain diagnostics
@@ -73,10 +109,49 @@ jobs:
           ldd "$THEOS/toolchain/linux/iphone/bin/clang" | grep -i "not found" || echo "clang: all shared libraries resolved"
           ls "$THEOS/sdks/iPhoneOS9.3.sdk" | head
 
+      - name: Version and build number
+        id: version
+        run: |
+          set -e
+          # One version for everything: Info.plist's CFBundleShortVersionString. The control file and a release tag must
+          # say the same. CFBundleVersion becomes the run number, so that every build can be told apart on the device
+          # (Settings > About shows both).
+          VERSION=$(python3 -c 'import plistlib; print(plistlib.load(open("Resources/Info.plist", "rb"))["CFBundleShortVersionString"])')
+          CONTROL_VERSION=$(sed -n 's/^Version: *//p' control)
+          if [ "$VERSION" != "$CONTROL_VERSION" ]; then
+            echo "::error::Resources/Info.plist says $VERSION, control says $CONTROL_VERSION"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not match the version $VERSION"
+            exit 1
+          fi
+          # (a release is built only from checked inputs: the warnings of a push build give the values)
+          if [ "$GITHUB_REF_TYPE" = tag ] && { [ -z "$TOOLCHAIN_SHA256" ] || [ -z "$SDK_SHA256" ]; }; then
+            echo "::error::pin TOOLCHAIN_SHA256 and SDK_SHA256 in build.yml before a release (a push build prints them)"
+            exit 1
+          fi
+          python3 - "$GITHUB_RUN_NUMBER" <<'EOF'
+          import plistlib, sys
+          path = "Resources/Info.plist"
+          with open(path, "rb") as f:
+              info = plistlib.load(f)
+          info["CFBundleVersion"] = sys.argv[1]
+          with open(path, "wb") as f:
+              plistlib.dump(info, f)
+          EOF
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Surfari $VERSION, build $GITHUB_RUN_NUMBER"
+
+      # (the versions of everything fetched below are listed with their licences in THIRD_PARTY_NOTICES.md and
+      # Resources/licenses.html: a changed version or a new component goes there too)
       - name: Fetch mbedTLS ${{ env.MBEDTLS_VERSION }}
         run: |
           set -e
-          curl -sSL "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MBEDTLS_VERSION}/mbedtls-${MBEDTLS_VERSION}.tar.bz2" -o /tmp/mbedtls.tar.bz2
+          curl -sSfL "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MBEDTLS_VERSION}/mbedtls-${MBEDTLS_VERSION}.tar.bz2" -o /tmp/mbedtls.tar.bz2
+          # (the checksum Mbed TLS publishes with the release)
+          echo "${MBEDTLS_SHA256}  /tmp/mbedtls.tar.bz2" | sha256sum -c -
           rm -rf vendor/mbedtls && mkdir -p vendor/mbedtls
           tar -xjf /tmp/mbedtls.tar.bz2 -C vendor/mbedtls --strip-components=1
           mv vendor/mbedtls/include/mbedtls/mbedtls_config.h vendor/mbedtls/include/mbedtls/mbedtls_config_default.h
@@ -86,35 +161,55 @@ jobs:
       - name: Fetch woff2 and brotli sources (WOFF2 fonts are converted to TTF on the device)
         run: |
           set -e
+          # (archives of the pinned commits: their content is the commit's, whatever happens to the tags)
           rm -rf vendor/woff2 vendor/brotli
           mkdir -p vendor/woff2 vendor/brotli
-          curl -sSL https://github.com/google/woff2/archive/refs/tags/v1.0.2.tar.gz | tar -xz -C vendor/woff2 --strip-components=1
-          curl -sSL https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz | tar -xz -C vendor/brotli --strip-components=1
+          curl -sSfL "https://github.com/google/woff2/archive/${WOFF2_COMMIT}.tar.gz" | tar -xz -C vendor/woff2 --strip-components=1
+          curl -sSfL "https://github.com/google/brotli/archive/${BROTLI_COMMIT}.tar.gz" | tar -xz -C vendor/brotli --strip-components=1
           # only the decoders are needed
           ls vendor/woff2/src | head -n 30
           ls vendor/brotli/c/dec vendor/brotli/c/common
           # libwebp: WebP images are decoded to PNG on the device
           rm -rf vendor/libwebp && mkdir -p vendor/libwebp
-          curl -sSL https://github.com/webmproject/libwebp/archive/refs/tags/v1.3.2.tar.gz | tar -xz -C vendor/libwebp --strip-components=1
+          curl -sSfL "https://github.com/webmproject/libwebp/archive/${LIBWEBP_COMMIT}.tar.gz" | tar -xz -C vendor/libwebp --strip-components=1
           # drop encoder-only dsp files (they are large and pull in the encoder)
           rm -f vendor/libwebp/src/dsp/enc*.c vendor/libwebp/src/dsp/cost*.c vendor/libwebp/src/dsp/ssim*.c vendor/libwebp/src/dsp/lossless_enc*.c
           ls vendor/libwebp/src/dec vendor/libwebp/src/dsp | head -n 80
 
+      # (the current bundle on the day of the build, not a pinned one: root certificates are removed for a reason. The
+      # log and the release notes name its date.)
       - name: Fetch CA bundle
-        run: |
-          curl -sSf https://curl.se/ca/cacert.pem -o Resources/cacert.pem
-          grep -c "BEGIN CERTIFICATE" Resources/cacert.pem
-
-      - name: Fetch ad block list (Peter Lowe's list, plus the bundled base list)
+        id: cacert
         run: |
           set -e
-          curl -sSfL "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext" -o /tmp/adservers.txt || true
-          grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' /tmp/adservers.txt > Resources/adblock.txt || true
-          echo "ad block domains: $(wc -l < Resources/adblock.txt)"
-          # OISD small ("block, don't break": ads, trackers, malware; a domain covers its subdomains)
-          curl -sSfL "https://small.oisd.nl/domainswild2" -o /tmp/oisd.txt || true
-          grep -E '^[A-Za-z0-9._-]+\.[A-Za-z0-9-]{2,}$' /tmp/oisd.txt > Resources/adblock-oisd.txt || true
-          echo "OISD small domains: $(wc -l < Resources/adblock-oisd.txt)"
+          curl -sSf https://curl.se/ca/cacert.pem -o Resources/cacert.pem
+          grep -c "BEGIN CERTIFICATE" Resources/cacert.pem
+          sha256sum Resources/cacert.pem
+          CACERT_DATE=$(sed -n 's/^## Certificate data from Mozilla as of: *//p' Resources/cacert.pem | head -n1)
+          if [ -z "$CACERT_DATE" ]; then echo "::warning::cacert.pem has no 'Certificate data from Mozilla as of' line"; fi
+          echo "CA bundle: Mozilla's certificate data as of ${CACERT_DATE:-unknown}"
+          echo "date=$CACERT_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the ad block list (OISD small, plus the bundled base list)
+        run: |
+          set -e
+          # OISD small ("block, don't break": ads, trackers, malware; a domain covers its subdomains). It is GPL-3.0 and
+          # ships as a data file of its own with its header lines (licence, homepage), which the app's loader skips
+          # like every '#' line. (Peter Lowe's list is no longer used: its terms do not allow redistribution in an app,
+          # and OISD covers its domains.)
+          if curl -sSfL "https://small.oisd.nl/domainswild2" -o /tmp/oisd.txt; then
+            grep -E '^(#.*|[A-Za-z0-9._-]+\.[A-Za-z0-9-]{2,})$' /tmp/oisd.txt > Resources/adblock-oisd.txt || true
+          fi
+          DOMAINS=$(grep -vc '^#' Resources/adblock-oisd.txt 2>/dev/null || true)
+          DOMAINS=${DOMAINS:-0}
+          echo "OISD small domains: $DOMAINS"
+          # (a failed download must not quietly turn into a release without ad blocking; a build of a push only warns)
+          if [ "$DOMAINS" -lt 10000 ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then echo "::error::the OISD list did not download ($DOMAINS domains)"; exit 1; fi
+            echo "::warning::the OISD list did not download ($DOMAINS domains): this build blocks only the bundled base list"
+          elif ! grep -q '^# License:' Resources/adblock-oisd.txt; then
+            echo "::warning::the OISD list came without its licence header line"
+          fi
 
       - name: Build a trimmed core-js (additive polyfills only, no replacements of native RegExp/String/Array/JSON)
         run: |
@@ -161,13 +256,6 @@ jobs:
           # (Babel and TypeScript on the device ran at about 0.1 KB/s with 300 MB of RAM on an iPad 2; the app's own
           # transpiler, Resources/jsfix.js, prints ES5 straight from acorn's tree, about 50 KB/s there.)
           curl -sSfL "https://cdn.jsdelivr.net/npm/acorn@8.14.0/dist/acorn.js" -o Resources/js/acorn.js
-          # The 2012 engine copies on slice(): acorn's directive check sliced the whole rest of the input at every
-          # function of sloppy code (13 s instead of 2 s for a 133 KB script on the iPad); a window is enough there.
-          sed -i 's/literal.exec(this.input.slice(start))/literal.exec(this.input.slice(start, start + 4096))/' Resources/js/acorn.js
-          grep -q 'this.input.slice(start, start + 4096)' Resources/js/acorn.js
-          # Unicode property tables for \p{...} in regular expressions (the transpiler expands them)
-          node tools/gen-unicode.js > Resources/js/unicode-props.js
-          ls -la Resources/js/unicode-props.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/regenerator-runtime@0.13.11/runtime.js" -o Resources/js/regenerator-runtime.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/whatwg-fetch@3.6.20/dist/fetch.umd.js" -o Resources/js/fetch.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/intersection-observer@0.12.2/intersection-observer.js" -o Resources/js/intersection-observer.js
@@ -175,33 +263,56 @@ jobs:
           curl -sSfL "https://cdn.jsdelivr.net/npm/picturefill@3.0.3/dist/picturefill.min.js" -o Resources/js/picturefill.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/dialog-polyfill@0.5.6/dist/dialog-polyfill.js" -o Resources/js/dialog-polyfill.js
           curl -sSfL "https://cdn.jsdelivr.net/npm/object-fit-images@3.2.4/dist/ofi.min.js" -o Resources/js/object-fit-images.js
-          # endless size polling of lazy pictures, and the placeholder from the shim (see the script)
-          node tools/patch-ofi.js Resources/js/object-fit-images.js
           # served separately and fetched by pages on first use of indexedDB (WebSQL-backed shim)
           curl -sSfL "https://cdn.jsdelivr.net/npm/indexeddbshim@3.10.0/dist/indexeddbshim.min.js" -o Resources/js/indexeddbshim.js
+          # (the files of the npm packages, as jsDelivr's file list gives their SHA-256; a published npm version never
+          # changes, so neither do these. Checked before the patches below.)
+          sha256sum -c - <<'EOF'
+          bec194b9abb10147d3bb77e544d95cf1c7b4f9f42dad00dfc83791909ebf49c7  Resources/js/acorn.js
+          e4fa2bcc7507e23fb226bad104bd3c526149ebc9891afbc4bb3a4a0c88afded3  Resources/js/regenerator-runtime.js
+          8c006dece7b95b63787c3ae297593c6bad9386cb8054697d18104177a5f52c87  Resources/js/fetch.js
+          bf73170c8637bae8c328ed21dfb368825343a7abb0abee0498cd04907f7d52ea  Resources/js/intersection-observer.js
+          2290b5c60e0cdc62851fb687800237273ac53797595b1b133860c4f1386de378  Resources/js/resize-observer.js
+          893fa7fe8b6e69e2828319c04a7cbb6f129ea820db695d4ced5757d59450b6a8  Resources/js/picturefill.js
+          7d5b4a5c45b61245429184d1a4af62dcf5d3a05d346428c5b00dcf4d7e901994  Resources/js/dialog-polyfill.js
+          37217cfedb39356d2a0fd317e4a8ee87d225f4364e3afc7473ab5a8e7d97ec64  Resources/js/object-fit-images.js
+          b278430c64e09ab0c401d17b7b824876b22f487b3fe78d6d974739ff027ba276  Resources/js/indexeddbshim.js
+          EOF
+          # The 2012 engine copies on slice(): acorn's directive check sliced the whole rest of the input at every
+          # function of sloppy code (13 s instead of 2 s for a 133 KB script on the iPad); a window is enough there.
+          sed -i 's/literal.exec(this.input.slice(start))/literal.exec(this.input.slice(start, start + 4096))/' Resources/js/acorn.js
+          grep -q 'this.input.slice(start, start + 4096)' Resources/js/acorn.js
+          # Unicode property tables for \p{...} in regular expressions (the transpiler expands them)
+          node tools/gen-unicode.js > Resources/js/unicode-props.js
+          ls -la Resources/js/unicode-props.js
+          # endless size polling of lazy pictures, and the placeholder from the shim (see the script)
+          node tools/patch-ofi.js Resources/js/object-fit-images.js
           ls -la Resources/js
 
       - name: Flatten the browserscore feature tests (browserscore/features, MIT) for the in-app Browserscore page
         run: |
           set -e
-          rm -rf /tmp/bsfeatures
-          git clone --depth 1 https://github.com/browserscore/features /tmp/bsfeatures
+          rm -rf /tmp/bsfeatures && mkdir -p /tmp/bsfeatures
+          git -C /tmp/bsfeatures init --quiet
+          git -C /tmp/bsfeatures fetch --quiet --depth 1 https://github.com/browserscore/features "$BROWSERSCORE_COMMIT"
+          git -C /tmp/bsfeatures checkout --quiet FETCH_HEAD
           node tools/browserscore-convert.mjs /tmp/bsfeatures Resources/js/browserscore-features.js
           ls -la Resources/js/browserscore-features.js
 
       - name: Minify the shims and check every script for iOS 6 (ES5, no block functions in strict mode)
         run: |
           set -e
-          npm install --no-save --silent acorn@8 terser@5
+          npm install --no-save --silent acorn@8.14.0 terser@5.39.0
           # (constructors keep their names - pages read Map.name, Promise.name - other function expressions lose them: a
-          # named one costs every call on iOS 6, see the script. The app takes js/<name>.js before <name>.js.)
+          # named one costs every call on iOS 6, see the script. The app takes js/<name>.js before <name>.js, and the
+          # package leaves out the root copies these replace, see the Makefile.)
           node tools/minify-page-scripts.js Resources/shims.js Resources/js/shims.js Resources/shims-extra.js Resources/js/shims-extra.js \
             Resources/page-prelude.js Resources/js/page-prelude.js Resources/regexp-shim.js Resources/js/regexp-shim.js \
             Resources/cssfix.js Resources/js/cssfix.js
           # (cssfix: the copy a page loads when its scripts insert styles; the app's own rewriter keeps the source)
           node tools/gen-helpers.js > Resources/js/jsfix-helpers.js
           # (the polyfills of the bundle as they come from npm, and the helpers: every page parses them, and keeps their
-          # text - about 200 KB of comments and white space down to some 80)
+          # text - about 200 KB of comments and white space down to some 80; licence headers stay)
           for f in regenerator-runtime fetch intersection-observer resize-observer dialog-polyfill jsfix-helpers; do
             node tools/minify-page-scripts.js Resources/js/$f.js Resources/js/$f.js
           done
@@ -262,38 +373,91 @@ jobs:
           make clean || true
           make package FINALPACKAGE=1 -j"$(nproc)" 2>&1 | tee build.log
           echo "== staged app =="
-          ls -la .theos/_/Applications/Browser.app
+          ls -la .theos/_/Applications/Surfari.app
 
-      - name: Make IPAs
+      - name: Make the IPAs and name the packages
         run: |
           set -e
           export PATH="$THEOS/toolchain/linux/iphone/bin:$THEOS/bin:$PATH"
-          APP=.theos/_/Applications/Browser.app
+          APP=.theos/_/Applications/Surfari.app
           LDID=$(command -v ldid || find "$THEOS" -type f -name ldid | head -n1)
           echo "ldid: $LDID"
-          VERSION=$(grep '^Version:' control | cut -d' ' -f2)
           rm -rf /tmp/ipa && mkdir -p /tmp/ipa/Payload packages
           cp -a "$APP" /tmp/ipa/Payload/
-          # 1) with the JIT entitlement
-          "$LDID" -SResources/entitlements.plist /tmp/ipa/Payload/Browser.app/Browser
-          "$LDID" -e /tmp/ipa/Payload/Browser.app/Browser | head -n 20 || true
-          (cd /tmp/ipa && zip -qr9 "$GITHUB_WORKSPACE/packages/Browser-$VERSION.ipa" Payload)
-          # 2) plain signature, for troubleshooting if the entitlement keeps the app from launching
-          "$LDID" -S /tmp/ipa/Payload/Browser.app/Browser
-          (cd /tmp/ipa && zip -qr9 "$GITHUB_WORKSPACE/packages/Browser-$VERSION-nojit.ipa" Payload)
-          # the memory tool for SSH (also in the .deb as /usr/bin/brmem)
-          if [ -f .theos/_/usr/bin/brmem ]; then cp .theos/_/usr/bin/brmem packages/brmem; fi
+          BIN=/tmp/ipa/Payload/Surfari.app/Surfari
+          # 1) with the JIT entitlement (dynamic-codesigning)
+          "$LDID" -SResources/entitlements.plist "$BIN"
+          "$LDID" -e "$BIN" | head -n 20 || true
+          (cd /tmp/ipa && zip -qr9 "$GITHUB_WORKSPACE/packages/Surfari-$VERSION.ipa" Payload)
+          # 2) without the JIT, for devices where the JIT build does not start: the same entitlements minus
+          # dynamic-codesigning. (application-identifier and keychain-access-groups must stay: without them securityd
+          # refuses the app's keychain calls and saved passwords silently stop working.)
+          python3 - <<'EOF'
+          import plistlib
+          with open("Resources/entitlements.plist", "rb") as f:
+              entitlements = plistlib.load(f)
+          for key in ("dynamic-codesigning", "get-task-allow"):
+              entitlements.pop(key, None)
+          with open("/tmp/entitlements-nojit.plist", "wb") as f:
+              plistlib.dump(entitlements, f)
+          EOF
+          "$LDID" -S/tmp/entitlements-nojit.plist "$BIN"
+          "$LDID" -e "$BIN" > /tmp/nojit-entitlements.txt
+          cat /tmp/nojit-entitlements.txt
+          grep -q keychain-access-groups /tmp/nojit-entitlements.txt
+          if grep -q dynamic-codesigning /tmp/nojit-entitlements.txt; then echo "::error::the nojit IPA kept the JIT entitlement"; exit 1; fi
+          (cd /tmp/ipa && zip -qr9 "$GITHUB_WORKSPACE/packages/Surfari-$VERSION-nojit.ipa" Payload)
+          # the .deb under the same name (Theos calls it <package id>_<version>_<arch>.deb)
+          DEB=$(ls packages/com.samcejko.browser_*_iphoneos-arm.deb | head -n1)
+          mv "$DEB" "packages/Surfari-$VERSION.deb"
           ls -la packages/
+
+      - name: Check the .deb and write checksums
+        run: |
+          set -e
+          DEB="packages/Surfari-$VERSION.deb"
+          dpkg-deb -I "$DEB"
+          dpkg-deb -c "$DEB" > /tmp/deb-files.txt
+          cat /tmp/deb-files.txt
+          # (what users get: the app with its licence page, the notices, the uicache script, the guard against an IPA
+          # copy - and no developer tool)
+          grep -q 'Applications/Surfari.app/Surfari$' /tmp/deb-files.txt
+          grep -q 'Applications/Surfari.app/licenses.html$' /tmp/deb-files.txt
+          grep -q 'usr/share/doc/com.samcejko.browser/LICENSE$' /tmp/deb-files.txt
+          grep -q 'usr/share/doc/com.samcejko.browser/THIRD_PARTY_NOTICES.md$' /tmp/deb-files.txt
+          if grep -q 'usr/bin/brmem' /tmp/deb-files.txt; then echo "::error::brmem is in the .deb"; exit 1; fi
+          rm -rf /tmp/debctl
+          dpkg-deb -e "$DEB" /tmp/debctl
+          sh -n /tmp/debctl/postinst
+          sh -n /tmp/debctl/preinst
+          # the preinst lets the .deb in on a device without an IPA copy, and refuses it next to one
+          sh /tmp/debctl/preinst install
+          sudo mkdir -p /var/mobile/Applications/CI-TEST/Surfari.app
+          echo '<string>com.samcejko.browser</string>' | sudo tee /var/mobile/Applications/CI-TEST/Surfari.app/Info.plist >/dev/null
+          if sh /tmp/debctl/preinst install; then echo "::error::the preinst let the .deb in next to an IPA copy"; exit 1; fi
+          sh /tmp/debctl/preinst abort-upgrade 1.0.0
+          sudo rm -rf /var/mobile
+          (cd packages && sha256sum "Surfari-$VERSION.ipa" "Surfari-$VERSION-nojit.ipa" "Surfari-$VERSION.deb" > SHA256SUMS && cat SHA256SUMS)
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: Browser-packages
+          name: Surfari-packages
           path: |
             packages/*.ipa
             packages/*.deb
-            packages/brmem
+            packages/SHA256SUMS
           if-no-files-found: error
+          retention-days: 14
+
+      # (a developer tool for the iPad, never part of the release: copy it to /usr/bin over SSH, see docs/DEVELOPMENT.md)
+      - name: Upload brmem
+        uses: actions/upload-artifact@v4
+        with:
+          name: brmem
+          path: packages/brmem
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload build log
         if: always()
@@ -302,3 +466,52 @@ jobs:
           name: build-log
           path: build.log
           if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    # (the build job has checked that the tag is v<the version of Info.plist and control>)
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      CACERT_DATE: ${{ needs.build.outputs.cacert }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the packages
+        uses: actions/download-artifact@v4
+        with:
+          name: Surfari-packages
+          path: packages
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          set -e
+          # (the section "## [<version>] ..." up to the next "## " heading)
+          awk -v v="$VERSION" '/^## /{ if (p) exit; if (index($0, "[" v "]")) { p = 1; next } } p' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; fi
+          # (which root certificates this build trusts: the bundle is fetched on the day of the build)
+          printf '\n---\n\nRoot certificates: the Mozilla certificate data as of %s (https://curl.se/ca/).\n' "${CACERT_DATE:-unknown}" >> release-notes.md
+          cat release-notes.md
+          cp LICENSE THIRD_PARTY_NOTICES.md packages/
+          ls -la packages/
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Surfari ${{ needs.build.outputs.version }}
+          body_path: release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            packages/Surfari-${{ needs.build.outputs.version }}.ipa
+            packages/Surfari-${{ needs.build.outputs.version }}-nojit.ipa
+            packages/Surfari-${{ needs.build.outputs.version }}.deb
+            packages/SHA256SUMS
+            packages/LICENSE
+            packages/THIRD_PARTY_NOTICES.md

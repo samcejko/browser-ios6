@@ -1,12 +1,19 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Nápověda</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surfari Help</title>
+<script>
+// Czech when the system language is Czech, else English (the two languages of the app); set before the page is drawn
+if (/^cs(-|_|$)/i.test(navigator.language || '')) { document.documentElement.className = 'cs'; document.documentElement.lang = 'cs'; document.title = 'Nápověda Surfari'; }
+</script>
 <style>
 body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 16px; background: #f2f2f5; color: #333; -webkit-text-size-adjust: 100%; }
 body.dark { background: #1c1c1e; color: #eee; }
+#cs { display: none; }
+.cs #cs { display: block; }
+.cs #en { display: none; }
 .wrap { max-width: 640px; margin: 0 auto; }
 h1 { font-size: 24px; margin: 8px 0 14px; color: #2b5fb3; }
 body.dark h1 { color: #8ab4f8; }
@@ -18,31 +25,121 @@ li:first-child { border-radius: 8px 8px 0 0; }
 li:last-child { border-radius: 0 0 8px 8px; }
 b { color: #2b5fb3; }
 body.dark b { color: #8ab4f8; }
+a { color: #2b5fb3; }
+body.dark a { color: #8ab4f8; }
 p { font-size: 15px; line-height: 1.45; margin: 8px 4px; }
-.note { font-size: 13px; color: #888; margin: 14px 4px 0; }
+.warn { background: #fff4e0; border: 1px solid #f0c27a; border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+body.dark .warn { background: #3a2f1c; border-color: #8a6a2e; }
+.note { font-size: 13px; color: #888; margin: 18px 4px 0; }
 </style>
 </head>
 <body>
-<div class="wrap">
-<h1>Nápověda</h1>
-<p>Prohlížeč používá vestavěný engine iOS 6 a všechno, co engine neumí, doplňuje sám: vlastní šifrované spojení
-(TLS 1.2 s aktuálními certifikáty), přepis moderního CSS, doplnění JavaScriptu, převod fontů WOFF2 a obrázků WebP.</p>
+<div class="wrap" id="en">
+<h1>Surfari Help</h1>
+<p>Surfari uses the web engine built into iOS 6 and adds what that engine lacks: its own secure connections (TLS 1.2
+with current certificates), a rewrite of modern CSS, a translator of modern JavaScript, newer web features, and
+conversion of WOFF2 fonts and WebP images.</p>
+
+<h2>Address bar</h2>
+<ul>
+  <li><b>Address or search</b> – anything that does not look like an address is searched with your search engine. While you type, Surfari offers your history, your bookmarks and search suggestions.</li>
+  <li><b>Shortcuts</b> – <i>g query</i> searches Google, <i>b</i> Bing, <i>s</i> Seznam, <i>d</i> DuckDuckGo, <i>w</i> the Czech and <i>we</i> the English Wikipedia.</li>
+  <li><b>javascript:</b> – a bookmarklet runs in the open page.</li>
+  <li><b>Paste and Go</b> – in the menu when you hold a finger on the address bar.</li>
+  <li>The <b>padlock</b> on the left shows the details of the secure connection; a <b>reader icon</b> appears on articles.</li>
+  <li><b>Hold the Reload button</b> – reload without the cache, desktop or mobile version, allow ads on this site.</li>
+</ul>
+
+<h2>Navigation</h2>
+<ul>
+  <li><b>Swipe in from the screen edge</b> – back (from the left) and forward (from the right).</li>
+  <li><b>Hold the back or forward arrow</b> – the pages in the tab's history.</li>
+  <li><b>Pull down</b> at the top of a page – reload it.</li>
+</ul>
+
+<h2>Tabs</h2>
+<ul>
+  <li><b>Plus</b> opens a new tab; <b>hold the plus</b> for recently closed tabs.</li>
+  <li><b>Hold a tab</b> – close it, close the others, duplicate it, reopen a closed tab.</li>
+  <li><b>Hold a link</b> – open it in a new tab or in the background, copy, share, download, open in Safari, save an image.</li>
+</ul>
+
+<h2>Share menu (the arrow icon)</h2>
+<ul>
+  <li><b>Reader</b> – the article without the clutter around it.</li>
+  <li><b>Find on Page</b>, <b>Translate Page</b> (through Google Translate), <b>View Source</b>.</li>
+  <li><b>Print</b> (AirPrint) and <b>Save as PDF</b> to your downloads.</li>
+  <li><b>Add Bookmark</b>; the book icon opens bookmarks, history and downloads. Bookmarks can be renamed, edited and reordered (Edit, or hold a bookmark).</li>
+</ul>
+
+<h2>Selected text</h2>
+<ul>
+  <li><b>Search</b> and <b>Share</b> in the menu above the selection; <b>Open</b> when the selection is an address.</li>
+</ul>
+
+<h2>Saved passwords</h2>
+<ul>
+  <li>When you sign in on a secure (https) site, Surfari offers to save the login and fills it in on your next visit. Logins stay in this device's keychain and are never sent anywhere else.</li>
+  <li><b>Settings › Forget site passwords</b> deletes them, together with the logins of password dialogs (HTTP authentication).</li>
+</ul>
+
+<h2>Settings</h2>
+<ul>
+  <li><b>Page version</b> – how Surfari introduces itself to sites: iPad with iOS 6, desktop, or a modern iPad. Google's sites get the modern iPad unless you choose another version for them.</li>
+  <li><b>Search engine</b> – DuckDuckGo, Google, Bing, Seznam, or your own address with %s.</li>
+  <li><b>Home page</b> – this built-in start page, or the page that is open.</li>
+  <li><b>Privacy</b> – private browsing, blocking of ads and trackers, third-party cookies, Do Not Track, hiding of cookie banners, search suggestions.</li>
+  <li><b>Load images</b> off saves data; <b>Dark pages</b> gives pages a dark style.</li>
+  <li><b>Licenses</b> (under About) – the licences of Surfari and of the components it includes.</li>
+</ul>
+
+<h2>Privacy</h2>
+<ul>
+  <li>Surfari has no account, no analytics and no crash reporting, and does not check for updates. Pages come straight from the sites you visit.</li>
+  <li><b>Search suggestions</b>: what you type in the address bar goes to the suggestion service of your search engine (Google, Bing, or DuckDuckGo, which also serves Seznam and custom engines) – never an address, and never in private browsing. You can turn them off under Settings › Privacy.</li>
+  <li><b>Name lookups</b>: when your network's DNS server is slow or gives no answer, Surfari asks Google Public DNS (8.8.8.8) and Cloudflare (1.1.1.1) directly. These lookups are not encrypted.</li>
+  <li><b>Translate Page</b> sends the page's address to Google Translate.</li>
+  <li>The <b>ad block list</b> is part of the app: nothing is downloaded to update it, and blocking happens on the device.</li>
+  <li><b>Private browsing</b> keeps no history, writes nothing to the page cache and sends no search suggestions; its cookies are separate and are deleted when you turn it off. The web engine's own site storage (local storage, databases) is shared with normal browsing, and downloads stay in the app's Documents folder, which iTunes file sharing shows.</li>
+</ul>
+
+<h2>Security</h2>
+<p class="warn">The page engine is the WebKit of iOS 6, which has not received security updates for years, and pages can
+exploit its known bugs. Surfari's own TLS keeps connections secure, but it cannot fix the engine. If that worries you,
+do not use Surfari for banking or with passwords you use elsewhere, stay on sites you trust, and keep
+<b>Verify certificates</b> on.</p>
+
+<h2>What does not work</h2>
+<ul>
+  <li>Protected video (DRM): Netflix, Disney+, Spotify and similar services.</li>
+  <li>Sites that check the browser before they let you in (for example Cloudflare's "verifying your browser"): Surfari offers to open them in Safari.</li>
+  <li>Features the old engine cannot be taught, such as WebAssembly, video calls (WebRTC) and offline web apps (service workers).</li>
+  <li>Very large web apps can load slowly or run out of memory; Surfari is tuned for devices with 512 MB of memory, such as the iPad 2.</li>
+</ul>
+<p class="note">Surfari is free software under the MIT License. <a href="licenses.html">Licenses</a></p>
+</div>
+
+<div class="wrap" id="cs">
+<h1>Nápověda Surfari</h1>
+<p>Surfari používá webový engine vestavěný v iOS 6 a doplňuje, co engine neumí: vlastní šifrované spojení (TLS 1.2
+s aktuálními certifikáty), přepis moderního CSS, překlad moderního JavaScriptu, novější webové funkce a převod
+fontů WOFF2 a obrázků WebP.</p>
 
 <h2>Adresní řádek</h2>
 <ul>
-  <li><b>Adresa nebo hledání</b> – co nevypadá jako adresa, se hledá zvoleným vyhledávačem. Při psaní se nabízí historie, záložky a našeptávač.</li>
+  <li><b>Adresa nebo hledání</b> – co nevypadá jako adresa, se hledá zvoleným vyhledávačem. Při psaní se nabízí historie, záložky a návrhy vyhledávání.</li>
   <li><b>Zkratky</b> – <i>g dotaz</i> hledá na Googlu, <i>b</i> Bing, <i>s</i> Seznam, <i>d</i> DuckDuckGo, <i>w</i> česká a <i>we</i> anglická Wikipedie.</li>
   <li><b>javascript:</b> – bookmarklet se spustí v otevřené stránce.</li>
   <li><b>Vložit a přejít</b> – v nabídce po podržení prstu v adresním řádku.</li>
   <li><b>Zámek</b> vlevo ukáže údaje o šifrovaném spojení; <b>ikona čtečky</b> se objeví u článků.</li>
-  <li><b>Podržení tlačítka Načíst</b> – načtení bez cache, verze pro počítač / mobil, povolení reklam na tomto webu.</li>
+  <li><b>Podržení tlačítka Načíst</b> – načtení bez cache, verze pro počítač nebo mobil, povolení reklam na tomto webu.</li>
 </ul>
 
 <h2>Navigace</h2>
 <ul>
   <li><b>Tažení od okraje obrazovky</b> – zpět (zleva) a vpřed (zprava).</li>
-  <li><b>Podržení šipky zpět nebo vpřed</b> – seznam stránek v historii panelu.</li>
-  <li><b>Tažení dolů</b> nad začátkem stránky – načte stránku znovu.</li>
+  <li><b>Podržení šipky zpět nebo vpřed</b> – stránky v historii panelu.</li>
+  <li><b>Tažení dolů</b> nad začátkem stránky – načte ji znovu.</li>
 </ul>
 
 <h2>Panely</h2>
@@ -65,24 +162,55 @@ p { font-size: 15px; line-height: 1.45; margin: 8px 4px; }
   <li><b>Hledat</b> a <b>Sdílet</b> v nabídce nad označením; <b>Otevřít</b>, pokud je označená adresa.</li>
 </ul>
 
-<h2>Nastavení</h2>
+<h2>Uložená hesla</h2>
 <ul>
-  <li><b>Verze stránek</b> – identita prohlížeče (iPad s iOS 6, počítač, moderní iPad). Google se vždy načítá jako moderní iPad.</li>
-  <li><b>Vyhledávač</b> – DuckDuckGo, Google, Bing, Seznam nebo vlastní adresa s %s.</li>
-  <li><b>Domovská stránka</b> – vestavěná úvodní stránka, nebo právě otevřená stránka.</li>
-  <li><b>Soukromí</b> – anonymní prohlížení, blokování reklam, cookies třetích stran, Do Not Track, skrývání cookie lišt.</li>
-  <li><b>Načítat obrázky</b> vypnuté šetří data; <b>Tmavé stránky</b> vnutí stránkám tmavý styl.</li>
-  <li><b>Zapomenout hesla k webům</b> – přihlašovací údaje HTTP autentizace platí jen do ukončení aplikace.</li>
+  <li>Po přihlášení na zabezpečeném webu (https) Surfari nabídne uložení přihlašovacích údajů a příště je vyplní. Údaje zůstávají v klíčence tohoto zařízení a nikam jinam se neposílají.</li>
+  <li><b>Nastavení › Zapomenout hesla k webům</b> je smaže, spolu s přihlášeními z dialogů pro heslo (HTTP autentizace).</li>
 </ul>
 
+<h2>Nastavení</h2>
+<ul>
+  <li><b>Verze stránek</b> – jak se Surfari webům představuje: iPad s iOS 6, počítač, nebo moderní iPad. Weby Googlu dostanou moderní iPad, pokud pro ně nezvolíte jinou verzi.</li>
+  <li><b>Vyhledávač</b> – DuckDuckGo, Google, Bing, Seznam nebo vlastní adresa s %s.</li>
+  <li><b>Domovská stránka</b> – tato vestavěná úvodní stránka, nebo právě otevřená stránka.</li>
+  <li><b>Soukromí</b> – anonymní prohlížení, blokování reklam a sledování, cookies třetích stran, Do Not Track, skrývání cookie lišt, návrhy vyhledávání.</li>
+  <li><b>Načítat obrázky</b> vypnuté šetří data; <b>Tmavé stránky</b> dají stránkám tmavý vzhled.</li>
+  <li><b>Licence</b> (v části O aplikaci) – licence Surfari a součástí, které obsahuje.</li>
+</ul>
+
+<h2>Soukromí</h2>
+<ul>
+  <li>Surfari nemá účet, analytiku ani hlášení pádů a nekontroluje aktualizace. Stránky se načítají přímo z navštívených webů.</li>
+  <li><b>Návrhy vyhledávání</b>: co píšete do adresního řádku, jde službě návrhů vašeho vyhledávače (Google, Bing, nebo DuckDuckGo, který slouží i pro Seznam a vlastní vyhledávač) – nikdy ne adresa a nikdy při anonymním prohlížení. Vypnout je můžete v Nastavení › Soukromí.</li>
+  <li><b>Překlad názvů</b>: když DNS server vaší sítě odpovídá pomalu nebo vůbec, Surfari se zeptá přímo Google Public DNS (8.8.8.8) a Cloudflare (1.1.1.1). Tyto dotazy nejsou šifrované.</li>
+  <li><b>Přeložit stránku</b> pošle adresu stránky Překladači Google.</li>
+  <li><b>Seznam blokovaných reklam</b> je součástí aplikace: nic se kvůli němu nestahuje a blokuje se přímo v zařízení.</li>
+  <li><b>Anonymní prohlížení</b> nevede historii, nic neukládá do cache stránek a neposílá návrhy vyhledávání; jeho cookies jsou oddělené a po vypnutí se smažou. Vlastní úložiště webů v enginu (local storage, databáze) je společné s běžným prohlížením a stažené soubory zůstávají ve složce Documents aplikace, kterou ukazuje sdílení souborů v iTunes.</li>
+</ul>
+
+<h2>Bezpečnost</h2>
+<p class="warn">Stránky vykresluje WebKit z iOS 6, který už léta nedostává bezpečnostní opravy, a stránky mohou zneužít
+jeho známé chyby. Vlastní TLS v Surfari udrží spojení bezpečné, engine ale opravit nedokáže. Pokud vás to znepokojuje,
+nepoužívejte Surfari pro bankovnictví ani s hesly, která máte i jinde, zůstaňte u webů, kterým věříte, a nechte
+zapnuté <b>Ověřovat certifikáty</b>.</p>
+
 <h2>Co nefunguje</h2>
-<p>Stránky, které vyžadují JavaScript novější než ES5 (syntaxe let/const, šipkové funkce, moduly) bez záložní verze,
-weby s ověřením prohlížeče (Cloudflare) a přehrávače videa s MSE. Přepis takového kódu byl na iPadu 2 vyzkoušen a je
-příliš pomalý.</p>
-<p class="note">Aplikace neposílá žádná data nikam jinam než na navštívené weby a zvolený vyhledávač.</p>
+<ul>
+  <li>Chráněné video (DRM): Netflix, Disney+, Spotify a podobné služby.</li>
+  <li>Weby, které před vpuštěním ověřují prohlížeč (například „verifying your browser“ od Cloudflare): Surfari nabídne otevření v Safari.</li>
+  <li>Funkce, které starý engine naučit nejde, třeba WebAssembly, videohovory (WebRTC) a offline webové aplikace (service workery).</li>
+  <li>Velmi velké webové aplikace se mohou načítat pomalu nebo jim dojde paměť; Surfari je vyladěný pro zařízení s 512 MB paměti, jako je iPad 2.</li>
+</ul>
+<p class="note">Surfari je svobodný software pod licencí MIT. <a href="licenses.html">Licence</a></p>
 </div>
 <script>
-try { if (/dark/.test(location.search)) document.body.className = 'dark'; } catch (e) {}
+(function () {
+  // (the app asks for the dark theme with ?dark; the licences page then gets it as well)
+  if (!/dark/.test(location.search)) return;
+  document.body.className = 'dark';
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) if (links[i].getAttribute('href') === 'licenses.html') links[i].setAttribute('href', 'licenses.html?dark');
+})();
 </script>
 </body>
 </html>

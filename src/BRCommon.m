@@ -2,7 +2,31 @@
 
 #include <mach/mach.h>
 
-NSString * const BRErrorDomain = @"BrowserErrorDomain";
+NSString * const BRErrorDomain = @"SurfariErrorDomain";
+
+static NSString *BRDebugKeyPath(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/surfari-debug-key"];
+}
+
+NSString *BRDebugKey(void)
+{
+    NSString *text = [NSString stringWithContentsOfFile:BRDebugKeyPath() encoding:NSUTF8StringEncoding error:NULL];
+    text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return text.length >= 16 ? text : nil;
+}
+
+BOOL BRDebugEnabled(void)
+{
+    // (every BRLog asks, from any thread: one file check per run)
+    static BOOL enabled;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        enabled = [[NSFileManager defaultManager] fileExistsAtPath:BRDebugKeyPath()]
+                  || [[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugLog"];
+    });
+    return enabled;
+}
 
 double BRResidentMemoryMB(void)
 {

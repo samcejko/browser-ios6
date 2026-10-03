@@ -1,0 +1,6 @@
+{
+    "repo": "samcejko/surfari",
+    "token": "<fine-grained token>",
+    "ipad": "<iPad IP>",
+    "debugKey": "<16+ chars>"
+}

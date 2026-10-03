@@ -1,4 +1,4 @@
-/* Browser - Czech */
+/* Surfari - Czech */
 
 "Search or enter address" = "Hledat nebo zadat adresu";
 "Home" = "Domů";
@@ -50,8 +50,7 @@
 "Connection failed." = "Připojení selhalo.";
 "The certificate bundle is missing, cannot verify the server." = "Chybí balík certifikátů, server nelze ověřit.";
 "Check the date and time of this device." = "Zkontrolujte datum a čas v zařízení.";
-"Certificate verification can be turned off in Settings." = "Ověřování certifikátů lze vypnout v Nastavení.";
-"Server certificate rejected: %@. %@" = "Certifikát serveru byl odmítnut: %@. %@";
+"The server's certificate could not be verified (%@). The page was blocked to protect you." = "Certifikát serveru se nepodařilo ověřit (%@). Stránka byla pro vaši ochranu zablokována.";
 "TLS handshake timed out." = "Vypršel čas TLS handshaku.";
 "TLS handshake failed: %@" = "TLS handshake selhal: %@";
 "Sending the request failed: %@" = "Odeslání požadavku selhalo: %@";
@@ -63,6 +62,7 @@
 "Unexpected response: %@" = "Neočekávaná odpověď: %@";
 "The server closed the connection without responding." = "Server ukončil spojení bez odpovědi.";
 "Content decoding failed." = "Dekódování obsahu selhalo.";
+"The server's response is too large." = "Odpověď serveru je příliš velká.";
 
 "Share" = "Sdílet";
 "Open" = "Otevřít";
@@ -170,3 +170,19 @@
 "iPhone with iOS 6 (lighter pages)" = "iPhone s iOS 6 (lehčí stránky)";
 "Modern iPhone (Safari 17)" = "Moderní iPhone (Safari 17)";
 "The iPad was running out of memory: the page was loaded again so that the app stays open." = "iPadu docházela paměť: stránka se načetla znovu, aby aplikace zůstala otevřená.";
+"Safe start" = "Bezpečné spuštění";
+"The app closed unexpectedly twice in a row, so this time it opened the start page instead of the last page. Your tabs are kept." = "Aplikace se dvakrát po sobě nečekaně ukončila, proto tentokrát místo poslední stránky otevřela úvodní stránku. Panely zůstaly zachované.";
+
+/* settings */
+"Advanced" = "Pokročilé";
+"Licenses" = "Licence";
+"Search suggestions" = "Návrhy vyhledávání";
+"Search suggestions send what you type in the address bar to the search engine (never in private browsing)." = "Návrhy vyhledávání posílají text, který píšete do adresního řádku, vyhledávači (v anonymním prohlížení nikdy).";
+"For troubleshooting only. Without certificate verification anyone on the network can read and change secure pages, passwords included. Without the rewriting and polyfills most modern sites stop working, and every change of them empties the cache." = "Jen pro řešení potíží. Bez ověřování certifikátů může kdokoli v síti číst a měnit zabezpečené stránky včetně hesel. Bez přepisování a polyfillů většina moderních webů přestane fungovat a každá jejich změna vymaže cache.";
+"Turn off certificate verification?" = "Vypnout ověřování certifikátů?";
+"Secure pages could then come from anyone between you and the site (for example on a public Wi-Fi), who can read and change them, passwords included. Turn it back on as soon as you can." = "Zabezpečené stránky by pak mohl podvrhnout kdokoli mezi vámi a webem (třeba na veřejné Wi-Fi) a číst či měnit je včetně hesel. Zapněte ho znovu, jakmile to půjde.";
+"Turn Off" = "Vypnout";
+"Private browsing could not be turned on: there is no room to put the cookies of normal browsing aside. Free up some space and try again." = "Anonymní prohlížení se nepodařilo zapnout: není místo, kam odložit cookies běžného prohlížení. Uvolněte trochu místa a zkuste to znovu.";
+
+/* other apps */
+"Open in another app?" = "Otevřít v jiné aplikaci?";

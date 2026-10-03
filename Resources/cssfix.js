@@ -4836,7 +4836,9 @@ var CSSFix = (function () {
 
     // ------------------------------------------------------------------ scripts inside HTML
 
-    var scriptCache = {}, scriptCacheSize = 0;   // hash -> transpiled inline script
+    // hash -> [inline script, its lowered text]. Every site's documents share it and the hash is a quick one, which a page
+    // could match with a script of its own: an entry counts only for the very same text.
+    var scriptCache = {}, scriptCacheSize = 0;
 
     function hashString(s) {
         var h = 2166136261, i = 0, n = s.length;
@@ -4882,7 +4884,8 @@ var CSSFix = (function () {
     // theirs with a semicolon)
     var DIRECTIVES = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:(["'])(?:[^"'\\\n]|\\.)*?\1\s*;(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*)*/;
 
-    // a file name for a script's text: two 32-bit hashes and the length
+    // a file name for a script's text: two 32-bit hashes and the length (the app names the file and the document's
+    // reference to it again, by a SHA-256 of the text: see BRCSSRewriter rewrittenData)
     function scriptName(s) {
         var a = 2166136261, b = 5381, i = 0, n = s.length, c;
         for (; i < n; i++) {
@@ -4896,14 +4899,14 @@ var CSSFix = (function () {
     function transpileInline(code) {
         if (typeof JSFix === 'undefined' || !code || !/[^\s]/.test(code)) return null;
         if (tooBigInline(code)) return null;
-        var key = hashString(code);
-        if (scriptCache.hasOwnProperty(key)) return scriptCache[key];
+        var key = hashString(code), hit = scriptCache.hasOwnProperty(key) ? scriptCache[key] : null;
+        if (hit && hit[0] === code) return hit[1];
         var out = null;
         try { out = JSFix.run(code, '{}'); } catch (e) { out = null; }
         if (out === '') out = null;   // already ES5 (or not lowerable)
         if (scriptCacheSize > 2000000) { scriptCache = {}; scriptCacheSize = 0; }
-        scriptCache[key] = out;
-        scriptCacheSize += (out || '').length;
+        scriptCache[key] = [code, out];
+        scriptCacheSize += code.length + (out || '').length;
         return out;
     }
 

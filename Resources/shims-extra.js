@@ -694,6 +694,10 @@
         return sendToApp('brtab', url);
     }
     function frameExists(name) { try { return !!window.frames[name]; } catch (e) { return false; } }
+    // The page's diagnostics for the app's log (brlog:) - load timing, errors, refused popups - only on a developer's
+    // device, where the app puts window.__brDebugLog at the start of the polyfills: elsewhere nothing logs them, and
+    // each would cost the page a hidden frame (and the timing a timer a second) for nothing
+    var brDebugLog = !!window.__brDebugLog;
     // Popup blocking: window.open only counts within a moment of a tap, click or key press
     var lastGesture = 0, blockedPopups = 0;
     function noteGesture() { lastGesture = Date.now(); }
@@ -703,7 +707,7 @@
         if (name === '_self' || name === '_top' || name === '_parent') { if (url) window.location.href = url; return window; }
         if (name && frameExists(name)) { try { window.frames[name].location.href = url; } catch (e) {} return window.frames[name]; }
         if (Date.now() - lastGesture > 2000) {
-            if (blockedPopups++ < 3) sendToApp('brlog', 'Popup blocked: ' + String(url || '').slice(0, 200));
+            if (brDebugLog && blockedPopups++ < 3) sendToApp('brlog', 'Popup blocked: ' + String(url || '').slice(0, 200));
             return null;
         }
         if (!url || url === 'about:blank' || String(url).charAt(0) === '#') url = '';
@@ -732,13 +736,15 @@
     }, false);
     // Load timing for the app's log: when the DOM was ready, when the page finished, and the longest stretch
     // during which the engine was too busy to run a 1 s timer (JavaScript or layout work).
-    var brT0 = Date.now(), lastTick = brT0, maxGap = 0, maxGapAt = 0;
-    var tickTimer = setInterval(function () { var now = Date.now(), gap = now - lastTick - 1000; if (gap > maxGap) { maxGap = gap; maxGapAt = lastTick - brT0; } lastTick = now; }, 1000);
-    document.addEventListener('DOMContentLoaded', function () { sendToApp('brlog', 'timing: DOMContentLoaded after ' + (Date.now() - brT0) + ' ms, busy gap so far ' + maxGap + ' ms'); }, false);
-    window.addEventListener('load', function () {
-        sendToApp('brlog', 'timing: load after ' + (Date.now() - brT0) + ' ms, longest busy gap ' + maxGap + ' ms at ' + maxGapAt + ' ms, scripts ' + document.scripts.length + ', errors ' + reportedErrors + ', nodes ' + document.getElementsByTagName('*').length);
-        setTimeout(function () { clearInterval(tickTimer); tickTimer = null; }, 30000);
-    }, false);
+    var brT0 = Date.now(), lastTick = brT0, maxGap = 0, maxGapAt = 0, tickTimer = null;
+    if (brDebugLog) {
+        tickTimer = setInterval(function () { var now = Date.now(), gap = now - lastTick - 1000; if (gap > maxGap) { maxGap = gap; maxGapAt = lastTick - brT0; } lastTick = now; }, 1000);
+        document.addEventListener('DOMContentLoaded', function () { sendToApp('brlog', 'timing: DOMContentLoaded after ' + (Date.now() - brT0) + ' ms, busy gap so far ' + maxGap + ' ms'); }, false);
+        window.addEventListener('load', function () {
+            sendToApp('brlog', 'timing: load after ' + (Date.now() - brT0) + ' ms, longest busy gap ' + maxGap + ' ms at ' + maxGapAt + ' ms, scripts ' + document.scripts.length + ', errors ' + reportedErrors + ', nodes ' + document.getElementsByTagName('*').length);
+            setTimeout(function () { clearInterval(tickTimer); tickTimer = null; }, 30000);
+        }, false);
+    }
     // Uncaught errors of the page reach the app's log (brlog: scheme) so that broken sites can be diagnosed over SSH
     var reportedErrors = 0;
     window.addEventListener('error', function (e) {
@@ -746,7 +752,7 @@
         // lowered again - IKEA's recommendation chunks sat in the cache as they came, with a year to live)
         var file = e.filename || '';
         if (/SyntaxError/.test(e.message || '') && /^https?:/.test(file) && file.split('#')[0] !== location.href.split('#')[0]) sendToApp('brevict', file);
-        if (reportedErrors >= 5) return;
+        if (!brDebugLog || reportedErrors >= 5) return;
         reportedErrors++;
         var src = (e.filename || '').split('/').slice(-1)[0];
         sendToApp('brlog', 'JS error: ' + (e.message || 'error') + ' @ ' + src + ':' + (e.lineno || 0) + ' page ' + location.hostname);
@@ -832,6 +838,8 @@
     if (!navigator.share) {
         navigator.share = function (data) {
             data = data || {};
+            // (the app's share sheet opens only within 5 s of the user's tap on the page, see the clipboard below)
+            if (Date.now() - lastGesture >= 5000) return rejectWith('NotAllowedError', 'share needs a tap of the user')();
             var ok = sendToApp('brshare', JSON.stringify({ title: data.title || '', text: data.text || '', url: data.url ? absoluteURL(data.url) : '' }));
             return ok ? resolved() : rejectWith('AbortError', 'share failed')();
         };
@@ -840,7 +848,9 @@
     // Clipboard writes go to the system pasteboard through the app; window.print() opens the print dialog
     try {
         navigator.clipboard = {
-            writeText: function (text) { return sendToApp('brcopy', String(text)) ? resolved() : rejectWith('NotAllowedError', 'copy failed')(); },
+            // (the app copies only within 5 s of the user's tap on the page, as browsers want a user activation: later the
+            // page hears that it failed)
+            writeText: function (text) { return Date.now() - lastGesture < 5000 && sendToApp('brcopy', String(text)) ? resolved() : rejectWith('NotAllowedError', 'copy failed')(); },
             write: function () { return rejectWith('NotAllowedError', 'only text can be copied')(); },
             readText: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); },
             read: function () { return rejectWith('NotAllowedError', 'reading the clipboard is not allowed')(); }
@@ -2195,62 +2205,82 @@
         window.SpeechRecognitionEvent = window.webkitSpeechRecognitionEvent = function SpeechRecognitionEvent() {};
     }
 
-    // ---- crypto.subtle: real SHA-1 / SHA-256 digests, everything else unavailable
+    // ---- crypto.subtle: SHA digests here, the rest further down (brSubtle)
+    // Key bytes, and what is made of them, go only through this code's own arithmetic and through the elements and
+    // lengths of arrays it made itself (own properties in this engine) - never through a method, a constructor or a Math
+    // function a page can put in place: a page script that replaced Uint8Array.prototype.set, Array.prototype.push or
+    // indexOf read the bytes of keys made not extractable, or used a key for what its usages do not allow. Typed arrays
+    // come from the constructor of before any page script. (Not its set either: core-js may have put its own there,
+    // which looks things up on the array it gets.)
+    var CryptoU8 = window.Uint8Array;
     function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
     function rotl(x, n) { return (x << n) | (x >>> (32 - n)); }
-    function padMessage(bytes) {
-        var l = bytes.length, padLen = ((l + 9 + 63) >> 6) << 6, msg = new Uint8Array(padLen);
-        msg.set(bytes);
-        msg[l] = 0x80;
-        var bits = l * 8, hi = Math.floor(bits / 4294967296), lo = bits >>> 0;
-        msg[padLen - 8] = (hi >>> 24) & 255; msg[padLen - 7] = (hi >>> 16) & 255; msg[padLen - 6] = (hi >>> 8) & 255; msg[padLen - 5] = hi & 255;
-        msg[padLen - 4] = (lo >>> 24) & 255; msg[padLen - 3] = (lo >>> 16) & 255; msg[padLen - 2] = (lo >>> 8) & 255; msg[padLen - 1] = lo & 255;
-        return msg;
+    // The end of a message for SHA-1/2: its bytes after the whole blocks, 0x80, zeros, and the length in bits big-endian
+    // in the last 8 bytes (of the 16 that SHA-384/512 keep for it). `total` is the length hashed, a key block hashed in
+    // front of the message counted in. Only this tail is copied: the whole blocks are read from the message itself.
+    function hashTail(bytes, from, total, bs, lenBytes) {
+        var rem = bytes.length - from, n = rem + 1 + lenBytes > bs ? 2 * bs : bs, t = new CryptoU8(n), i;
+        for (i = 0; i < rem; i++) t[i] = bytes[from + i];
+        t[rem] = 0x80;
+        var bits = total * 8, hi = (bits / 4294967296) | 0, lo = bits >>> 0;
+        t[n - 8] = (hi >>> 24) & 255; t[n - 7] = (hi >>> 16) & 255; t[n - 6] = (hi >>> 8) & 255; t[n - 5] = hi & 255;
+        t[n - 4] = (lo >>> 24) & 255; t[n - 3] = (lo >>> 16) & 255; t[n - 2] = (lo >>> 8) & 255; t[n - 1] = lo & 255;
+        return t;
     }
     function readWords(msg, off, w, n) { for (var i = 0; i < n; i++) w[i] = (msg[off + i * 4] << 24) | (msg[off + i * 4 + 1] << 16) | (msg[off + i * 4 + 2] << 8) | msg[off + i * 4 + 3]; }
-    function wordsToBytes(H) { var out = new Uint8Array(H.length * 4); for (var i = 0; i < H.length; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 255; out[i * 4 + 2] = (H[i] >>> 8) & 255; out[i * 4 + 3] = H[i] & 255; } return out; }
+    function wordsToBytes(H) { var out = new CryptoU8(H.length * 4); for (var i = 0; i < H.length; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 255; out[i * 4 + 2] = (H[i] >>> 8) & 255; out[i * 4 + 3] = H[i] & 255; } return out; }
     var K256 = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
                 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
                 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
                 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
-    function sha256(bytes) {
-        var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-        var msg = padMessage(bytes), w = new Array(64), i;
-        for (var off = 0; off < msg.length; off += 64) {
-            readWords(msg, off, w, 16);
-            for (i = 16; i < 64; i++) {
-                var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3), s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
-                w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
-            }
-            var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-            for (i = 0; i < 64; i++) {
-                var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25), ch = (e & f) ^ (~e & g), t1 = (h + S1 + ch + K256[i] + w[i]) | 0;
-                var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22), maj = (a & b) ^ (a & c) ^ (b & c), t2 = (S0 + maj) | 0;
-                h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
-            }
-            H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
-            H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    // one 64-byte block at `off` of msg into the state H (w: the message schedule, an array of the caller's)
+    function sha256Block(H, w, msg, off) {
+        var i;
+        readWords(msg, off, w, 16);
+        for (i = 16; i < 64; i++) {
+            var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3), s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
         }
+        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        for (i = 0; i < 64; i++) {
+            var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25), ch = (e & f) ^ (~e & g), t1 = (h + S1 + ch + K256[i] + w[i]) | 0;
+            var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22), maj = (a & b) ^ (a & c) ^ (b & c), t2 = (S0 + maj) | 0;
+            h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+        }
+        H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+        H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    }
+    // pre: a block hashed in front of bytes (HMAC's key block), or nothing
+    function sha256(bytes, pre) {
+        var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+        var w = [], l = bytes.length, full = l - l % 64, tail = hashTail(bytes, full, (pre ? 64 : 0) + l, 64, 8), off;
+        if (pre) sha256Block(H, w, pre, 0);
+        for (off = 0; off < full; off += 64) sha256Block(H, w, bytes, off);
+        for (off = 0; off < tail.length; off += 64) sha256Block(H, w, tail, off);
         return wordsToBytes(H);
     }
-    function sha1(bytes) {
-        var H = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
-        var msg = padMessage(bytes), w = new Array(80), i;
-        for (var off = 0; off < msg.length; off += 64) {
-            readWords(msg, off, w, 16);
-            for (i = 16; i < 80; i++) w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-            var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4];
-            for (i = 0; i < 80; i++) {
-                var f, k;
-                if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
-                else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
-                else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
-                else { f = b ^ c ^ d; k = 0xCA62C1D6; }
-                var t = (rotl(a, 5) + f + e + k + w[i]) | 0;
-                e = d; d = c; c = rotl(b, 30); b = a; a = t;
-            }
-            H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0; H[4] = (H[4] + e) | 0;
+    function sha1Block(H, w, msg, off) {
+        var i;
+        readWords(msg, off, w, 16);
+        for (i = 16; i < 80; i++) w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4];
+        for (i = 0; i < 80; i++) {
+            var f, k;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+            var t = (rotl(a, 5) + f + e + k + w[i]) | 0;
+            e = d; d = c; c = rotl(b, 30); b = a; a = t;
         }
+        H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0; H[4] = (H[4] + e) | 0;
+    }
+    function sha1(bytes, pre) {
+        var H = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        var w = [], l = bytes.length, full = l - l % 64, tail = hashTail(bytes, full, (pre ? 64 : 0) + l, 64, 8), off;
+        if (pre) sha1Block(H, w, pre, 0);
+        for (off = 0; off < full; off += 64) sha1Block(H, w, bytes, off);
+        for (off = 0; off < tail.length; off += 64) sha1Block(H, w, tail, off);
         return wordsToBytes(H);
     }
     function toBytes(data) {
@@ -2269,73 +2299,101 @@
     // secret keys imported, exported (raw bytes or JWK) and generated. Public-key algorithms stay unavailable. Written
     // from the specifications (AES after SJCL's table method); tools/crypto-test.html compares every operation with a
     // current browser's own. (AWS WAF's challenge in front of imdb.com encrypts with AES-GCM: it failed here.)
+    // (the notice is here rather than at the AES code below: the minifier keeps a /*! comment in front of a statement it
+    // leaves alone, and the var statements there are merged)
+    /*! The AES code below (aesTables, aesKey, aesBlock) follows aes.js of the Stanford Javascript Crypto Library (SJCL):
+     * Copyright 2009-2010 Emily Stark, Mike Hamburg, Dan Boneh, Stanford University. All rights reserved.
+     * SJCL is dual-licensed under the GNU GPL version 2.0 or higher and the 2-clause BSD license; used here under the
+     * 2-clause BSD license:
+     * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+     * following conditions are met:
+     * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the
+     *    following disclaimer.
+     * 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+     *    following disclaimer in the documentation and/or other materials provided with the distribution.
+     * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+     * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+     * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+     * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+     * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+     * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+     * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+     */
     var brSubtle = (function () {
         if (!P || !window.Uint8Array) return null;
         var K512 = [0x428a2f98, 0xd728ae22, 0x71374491, 0x23ef65cd, 0xb5c0fbcf, 0xec4d3b2f, 0xe9b5dba5, 0x8189dbbc, 0x3956c25b, 0xf348b538, 0x59f111f1, 0xb605d019, 0x923f82a4, 0xaf194f9b, 0xab1c5ed5, 0xda6d8118, 0xd807aa98, 0xa3030242, 0x12835b01, 0x45706fbe, 0x243185be, 0x4ee4b28c, 0x550c7dc3, 0xd5ffb4e2, 0x72be5d74, 0xf27b896f, 0x80deb1fe, 0x3b1696b1, 0x9bdc06a7, 0x25c71235, 0xc19bf174, 0xcf692694, 0xe49b69c1, 0x9ef14ad2, 0xefbe4786, 0x384f25e3, 0x0fc19dc6, 0x8b8cd5b5, 0x240ca1cc, 0x77ac9c65, 0x2de92c6f, 0x592b0275, 0x4a7484aa, 0x6ea6e483, 0x5cb0a9dc, 0xbd41fbd4, 0x76f988da, 0x831153b5, 0x983e5152, 0xee66dfab, 0xa831c66d, 0x2db43210, 0xb00327c8, 0x98fb213f, 0xbf597fc7, 0xbeef0ee4, 0xc6e00bf3, 0x3da88fc2, 0xd5a79147, 0x930aa725, 0x06ca6351, 0xe003826f, 0x14292967, 0x0a0e6e70, 0x27b70a85, 0x46d22ffc, 0x2e1b2138, 0x5c26c926, 0x4d2c6dfc, 0x5ac42aed, 0x53380d13, 0x9d95b3df, 0x650a7354, 0x8baf63de, 0x766a0abb, 0x3c77b2a8, 0x81c2c92e, 0x47edaee6, 0x92722c85, 0x1482353b, 0xa2bfe8a1, 0x4cf10364, 0xa81a664b, 0xbc423001, 0xc24b8b70, 0xd0f89791, 0xc76c51a3, 0x0654be30, 0xd192e819, 0xd6ef5218, 0xd6990624, 0x5565a910, 0xf40e3585, 0x5771202a, 0x106aa070, 0x32bbd1b8, 0x19a4c116, 0xb8d2d0c8, 0x1e376c08, 0x5141ab53, 0x2748774c, 0xdf8eeb99, 0x34b0bcb5, 0xe19b48a8, 0x391c0cb3, 0xc5c95a63, 0x4ed8aa4a, 0xe3418acb, 0x5b9cca4f, 0x7763e373, 0x682e6ff3, 0xd6b2b8a3, 0x748f82ee, 0x5defb2fc, 0x78a5636f, 0x43172f60, 0x84c87814, 0xa1f0ab72, 0x8cc70208, 0x1a6439ec, 0x90befffa, 0x23631e28, 0xa4506ceb, 0xde82bde9, 0xbef9a3f7, 0xb2c67915, 0xc67178f2, 0xe372532b, 0xca273ece, 0xea26619c, 0xd186b8c7, 0x21c0c207, 0xeada7dd6, 0xcde0eb1e, 0xf57d4f7f, 0xee6ed178, 0x06f067aa, 0x72176fba, 0x0a637dc5, 0xa2c898a6, 0x113f9804, 0xbef90dae, 0x1b710b35, 0x131c471b, 0x28db77f5, 0x23047d84, 0x32caab7b, 0x40c72493, 0x3c9ebe0a, 0x15c9bebc, 0x431d67c4, 0x9c100d4c, 0x4cc5d4be, 0xcb3e42b6, 0x597f299c, 0xfc657e2a, 0x5fcb6fab, 0x3ad6faec, 0x6c44198c, 0x4a475817];
         var H512 = [0x6a09e667, 0xf3bcc908, 0xbb67ae85, 0x84caa73b, 0x3c6ef372, 0xfe94f82b, 0xa54ff53a, 0x5f1d36f1, 0x510e527f, 0xade682d1, 0x9b05688c, 0x2b3e6c1f, 0x1f83d9ab, 0xfb41bd6b, 0x5be0cd19, 0x137e2179];
         var H384 = [0xcbbb9d5d, 0xc1059ed8, 0x629a292a, 0x367cd507, 0x9159015a, 0x3070dd17, 0x152fecd8, 0xf70e5939, 0x67332667, 0xffc00b31, 0x8eb44a87, 0x68581511, 0xdb0c2e0d, 0x64f98fa7, 0x47b5481d, 0xbefa4fa4];
         var TWO32 = 4294967296;
-        // SHA-512 on 64-bit words kept as (high, low) 32-bit halves
-        var sha512 = function (bytes, is384) {
-            var H = (is384 ? H384 : H512).slice(0), l = bytes.length, padLen = ((l + 17 + 127) >> 7) << 7, msg = new Uint8Array(padLen), i, p;
-            msg.set(bytes);
-            msg[l] = 0x80;
-            var bits = l * 8, bh = Math.floor(bits / TWO32), bl = bits >>> 0;
-            msg[padLen - 8] = bh >>> 24; msg[padLen - 7] = (bh >>> 16) & 255; msg[padLen - 6] = (bh >>> 8) & 255; msg[padLen - 5] = bh & 255;
-            msg[padLen - 4] = bl >>> 24; msg[padLen - 3] = (bl >>> 16) & 255; msg[padLen - 2] = (bl >>> 8) & 255; msg[padLen - 1] = bl & 255;
-            var W = new Array(160);
-            for (var off = 0; off < padLen; off += 128) {
-                for (i = 0; i < 32; i++) { p = off + i * 4; W[i] = (msg[p] << 24) | (msg[p + 1] << 16) | (msg[p + 2] << 8) | msg[p + 3]; }
-                for (i = 16; i < 80; i++) {
-                    var xh = W[2 * i - 30], xl = W[2 * i - 29];
-                    var s0h = ((xh >>> 1) | (xl << 31)) ^ ((xh >>> 8) | (xl << 24)) ^ (xh >>> 7);
-                    var s0l = ((xl >>> 1) | (xh << 31)) ^ ((xl >>> 8) | (xh << 24)) ^ ((xl >>> 7) | (xh << 25));
-                    xh = W[2 * i - 4]; xl = W[2 * i - 3];
-                    var s1h = ((xh >>> 19) | (xl << 13)) ^ ((xl >>> 29) | (xh << 3)) ^ (xh >>> 6);
-                    var s1l = ((xl >>> 19) | (xh << 13)) ^ ((xh >>> 29) | (xl << 3)) ^ ((xl >>> 6) | (xh << 26));
-                    var lo = (s1l >>> 0) + (W[2 * i - 13] >>> 0) + (s0l >>> 0) + (W[2 * i - 31] >>> 0);
-                    W[2 * i] = (s1h + W[2 * i - 14] + s0h + W[2 * i - 32] + Math.floor(lo / TWO32)) | 0;
-                    W[2 * i + 1] = lo | 0;
-                }
-                var ah = H[0], al = H[1], bh2 = H[2], bl2 = H[3], ch = H[4], cl = H[5], dh = H[6], dl = H[7];
-                var eh = H[8], el = H[9], fh = H[10], fl = H[11], gh = H[12], gl = H[13], hh = H[14], hl = H[15];
-                for (i = 0; i < 80; i++) {
-                    var S1h = ((eh >>> 14) | (el << 18)) ^ ((eh >>> 18) | (el << 14)) ^ ((el >>> 9) | (eh << 23));
-                    var S1l = ((el >>> 14) | (eh << 18)) ^ ((el >>> 18) | (eh << 14)) ^ ((eh >>> 9) | (el << 23));
-                    var chh = (eh & fh) ^ (~eh & gh), chl = (el & fl) ^ (~el & gl);
-                    var t1l = (hl >>> 0) + (S1l >>> 0) + (chl >>> 0) + (K512[2 * i + 1] >>> 0) + (W[2 * i + 1] >>> 0);
-                    var t1h = hh + S1h + chh + K512[2 * i] + W[2 * i] + Math.floor(t1l / TWO32);
-                    var S0h = ((ah >>> 28) | (al << 4)) ^ ((al >>> 2) | (ah << 30)) ^ ((al >>> 7) | (ah << 25));
-                    var S0l = ((al >>> 28) | (ah << 4)) ^ ((ah >>> 2) | (al << 30)) ^ ((ah >>> 7) | (al << 25));
-                    var mjh = (ah & bh2) ^ (ah & ch) ^ (bh2 & ch), mjl = (al & bl2) ^ (al & cl) ^ (bl2 & cl);
-                    var t2l = (S0l >>> 0) + (mjl >>> 0), t2h = S0h + mjh + Math.floor(t2l / TWO32);
-                    hh = gh; hl = gl; gh = fh; gl = fl; fh = eh; fl = el;
-                    var nel = (dl >>> 0) + (t1l >>> 0) % TWO32;
-                    eh = (dh + t1h + Math.floor(nel / TWO32)) | 0; el = nel | 0;
-                    dh = ch; dl = cl; ch = bh2; cl = bl2; bh2 = ah; bl2 = al;
-                    var nal = (t1l % TWO32) + (t2l % TWO32);
-                    ah = (t1h + t2h + Math.floor(nal / TWO32)) | 0; al = nal | 0;
-                }
-                var add = function (k, xh2, xl2) { var s = (H[k + 1] >>> 0) + (xl2 >>> 0); H[k] = (H[k] + xh2 + Math.floor(s / TWO32)) | 0; H[k + 1] = s | 0; };
-                add(0, ah, al); add(2, bh2, bl2); add(4, ch, cl); add(6, dh, dl); add(8, eh, el); add(10, fh, fl); add(12, gh, gl); add(14, hh, hl);
+        // SHA-512 on 64-bit words kept as (high, low) 32-bit halves; a carry is (x / TWO32) | 0, x never negative here
+        // (not Math.floor: the sums it got hold message words, the key's in HMAC)
+        var add64 = function (H, k, xh, xl) { var s = (H[k + 1] >>> 0) + (xl >>> 0); H[k] = (H[k] + xh + ((s / TWO32) | 0)) | 0; H[k + 1] = s | 0; };
+        var sha512Block = function (H, W, msg, off) {
+            var i, p;
+            for (i = 0; i < 32; i++) { p = off + i * 4; W[i] = (msg[p] << 24) | (msg[p + 1] << 16) | (msg[p + 2] << 8) | msg[p + 3]; }
+            for (i = 16; i < 80; i++) {
+                var xh = W[2 * i - 30], xl = W[2 * i - 29];
+                var s0h = ((xh >>> 1) | (xl << 31)) ^ ((xh >>> 8) | (xl << 24)) ^ (xh >>> 7);
+                var s0l = ((xl >>> 1) | (xh << 31)) ^ ((xl >>> 8) | (xh << 24)) ^ ((xl >>> 7) | (xh << 25));
+                xh = W[2 * i - 4]; xl = W[2 * i - 3];
+                var s1h = ((xh >>> 19) | (xl << 13)) ^ ((xl >>> 29) | (xh << 3)) ^ (xh >>> 6);
+                var s1l = ((xl >>> 19) | (xh << 13)) ^ ((xh >>> 29) | (xl << 3)) ^ ((xl >>> 6) | (xh << 26));
+                var lo = (s1l >>> 0) + (W[2 * i - 13] >>> 0) + (s0l >>> 0) + (W[2 * i - 31] >>> 0);
+                W[2 * i] = (s1h + W[2 * i - 14] + s0h + W[2 * i - 32] + ((lo / TWO32) | 0)) | 0;
+                W[2 * i + 1] = lo | 0;
             }
-            var n = is384 ? 12 : 16, out = new Uint8Array(n * 4);
+            var ah = H[0], al = H[1], bh2 = H[2], bl2 = H[3], ch = H[4], cl = H[5], dh = H[6], dl = H[7];
+            var eh = H[8], el = H[9], fh = H[10], fl = H[11], gh = H[12], gl = H[13], hh = H[14], hl = H[15];
+            for (i = 0; i < 80; i++) {
+                var S1h = ((eh >>> 14) | (el << 18)) ^ ((eh >>> 18) | (el << 14)) ^ ((el >>> 9) | (eh << 23));
+                var S1l = ((el >>> 14) | (eh << 18)) ^ ((el >>> 18) | (eh << 14)) ^ ((eh >>> 9) | (el << 23));
+                var chh = (eh & fh) ^ (~eh & gh), chl = (el & fl) ^ (~el & gl);
+                var t1l = (hl >>> 0) + (S1l >>> 0) + (chl >>> 0) + (K512[2 * i + 1] >>> 0) + (W[2 * i + 1] >>> 0);
+                var t1h = hh + S1h + chh + K512[2 * i] + W[2 * i] + ((t1l / TWO32) | 0);
+                var S0h = ((ah >>> 28) | (al << 4)) ^ ((al >>> 2) | (ah << 30)) ^ ((al >>> 7) | (ah << 25));
+                var S0l = ((al >>> 28) | (ah << 4)) ^ ((ah >>> 2) | (al << 30)) ^ ((ah >>> 7) | (al << 25));
+                var mjh = (ah & bh2) ^ (ah & ch) ^ (bh2 & ch), mjl = (al & bl2) ^ (al & cl) ^ (bl2 & cl);
+                var t2l = (S0l >>> 0) + (mjl >>> 0), t2h = S0h + mjh + ((t2l / TWO32) | 0);
+                hh = gh; hl = gl; gh = fh; gl = fl; fh = eh; fl = el;
+                var nel = (dl >>> 0) + (t1l >>> 0) % TWO32;
+                eh = (dh + t1h + ((nel / TWO32) | 0)) | 0; el = nel | 0;
+                dh = ch; dl = cl; ch = bh2; cl = bl2; bh2 = ah; bl2 = al;
+                var nal = (t1l % TWO32) + (t2l % TWO32);
+                ah = (t1h + t2h + ((nal / TWO32) | 0)) | 0; al = nal | 0;
+            }
+            add64(H, 0, ah, al); add64(H, 2, bh2, bl2); add64(H, 4, ch, cl); add64(H, 6, dh, dl); add64(H, 8, eh, el); add64(H, 10, fh, fl); add64(H, 12, gh, gl); add64(H, 14, hh, hl);
+        };
+        // (pre as for sha256)
+        var sha512 = function (bytes, is384, pre) {
+            var I = is384 ? H384 : H512, H = [], W = [], l = bytes.length, full = l - l % 128, tail = hashTail(bytes, full, (pre ? 128 : 0) + l, 128, 16), off, i;
+            for (i = 0; i < 16; i++) H[i] = I[i];
+            if (pre) sha512Block(H, W, pre, 0);
+            for (off = 0; off < full; off += 128) sha512Block(H, W, bytes, off);
+            for (off = 0; off < tail.length; off += 128) sha512Block(H, W, tail, off);
+            var n = is384 ? 12 : 16, out = new CryptoU8(n * 4);
             for (i = 0; i < n; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 255; out[i * 4 + 2] = (H[i] >>> 8) & 255; out[i * 4 + 3] = H[i] & 255; }
             return out;
         };
-        // name -> [hash, block size, output size]
-        var HASHES = { 'SHA-1': [sha1, 64, 20], 'SHA-256': [sha256, 64, 32], 'SHA-384': [function (b) { return sha512(b, true); }, 128, 48], 'SHA-512': [function (b) { return sha512(b, false); }, 128, 64] };
+        // name -> [hash, block size, output size]. (No prototype: a name a page put on Object.prototype would have been
+        // a "hash" here, and HMAC hands its hash the key block.)
+        var HASHES = Object.create(null);
+        HASHES['SHA-1'] = [sha1, 64, 20];
+        HASHES['SHA-256'] = [sha256, 64, 32];
+        HASHES['SHA-384'] = [function (b, pre) { return sha512(b, true, pre); }, 128, 48];
+        HASHES['SHA-512'] = [function (b, pre) { return sha512(b, false, pre); }, 128, 64];
         var algName = function (a) { return String(typeof a === 'string' ? a : (a && a.name) || '').toUpperCase(); };
         var hashName = function (h) { var n = algName(h); if (/^SHA\d/.test(n)) n = 'SHA-' + n.slice(3); return HASHES[n] ? n : null; };
-        var hmac = function (hn, key, data) {
-            var hf = HASHES[hn], bs = hf[1], k = key.length > bs ? hf[0](key) : key, i;
-            var inner = new Uint8Array(bs + data.length), outer = new Uint8Array(bs + hf[2]);
-            for (i = 0; i < bs; i++) { var kb = i < k.length ? k[i] : 0; inner[i] = kb ^ 0x36; outer[i] = kb ^ 0x5c; }
-            inner.set(data, bs);
-            outer.set(hf[0](inner), bs);
-            return hf[0](outer);
+        // HMAC: the key (hashed first when longer than a block) XOR 0x36 and XOR 0x5c, each block hashed in front of its
+        // message - no copy of the two together. The pair [inner, outer] serves a whole PBKDF2 or HKDF run.
+        var hmacPads = function (hn, key) {
+            var hf = HASHES[hn], bs = hf[1], k = key.length > bs ? hf[0](key) : key, ipad = new CryptoU8(bs), opad = new CryptoU8(bs), i, kb;
+            for (i = 0; i < bs; i++) { kb = i < k.length ? k[i] : 0; ipad[i] = kb ^ 0x36; opad[i] = kb ^ 0x5c; }
+            return [ipad, opad];
         };
-        // ---- AES (SJCL's tables: the S-box and the combined round tables, both directions)
+        var hmacWith = function (hn, pads, data) { var h = HASHES[hn][0]; return h(h(data, pads[0]), pads[1]); };
+        var hmac = function (hn, key, data) { return hmacWith(hn, hmacPads(hn, key), data); };
+        // ---- AES (SJCL's tables: the S-box and the combined round tables, both directions; SJCL's BSD notice is above
+        // brSubtle)
         var T = null;
         var aesTables = function () {
             if (T) return T;
@@ -2358,9 +2416,9 @@
             return T;
         };
         var aesKey = function (bytes) {
-            var t = aesTables(), sbox = t[0][4], decT = t[1], key = [], i, j, tmp, rcon = 1;
-            for (i = 0; i < bytes.length; i += 4) key.push((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]);
-            var keyLen = key.length, encKey = key.slice(0), decKey = [];
+            var t = aesTables(), sbox = t[0][4], decT = t[1], keyLen = bytes.length / 4, encKey = [], decKey = [], i, j, tmp, rcon = 1;
+            // (the key words go straight into the schedule: push and slice were the page's to replace)
+            for (i = 0; i < keyLen; i++) encKey[i] = (bytes[4 * i] << 24) | (bytes[4 * i + 1] << 16) | (bytes[4 * i + 2] << 8) | bytes[4 * i + 3];
             for (i = keyLen; i < 4 * keyLen + 28; i++) {
                 tmp = encKey[i - 1];
                 if (i % keyLen === 0 || (keyLen === 8 && i % keyLen === 4)) {
@@ -2425,8 +2483,10 @@
             put(la, 0); put(lc, 8);
             return b;
         };
+        // (counter blocks copied element by element, not with slice: for an IV of other than 12 bytes they come from the
+        // GHASH key, and a slice of the page's would have seen them)
         var gctr = function (ks, cb, input) {
-            var out = new Uint8Array(input.length), ctr = cb.slice(0), blk = new Uint8Array(16);
+            var out = new Uint8Array(input.length), ctr = [cb[0], cb[1], cb[2], cb[3]], blk = new CryptoU8(16);
             for (var o = 0; o < input.length; o += 16) {
                 putWords(aesBlock(ks, ctr, 0), blk, 0);
                 for (var i = 0; i < 16 && o + i < input.length; i++) out[o + i] = input[o + i] ^ blk[i];
@@ -2436,18 +2496,17 @@
         };
         var gcm = function (ks, iv, aad, data, tagBits, decrypt) {
             var Hk = aesBlock(ks, [0, 0, 0, 0], 0), J0;
-            if (iv.length === 12) J0 = [words(new Uint8Array([iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7], iv[8], iv[9], iv[10], iv[11], 0, 0, 0, 1]), 0)][0];
+            if (iv.length === 12) J0 = [(iv[0] << 24) | (iv[1] << 16) | (iv[2] << 8) | iv[3], (iv[4] << 24) | (iv[5] << 16) | (iv[6] << 8) | iv[7], (iv[8] << 24) | (iv[9] << 16) | (iv[10] << 8) | iv[11], 1];
             else J0 = ghashInto(Hk, ghashInto(Hk, [0, 0, 0, 0], iv), lenBlock(0, iv.length));
             var tagLen = tagBits / 8, ct = data;
             if (decrypt) {
                 if (data.length < tagLen) throw err('OperationError', 'The data is too short');
                 ct = data.subarray(0, data.length - tagLen);
             }
-            var start = J0.slice(0);
-            start[3] = (start[3] + 1) | 0;
+            var start = [J0[0], J0[1], J0[2], (J0[3] + 1) | 0];
             var body = decrypt ? null : gctr(ks, start, data), cipher = decrypt ? ct : body;
             var S = ghashInto(Hk, ghashInto(Hk, ghashInto(Hk, [0, 0, 0, 0], aad), cipher), lenBlock(aad.length, cipher.length));
-            var tagFull = new Uint8Array(16), ej = aesBlock(ks, J0, 0);
+            var tagFull = new CryptoU8(16), ej = aesBlock(ks, J0, 0);
             putWords([ej[0] ^ S[0], ej[1] ^ S[1], ej[2] ^ S[2], ej[3] ^ S[3]], tagFull, 0);
             if (decrypt) {
                 var given = data.subarray(data.length - tagLen), diff = 0;
@@ -2488,7 +2547,7 @@
             return outD.subarray(0, outD.length - n);
         };
         var ctrMode = function (ks, counter, length, data) {
-            var ctr = new Uint8Array(counter), out = new Uint8Array(data.length), blk = new Uint8Array(16);
+            var ctr = new Uint8Array(counter), out = new Uint8Array(data.length), blk = new CryptoU8(16);
             for (var o = 0; o < data.length; o += 16) {
                 putWords(aesBlock(ks, words(ctr, 0), 0), blk, 0);
                 for (var i = 0; i < 16 && o + i < data.length; i++) out[o + i] = data[o + i] ^ blk[i];
@@ -2507,23 +2566,40 @@
         var unb64u = function (s) {
             s = String(s).replace(/-/g, '+').replace(/_/g, '/');
             while (s.length % 4) s += '=';
-            var bin = atob(s), out = new Uint8Array(bin.length);
+            var bin = atob(s), out = new CryptoU8(bin.length);
             for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
             return out;
         };
         var CryptoKeyC = window.CryptoKey || function CryptoKey() { throw new TypeError('Illegal constructor'); };
         if (!window.CryptoKey) window.CryptoKey = CryptoKeyC;
         var AES = { 'AES-GCM': 1, 'AES-CBC': 1, 'AES-CTR': 1, 'AES-KW': 1 };
+        // The key bytes never sit on the key object: a key that is not extractable must not give them to the page's
+        // scripts (sites keep such keys so that an injected script cannot take them). The key carries a function that
+        // puts its record - bytes, algorithm, usages, extractable - into `held`, which only this closure can read; a
+        // forged key with extractable: true that borrows that function still gets the real key's record and its
+        // extractable. (A WeakMap would do, but the engine has none and the shims' stand-in keeps entries on the key.)
+        var held = null;
+        // generated keys: the engine's own generator, taken before any page script could put another in its place, and
+        // bound to its Crypto object now (a call through the page's Function.prototype.call would hand it the new key);
+        // without one generateKey fails (never Math.random, see shims.js)
+        var rngOwner = window.crypto, rngFill = rngOwner && rngOwner.getRandomValues;
+        var rngCall = typeof rngFill === 'function' && rngFill.bind ? rngFill.bind(rngOwner) : null;
+        // usages as bits, which keyOf tests without a method a page can replace (one whose indexOf answered 0 decrypted
+        // with an encrypt-only key)
+        var USE = { encrypt: 1, decrypt: 2, sign: 4, verify: 8, deriveKey: 16, deriveBits: 32, wrapKey: 64, unwrapKey: 128 };
         // (own properties: a CryptoKey prototype of the engine's has getters only)
         // (the CryptoKey of the moment: the interface stubs further down may put another one in place)
         var makeKey = function (raw, alg, extractable, usages) {
             var C = typeof window.CryptoKey === 'function' ? window.CryptoKey : CryptoKeyC;
             var k = Object.create(C.prototype), own = function (name, v, en) { Object.defineProperty(k, name, { value: v, enumerable: en, configurable: true }); };
+            var use = Array.prototype.slice.call(usages || []), bits = 0;
+            for (var i = 0; i < use.length; i++) bits |= USE[use[i]] | 0;
+            var rec = { raw: raw, name: alg.name, hash: alg.hash ? alg.hash.name : '', extractable: !!extractable, usages: use.slice(), use: bits };
             own('type', 'secret', true);
-            own('extractable', !!extractable, true);
+            own('extractable', rec.extractable, true);
             own('algorithm', alg, true);
-            own('usages', Array.prototype.slice.call(usages || []), true);
-            own('__brRaw', raw, false);
+            own('usages', use, true);
+            Object.defineProperty(k, '__brKey', { value: function () { held = rec; } });
             return k;
         };
         var keyAlgorithm = function (name, algorithm, raw) {
@@ -2540,37 +2616,57 @@
             throw err('NotSupportedError', 'Algorithm: Unrecognized name');
         };
         var JWK_ALG = { 'AES-GCM': 'GCM', 'AES-CBC': 'CBC', 'AES-CTR': 'CTR', 'AES-KW': 'KW' };
-        var keyOf = function (key) { if (!key || !key.__brRaw) throw err('InvalidAccessError', 'The key is not usable here'); return key.__brRaw; };
+        // a key's record (see makeKey), for an operation that needs `usage` among its usages, as the standard checks
+        var keyOf = function (key, usage) {
+            var f = key && (typeof key === 'object' || typeof key === 'function') ? key.__brKey : null, rec;
+            held = null;
+            if (typeof f === 'function') f();
+            rec = held;
+            held = null;
+            if (!rec) throw err('InvalidAccessError', 'The key is not usable here');
+            if (usage && !(rec.use & USE[usage])) throw err('InvalidAccessError', "The key's usages do not include '" + usage + "'");
+            return rec;
+        };
+        // (KDF base keys are never extractable, as the standard and other browsers have it)
+        var KDF = { PBKDF2: 1, HKDF: 1 };
         var run = function (fn) { return new P(function (resolve) { resolve(fn()); }); };
         var copy = function (u) { var out = new Uint8Array(u.length); out.set(u); return out.buffer; };
-        var deriveBitsNow = function (algorithm, baseKey, length) {
-            var name = algName(algorithm), raw = keyOf(baseKey), hn = hashName(algorithm.hash);
+        var deriveBitsNow = function (algorithm, baseKey, length, usage) {
+            var name = algName(algorithm), hn = hashName(algorithm.hash);
+            if (!KDF[name]) throw err('NotSupportedError', 'Algorithm: Unrecognized name');
             if (!hn) throw err('NotSupportedError', 'Unrecognized hash');
+            var base = keyOf(baseKey, usage), raw = base.raw;
+            if (base.name !== name) throw err('InvalidAccessError', 'The key does not match the algorithm');
             if (!length || length % 8) throw err('OperationError', 'The length must be a multiple of 8');
-            var n = length / 8, hl = HASHES[hn][2], out = new Uint8Array(n), i, j, k, u, t;
+            // (what holds derived bits is copied element by element: deriveKey's bits are a key)
+            var n = length / 8, hl = HASHES[hn][2], out = new CryptoU8(n), i, j, k, u, t, pads;
             if (name === 'PBKDF2') {
                 var salt = toBytes(algorithm.salt), iters = algorithm.iterations | 0;
                 if (iters < 1) throw err('OperationError', 'The iterations must be at least 1');
+                pads = hmacPads(hn, raw);
                 for (i = 1, k = 0; k < n; i++) {
                     var block = new Uint8Array(salt.length + 4);
                     block.set(salt);
                     block[salt.length] = i >>> 24; block[salt.length + 1] = (i >>> 16) & 255; block[salt.length + 2] = (i >>> 8) & 255; block[salt.length + 3] = i & 255;
-                    u = hmac(hn, raw, block);
-                    t = new Uint8Array(u);
-                    for (j = 1; j < iters; j++) { u = hmac(hn, raw, u); for (var q = 0; q < t.length; q++) t[q] ^= u[q]; }
+                    // (U1 becomes the sum T: each U is read whole before the next is added)
+                    t = u = hmacWith(hn, pads, block);
+                    for (j = 1; j < iters; j++) { u = hmacWith(hn, pads, u); for (var q = 0; q < hl; q++) t[q] ^= u[q]; }
                     for (j = 0; j < hl && k < n; j++) out[k++] = t[j];
                 }
                 return out;
             }
             if (name === 'HKDF') {
-                var prk = hmac(hn, algorithm.salt ? toBytes(algorithm.salt) : new Uint8Array(hl), raw), info = algorithm.info ? toBytes(algorithm.info) : new Uint8Array(0);
+                var prk = hmac(hn, algorithm.salt ? toBytes(algorithm.salt) : new CryptoU8(hl), raw), info = algorithm.info ? toBytes(algorithm.info) : new Uint8Array(0), il = info.length;
                 if (n > 255 * hl) throw err('OperationError', 'The length is too big');
-                t = new Uint8Array(0);
+                pads = hmacPads(hn, prk);
+                t = new CryptoU8(0);
                 for (i = 1, k = 0; k < n; i++) {
-                    var m = new Uint8Array(t.length + info.length + 1);
-                    m.set(t); m.set(info, t.length); m[m.length - 1] = i;
-                    t = hmac(hn, prk, m);
-                    for (j = 0; j < t.length && k < n; j++) out[k++] = t[j];
+                    var tl = t.length, m = new CryptoU8(tl + il + 1);
+                    for (j = 0; j < tl; j++) m[j] = t[j];
+                    for (j = 0; j < il; j++) m[tl + j] = info[j];
+                    m[tl + il] = i;
+                    t = hmacWith(hn, pads, m);
+                    for (j = 0; j < hl && k < n; j++) out[k++] = t[j];
                 }
                 return out;
             }
@@ -2578,21 +2674,26 @@
         };
         var importNow = function (format, keyData, algorithm, extractable, usages) {
             var name = algName(algorithm), raw;
-            if (format === 'raw') raw = new Uint8Array(toBytes(keyData));
-            else if (format === 'jwk') {
+            if (KDF[name] && extractable) throw err('SyntaxError', 'KDF keys must set extractable=false');
+            if (format === 'raw') {
+                var src = toBytes(keyData);
+                raw = new CryptoU8(src.length);
+                for (var i = 0; i < raw.length; i++) raw[i] = src[i];
+            } else if (format === 'jwk') {
                 if (!keyData || keyData.kty !== 'oct' || typeof keyData.k !== 'string') throw err('DataError', 'Only symmetric JWK keys are supported');
                 raw = unb64u(keyData.k);
             } else throw err('NotSupportedError', 'Unsupported key format');
             return makeKey(raw, keyAlgorithm(name, algorithm, raw), extractable, usages);
         };
         var cryptNow = function (algorithm, key, data, decrypt) {
-            var name = algName(algorithm), raw = keyOf(key), bytes = toBytes(data);
-            if (!AES[name] || key.algorithm.name !== name) throw err('InvalidAccessError', 'The key does not match the algorithm');
-            var ks = aesKey(raw);
+            var name = algName(algorithm), rec = keyOf(key, decrypt ? 'decrypt' : 'encrypt'), bytes = toBytes(data);
+            if (!AES[name] || rec.name !== name) throw err('InvalidAccessError', 'The key does not match the algorithm');
+            var ks = aesKey(rec.raw);
             if (name === 'AES-GCM') {
                 var iv = toBytes(algorithm.iv), tl = algorithm.tagLength === undefined ? 128 : algorithm.tagLength;
                 if (!iv.length) throw err('OperationError', 'The iv must not be empty');
-                if ([32, 64, 96, 104, 112, 120, 128].indexOf(tl) < 0) throw err('OperationError', 'Bad tagLength');
+                // (compared one by one: with the page's indexOf a tag of 0 bits would have let anything decrypt)
+                if (tl !== 128 && tl !== 120 && tl !== 112 && tl !== 104 && tl !== 96 && tl !== 64 && tl !== 32) throw err('OperationError', 'Bad tagLength');
                 return gcm(ks, iv, algorithm.additionalData ? toBytes(algorithm.additionalData) : new Uint8Array(0), bytes, tl, decrypt);
             }
             if (name === 'AES-CBC') {
@@ -2618,12 +2719,13 @@
             importKey: function (format, keyData, algorithm, extractable, usages) { return run(function () { return importNow(format, keyData, algorithm, extractable, usages); }); },
             exportKey: function (format, key) {
                 return run(function () {
-                    var raw = keyOf(key);
-                    if (!key.extractable) throw err('InvalidAccessError', 'The key is not extractable');
-                    if (format === 'raw') return copy(raw);
+                    // (what the key was made with, not its properties: a page can redefine those)
+                    var rec = keyOf(key);
+                    if (!rec.extractable) throw err('InvalidAccessError', 'The key is not extractable');
+                    if (format === 'raw') return copy(rec.raw);
                     if (format === 'jwk') {
-                        var a = key.algorithm, alg = a.name === 'HMAC' ? 'HS' + a.hash.name.slice(4) : JWK_ALG[a.name] ? 'A' + a.length + JWK_ALG[a.name] : undefined;
-                        var jwk = { kty: 'oct', k: b64u(raw), ext: true, key_ops: key.usages.slice() };
+                        var alg = rec.name === 'HMAC' ? 'HS' + rec.hash.slice(4) : JWK_ALG[rec.name] ? 'A' + rec.raw.length * 8 + JWK_ALG[rec.name] : undefined;
+                        var jwk = { kty: 'oct', k: b64u(rec.raw), ext: true, key_ops: rec.usages.slice() };
                         if (alg) jwk.alg = alg;
                         return jwk;
                     }
@@ -2636,8 +2738,9 @@
                     if (AES[name]) n = (algorithm.length | 0) / 8;
                     else if (name === 'HMAC') { var hn = hashName(algorithm.hash); if (!hn) throw err('NotSupportedError', 'Unrecognized hash'); n = algorithm.length ? Math.ceil(algorithm.length / 8) : HASHES[hn][1]; }
                     else throw err('NotSupportedError', 'Algorithm: Unrecognized name');
-                    var raw = new Uint8Array(n);
-                    window.crypto.getRandomValues(raw);
+                    if (!rngCall) throw err('OperationError', 'No secure random source is available');
+                    var raw = new CryptoU8(n);
+                    rngCall(raw);
                     return makeKey(raw, keyAlgorithm(name, algorithm, raw), extractable, usages);
                 });
             },
@@ -2645,24 +2748,29 @@
             decrypt: function (algorithm, key, data) { return run(function () { return copy(cryptNow(algorithm, key, data, true)); }); },
             sign: function (algorithm, key, data) {
                 return run(function () {
-                    if (algName(algorithm) !== 'HMAC' || !key || !key.algorithm || key.algorithm.name !== 'HMAC') throw err('NotSupportedError', 'Only HMAC signatures are available');
-                    return hmac(key.algorithm.hash.name, keyOf(key), toBytes(data)).buffer;
+                    if (algName(algorithm) !== 'HMAC') throw err('NotSupportedError', 'Only HMAC signatures are available');
+                    var rec = keyOf(key, 'sign');
+                    if (rec.name !== 'HMAC') throw err('InvalidAccessError', 'The key does not match the algorithm');
+                    return hmac(rec.hash, rec.raw, toBytes(data)).buffer;
                 });
             },
             verify: function (algorithm, key, signature, data) {
                 return run(function () {
-                    if (algName(algorithm) !== 'HMAC' || !key || !key.algorithm || key.algorithm.name !== 'HMAC') throw err('NotSupportedError', 'Only HMAC signatures are available');
-                    var mac = hmac(key.algorithm.hash.name, keyOf(key), toBytes(data)), sig = toBytes(signature), diff = mac.length ^ sig.length;
+                    if (algName(algorithm) !== 'HMAC') throw err('NotSupportedError', 'Only HMAC signatures are available');
+                    var rec = keyOf(key, 'verify');
+                    if (rec.name !== 'HMAC') throw err('InvalidAccessError', 'The key does not match the algorithm');
+                    var mac = hmac(rec.hash, rec.raw, toBytes(data)), sig = toBytes(signature), diff = mac.length ^ sig.length;
                     for (var i = 0; i < mac.length && i < sig.length; i++) diff |= mac[i] ^ sig[i];
                     return diff === 0;
                 });
             },
-            deriveBits: function (algorithm, baseKey, length) { return run(function () { return deriveBitsNow(algorithm, baseKey, length).buffer; }); },
+            deriveBits: function (algorithm, baseKey, length) { return run(function () { return deriveBitsNow(algorithm, baseKey, length, 'deriveBits').buffer; }); },
             deriveKey: function (algorithm, baseKey, derivedKeyType, extractable, usages) {
                 return run(function () {
                     var dn = algName(derivedKeyType), len = derivedKeyType.length;
+                    if (KDF[dn] && extractable) throw err('SyntaxError', 'KDF keys must set extractable=false');
                     if (dn === 'HMAC' && !len) { var hn = hashName(derivedKeyType.hash); len = hn ? HASHES[hn][1] * 8 : 0; }
-                    var bits = deriveBitsNow(algorithm, baseKey, len);
+                    var bits = deriveBitsNow(algorithm, baseKey, len, 'deriveKey');
                     return makeKey(bits, keyAlgorithm(dn, derivedKeyType, bits), extractable, usages);
                 });
             },
@@ -2688,12 +2796,19 @@
         if (!window.crypto.subtle) try { Object.defineProperty(window.crypto, 'subtle', { value: subtle, configurable: true }); } catch (e) {}
         if (!window.crypto.subtle) {
             // the native Crypto object refuses new properties: replace it with a wrapper
-            var nativeCrypto = window.crypto;
-            var cryptoWrapper = {
-                subtle: subtle,
-                getRandomValues: function (arr) { if (nativeCrypto.getRandomValues) { nativeCrypto.getRandomValues(arr); return arr; } for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; },
-                randomUUID: nativeCrypto.randomUUID ? function () { return nativeCrypto.randomUUID(); } : function () { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
-            };
+            var nativeCrypto = window.crypto, nativeFill = nativeCrypto.getRandomValues;
+            var cryptoWrapper = { subtle: subtle };
+            // (random values from the engine's generator or none at all - never Math.random, see shims.js)
+            if (typeof nativeFill === 'function') {
+                cryptoWrapper.getRandomValues = function (arr) { nativeFill.call(nativeCrypto, arr); return arr; };
+                cryptoWrapper.randomUUID = nativeCrypto.randomUUID ? function () { return nativeCrypto.randomUUID(); } : function () {
+                    var b = new Uint8Array(16), s = '', i;
+                    nativeFill.call(nativeCrypto, b);
+                    b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+                    for (i = 0; i < 16; i++) { s += (b[i] + 256).toString(16).slice(1); if (i === 3 || i === 5 || i === 7 || i === 9) s += '-'; }
+                    return s;
+                };
+            }
             try { Object.defineProperty(window, 'crypto', { value: cryptoWrapper, configurable: true, writable: true }); } catch (e2) { try { window.crypto = cryptoWrapper; } catch (e3) {} }
         }
         window.SubtleCrypto = function SubtleCrypto() {};
@@ -9314,9 +9429,23 @@
     if (!window.FocusEvent) window.FocusEvent = function FocusEvent(type, init) { var e = document.createEvent('Event'); e.initEvent(type, !!(init && init.bubbles), !!(init && init.cancelable)); e.relatedTarget = (init && init.relatedTarget) || null; return e; };
     if (!window.SecurityPolicyViolationEvent) window.SecurityPolicyViolationEvent = function SecurityPolicyViolationEvent() {};
     if (!window.ResizeObserverEntry) window.ResizeObserverEntry = function ResizeObserverEntry() {};
-    if (!window.Sanitizer) window.Sanitizer = function Sanitizer() { this.sanitize = function (frag) { return frag; }; this.sanitizeFor = function (el, html) { var e = document.createElement(el); e.innerHTML = html; return e; }; };
-    if (Ep && !Ep.setHTML) Ep.setHTML = function (html) { this.innerHTML = html; };
-    if (!window.trustedTypes) window.trustedTypes = { createPolicy: function (name, rules) { rules = rules || {}; return { name: name, createHTML: function (s) { return rules.createHTML ? rules.createHTML(s) : s; }, createScript: function (s) { return rules.createScript ? rules.createScript(s) : s; }, createScriptURL: function (s) { return rules.createScriptURL ? rules.createScriptURL(s) : s; } }; }, isHTML: function () { return false; }, isScript: function () { return false; }, isScriptURL: function () { return false; }, emptyHTML: '', emptyScript: '', getAttributeType: function () { return null; }, getPropertyType: function () { return null; }, defaultPolicy: null };
+    // (no Sanitizer and no Element.setHTML: the standard ones remove everything that can run script, and sites that find
+    // them hand them untrusted markup instead of running their own sanitizer - a stand-in that is innerHTML underneath
+    // turned that into script injection. Without them pages keep to DOMPurify or what else they bring.)
+    // Trusted Types: a policy gives what its own rule makes of the text; one without the rule for that kind throws, as
+    // in other browsers - handing the raw text back made code that counts on that refusal pass markup through. (The
+    // rules are taken when the policy is made, as the standard has it.)
+    if (!window.trustedTypes) {
+        var ttRule = function (name, rules, kind) {
+            var f = rules[kind];
+            return function () {
+                if (typeof f !== 'function') throw new TypeError("Failed to execute '" + kind + "' on 'TrustedTypePolicy': Policy " + name + "'s TrustedTypePolicyOptions did not specify a '" + kind + "' member.");
+                return f.apply(null, arguments);
+            };
+        };
+        window.trustedTypes = { createPolicy: function (name, rules) { rules = rules || {}; name = String(name); return { name: name, createHTML: ttRule(name, rules, 'createHTML'), createScript: ttRule(name, rules, 'createScript'), createScriptURL: ttRule(name, rules, 'createScriptURL') }; },
+            isHTML: function () { return false; }, isScript: function () { return false; }, isScriptURL: function () { return false; }, emptyHTML: '', emptyScript: '', getAttributeType: function () { return null; }, getPropertyType: function () { return null; }, defaultPolicy: null };
+    }
 
     // ---- Elements the old parser does not know get real constructors, prototypes and behaviour
     var HEp = window.HTMLElement && window.HTMLElement.prototype;
@@ -12868,8 +12997,15 @@
     // ---- Saved passwords (kept by the app in the keychain): a login's name and password go to the app when the form is
     // sent - submit, Enter in the password field, or a click on a button of its form (pages that log in by script) -
     // and the app offers to keep them; when a password or name field gets the focus on a site with kept logins the app
-    // offers to fill them in (window.__brFillLogin, on the user's tap only)
+    // offers to fill them in (window.__brFillLogin, on the user's tap only). Both messages carry the token the app puts
+    // into the top document when it has loaded or when asked (window.__brLoginToken, new for every page): the app takes no message
+    // without it, so a frame of another site - an ad, a widget - can neither raise "Save password?" for the site on
+    // screen nor overwrite a kept login. Frames never get the token and send nothing.
     (function () {
+        var token = function () { var t = window.top === window ? window.__brLoginToken : null; return typeof t === 'string' && t ? t : null; };
+        // (the app gives it when the page has loaded, which on a heavy page can take a minute: until then it is asked for -
+        // the main frame alone, at once and then every 2 s while one waits - and comes within half a second)
+        var askToken = function (tries) { if (tries % 4 === 0 && window.top === window) sendToApp('brpwtoken', '1'); };
         var isPassword = function (el) { return !!el && el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'password'; };
         var isName = function (el) {
             if (!el || el.tagName !== 'INPUT') return false;
@@ -12889,13 +13025,18 @@
             return { pass: pass, user: user };
         };
         var lastSent = '', lastTime = 0;
-        var offer = function (root) {
-            var login = findLogin(root);
-            if (!login) return;
-            var user = login.user ? login.user.value : '', key = user + '\n' + login.pass.value, now = Date.now();
+        // (a login sent by script before the page has loaded goes once the token is there, should the page still be on)
+        var send = function (user, pass, tries) {
+            var t = token();
+            if (!t) { if (tries < 60) { askToken(tries); setTimeout(function () { send(user, pass, tries + 1); }, 500); } return; }
+            var key = user + '\n' + pass, now = Date.now();
             if (key === lastSent && now - lastTime < 10000) return;
             lastSent = key; lastTime = now;
-            sendToApp('brpw', JSON.stringify({ h: location.host, u: user, p: login.pass.value }));
+            sendToApp('brpw', JSON.stringify({ h: location.host, u: user, p: pass, t: t }));
+        };
+        var offer = function (root) {
+            var login = window.top === window ? findLogin(root) : null;
+            if (login) send(login.user ? login.user.value : '', login.pass.value, 0);
         };
         document.addEventListener('submit', function (e) { if (e.target && e.target.tagName === 'FORM') offer(e.target); }, true);
         document.addEventListener('keydown', function (e) { if ((e.keyCode === 13) && isPassword(e.target)) offer(scope(e.target)); }, true);
@@ -12905,14 +13046,29 @@
                 if (t === 'BUTTON' || (t === 'INPUT' && /^(submit|button|image)$/i.test(el.type)) || el.getAttribute('role') === 'button') { offer(el.form || document); return; }
             }
         }, true);
+        // (a field focused before the page has loaded - autofocus - asks once the token is there, if it still has the focus)
         var asked = false;
+        var ask = function (tries) {
+            var el = document.activeElement, t = token();
+            if (tries && !(isPassword(el) || isName(el))) { asked = false; return; }
+            if (!t) { if (tries < 60) { askToken(tries); setTimeout(function () { ask(tries + 1); }, 500); } else asked = false; return; }
+            sendToApp('brpwfocus', JSON.stringify({ h: location.host, t: t }));
+        };
         document.addEventListener('focusin', function (e) {
-            if (asked || !(isPassword(e.target) || isName(e.target))) return;
+            if (asked || window.top !== window || !(isPassword(e.target) || isName(e.target))) return;
             asked = true;
-            sendToApp('brpwfocus', location.host);
+            ask(0);
         }, true);
-        // (from the app, after the user's tap: the fields get the values and the events a typing user would give)
-        window.__brFillLogin = function (user, pass) {
+        // (a page with a password field asks for the token as soon as its document is there: a form sent before the page
+        // has loaded, which navigates away at once, then still has it)
+        if (window.top === window) document.addEventListener('DOMContentLoaded', function () {
+            if (token()) return;
+            var inputs = document.getElementsByTagName('input');
+            for (var i = 0; i < inputs.length; i++) if (isPassword(inputs[i])) { askToken(0); return; }
+        }, false);
+        // (from the app, after the user's tap: the fields get the values and the events a typing user would give; fixed
+        // in place, so a script of the page cannot put itself where the app hands over the password)
+        var fill = function (user, pass) {
             var active = document.activeElement, inputs = document.getElementsByTagName('input'), pw = isPassword(active) ? active : null, i;
             for (i = 0; !pw && i < inputs.length; i++) if (isPassword(inputs[i]) && inputs[i].offsetWidth > 0) pw = inputs[i];
             var name = null;
@@ -12934,10 +13090,30 @@
             if (pw) set(pw, pass);
             return pw ? 'filled' : (name ? 'name' : 'none');
         };
+        try { Object.defineProperty(window, '__brFillLogin', { value: fill, writable: false, configurable: false, enumerable: false }); } catch (eF) {
+            try { if (!window.__brFillLogin) window.__brFillLogin = fill; } catch (eG) {}
+        }
     })();
     // ---- CompressionStream / DecompressionStream (gzip, deflate, deflate-raw): inflate after RFC 1951 in the manner of
     // zlib's puff, deflate with LZ77 matches in the fixed Huffman code (smaller, if not as small as zlib's); the bytes
     // are collected and come out when the stream closes
+    /*! The inflate code below (huffman, inflate) is an altered version - a JavaScript port - of puff.c from zlib's
+     * contrib/puff, whose notice follows:
+     * puff.h
+     * Copyright (C) 2002-2013 Mark Adler, all rights reserved
+     * version 2.3, 21 Jan 2013
+     * This software is provided 'as-is', without any express or implied warranty. In no event will the author be held
+     * liable for any damages arising from the use of this software.
+     * Permission is granted to anyone to use this software for any purpose, including commercial applications, and to
+     * alter it and redistribute it freely, subject to the following restrictions:
+     * 1. The origin of this software must not be misrepresented; you must not claim that you wrote the original
+     *    software. If you use this software in a product, an acknowledgment in the product documentation would be
+     *    appreciated but is not required.
+     * 2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original
+     *    software.
+     * 3. This notice may not be removed or altered from any source distribution.
+     * Mark Adler    madler@alumni.caltech.edu
+     */
     (function () {
         var TS = window.TransformStream;
         if (!TS || (window.CompressionStream && window.DecompressionStream)) return;
@@ -13211,9 +13387,12 @@
     // ---- WebSockets through the app's network layer: WebCore opens wss:// with the system's TLS, which knows neither
     // today's ciphers nor today's root certificates (Let's Encrypt), so most secure sockets never opened. A wss://
     // socket asks the app for a local ws:// address (BRMediaProxy), which opens the real one with the app's own TLS and
-    // passes the frames through; should that socket fail before it opens, the engine's own is tried as before. The page
-    // gets a socket object of the shims (the real URL, its events re-sent). Relative and http(s) URLs are taken too, as
-    // today's browsers take them. (The same in worker-shims.js.)
+    // passes the frames through. The engine's own socket goes only when the app gives no such address: once the relay
+    // has the socket, a failure before it opens is 'error' and 'close' for the page, never a second try over the
+    // system's TLS - an attacker on the way who made the relay's connection fail (a reset, a blocked connect) would get
+    // the old ciphers and roots the app turns down. (A server the app's TLS refused gives an open socket closed at once,
+    // reason "tls": an error and close 1015 for the page.) The page gets a socket object of the shims (the real URL, its events re-sent). Relative and http(s)
+    // URLs are taken too, as today's browsers take them. (The same in worker-shims.js.)
     (function (G) {
         var Native = G.WebSocket;
         if (!Native || (typeof Native !== 'function' && typeof Native !== 'object') || Native.__brLocal || !Native.prototype) return;
@@ -13260,12 +13439,14 @@
                 ws.onmessage = function (e) { fire(self, 'message', { data: e.data, origin: origin, lastEventId: '', ports: [] }); };
                 ws.onerror = function () { if (!(proxied && !opened)) fire(self, 'error', {}); };
                 ws.onclose = function (e) {
-                    if (proxied && !opened && !self.__byPage) {
-                        try { self.__ws = attach(make(target, protocols), false); return; } catch (e2) {}
-                        fire(self, 'error', {});
-                    }
+                    var code = e.code, reason = e.reason || '', clean = !!e.wasClean;
+                    // (a server the app's TLS refused: the relay closes with 4015 "tls", since WebCore refuses the reserved
+                    // 1015 in a close frame; the page gets what a failed TLS handshake gives, an error and 1015. The relay
+                    // failed before the socket opened: the page's one error, no second try - see above.)
+                    if (proxied && code === 4015 && reason === 'tls' && !self.__byPage) { fire(self, 'error', {}); code = 1015; clean = false; }
+                    else if (proxied && !opened && !self.__byPage) fire(self, 'error', {});
                     self.readyState = 3;
-                    fire(self, 'close', { code: e.code, reason: e.reason || '', wasClean: !!e.wasClean });
+                    fire(self, 'close', { code: code, reason: reason, wasClean: clean });
                 };
                 return ws;
             };

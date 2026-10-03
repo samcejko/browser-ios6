@@ -9,7 +9,9 @@
 <body>
 <div id="out">running…</div>
 <script>
-var files = ['bootstrap.css', 'pico.css', 'wikipedia.css', 'idnes1.css', 'idnes2.css', 'idnes3.css', 'seznam1.css', 'seznam2.css', 'idnes.html', 'seznam.html'];
+// (open-source stylesheets with their licence headers; saved copies of real sites' pages and styles stay out of the
+// repository: put them in tools/samples/local/, which git ignores, and list them with ?files=local/a.css,local/b.html)
+var files = /[?&]files=([^&]+)/.test(location.search) ? decodeURIComponent(RegExp.$1).split(',') : ['bootstrap.css', 'pico.css'];
 var out = [];
 function load(i) {
   if (i >= files.length) { document.getElementById('out').textContent = out.join('\n'); document.title = 'bench done'; return; }

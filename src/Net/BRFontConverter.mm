@@ -12,6 +12,10 @@ static inline uint16_t rd16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | 
 static inline void wr32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
 static inline void wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
 
+// Do `need` bytes at `off` fit in `len`? Without the sum: size_t is 32 bits on armv7, and a font's offset near 4 GB
+// made "off + need > len" wrap around and pass, pointing outside the buffer.
+static inline bool BRInside(size_t off, size_t need, size_t len) { return off <= len && need <= len - off; }
+
 static uint32_t BRFontChecksum(const uint8_t *data, size_t len)
 {
     uint32_t sum = 0;
@@ -49,37 +53,49 @@ static const size_t BRHeavyLayoutTables = 24 * 1024;
 // a font has hundreds of ligatures of four or more letters and nothing to position (no GPOS to speak of); a text font
 // has kerning, and a few dozen long ligatures at most (Inter has arrows and the like: its text vanished when its
 // tables were kept). Counts them in the GSUB ligature lookups (also behind extension lookups), up to `enough`.
+// The offsets may repeat (every lookup naming one subtable, every set one short ligature): a few KB of GSUB, padded past
+// BRHeavyLayoutTables (nothing once compressed in a WOFF2), asked for up to 65535^4 steps, and the thread converting
+// the font (WebKit's loader thread for a data: font) spun for good. Real icon fonts take a few thousand steps; past the
+// budget the count so far stands.
+static const size_t BRLigatureWalkBudget = 1u << 20;
+
 static size_t BRLongLigatures(const uint8_t *p, size_t len, size_t enough)
 {
     if (len < 10) return 0;
-    size_t listOff = rd16(p + 8), count = 0;
-    if (listOff + 2 > len) return 0;
+    size_t listOff = rd16(p + 8), count = 0, budget = BRLigatureWalkBudget;
+    if (!BRInside(listOff, 2, len)) return 0;
     uint16_t lookups = rd16(p + listOff);
     for (uint16_t i = 0; i < lookups; i++) {
-        if (listOff + 2 + (size_t)i * 2 + 2 > len) break;
+        if (!--budget) return count;
+        if (!BRInside(listOff + 2 + (size_t)i * 2, 2, len)) break;
         size_t lookup = listOff + rd16(p + listOff + 2 + (size_t)i * 2);
-        if (lookup + 6 > len) continue;
+        if (!BRInside(lookup, 6, len)) continue;
         uint16_t type = rd16(p + lookup), subtables = rd16(p + lookup + 4);
         for (uint16_t j = 0; j < subtables; j++) {
-            if (lookup + 6 + (size_t)j * 2 + 2 > len) break;
+            if (!--budget) return count;
+            if (!BRInside(lookup + 6 + (size_t)j * 2, 2, len)) break;
             size_t sub = lookup + rd16(p + lookup + 6 + (size_t)j * 2);
             uint16_t subType = type;
             if (subType == 7) {   // extension: the real type and a 32-bit offset
-                if (sub + 8 > len) continue;
+                if (!BRInside(sub, 8, len)) continue;
                 subType = rd16(p + sub + 2);
-                sub += rd32(p + sub + 4);
+                uint32_t ext = rd32(p + sub + 4);
+                if (ext > len - sub) continue;   // (sub + ext wrapped around on armv7 and passed the check below)
+                sub += ext;
             }
-            if (subType != 4 || sub + 6 > len || rd16(p + sub) != 1) continue;
+            if (subType != 4 || !BRInside(sub, 6, len) || rd16(p + sub) != 1) continue;
             uint16_t sets = rd16(p + sub + 4);
             for (uint16_t k = 0; k < sets; k++) {
-                if (sub + 6 + (size_t)k * 2 + 2 > len) break;
+                if (!--budget) return count;
+                if (!BRInside(sub + 6 + (size_t)k * 2, 2, len)) break;
                 size_t set = sub + rd16(p + sub + 6 + (size_t)k * 2);
-                if (set + 2 > len) continue;
+                if (!BRInside(set, 2, len)) continue;
                 uint16_t ligatures = rd16(p + set);
                 for (uint16_t m = 0; m < ligatures; m++) {
-                    if (set + 2 + (size_t)m * 2 + 2 > len) break;
+                    if (!--budget) return count;
+                    if (!BRInside(set + 2 + (size_t)m * 2, 2, len)) break;
                     size_t lig = set + rd16(p + set + 2 + (size_t)m * 2);
-                    if (lig + 4 <= len && rd16(p + lig + 2) >= 4 && ++count >= enough) return count;
+                    if (BRInside(lig, 4, len) && rd16(p + lig + 2) >= 4 && ++count >= enough) return count;
                 }
             }
         }
@@ -111,10 +127,10 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
         rec.checksum = rd32(r + 4);
         rec.offset = rd32(r + 8);
         rec.length = rd32(r + 12);
+        if (!BRInside(rec.offset, rec.length, len)) return false;   // (before anything uses the table)
         if (memcmp(rec.tag, "fvar", 4) == 0) hasFvar = true;
         if (memcmp(rec.tag, "CFF2", 4) == 0) hasCFF2 = true;
         if (memcmp(rec.tag, "GSUB", 4) == 0 || memcmp(rec.tag, "GPOS", 4) == 0) layoutBytes += rec.length;
-        if ((size_t)rec.offset + rec.length > len) return false;
         if (memcmp(rec.tag, "GSUB", 4) == 0) { gsub = p + rec.offset; gsubLength = rec.length; }
         if (memcmp(rec.tag, "GPOS", 4) == 0) gposLength = rec.length;
         all.push_back(rec);
@@ -132,6 +148,12 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
         if (dropLayout) for (int k = 0; layoutTags[k]; k++) if (memcmp(all[i].tag, layoutTags[k], 4) == 0) drop = true;
         if (!drop) keep.push_back(all[i]);
     }
+    // Every kept table is copied out: a directory listing one table thousands of times (or overlapping ones) would make
+    // the copy many times the font. Real fonts never overlap (the font sanitizers of other browsers refuse that), so
+    // their tables add up to less than the file.
+    uint64_t keptBytes = 0;
+    for (size_t i = 0; i < keep.size(); i++) keptBytes += keep[i].length;
+    if (keptBytes > len) return false;
     *dropped = (int)(numTables - keep.size());
     *droppedLayout = dropLayout;
     uint16_t n = (uint16_t)keep.size();
@@ -171,6 +193,10 @@ static bool BRStripVariationTables(const std::string &in, std::string &out, int 
 
 // WOFF 1.0: an sfnt with zlib-compressed tables. The engine can load WOFF itself, but going through
 // the converter lets the heavy layout tables be dropped like for every other font.
+// The most it may decode to: real fonts are a few MB (a CJK one about 20). Without a limit a small file could claim
+// gigabytes (tables of 64 MB each, all inflated from one shared compressed block) and take the iPad's memory.
+static const uint64_t BRMaxWOFFOutput = 30u << 20;
+
 static bool BRDecodeWOFF1(const uint8_t *p, size_t len, std::string &out)
 {
     if (len < 44 || memcmp(p, "wOFF", 4) != 0) return false;
@@ -179,6 +205,7 @@ static bool BRDecodeWOFF1(const uint8_t *p, size_t len, std::string &out)
     if (numTables == 0 || len < 44 + (size_t)numTables * 20) return false;
     struct Entry { char tag[4]; uint32_t offset, compLength, origLength, checksum; };
     std::vector<Entry> entries;
+    uint64_t total = 12 + (uint64_t)numTables * 16;   // the sfnt it becomes, padding included: known before anything is allocated
     for (uint16_t i = 0; i < numTables; i++) {
         const uint8_t *e = p + 44 + (size_t)i * 20;
         Entry en;
@@ -187,7 +214,9 @@ static bool BRDecodeWOFF1(const uint8_t *p, size_t len, std::string &out)
         en.compLength = rd32(e + 8);
         en.origLength = rd32(e + 12);
         en.checksum = rd32(e + 16);
-        if ((size_t)en.offset + en.compLength > len || en.origLength > (64u << 20)) return false;
+        if (!BRInside(en.offset, en.compLength, len)) return false;
+        total += ((uint64_t)en.origLength + 3) & ~(uint64_t)3;
+        if (total > BRMaxWOFFOutput) return false;   // (so also every single table)
         entries.push_back(en);
     }
     uint16_t entrySelector = 0;
@@ -195,6 +224,7 @@ static bool BRDecodeWOFF1(const uint8_t *p, size_t len, std::string &out)
     uint16_t searchRange = (uint16_t)((1u << entrySelector) * 16);
     uint16_t rangeShift = (uint16_t)(numTables * 16 - searchRange);
     out.assign(12 + (size_t)numTables * 16, '\0');
+    out.reserve((size_t)total);   // one allocation: no copies while it grows
     uint8_t *h = (uint8_t *)&out[0];
     wr32(h, flavor);
     wr16(h + 4, numTables);
@@ -206,10 +236,9 @@ static bool BRDecodeWOFF1(const uint8_t *p, size_t len, std::string &out)
         while (out.size() % 4) out.push_back('\0');
         uint32_t newOffset = (uint32_t)out.size();
         if (en.compLength < en.origLength) {
-            std::string table(en.origLength, '\0');
+            out.resize((size_t)newOffset + en.origLength);   // inflated in place: no second copy of the table
             uLongf destLen = en.origLength;
-            if (uncompress((Bytef *)&table[0], &destLen, p + en.offset, en.compLength) != Z_OK || destLen != en.origLength) return false;
-            out.append(table);
+            if (uncompress((Bytef *)&out[newOffset], &destLen, p + en.offset, en.compLength) != Z_OK || destLen != en.origLength) return false;
         } else {
             out.append((const char *)p + en.offset, en.origLength);
         }

@@ -107,6 +107,7 @@ static NSString *BRFileNameForDownload(NSURL *url, NSDictionary *headers)
     r.verifyTLS = [BRSettings verifyTLS];
     r.highPriority = YES;
     r.readTimeout = 120;
+    r.unlimitedDecodedSize = YES;   // written to a file: no limit on gzip/deflate/br output
     NSArray *cookies = nil;
     @synchronized (BRCookieLock()) { cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url]; }
     NSMutableDictionary *headers = [NSMutableDictionary dictionary];
@@ -120,6 +121,8 @@ static NSString *BRFileNameForDownload(NSURL *url, NSDictionary *headers)
     __block NSString *finalPath = nil;
     __block long long received = 0;
     __block NSInteger status = 0;
+    // (alive inside onComplete: the request keeps itself alive until onComplete returns)
+    __weak BRHTTPRequest *weakR = r;
     r.onHeaders = ^(NSInteger st, NSDictionary *hdrs) {
         status = st;
         if (st < 200 || st >= 300) return;
@@ -139,6 +142,8 @@ static NSString *BRFileNameForDownload(NSURL *url, NSDictionary *headers)
         handle = nil;
         NSError *result = error;
         if (!result && (status < 200 || status >= 300)) result = BRMakeError(BRErrorBadResponse, [NSString stringWithFormat:L(@"Unexpected response: %@"), [NSString stringWithFormat:@"HTTP %ld", (long)status]]);
+        // (cut off by a closed or reset connection: never saved as if it were the whole file)
+        if (!result && weakR.bodyTruncated) result = BRMakeError(BRErrorConnectionLost, L(@"Connection lost."));
         if (!result && (!partPath || ![[NSFileManager defaultManager] moveItemAtPath:partPath toPath:finalPath error:NULL])) {
             result = BRMakeError(BRErrorNetwork, L(@"The file could not be saved."));
         }

@@ -12,19 +12,19 @@
 	<key>CFBundleDisplayName</key>
 	<string>Surfari</string>
 	<key>CFBundleExecutable</key>
-	<string>Browser</string>
+	<string>Surfari</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.samcejko.browser</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Browser</string>
+	<string>Surfari</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>CFBundleSupportedPlatforms</key>
@@ -102,7 +102,7 @@
 			<string>com.samcejko.browser</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>browser</string>
+				<string>surfari</string>
 			</array>
 		</dict>
 	</array>

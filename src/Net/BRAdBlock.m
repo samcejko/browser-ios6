@@ -23,8 +23,8 @@ static void BRLoadDomains(void)
 {
     NSTimeInterval t0 = [NSDate timeIntervalSinceReferenceDate];
     NSMutableData *buf = [NSMutableData data], *offs = [NSMutableData data];
-    // (adblock-base: bundled; adblock: Peter Lowe's list; adblock-oisd: OISD small, "block, don't break")
-    for (NSString *name in @[@"adblock-base", @"adblock", @"adblock-oisd"]) {
+    // (adblock-base: bundled, the project's own; adblock-oisd: OISD small, "block, don't break", fetched at build time)
+    for (NSString *name in @[@"adblock-base", @"adblock-oisd"]) {
         NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"txt"];
         NSData *data = path ? [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL] : nil;
         const char *p = data.bytes, *end = p + data.length;

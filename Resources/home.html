@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Browser</title>
+<title>Surfari</title>
 <style>
 body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 16px; background: #f2f2f5; color: #333; }
 body.dark { background: #1c1c1e; color: #eee; }
@@ -22,67 +22,75 @@ body.dark .tiles .tile { background: #2c2c2e; border-color: #444; }
 .tile .letter { float: left; width: 36px; height: 36px; line-height: 36px; margin-right: 10px; border-radius: 8px; background: #4a90e2; color: #fff; font-size: 20px; text-align: center; font-weight: bold; }
 .tile .title { display: block; font-size: 15px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .tile .host { display: block; font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
-.links { list-style: none; padding: 0; margin: 0 auto; max-width: 560px; }
+.links { list-style: none; padding: 0; margin: 24px auto 0; max-width: 560px; }
 .links li { margin: 0; }
 .links a { display: block; padding: 12px 14px; background: #fff; border: 1px solid #ddd; margin-bottom: -1px; color: #222; text-decoration: none; font-size: 17px; }
 body.dark .links a { background: #2c2c2e; border-color: #444; color: #eee; }
 .links li:first-child a { border-radius: 8px 8px 0 0; }
 .links li:last-child a { border-radius: 0 0 8px 8px; }
-.links a span { color: #888; font-size: 13px; display: block; }
-.info { font-size: 12px; color: #999; text-align: center; margin-top: 22px; word-break: break-word; }
+.links .sub { color: #888; font-size: 13px; display: block; }
 .empty { color: #999; font-size: 14px; margin: 0 6px; }
 </style>
 </head>
 <body>
-<h1>Browser</h1>
+<h1>Surfari</h1>
 <form id="search" action="https://lite.duckduckgo.com/lite/" method="get">
-  <input type="text" name="q" id="q" placeholder="Hledat na DuckDuckGo" autocorrect="off" autocapitalize="off">
-  <input type="submit" value="Hledat">
+  <input type="text" name="q" id="q" placeholder="Search with DuckDuckGo" data-cs-placeholder="Hledat na DuckDuckGo" autocorrect="off" autocapitalize="off">
+  <input type="submit" value="Search" data-cs-value="Hledat">
 </form>
-<h2>Často navštěvované</h2>
-<div class="tiles" id="top"><p class="empty">Zatím žádné navštívené stránky.</p></div>
-<h2>Záložky</h2>
+<h2 data-cs="Často navštěvované">Frequently visited</h2>
+<div class="tiles" id="top"><p class="empty" data-cs="Zatím žádné navštívené stránky.">No visited sites yet.</p></div>
+<h2 data-cs="Záložky">Bookmarks</h2>
 <div class="tiles" id="bookmarks"></div>
-<h2>Testy</h2>
 <ul class="links">
-  <li><a href="https://html5test.com/">HTML5 test<span>html5test.com</span></a></li>
-  <li><a href="https://ios6-browser.invalid/csstest.html">Test CSS3<span>co z moderního CSS tento prohlížeč vykreslí</span></a></li>
-  <li><a href="https://ios6-browser.invalid/browserscore.html">Browserscore<span>testy z browserscore.dev, nativně i přes přepis CSS</span></a></li>
-  <li><a href="https://valid-isrgrootx1.letsencrypt.org/">Certifikát Let's Encrypt<span>valid-isrgrootx1.letsencrypt.org</span></a></li>
-  <li><a href="https://www.howsmyssl.com/a/check">TLS spojení (JSON)<span>www.howsmyssl.com</span></a></li>
-  <li><a href="help.html">Nápověda<span>gesta, zkratky a funkce prohlížeče</span></a></li>
+  <li><a id="help" href="help.html"><span data-cs="Nápověda">Help</span><span class="sub" data-cs="gesta, zkratky, soukromí a co nefunguje">gestures, shortcuts, privacy and what does not work</span></a></li>
 </ul>
-<p class="info" id="info">JavaScript se měří…</p>
 <script>
 (function () {
-  var t0 = new Date().getTime();
-  var x = 0;
-  for (var i = 0; i < 3000000; i++) { x = (x + i * 7) % 1000003; }
-  var ms = new Date().getTime() - t0;
-  // Measured on an iPad 2: about 480 ms with the Nitro JIT, about 940 ms with the interpreter only.
-  var jit = ms < 700 ? 'JIT je zapnutý' : 'JIT je vypnutý';
-  document.getElementById('info').innerHTML = 'JavaScript: 3 miliony iterací za ' + ms + ' ms (' + jit + ')<br>' + navigator.userAgent;
-})();
-// Filled in by the app: search engine, bookmarks and the most visited sites.
-window.brSetHome = function (data) {
-  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+  // English, or Czech when the system language is Czech (the two languages of the app)
+  var cs = /^cs(-|_|$)/i.test(navigator.language || '');
+  var T = cs ? { searchOn: 'Hledat na ', web: 'webu', noBookmarks: 'Žádné záložky.' }
+             : { searchOn: 'Search with ', web: 'the web', noBookmarks: 'No bookmarks yet.' };
+  if (cs) {
+    document.documentElement.lang = 'cs';
+    var all = document.getElementsByTagName('*');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i], text = el.getAttribute('data-cs'), hint = el.getAttribute('data-cs-placeholder'), value = el.getAttribute('data-cs-value');
+      if (text) el.textContent = text;
+      if (hint) el.placeholder = hint;
+      if (value) el.value = value;
+    }
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function host(u) { var m = /^[a-z]+:\/\/([^\/?#]+)/i.exec(u); return m ? m[1].replace(/^www\./, '') : u; }
   function tiles(list) {
     var h = '';
     for (var i = 0; i < list.length; i++) {
-      var e = list[i], title = e.title || host(e.url), letter = (host(e.url).charAt(0) || '?').toUpperCase();
+      var e = list[i];
+      // (web pages only: a javascript: bookmarklet would run in this page, where it has nothing to do)
+      if (!e || typeof e.url !== 'string' || !/^https?:\/\//i.test(e.url)) continue;
+      var title = e.title || host(e.url), letter = (host(e.url).charAt(0) || '?').toUpperCase();
       h += '<a href="' + esc(e.url) + '"><span class="tile"><span class="letter">' + esc(letter) + '</span><span class="title">' + esc(title) + '</span><span class="host">' + esc(host(e.url)) + '</span></span></a>';
     }
     return h;
   }
-  if (data.dark) document.body.className = 'dark';
-  if (data.searchAction) {
-    document.getElementById('search').action = data.searchAction;
-    document.getElementById('q').placeholder = 'Hledat na ' + (data.searchName || 'webu');
-  }
-  if (data.top && data.top.length) document.getElementById('top').innerHTML = tiles(data.top);
-  document.getElementById('bookmarks').innerHTML = data.bookmarks && data.bookmarks.length ? tiles(data.bookmarks) : '<p class="empty">Žádné záložky.</p>';
-};
+  // Filled in by the app: theme, search engine, bookmarks and the most visited sites.
+  window.brSetHome = function (data) {
+    if (!data) return;
+    if (data.dark) {
+      document.body.className = 'dark';
+      document.getElementById('help').setAttribute('href', 'help.html?dark');
+    }
+    if (data.searchAction) {
+      document.getElementById('search').action = data.searchAction;
+      document.getElementById('q').placeholder = T.searchOn + (data.searchName || T.web);
+    }
+    var top = data.top && data.top.length ? tiles(data.top) : '';
+    if (top) document.getElementById('top').innerHTML = top;
+    var marks = data.bookmarks && data.bookmarks.length ? tiles(data.bookmarks) : '';
+    document.getElementById('bookmarks').innerHTML = marks || '<p class="empty">' + esc(T.noBookmarks) + '</p>';
+  };
+})();
 </script>
 </body>
 </html>

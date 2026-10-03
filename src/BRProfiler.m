@@ -145,7 +145,7 @@ static NSString *BRKindOf(NSString *image, NSString *name, BOOL top)
         if (BRHasAny(name, @[@"Timer", @"EventDispatcher", @"EventTarget", @"dispatchEvent", @"EventContext", @"ScheduledAction", @"ScriptExecutionContext"])) return nil;
         return @"WebCore (other)";
     }
-    if ([image isEqualToString:@"Browser"]) return @"app";
+    if ([image isEqualToString:@"Surfari"]) return @"app";
     if (BRHasAny(image, @[@"CoreGraphics", @"QuartzCore", @"libRIP", @"IOSurface", @"libCGFreetype", @"CoreText"])) return top ? @"painting" : nil;
     if (BRHasAny(image, @[@"ImageIO", @"libjpeg", @"libpng", @"AppleJPEG"])) return @"images";
     if (BRHasAny(image, @[@"libz", @"CFNetwork", @"Security", @"libcommonCrypto", @"libcorecrypto"])) return top ? @"network and decompression" : nil;
@@ -343,7 +343,7 @@ static NSString *BRKindOf(NSString *image, NSString *name, BOOL top)
             NSUInteger n = appImps.length / sizeof(uintptr_t), lo = 0, hi = n;
             while (lo < hi) { NSUInteger mid = (lo + hi) / 2; if (imps[mid] <= lookup) lo = mid + 1; else hi = mid; }
             if (lo > 0 && lookup - imps[lo - 1] < 16384) [labels addObject:appNames[lo - 1]];
-            else [labels addObject:[NSString stringWithFormat:@"Browser+0x%lx", (unsigned long)(lookup - (uintptr_t)info.dli_fbase)]];
+            else [labels addObject:[NSString stringWithFormat:@"Surfari+0x%lx", (unsigned long)(lookup - (uintptr_t)info.dli_fbase)]];
             continue;
         }
         if (info.dli_sname && strcmp(info.dli_sname, "<redacted>") != 0) {

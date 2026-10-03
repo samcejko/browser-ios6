@@ -6,8 +6,6 @@
 	<string>com.samcejko.browser</string>
 	<key>dynamic-codesigning</key>
 	<true/>
-	<key>get-task-allow</key>
-	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>com.samcejko.browser</string>

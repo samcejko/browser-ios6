@@ -5,6 +5,7 @@
 #import "BRMemory.h"
 
 #include <zlib.h>
+#include <CommonCrypto/CommonDigest.h>
 
 static const NSUInteger BRMaxPagesRemembered = 8;
 // seconds without work before an engine gives its whole heap back (the rewriter's engine only above the given
@@ -96,11 +97,34 @@ static NSString *BRDecode(NSData *data, NSString *charset, NSString **usedCharse
     return [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
 }
 
-// Caches/transpiled/<crc>-<length>-<jsfix tag>.js: lowered scripts by content (an empty file: nothing to lower)
+// Caches/transpiled/<text key>-<jsfix tag>.js: lowered scripts by content (an empty file: nothing to lower)
 static NSString *BRTranspiledDirectory(void)
 {
     NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
     return [caches stringByAppendingPathComponent:@"transpiled"];
+}
+
+// The name of a text the results made from it are kept under, on disk and in memory - lowered scripts, rewritten
+// styles, set-aside inline scripts, kept factories: the first half of its SHA-256 (over `more` too, when given) and its
+// length. Every site's pages share these results, so the name must be one no page can give a text of its own: a
+// CRC-32, as before, anyone can match, and a page could have put its code under the name of another site's script, to
+// be run there.
+static NSString *BRTextKey(NSData *data, NSData *more)
+{
+    CC_SHA256_CTX ctx;
+    CC_SHA256_Init(&ctx);
+    if (data.length) CC_SHA256_Update(&ctx, data.bytes, (CC_LONG)data.length);
+    if (more.length) CC_SHA256_Update(&ctx, more.bytes, (CC_LONG)more.length);
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Final(digest, &ctx);
+    static const char digits[] = "0123456789abcdef";
+    char hex[33];
+    for (int i = 0; i < 16; i++) {
+        hex[2 * i] = digits[digest[i] >> 4];
+        hex[2 * i + 1] = digits[digest[i] & 15];
+    }
+    hex[32] = 0;
+    return [NSString stringWithFormat:@"%s-%lx", hex, (unsigned long)data.length];
 }
 
 // a checksum of jsfix.js: results of another version are not reused
@@ -136,17 +160,32 @@ static NSString *BRRewriterTag(void)
     return tag;
 }
 
-// the text of factory n of a webpack chunk kept for later (base = "<crc>-<length>" of the chunk; see jsfix.js LAZY_*)
+// the text of factory n of a webpack chunk kept for later (base = the chunk's BRTextKey; see jsfix.js LAZY_*)
 static NSString *BRLazyPartPath(NSString *base, long n)
 {
     return [BRTranspiledDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"%@s%ld-%@.js", base, n, BRTranspileTag()]];
 }
 
-// the text of a document's inline script set aside by the rewriter (see cssfix.js fixScripts), nil for a bad name
+// the text of a document's inline script set aside by the rewriter (see cssfix.js fixScripts), nil for a bad name (the
+// name is the text's BRTextKey, given in rewriteData)
 static NSString *BRInlineScriptPath(NSString *name)
 {
-    if (!name.length || name.length > 40 || [name rangeOfString:@"^[0-9a-f]+-[0-9a-f]+$" options:NSRegularExpressionSearch].location == NSNotFound) return nil;
+    if (!name.length || name.length > 48 || [name rangeOfString:@"^[0-9a-f]{32}-[0-9a-f]+$" options:NSRegularExpressionSearch].location == NSNotFound) return nil;
     return [BRTranspiledDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"inline-%@-%@.js", name, BRTranspileTag()]];
+}
+
+static void BRPruneTranspiled(void);
+// Caches/transpiled grows with every page's scripts and styles: pruned at launch, and again whenever 16 MB more were
+// written (a long session, or pages that send endless new texts to /lower and /cssrun, stays within the limit)
+static void BRNoteTranspiledWrite(NSUInteger bytes)
+{
+    static unsigned long long written;
+    BOOL prune = NO;
+    @synchronized ([BRCSSRewriter class]) {
+        written += bytes + 4096;   // (a file takes a block of the flash at least)
+        if (written >= 16ull * 1024 * 1024) { written = 0; prune = YES; }
+    }
+    if (prune) dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{ @autoreleasepool { [BRCSSRewriter pruneTranspiledCache]; } });
 }
 
 @implementation BRCSSRewriter {
@@ -465,15 +504,12 @@ static NSArray *BRManifestKinds(void)
 {
     engine.lastNoRoom = NO;
     NSString *activityKey = engine == [BRJSEngine transpiler2] ? @"js3" : @"js";   // (what the memory report says each engine does)
-    unsigned long crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
     // (a module's registration names its URL: the key has it too)
-    if (module) { NSData *u = [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding]; if (u.length) crc = crc32(crc, (const Bytef *)u.bytes, (uInt)u.length); }
-    NSString *key = [NSString stringWithFormat:@"%08lx-%lx%@-%@", crc, (unsigned long)data.length, module ? @"m" : @"", BRTranspileTag()];
+    NSString *base = BRTextKey(data, module ? [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding] : nil);
+    NSString *key = [NSString stringWithFormat:@"%@%@-%@", base, module ? @"m" : @"", BRTranspileTag()];
     NSString *dir = BRTranspiledDirectory();
     NSString *path = [dir stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]];
     BOOL private = [BRSettings privateMode];
-    NSString *base = [NSString stringWithFormat:@"%08lx-%lx", crc, (unsigned long)data.length];
     NSData *cached = [_transpiled objectForKey:key];
     if (!cached && !private) {
         cached = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
@@ -554,6 +590,7 @@ static NSArray *BRManifestKinds(void)
             if (!private) {
                 [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
                 [[NSData data] writeToFile:path atomically:YES];
+                BRNoteTranspiledWrite(0);
             }
             [engine collectGarbage];
             [engine releaseWhenIdleFor:BRTranspilerIdleRelease aboveMB:0];
@@ -685,6 +722,7 @@ static NSArray *BRManifestKinds(void)
     if (!private) {
         [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
         [store writeToFile:path atomically:YES];
+        BRNoteTranspiledWrite(store.length);
     }
     if (data.length > 200000) { [engine collectGarbage]; [BRJSEngine returnFreeMemory]; }
     // a parse tree of a big script leaves the heap large: the whole VM goes once the page's scripts are through
@@ -696,9 +734,7 @@ static NSArray *BRManifestKinds(void)
 - (void)forgetTranspiledScript:(NSData *)data
 {
     if (!data.length) return;
-    unsigned long crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (const Bytef *)data.bytes, (uInt)data.length);
-    NSString *key = [NSString stringWithFormat:@"%08lx-%lx-%@", crc, (unsigned long)data.length, BRTranspileTag()];
+    NSString *key = [NSString stringWithFormat:@"%@-%@", BRTextKey(data, nil), BRTranspileTag()];
     [_transpiled removeObjectForKey:key];
     [[NSFileManager defaultManager] removeItemAtPath:[BRTranspiledDirectory() stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]] error:NULL];
 }
@@ -766,6 +802,7 @@ static NSArray *BRManifestKinds(void)
         @autoreleasepool {
             NSData *d = [[text substringWithRange:NSMakeRange(start, end - start)] dataUsingEncoding:NSUTF8StringEncoding];
             if (!d || ![d writeToFile:BRLazyPartPath(base, (long)n) atomically:YES]) return 0;
+            BRNoteTranspiledWrite(d.length);
         }
         n++;
     }
@@ -834,9 +871,7 @@ static NSArray *BRManifestKinds(void)
 - (NSData *)runtimeStyleResult:(NSData *)request
 {
     if (request.length < 8) { BRLog(@"Inserted style: no text came (%lu bytes)", (unsigned long)request.length); return nil; }
-    unsigned long crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (const Bytef *)request.bytes, (uInt)request.length);
-    NSString *key = [NSString stringWithFormat:@"css-%08lx-%lx-%@-%@", crc, (unsigned long)request.length, BRRewriterTag(), BRTranspileTag()];
+    NSString *key = [NSString stringWithFormat:@"css-%@-%@-%@", BRTextKey(request, nil), BRRewriterTag(), BRTranspileTag()];
     NSString *path = [BRTranspiledDirectory() stringByAppendingPathComponent:[key stringByAppendingPathExtension:@"js"]];
     BOOL private = [BRSettings privateMode];
     NSData *cached = [_transpiled objectForKey:key];
@@ -873,6 +908,7 @@ static NSArray *BRManifestKinds(void)
     if (!private) {
         [[NSFileManager defaultManager] createDirectoryAtPath:BRTranspiledDirectory() withIntermediateDirectories:YES attributes:nil error:NULL];
         [out writeToFile:path atomically:YES];
+        BRNoteTranspiledWrite(out.length);
     }
     return out;
 }
@@ -970,7 +1006,25 @@ static NSArray *BRManifestKinds(void)
     return tag;
 }
 
++ (void)forgetCachedResults
+{
+    BRCSSRewriter *r = [self shared];
+    [r->_transpiled removeAllObjects];   // (NSCache is thread safe)
+}
+
 + (void)pruneTranspiledCache
+{
+    // (one at a time: at launch, and again whenever more was written meanwhile, see BRNoteTranspiledWrite)
+    static BOOL running;
+    @synchronized ([BRCSSRewriter class]) {
+        if (running) return;
+        running = YES;
+    }
+    BRPruneTranspiled();
+    @synchronized ([BRCSSRewriter class]) { running = NO; }
+}
+
+static void BRPruneTranspiled(void)
 {
     NSString *dir = BRTranspiledDirectory(), *suffix = [NSString stringWithFormat:@"-%@.js", BRTranspileTag()];
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -985,7 +1039,11 @@ static NSArray *BRManifestKinds(void)
         total += [a fileSize];
         [items addObject:@[p, [a fileModificationDate] ?: [NSDate distantPast], @([a fileSize])]];
     }
-    const unsigned long long limit = 1024ull * 1024 * 1024;   // (1 GB: every lowering saved is seconds on the next visit)
+    // (every lowering saved is seconds on the next visit, but the flash is the user's: 200 MB, half of it when the device
+    // has less than 1 GB free)
+    NSDictionary *fs = [fm attributesOfFileSystemForPath:NSHomeDirectory() error:NULL];
+    unsigned long long freeBytes = fs[NSFileSystemFreeSize] ? [fs[NSFileSystemFreeSize] unsignedLongLongValue] : ~0ULL;
+    const unsigned long long limit = (freeBytes < 1024ull * 1024 * 1024 ? 100ull : 200ull) * 1024 * 1024;
     if (total <= limit) return;
     [items sortUsingComparator:^NSComparisonResult(NSArray *x, NSArray *y) { return [x[1] compare:y[1]]; }];
     for (NSArray *it in items) {
@@ -1063,6 +1121,9 @@ static NSString *BRPageKey(NSURL *url)
         NSBundle *b = [NSBundle mainBundle];
         // (debugging switch: the page shim logs the real errors of callbacks and promises, see shims-extra.js)
         if ([[NSUserDefaults standardUserDefaults] boolForKey:@"BRDebugJSErrors"]) [d appendData:[@"window.__brDebugErrors=true;\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        // (the page shim's load timing and error reports go to the log only on a developer's device, where BRLog writes:
+        // elsewhere the brlog: handler drops them, and they would cost every page a timer and hidden frames for nothing)
+        if (BRDebugEnabled()) [d appendData:[@"window.__brDebugLog=true;\n" dataUsingEncoding:NSUTF8StringEncoding]];
         // (jsfix-helpers: the transpiler's runtime helpers as globals, for lowered code a page keeps as text and runs
         // later, see tools/gen-helpers.js)
         // (page-prelude first: it keeps MutationObservers from holding left pages in memory, see the file)
@@ -1199,16 +1260,35 @@ static NSString *BRPageKey(NSURL *url)
     NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:[result dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     NSString *out = [parsed isKindOfClass:[NSDictionary class]] ? parsed[@"out"] : nil;
     if (![out isKindOfClass:[NSString class]]) return nil;
-    // the inline scripts set aside: the page asks for them as /__br_inline-<name>.js (see BRURLProtocol)
+    // the inline scripts set aside: the page asks for them as /__br_inline-<name>.js (see BRURLProtocol). The name the
+    // file and the document get is made here, the BRTextKey of the text cssfix.js gave: the files are shared by every
+    // site, and the quick hash cssfix.js names them by a page could match with a script of its own.
     NSArray *external = parsed[@"external"];
     if ([external isKindOfClass:[NSArray class]] && external.count) {
         [[NSFileManager defaultManager] createDirectoryAtPath:BRTranspiledDirectory() withIntermediateDirectories:YES attributes:nil error:NULL];
+        NSMutableArray *given = [NSMutableArray array], *named = [NSMutableArray array];
         for (NSArray *e in external) {
-            NSString *path = [e isKindOfClass:[NSArray class]] && e.count == 2 && [e[0] isKindOfClass:[NSString class]] ? BRInlineScriptPath(e[0]) : nil;
-            NSData *d = path && [e[1] isKindOfClass:[NSString class]] ? [e[1] dataUsingEncoding:NSUTF8StringEncoding] : nil;
+            BOOL ok = [e isKindOfClass:[NSArray class]] && e.count == 2 && [e[0] isKindOfClass:[NSString class]] && [e[1] isKindOfClass:[NSString class]];
+            NSString *script = ok ? e[1] : nil;
+            NSData *d = [script dataUsingEncoding:NSUTF8StringEncoding];
+            NSString *name = d ? BRTextKey(d, nil) : nil, *path = name ? BRInlineScriptPath(name) : nil;
+            NSString *was = ok ? [NSString stringWithFormat:@"/__br_inline-%@.js", e[0]] : nil;
+            NSString *now = name ? [NSString stringWithFormat:@"/__br_inline-%@.js", name] : nil;
+            // (the text names its own address in its first lines, to take its src away: see fixScripts)
+            NSRange own = path && was ? [script rangeOfString:was] : NSMakeRange(NSNotFound, 0);
+            d = own.location != NSNotFound ? [[script stringByReplacingCharactersInRange:own withString:now] dataUsingEncoding:NSUTF8StringEncoding] : nil;
             if (!d || ![d writeToFile:path atomically:YES]) { BRLog(@"cssfix: an inline script could not be set aside, the document stays as it was"); return nil; }
-            BRLog(@"cssfix: inline script of %lu KB set aside as %@", (unsigned long)(d.length >> 10), e[0]);
+            BRNoteTranspiledWrite(d.length);
+            BRLog(@"cssfix: inline script of %lu KB set aside as %@", (unsigned long)(d.length >> 10), name);
+            out = [out stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@" src=\"%@\"", was] withString:[NSString stringWithFormat:@" src=\"%@\"", now]];
+            [given addObject:e[0]];
+            [named addObject:name];
         }
+        // (and in the list at the document's end, see inlineScriptsPresentIn)
+        NSString *list = [NSString stringWithFormat:@"<!--br-inline:%@-->", [given componentsJoinedByString:@","]];
+        NSRange at = [out rangeOfString:list options:NSBackwardsSearch];
+        if (at.location == NSNotFound) { BRLog(@"cssfix: the list of the inline scripts set aside is missing, the document stays as it was"); return nil; }
+        out = [out stringByReplacingCharactersInRange:at withString:[NSString stringWithFormat:@"<!--br-inline:%@-->", [named componentsJoinedByString:@","]]];
     }
     external = nil;
     NSDictionary *newVars = parsed[@"vars"];

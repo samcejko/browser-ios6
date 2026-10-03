@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <ctype.h>
+#include <libkern/OSAtomic.h>
 
 static mbedtls_x509_crt g_cacert;
 static BOOL g_caLoaded = NO;
@@ -122,6 +124,22 @@ static void BRSessionForget(const char *key)
     pthread_mutex_unlock(&g_sessionLock);
 }
 
+// every host's: how many there were
+static int BRSessionForgetAll(void)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_sessionLock);
+    for (int i = 0; i < BR_SESSION_CACHE_SIZE; i++) {
+        BRSessionEntry *e = &g_sessions[i];
+        if (!e->used) continue;
+        mbedtls_ssl_session_free(&e->session);
+        e->used = 0;
+        n++;
+    }
+    pthread_mutex_unlock(&g_sessionLock);
+    return n;
+}
+
 #pragma mark - Helpers
 
 static NSString *BRMbedError(int ret)
@@ -134,6 +152,20 @@ static NSString *BRMbedError(int ret)
 static void BRSetError(NSError **error, NSInteger code, NSString *message)
 {
     if (error) *error = BRMakeError(code, message);
+}
+
+// A certificate that did not pass: what was wrong with it, and that the page stays blocked (there is no way around it
+// from the error; a wrong clock is the one cause the user can fix)
+static void BRSetCertificateError(NSError **error, uint32_t flags)
+{
+    char vbuf[512];
+    vbuf[0] = 0;
+    mbedtls_x509_crt_verify_info(vbuf, sizeof(vbuf), "", flags);
+    NSString *info = [([NSString stringWithUTF8String:vbuf] ?: @"") stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    info = [info stringByReplacingOccurrencesOfString:@"\n" withString:@"; "];
+    NSString *message = [NSString stringWithFormat:L(@"The server's certificate could not be verified (%@). The page was blocked to protect you."), info.length ? info : @"?"];
+    if (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE)) message = [message stringByAppendingFormat:@" %@", L(@"Check the date and time of this device.")];
+    BRSetError(error, BRErrorCertificate, message);
 }
 
 static void BRLoadCABundle(void)
@@ -343,6 +375,16 @@ static int BRDNSSkipName(const uint8_t *msg, int len, int off)
     }
 }
 
+// The question a reply repeats against the one asked (name, type, class): byte for byte, letters in any case (a
+// resolver may answer in its own; the length bytes and the type and class are no letters)
+static BOOL BRDNSSameQuestion(const uint8_t *asked, const uint8_t *echoed, int length)
+{
+    for (int i = 0; i < length; i++) {
+        if (tolower(asked[i]) != tolower(echoed[i])) return NO;
+    }
+    return YES;
+}
+
 static int BRDNSQueryA(const char *server, const char *host, uint32_t *out, int maxOut, uint32_t *ttlOut, int timeoutMs)
 {
     uint8_t q[512];
@@ -366,24 +408,33 @@ static int BRDNSQueryA(const char *server, const char *host, uint32_t *out, int 
     sa.sin_family = AF_INET;
     sa.sin_port = htons(53);
     inet_pton(AF_INET, server, &sa.sin_addr);
+    // (connected: the kernel passes on datagrams from that resolver only)
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        close(fd);
+        return -1;
+    }
     int result = -1;
-    if (sendto(fd, q, (size_t)qlen, 0, (struct sockaddr *)&sa, sizeof(sa)) == qlen) {
-        struct pollfd pfd;
-        pfd.fd = fd;
-        pfd.events = POLLIN;
-        pfd.revents = 0;
-        if (poll(&pfd, 1, timeoutMs) > 0) {
+    if (send(fd, q, (size_t)qlen, 0) == qlen) {
+        CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + timeoutMs / 1000.0;
+        for (;;) {
+            int leftMs = (int)((deadline - CFAbsoluteTimeGetCurrent()) * 1000);
+            if (leftMs <= 0) break;
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, leftMs) <= 0) break;
             uint8_t r[2048];
             ssize_t rl = recv(fd, r, sizeof(r), 0);
-            if (rl >= 12 && r[0] == q[0] && r[1] == q[1]) {
+            if (rl < 0) break;
+            // only the answer to this question: our id, a response, one question and that the one we asked (name, type
+            // and class; the name's letter case aside). Anything else is skipped, and the wait goes on.
+            if (rl < qlen || r[0] != q[0] || r[1] != q[1] || !(r[2] & 0x80) || r[4] != 0 || r[5] != 1 ||
+                !BRDNSSameQuestion(q + 12, r + 12, qlen - 12)) continue;
+            {
                 int rcode = r[3] & 0x0F;
-                int qd = (r[4] << 8) | r[5];
                 int an = (r[6] << 8) | r[7];
-                int off = 12;
-                for (int i = 0; i < qd && off >= 0; i++) {
-                    off = BRDNSSkipName(r, (int)rl, off);
-                    if (off >= 0) off += 4;
-                }
+                int off = qlen;   // (the question, matched above, is as long as ours)
                 int count = 0;
                 uint32_t minTTL = 0;
                 for (int i = 0; i < an && off >= 0; i++) {
@@ -403,6 +454,7 @@ static int BRDNSQueryA(const char *server, const char *host, uint32_t *out, int 
                 if (ttlOut) *ttlOut = minTTL;
                 result = (rcode == 0 || rcode == 3) ? count : -1;   // NXDOMAIN counts as a real answer
             }
+            break;
         }
     }
     close(fd);
@@ -514,6 +566,63 @@ static int BRResolveHost(NSString *host, struct sockaddr_storage *out, int maxOu
     return 0;
 }
 
+#pragma mark - This device's own addresses
+
+// 127/8 and 0/8 (a connection to 0.0.0.0 reaches this device too), ::1, :: and their IPv4-mapped forms
+static BOOL BRIsLoopbackAddress(const struct sockaddr_storage *sa)
+{
+    if (sa->ss_family == AF_INET) {
+        uint32_t a = ntohl(((const struct sockaddr_in *)sa)->sin_addr.s_addr);
+        return (a >> 24) == 127 || (a >> 24) == 0;
+    }
+    if (sa->ss_family == AF_INET6) {
+        const struct in6_addr *a6 = &((const struct sockaddr_in6 *)sa)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(a6) || IN6_IS_ADDR_UNSPECIFIED(a6)) return YES;
+        if (IN6_IS_ADDR_V4MAPPED(a6)) return a6->s6_addr[12] == 127 || a6->s6_addr[12] == 0;
+    }
+    return NO;
+}
+
+static BOOL BRIsLoopbackName(NSString *host)
+{
+    NSString *h = [host lowercaseString];
+    while ([h hasSuffix:@"."]) h = [h substringToIndex:h.length - 1];
+    if (!h.length) return NO;
+    if ([h isEqualToString:@"localhost"] || [h hasSuffix:@".localhost"]) return YES;
+    if ([h hasPrefix:@"["] && [h hasSuffix:@"]"] && h.length > 2) h = [h substringWithRange:NSMakeRange(1, h.length - 2)];
+    const char *c = [h UTF8String];
+    if (!c) return NO;
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    struct in_addr a4;
+    struct in6_addr a6;
+    // (inet_aton takes the numeric forms getaddrinfo also takes: 127.1, 2130706433, 0x7f.1)
+    if (inet_aton(c, &a4)) {
+        ss.ss_family = AF_INET;
+        ((struct sockaddr_in *)&ss)->sin_addr = a4;
+        return BRIsLoopbackAddress(&ss);
+    }
+    if (inet_pton(AF_INET6, c, &a6) == 1) {
+        ss.ss_family = AF_INET6;
+        ((struct sockaddr_in6 *)&ss)->sin6_addr = a6;
+        return BRIsLoopbackAddress(&ss);
+    }
+    return NO;
+}
+
+#define BR_RESERVED_PORTS 4
+static int g_reservedPorts[BR_RESERVED_PORTS];
+static pthread_mutex_t g_reservedLock = PTHREAD_MUTEX_INITIALIZER;
+
+static BOOL BRIsReservedPort(int port)
+{
+    BOOL found = NO;
+    pthread_mutex_lock(&g_reservedLock);
+    for (int i = 0; i < BR_RESERVED_PORTS && !found; i++) found = port > 0 && g_reservedPorts[i] == port;
+    pthread_mutex_unlock(&g_reservedLock);
+    return found;
+}
+
 #pragma mark - TCP connect with timeout
 
 static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *cancelled, NSError **error)
@@ -527,6 +636,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
     CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + timeoutMs / 1000.0;
     int fd = -1;
     int lastErr = 0;
+    int deviceName = -1;   // (whether the host names this device: asked only when an address is one of its own)
     char abuf[64];
     for (int idx = 0; idx < n; idx++) {
         struct sockaddr_storage sa = addrs[idx];
@@ -539,6 +649,16 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
             salen = sizeof(struct sockaddr_in6);
         } else {
             continue;
+        }
+        // This device's own services only by its own names (a public name that resolves here is DNS rebinding, or
+        // a hosts-file block), and the app's own listeners never: they serve the system's player and WebCore.
+        if (BRIsLoopbackAddress(&sa)) {
+            if (deviceName < 0) deviceName = BRIsLoopbackName(host) ? 1 : 0;
+            if (!deviceName || BRIsReservedPort(port)) {
+                BRLog(@"connect %@ [%s]:%d: refused, an address of this device", host, BRAddressString(&sa, abuf, sizeof(abuf)), port);
+                lastErr = ECONNREFUSED;
+                continue;
+            }
         }
         int remainingMs = (int)((deadline - CFAbsoluteTimeGetCurrent()) * 1000);
         if (remainingMs <= 0) {
@@ -644,6 +764,36 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
     return g_caCount;
 }
 
++ (void)flushSessionCache
+{
+    int n = BRSessionForgetAll();
+    BRLog(@"TLS sessions forgotten (%d)", n);
+}
+
++ (BOOL)isLoopbackHost:(NSString *)host
+{
+    return host.length && BRIsLoopbackName(host);
+}
+
++ (void)reserveLoopbackPort:(int)port
+{
+    if (port <= 0) return;
+    pthread_mutex_lock(&g_reservedLock);
+    BOOL known = NO;
+    for (int i = 0; i < BR_RESERVED_PORTS && !known; i++) known = g_reservedPorts[i] == port;
+    for (int i = 0; i < BR_RESERVED_PORTS && !known; i++) {
+        if (!g_reservedPorts[i]) { g_reservedPorts[i] = port; known = YES; }
+    }
+    pthread_mutex_unlock(&g_reservedLock);
+}
+
+static volatile int32_t g_socketSerial;
+
++ (uint32_t)latestSerial
+{
+    return (uint32_t)OSAtomicAdd32Barrier(0, &g_socketSerial);
+}
+
 - (instancetype)init
 {
     self = [super init];
@@ -655,6 +805,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
         mbedtls_ctr_drbg_init(&_ctr);
         _initialized = YES;
         _sessionKey[0] = 0;
+        _serial = (uint32_t)OSAtomicIncrement32Barrier(&g_socketSerial);
     }
     return self;
 }
@@ -741,13 +892,7 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
         if (resuming) BRSessionForget(_sessionKey);
         if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
-            uint32_t flags = mbedtls_ssl_get_verify_result(&_ssl);
-            char vbuf[512];
-            mbedtls_x509_crt_verify_info(vbuf, sizeof(vbuf), "", flags);
-            NSString *info = [[NSString stringWithUTF8String:vbuf] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            NSString *hint = (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE)) ?
-                L(@"Check the date and time of this device.") : L(@"Certificate verification can be turned off in Settings.");
-            BRSetError(error, BRErrorCertificate, [NSString stringWithFormat:L(@"Server certificate rejected: %@. %@"), info, hint]);
+            BRSetCertificateError(error, mbedtls_ssl_get_verify_result(&_ssl));
             return NO;
         }
         if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
@@ -763,9 +908,18 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
         BRSetError(error, BRErrorTLS, [NSString stringWithFormat:L(@"TLS handshake failed: %@"), what]);
         return NO;
     }
+    // A resumed session carries the check of the handshake that made it, and the abbreviated handshake shows no
+    // certificate: one made without a check must not pass for a checked one. (Sessions are kept from checked handshakes
+    // only, and forgotten when the setting changes: this is the last guard.)
+    if (verify && mbedtls_ssl_get_verify_result(&_ssl) != 0) {
+        BRSessionForget(_sessionKey);
+        BRSetCertificateError(error, mbedtls_ssl_get_verify_result(&_ssl));
+        return NO;
+    }
     _connected = YES;
+    _verified = verify;
     mbedtls_ssl_conf_read_timeout(&_conf, (uint32_t)readMs);
-    BRSessionStore(_sessionKey, &_ssl);
+    if (verify) BRSessionStore(_sessionKey, &_ssl);
     return YES;
 }
 

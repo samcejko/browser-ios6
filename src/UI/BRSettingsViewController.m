@@ -4,6 +4,7 @@
 #import "BRAdBlock.h"
 #import "BRConnectionPool.h"
 #import "BRJSEngine.h"
+#import "BRCSSRewriter.h"
 #import "BRURLProtocol.h"
 #import "BRPasswords.h"
 #import "BRCommon.h"
@@ -14,6 +15,7 @@ typedef NS_ENUM(NSInteger, BRSettingsSection) {
     BRSettingsSectionPrivacy,
     BRSettingsSectionData,
     BRSettingsSectionInfo,
+    BRSettingsSectionAdvanced,
     BRSettingsSectionCount
 };
 
@@ -29,10 +31,6 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowTextSize,
     BRFeatureRowHomePage,
     BRFeatureRowLoadImages,
-    BRFeatureRowCSSFix,
-    BRFeatureRowJSFix,
-    BRFeatureRowTranspile,
-    BRFeatureRowVerifyTLS,
     BRFeatureRowCount
 };
 
@@ -42,11 +40,43 @@ typedef NS_ENUM(NSInteger, BRPrivacyRow) {
     BRPrivacyRowThirdPartyCookies,
     BRPrivacyRowDoNotTrack,
     BRPrivacyRowCookieBanners,
+    BRPrivacyRowSearchSuggestions,
     BRPrivacyRowCount
+};
+
+typedef NS_ENUM(NSInteger, BRDataRow) {
+    BRDataRowClearCache = 0,
+    BRDataRowClearCookies,
+    BRDataRowForgetPasswords,
+    BRDataRowResetSettings,
+    BRDataRowCount
+};
+
+typedef NS_ENUM(NSInteger, BRInfoRow) {
+    BRInfoRowVersion = 0,
+    BRInfoRowBlockedRequests,
+    BRInfoRowHelp,
+    BRInfoRowLicenses,
+    BRInfoRowCount
+};
+
+// Troubleshooting switches: a user who plays with them can break every site or browse without verified TLS, so they
+// sit at the bottom under a warning. The counters after them are only for a device set up for debugging.
+typedef NS_ENUM(NSInteger, BRAdvancedRow) {
+    BRAdvancedRowVerifyTLS = 0,
+    BRAdvancedRowCSSFix,
+    BRAdvancedRowJSFix,
+    BRAdvancedRowTranspile,
+    BRAdvancedRowMemory,
+    BRAdvancedRowConnectionsReused,
+    BRAdvancedRowCount
 };
 
 // switch tags: section * 100 + row
 static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 + row; }
+
+static const NSInteger BRAlertCustomSearch = 500;
+static const NSInteger BRAlertVerifyTLSOff = 501;
 
 @interface BRSettingsViewController () <UIActionSheetDelegate, UIAlertViewDelegate>
 @end
@@ -87,8 +117,9 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         case BRSettingsSectionAppearance: return BRAppearanceRowCount;
         case BRSettingsSectionFeatures: return BRFeatureRowCount;
         case BRSettingsSectionPrivacy: return BRPrivacyRowCount;
-        case BRSettingsSectionData: return 4;
-        case BRSettingsSectionInfo: return 5;
+        case BRSettingsSectionData: return BRDataRowCount;
+        case BRSettingsSectionInfo: return BRInfoRowCount;
+        case BRSettingsSectionAdvanced: return BRDebugEnabled() ? BRAdvancedRowCount : BRAdvancedRowMemory;
     }
     return 0;
 }
@@ -101,6 +132,7 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         case BRSettingsSectionPrivacy: return L(@"Privacy");
         case BRSettingsSectionData: return L(@"Data");
         case BRSettingsSectionInfo: return L(@"About");
+        case BRSettingsSectionAdvanced: return L(@"Advanced");
     }
     return nil;
 }
@@ -111,7 +143,11 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         return L(@"The page version tells servers which browser to serve. iPad with iOS 6 gets pages this engine understands best; the modern identity gets current pages that may not work.");
     }
     if (section == BRSettingsSectionPrivacy) {
-        return L(@"Cookie banners of the common consent services are hidden; the page then behaves as if nothing was agreed to.");
+        return [NSString stringWithFormat:@"%@\n\n%@", L(@"Cookie banners of the common consent services are hidden; the page then behaves as if nothing was agreed to."),
+                L(@"Search suggestions send what you type in the address bar to the search engine (never in private browsing).")];
+    }
+    if (section == BRSettingsSectionAdvanced) {
+        return L(@"For troubleshooting only. Without certificate verification anyone on the network can read and change secure pages, passwords included. Without the rewriting and polyfills most modern sites stop working, and every change of them empties the cache.");
     }
     return nil;
 }
@@ -130,6 +166,14 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
     cell.textLabel.text = title;
     cell.detailTextLabel.text = value;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+}
+
+// a row that does something when tapped (blue text)
+- (void)configureActionCell:(UITableViewCell *)cell title:(NSString *)title
+{
+    cell.textLabel.text = title;
+    cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
     cell.selectionStyle = UITableViewCellSelectionStyleBlue;
 }
 
@@ -175,22 +219,6 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
                 cell.textLabel.text = L(@"Load images");
                 cell.accessoryView = [self switchWithValue:[BRSettings loadImages] tag:tag];
                 break;
-            case BRFeatureRowCSSFix:
-                cell.textLabel.text = L(@"Rewrite modern CSS");
-                cell.accessoryView = [self switchWithValue:[BRSettings cssFixEnabled] tag:tag];
-                break;
-            case BRFeatureRowJSFix:
-                cell.textLabel.text = L(@"JavaScript polyfills");
-                cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:tag];
-                break;
-            case BRFeatureRowTranspile:
-                cell.textLabel.text = L(@"Translate modern JavaScript");
-                cell.accessoryView = [self switchWithValue:[BRSettings transpileEnabled] tag:tag];
-                break;
-            case BRFeatureRowVerifyTLS:
-                cell.textLabel.text = L(@"Verify certificates");
-                cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:tag];
-                break;
         }
     } else if (section == BRSettingsSectionPrivacy) {
         switch (row) {
@@ -214,32 +242,65 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
                 cell.textLabel.text = L(@"Hide cookie banners");
                 cell.accessoryView = [self switchWithValue:[BRSettings hideCookieBanners] tag:tag];
                 break;
+            case BRPrivacyRowSearchSuggestions:
+                cell.textLabel.text = L(@"Search suggestions");
+                cell.accessoryView = [self switchWithValue:[BRSettings searchSuggestions] tag:tag];
+                break;
         }
     } else if (section == BRSettingsSectionData) {
-        cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-        cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
-        cell.textLabel.text = row == 0 ? L(@"Clear cache") : row == 1 ? L(@"Clear cookies") : row == 2 ? L(@"Forget site passwords") : L(@"Reset settings");
-    } else {
         switch (row) {
-            case 4:
-                cell.textLabel.text = L(@"Help and gestures");
-                cell.textLabel.textColor = [BRTheme shared].isDark ? [UIColor colorWithRed:0.5 green:0.7 blue:1 alpha:1] : [UIColor colorWithRed:0.2 green:0.36 blue:0.7 alpha:1];
-                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            case BRDataRowClearCache: [self configureActionCell:cell title:L(@"Clear cache")]; break;
+            case BRDataRowClearCookies: [self configureActionCell:cell title:L(@"Clear cookies")]; break;
+            case BRDataRowForgetPasswords: [self configureActionCell:cell title:L(@"Forget site passwords")]; break;
+            case BRDataRowResetSettings: [self configureActionCell:cell title:L(@"Reset settings")]; break;
+        }
+    } else if (section == BRSettingsSectionInfo) {
+        switch (row) {
+            case BRInfoRowVersion: {
+                // the app's name, its version and the build (CI's run number)
+                NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
+                NSString *version = info[@"CFBundleShortVersionString"] ?: @"?";
+                NSString *build = info[@"CFBundleVersion"];
+                cell.textLabel.text = @"Surfari";
+                cell.detailTextLabel.text = (build.length && ![build isEqualToString:version]) ? [NSString stringWithFormat:@"%@ (%@)", version, build] : version;
                 break;
-            case 0:
-                cell.textLabel.text = L(@"Version");
-                cell.detailTextLabel.text = [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] ?: @"?";
-                break;
-            case 1:
-                cell.textLabel.text = L(@"Memory");
-                cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld MB", (long)BRResidentMemoryMB()];
-                break;
-            case 2:
+            }
+            case BRInfoRowBlockedRequests:
                 cell.textLabel.text = L(@"Blocked requests");
                 cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu", (unsigned long)[BRAdBlock blockedRequestCount]];
                 break;
-            case 3:
+            case BRInfoRowHelp:
+                [self configureActionCell:cell title:L(@"Help and gestures")];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                break;
+            case BRInfoRowLicenses:
+                [self configureActionCell:cell title:L(@"Licenses")];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                break;
+        }
+    } else {
+        switch (row) {
+            case BRAdvancedRowVerifyTLS:
+                cell.textLabel.text = L(@"Verify certificates");
+                cell.accessoryView = [self switchWithValue:[BRSettings verifyTLS] tag:tag];
+                break;
+            case BRAdvancedRowCSSFix:
+                cell.textLabel.text = L(@"Rewrite modern CSS");
+                cell.accessoryView = [self switchWithValue:[BRSettings cssFixEnabled] tag:tag];
+                break;
+            case BRAdvancedRowJSFix:
+                cell.textLabel.text = L(@"JavaScript polyfills");
+                cell.accessoryView = [self switchWithValue:[BRSettings jsFixEnabled] tag:tag];
+                break;
+            case BRAdvancedRowTranspile:
+                cell.textLabel.text = L(@"Translate modern JavaScript");
+                cell.accessoryView = [self switchWithValue:[BRSettings transpileEnabled] tag:tag];
+                break;
+            case BRAdvancedRowMemory:
+                cell.textLabel.text = L(@"Memory");
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"%ld MB", (long)BRResidentMemoryMB()];
+                break;
+            case BRAdvancedRowConnectionsReused:
                 cell.textLabel.text = L(@"Connections reused");
                 cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu", (unsigned long)[BRConnectionPool shared].reuseCount];
                 break;
@@ -265,24 +326,55 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         return;
     }
     if (section == BRSettingsSectionFeatures) {
-        switch (row) {
-            case BRFeatureRowLoadImages: [BRSettings setLoadImages:sw.on]; break;
-            case BRFeatureRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; clearCache = YES; break;
-            case BRFeatureRowJSFix: [BRSettings setJSFixEnabled:sw.on]; clearCache = YES; break;
-            case BRFeatureRowTranspile: [BRSettings setTranspileEnabled:sw.on]; clearCache = YES; break;
-            case BRFeatureRowVerifyTLS: [BRSettings setVerifyTLS:sw.on]; break;
-        }
+        if (row == BRFeatureRowLoadImages) [BRSettings setLoadImages:sw.on];
     } else if (section == BRSettingsSectionPrivacy) {
         switch (row) {
-            case BRPrivacyRowPrivate: [BRSettings setPrivateMode:sw.on]; break;
+            case BRPrivacyRowPrivate:
+                if (![BRSettings setPrivateMode:sw.on]) {
+                    // (the normal session's cookies could not be put aside: emptying the jar would risk them)
+                    [sw setOn:[BRSettings privateMode] animated:YES];
+                    [[[UIAlertView alloc] initWithTitle:nil message:L(@"Private browsing could not be turned on: there is no room to put the cookies of normal browsing aside. Free up some space and try again.")
+                                               delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
+                }
+                break;
             case BRPrivacyRowAdBlock: [BRSettings setAdBlockEnabled:sw.on]; break;
             case BRPrivacyRowThirdPartyCookies: [BRSettings setBlockThirdPartyCookies:sw.on]; break;
             case BRPrivacyRowDoNotTrack: [BRSettings setDoNotTrack:sw.on]; break;
             case BRPrivacyRowCookieBanners: [BRSettings setHideCookieBanners:sw.on]; clearCache = YES; break;
+            case BRPrivacyRowSearchSuggestions: [BRSettings setSearchSuggestions:sw.on]; break;
+        }
+    } else if (section == BRSettingsSectionAdvanced) {
+        switch (row) {
+            case BRAdvancedRowVerifyTLS:
+                if (sw.on) {
+                    [BRSettings setVerifyTLS:YES];
+                } else {
+                    // switching it off is one tap away from browsing without TLS that means anything: it needs a yes
+                    [sw setOn:YES animated:YES];
+                    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Turn off certificate verification?")
+                                                                    message:L(@"Secure pages could then come from anyone between you and the site (for example on a public Wi-Fi), who can read and change them, passwords included. Turn it back on as soon as you can.")
+                                                                   delegate:self cancelButtonTitle:L(@"Cancel") otherButtonTitles:L(@"Turn Off"), nil];
+                    alert.tag = BRAlertVerifyTLSOff;
+                    [alert show];
+                }
+                break;
+            case BRAdvancedRowCSSFix: [BRSettings setCSSFixEnabled:sw.on]; clearCache = YES; break;
+            case BRAdvancedRowJSFix: [BRSettings setJSFixEnabled:sw.on]; clearCache = YES; break;
+            case BRAdvancedRowTranspile: [BRSettings setTranspileEnabled:sw.on]; clearCache = YES; break;
         }
     }
     // cached bodies were rewritten with the old settings
     if (clearCache) [[NSURLCache sharedURLCache] removeAllCachedResponses];
+}
+
+- (void)openBundledPage:(NSString *)name
+{
+    NSURL *page = [[NSBundle mainBundle] URLForResource:name withExtension:@"html"];
+    if (!page) return;
+    if ([BRTheme shared].isDark) page = [NSURL URLWithString:[page.absoluteString stringByAppendingString:@"?dark"]];
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (page) [[NSNotificationCenter defaultCenter] postNotificationName:@"BROpenURLNotification" object:nil userInfo:@{ @"url": page }];
+    }];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
@@ -312,25 +404,15 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         else [sheet showInView:self.view];
         return;
     }
-    if (indexPath.section == BRSettingsSectionInfo && indexPath.row == 4) {
-        NSURL *help = [[NSBundle mainBundle] URLForResource:@"help" withExtension:@"html"];
-        if ([BRTheme shared].isDark && help) help = [NSURL URLWithString:[help.absoluteString stringByAppendingString:@"?dark"]];
-        [self dismissViewControllerAnimated:YES completion:^{
-            if (help) [[NSNotificationCenter defaultCenter] postNotificationName:@"BROpenURLNotification" object:nil userInfo:@{ @"url": help }];
-        }];
+    if (indexPath.section == BRSettingsSectionInfo) {
+        if (indexPath.row == BRInfoRowHelp) [self openBundledPage:@"help"];
+        else if (indexPath.row == BRInfoRowLicenses) [self openBundledPage:@"licenses"];
         return;
     }
     if (indexPath.section != BRSettingsSectionData) return;
-    if (indexPath.row == 3) {
-        // back to the defaults (tabs, bookmarks and history stay)
-        [BRSettings setPrivateMode:NO];
-        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        for (NSString *key in @[@"BRAdBlock", @"BRCSSFix", @"BRJSFix", @"BRTranspile", @"BRUserAgentMode", @"BRDarkTheme", @"BRSearchEngine", @"BRTextSizePercent", @"BRDoNotTrack",
-                                @"BRBlockThirdPartyCookies", @"BRLoadImages", @"BRHideCookieBanners", @"BRPagesDark", @"BRUserAgentHosts", @"BRAdBlockHosts",
-                                @"BRHomePage", @"BRCustomSearch", @"BRVerifyTLS"]) {
-            [d removeObjectForKey:key];
-        }
-        [d synchronize];
+    if (indexPath.row == BRDataRowResetSettings) {
+        // back to the defaults (tabs, bookmarks, history and passwords stay; see BRSettings resetAll)
+        [BRSettings resetAll];
         [[BRTheme shared] setDark:NO];
         [[BRTheme shared] applyToNavigationBar:self.navigationController.navigationBar];
         [[BRTheme shared] applyToTableView:self.tableView];
@@ -341,18 +423,23 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
         [self.tableView reloadData];
         return;
     }
-    if (indexPath.row == 0) {
+    if (indexPath.row == BRDataRowClearCache) {
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
         NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
-        NSString *transpiled = [caches stringByAppendingPathComponent:@"transpiled"];
-        [[NSFileManager defaultManager] removeItemAtPath:transpiled error:NULL];
+        // lowered scripts, and the page inputs a debugging switch may have copied (they hold page data)
+        for (NSString *dir in @[@"transpiled", @"rewrite-inputs"]) {
+            [[NSFileManager defaultManager] removeItemAtPath:[caches stringByAppendingPathComponent:dir] error:NULL];
+        }
+        [BRCSSRewriter forgetCachedResults];   // (their copies in memory too)
         [[BRJSEngine shared] resetContext];
         [[BRJSEngine transpiler] resetContext];
         [[BRJSEngine transpiler2] resetContext];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cache cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
-    } else if (indexPath.row == 1) {
-        NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
-        for (NSHTTPCookie *c in [jar.cookies copy]) [jar deleteCookie:c];
+    } else if (indexPath.row == BRDataRowClearCookies) {
+        // (with those waiting for the end of private browsing; and the cache is keyed by address only, so it would
+        // still serve the pages fetched while logged in)
+        [BRSettings clearAllCookies];
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"Cookies cleared.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
     } else {
         [BRURLProtocol forgetCredentials];
@@ -369,7 +456,13 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
 {
-    if (alertView.tag != 500 || buttonIndex == alertView.cancelButtonIndex) return;
+    if (buttonIndex == alertView.cancelButtonIndex) return;
+    if (alertView.tag == BRAlertVerifyTLSOff) {
+        [BRSettings setVerifyTLS:NO];
+        [self.tableView reloadData];
+        return;
+    }
+    if (alertView.tag != BRAlertCustomSearch) return;
     NSString *t = [[alertView textFieldAtIndex:0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if ([t rangeOfString:@"%s"].location == NSNotFound) {
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"The address must contain %s.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
@@ -399,7 +492,7 @@ static NSInteger BRTag(NSInteger section, NSInteger row) { return section * 100 
             field.keyboardType = UIKeyboardTypeURL;
             field.autocorrectionType = UITextAutocorrectionTypeNo;
             field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-            alert.tag = 500;
+            alert.tag = BRAlertCustomSearch;
             [alert show];
             return;
         }

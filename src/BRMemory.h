@@ -42,7 +42,7 @@ extern NSString * const BRMemoryGraphicsNotification;
 + (NSString *)webKitReport;
 
 // Main thread: the pages' objects by kind, the most frequent first, and the protected ones (walks the whole heap:
-// for diagnosis only, browser:mem?types=1).
+// for diagnosis only, surfari:mem?key=<debug key>&types=1).
 + (NSString *)webKitTypesReport;
 
 // Frees what can be freed without losing the page (both script engines, page garbage, WebKit's memory cache and free

@@ -4,7 +4,9 @@
 @interface BRBrowserViewController : UIViewController
 
 - (void)loadURL:(NSURL *)url;
-@property (nonatomic) BOOL skipRestore;   // set before the view loads when the app was launched with a URL to open
+// Set before the view loads when the app was launched with a URL to open, and for a safe start after repeated crashes
+// (the app delegate then loads the bundled start page itself): the tabs are kept, the current one is not loaded.
+@property (nonatomic) BOOL skipRestore;
 - (void)goHome;
 - (void)navigateToTypedText:(NSString *)text;        // what the address bar does with typed text
 - (NSString *)evaluateJavaScript:(NSString *)code;   // in the current page (debugging over SSH)

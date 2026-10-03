@@ -170,8 +170,8 @@ delete window.AbortController; delete window.AbortSignal;
         w1.close(); w2.close();
     } catch (e) { wsInfo = 'threw ' + e; }
     check('WebSocket wrapper', wsOk, wsInfo);
-    // a proxy address that fails before opening: the browser's own socket is tried with the real URL, and only its
-    // failure reaches the page (one error, one close)
+    // a relay address that fails before opening: no second try over the engine's own socket (an attacker who made the
+    // relay fail would get the old TLS), the page gets one error and one close
     start();
     window.__brTestWsProxy = function () { return 'ws://127.0.0.1:1/proxy'; };
     var ev = [], w3 = new WebSocket('wss://127.0.0.1:2/real');
@@ -179,7 +179,7 @@ delete window.AbortController; delete window.AbortSignal;
     w3.onerror = function (e) { ev.push('error' + (e.target === w3)); };
     w3.addEventListener('close', function (e) {
         ev.push('close' + e.code);
-        check('WebSocket falls back to the real URL, one error and close', ev.join(' ') === 'errortrue close1006' && w3.readyState === 3 && w3.__ws.url.indexOf('127.0.0.1:2/real') >= 0 && w3.url === 'wss://127.0.0.1:2/real',
+        check('WebSocket relay failing before open: no second try, one error and close', ev.join(' ') === 'errortrue close1006' && w3.readyState === 3 && w3.__ws.url.indexOf('127.0.0.1:1/proxy') >= 0 && w3.url === 'wss://127.0.0.1:2/real',
             ev.join(' ') + ' ' + w3.readyState + ' ' + w3.__ws.url);
         end();
     });

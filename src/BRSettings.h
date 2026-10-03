@@ -3,8 +3,18 @@
 // User preferences (NSUserDefaults) and a few fixed URLs.
 @interface BRSettings : NSObject
 
+// Run once at launch, before anything reads the defaults (+initialize runs it too, so the first use of the class does
+// it at the latest): forgets developer switches a new build must not inherit, and puts the normal cookie jar back when
+// private browsing ended without its cleanup (a crash, a damaged preferences file).
++ (void)prepareAtLaunch;
+// "Reset settings": every preference of the app back to its default; tabs, bookmarks, history and passwords stay
++ (void)resetAll;
+// "Clear cookies": the jar and every copy put aside for private browsing (in private browsing the normal session's
+// cookies waiting for its end, so it ends with an empty jar)
++ (void)clearAllCookies;
+
 + (BOOL)verifyTLS;                       // default YES
-+ (void)setVerifyTLS:(BOOL)verify;
++ (void)setVerifyTLS:(BOOL)verify;       // a change also drops TLS sessions and kept-alive connections
 + (BOOL)adBlockEnabled;                  // default YES
 + (void)setAdBlockEnabled:(BOOL)enabled;
 + (BOOL)adBlockDisabledForHost:(NSString *)host;        // per-site exception ("allow ads on this site")
@@ -26,7 +36,7 @@
 + (void)setUserAgentMode:(NSInteger)mode forHost:(NSString *)host;   // -1 removes the override
 + (NSString *)userAgentOverrideForURL:(NSURL *)url;                  // nil when the engine's own identity applies
 // a site that closed the app for lack of memory (or sent a script too big for it) gets the phone version (mode 3) for
-// a month; YES when the host was not noted yet
+// a month; YES when the host was not noted yet (never in private browsing, which adds no site to the list)
 + (BOOL)noteHostTooHeavy:(NSString *)host;
 + (BOOL)lighterVersionForHost:(NSString *)host;
 
@@ -44,9 +54,15 @@
 + (NSInteger)textSizePercent;            // 100 = the page's own size
 + (void)setTextSizePercent:(NSInteger)percent;
 
-// Private browsing: no history, no cache writes, cookies restored to the state before it was switched on
+// Private browsing: no history, no cache writes, an empty cookie jar of its own; the normal session's cookies come
+// back when it is switched off. Per-site choices made meanwhile (ads, identity) are kept in memory only. A change also
+// drops TLS sessions, kept-alive connections and Basic auth logins. NO when private browsing could not start: the
+// normal cookies could not be put aside on disk (no room), and nothing changed.
 + (BOOL)privateMode;
-+ (void)setPrivateMode:(BOOL)enabled;
++ (BOOL)setPrivateMode:(BOOL)enabled;
+
++ (BOOL)searchSuggestions;               // default YES: address bar text goes to the search engine while typing
++ (void)setSearchSuggestions:(BOOL)on;
 
 + (BOOL)doNotTrack;                      // default NO: sends DNT: 1 and Sec-GPC: 1
 + (void)setDoNotTrack:(BOOL)enabled;

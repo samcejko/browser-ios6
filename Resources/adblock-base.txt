@@ -1,4 +1,4 @@
-# Built-in ad and tracker domains (always bundled; the larger list in adblock.txt is fetched at build time).
+# Built-in ad and tracker domains (the project's own, MIT; always bundled). The larger list, adblock-oisd.txt (OISD small, GPL-3.0), is a separate data file fetched at build time.
 doubleclick.net
 googlesyndication.com
 googleadservices.com

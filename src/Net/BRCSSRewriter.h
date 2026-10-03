@@ -27,12 +27,15 @@ typedef void (^BRRewriteCompletion)(NSData *output, NSString *charset, BOOL keep
 - (void)rewriteData:(NSData *)data kind:(NSString *)kind charset:(NSString *)charset pageURL:(NSURL *)pageURL
           sourceURL:(NSURL *)sourceURL mainFrame:(BOOL)mainFrame completion:(BRRewriteCompletion)completion;
 + (void)pruneTranspiledCache;   // keeps Caches/transpiled under its size limit (call off the main thread)
+// The results kept in memory (lowered scripts, rewritten styles) go, as when Settings > Clear cache deletes
+// Caches/transpiled. Any thread.
++ (void)forgetCachedResults;
 // Checksum of the rewriters (cssfix.js, jsfix.js): stored rewritten bodies of another version are not used. Any thread.
 + (NSString *)rewriteTag;
 // Work queued so far is dropped (the originals go back): the page load was stopped for lack of memory. Any thread.
 + (void)cancelPendingWork;
 + (NSString *)rewriterTag;     // checksum of jsfix.js and cssfix.js (the HTTP cache keeps rewritten bodies: one per tag)
-// Debugging (browser:jsfixtest): lowers the file params[@"input"] on a fresh transpiler context (jsfix.js from
+// Debugging (surfari:jsfixtest?key=...): lowers the file params[@"input"] on a fresh transpiler context (jsfix.js from
 // params[@"jsfix"] when given, options params[@"opts"]), sampling the resident size every 50 ms; logs time, sizes,
 // the peak and what stays after GC and after the context is gone, and writes the report to tmp/eval.txt.
 + (void)runTranspileTest:(NSDictionary *)params;

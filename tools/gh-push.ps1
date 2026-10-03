@@ -1,12 +1,20 @@
 # Pushes the working tree to GitHub through the REST API (no local git needed).
-# Usage: .\tools\gh-push.ps1 [-Repo owner/name] [-Token ghp_xxx] -Message "commit message"
-# Repo and token default to tools/local.json ({"repo": "...", "token": "..."}).
+# Usage: .\tools\gh-push.ps1 [-Repo owner/name] [-Token ghp_xxx] -Message "commit message" [-Tag v1.0.0]
+#        [-AllowOldHistory]
+# Repo and token default to tools/local.json (see tools/local.example.json). -Tag also puts a tag on the pushed commit
+# (the head when nothing changed): a tag v<version> makes the workflow publish a GitHub Release.
+# What .gitignore ignores is not pushed (tools/local.json never is), and files of the remote branch that are gone here
+# or ignored now are deleted there: the remote tree is the local one. A new empty repository gets a first commit that
+# holds the whole tree. Nothing is uploaded while a file holds what looks like a GitHub token, and a repository that
+# holds the private pre-1.0 history is never tagged or pushed to while public (see docs/DEVELOPMENT.md, Releasing).
 param(
     [string]$Repo = '',
     [string]$Token = $env:GH_TOKEN,
     [string]$Branch = '',
     [string]$Message = 'Update',
-    [string]$Root = ''
+    [string]$Root = '',
+    [string]$Tag = '',
+    [switch]$AllowOldHistory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +33,7 @@ $Headers = @{
     Authorization          = "Bearer $Token"
     Accept                 = 'application/vnd.github+json'
     'X-GitHub-Api-Version' = '2022-11-28'
-    'User-Agent'           = 'browser-ios6-push'
+    'User-Agent'           = 'surfari-push'
 }
 $Api = "https://api.github.com/repos/$Repo"
 
@@ -50,12 +58,93 @@ function Invoke-GH {
     }
 }
 
-function Test-Ignored([string]$rel) {
-    $r = $rel -replace '\\', '/'
-    if ($r -like '.theos/*' -or $r -like 'obj/*' -or $r -like 'packages/*' -or $r -like 'vendor/mbedtls/*' -or $r -like 'vendor/woff2/*' -or $r -like 'vendor/brotli/*' -or $r -like 'vendor/libwebp/*' -or $r -like '.git/*') { return $true }
-    if ($r -like 'Resources/Icon*.png' -or $r -like 'Resources/Default*.png' -or $r -eq 'Resources/cacert.pem' -or $r -eq 'Resources/adblock.txt' -or $r -like 'Resources/js/*' -or $r -like 'tools/babel-test/*') { return $true }
-    if ($r -like '*.ipa' -or $r -like '*.deb' -or $r -like '*.DS_Store' -or $r -eq 'tools/local.json' -or $r -like '*.log' -or $r -like 'saved/*') { return $true }
+# --- What is pushed: the rules of .gitignore -------------------------------------------------------------------------
+# (the glob patterns git uses: * and ? within a name, ** across directories, [...] classes, a trailing / for
+# directories only, a / at the start or inside anchoring the pattern to the root, ! taking a path back in; a path is
+# ignored when it or a directory above it is)
+function ConvertTo-IgnoreRule([string]$Line) {
+    $p = $Line.Trim()
+    if (-not $p -or $p.StartsWith('#')) { return $null }
+    $negate = $p.StartsWith('!')
+    if ($negate) { $p = $p.Substring(1) }
+    $dirOnly = $p.EndsWith('/')
+    $p = $p.TrimEnd('/')
+    $anchored = $p.Contains('/')
+    $p = $p.TrimStart('/')
+    if (-not $p) { return $null }
+    $sb = New-Object Text.StringBuilder
+    $i = 0
+    while ($i -lt $p.Length) {
+        $c = [string]$p[$i]
+        if ($c -eq '*' -and $i + 1 -lt $p.Length -and [string]$p[$i + 1] -eq '*') {
+            # '**/' is any number of directories (none too), any other '**' anything
+            if ($i + 2 -lt $p.Length -and [string]$p[$i + 2] -eq '/') { [void]$sb.Append('(?:.*/)?'); $i += 3; continue }
+            [void]$sb.Append('.*'); $i += 2; continue
+        }
+        if ($c -eq '*') { [void]$sb.Append('[^/]*') }
+        elseif ($c -eq '?') { [void]$sb.Append('[^/]') }
+        elseif ($c -eq '[' -and $p.IndexOf(']', $i + 1) -gt $i + 1) {
+            $end = $p.IndexOf(']', $i + 1)
+            $class = $p.Substring($i + 1, $end - $i - 1)
+            if ($class.StartsWith('!')) { $class = '^' + $class.Substring(1) }
+            [void]$sb.Append('[' + $class.Replace('\', '\\') + ']')
+            $i = $end
+        }
+        elseif ($c -eq '\' -and $i + 1 -lt $p.Length) { $i++; [void]$sb.Append([Regex]::Escape([string]$p[$i])) }
+        else { [void]$sb.Append([Regex]::Escape($c)) }
+        $i++
+    }
+    $prefix = if ($anchored) { '^' } else { '(?:^|/)' }
+    $regex = New-Object Text.RegularExpressions.Regex -ArgumentList ($prefix + $sb.ToString() + '$'), ([Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    return [pscustomobject]@{ Regex = $regex; Negate = $negate; DirOnly = $dirOnly }
+}
+
+$rootFull = (Resolve-Path $Root).Path
+$IgnoreRules = New-Object System.Collections.ArrayList
+$gitignore = Join-Path $rootFull '.gitignore'
+if (Test-Path $gitignore) {
+    foreach ($line in [IO.File]::ReadAllLines($gitignore)) {
+        $rule = ConvertTo-IgnoreRule $line
+        if ($rule) { [void]$IgnoreRules.Add($rule) }
+    }
+}
+Write-Host "$($IgnoreRules.Count) ignore rules from .gitignore"
+
+function Test-OneIgnored([string]$Path, [bool]$IsDir) {
+    $ignored = $false
+    foreach ($rule in $IgnoreRules) {
+        if ($rule.DirOnly -and -not $IsDir) { continue }
+        if ($rule.Regex.IsMatch($Path)) { $ignored = -not $rule.Negate }
+    }
+    return $ignored
+}
+
+function Test-Ignored([string]$Rel, [bool]$IsDir = $false) {
+    $r = ($Rel -replace '\\', '/').Trim('/')
+    # (the local settings and copies of them hold the token, whatever .gitignore says)
+    if ($r -match '^tools/local[^/]*\.json' -and $r -ne 'tools/local.example.json') { return $true }
+    if ($r -eq '.git' -or $r.StartsWith('.git/')) { return $true }
+    $parts = $r.Split('/')
+    $path = ''
+    for ($n = 0; $n -lt $parts.Length; $n++) {
+        if ($n -eq 0) { $path = $parts[0] } else { $path = $path + '/' + $parts[$n] }
+        $isDirHere = ($n -lt $parts.Length - 1) -or $IsDir
+        if (Test-OneIgnored $path $isDirHere) { return $true }
+    }
     return $false
+}
+
+# the files to push (ignored directories are not entered at all: packages/ and tools/babel-test/ are large)
+$LocalFiles = New-Object System.Collections.ArrayList
+function Add-LocalFiles([string]$Dir, [string]$RelDir) {
+    foreach ($item in Get-ChildItem -LiteralPath $Dir -Force) {
+        $rel = if ($RelDir) { "$RelDir/$($item.Name)" } else { $item.Name }
+        if ($item.PSIsContainer) {
+            if (-not (Test-Ignored $rel $true)) { Add-LocalFiles $item.FullName $rel }
+        } elseif (-not (Test-Ignored $rel $false)) {
+            [void]$LocalFiles.Add([pscustomobject]@{ Rel = $rel; Full = $item.FullName })
+        }
+    }
 }
 
 function Get-GitBlobSha([byte[]]$bytes) {
@@ -67,15 +156,42 @@ function Get-GitBlobSha([byte[]]$bytes) {
     return ([BitConverter]::ToString($sha1.ComputeHash($all)) -replace '-', '').ToLower()
 }
 
-# 0. Default branch when none was given
+# 0. The repository: its default branch when none was given, and whether it holds the private history
+$repoInfo = Invoke-GH GET ""
 if (-not $Branch) {
-    $repoInfo = Invoke-GH GET ""
     $Branch = $repoInfo.default_branch
     if (-not $Branch) { $Branch = 'main' }
     Write-Host "Using branch '$Branch'"
 }
 
-# 1. Current head (initialise an empty repository through the contents API if needed)
+# Surfari's public repository starts at 1.0.0 with a history of its own: the private repository it was developed in
+# before holds commits (with third-party pages and site bundles saved for tests) that must never become public. Two
+# of those commits tell that history apart, also after a rename of that repository. A release tag, or a push into a
+# public repository, is refused while they are there.
+$OldHistoryCommits = @('4d762e5', '5b5655b23e8a7aa0c186d146da32eda01aee15fc')
+function Test-RemoteCommit([string]$Sha) {
+    try {
+        Invoke-GH GET "/commits/$Sha" | Out-Null
+        return $true
+    } catch {
+        $status = 0
+        try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+        # (404/422: no such commit; 409: the repository is empty)
+        if ($status -eq 404 -or $status -eq 409 -or $status -eq 422) { return $false }
+        throw
+    }
+}
+if (($Tag -or $repoInfo.private -ne $true) -and -not $AllowOldHistory) {
+    foreach ($c in $OldHistoryCommits) {
+        if (Test-RemoteCommit $c) {
+            $why = if ($Tag) { "a release tag ($Tag)" } else { 'a push into this public repository' }
+            throw "$Repo holds the private pre-1.0 history (commit $c): $why would publish it. Push into the new, empty repository instead (docs/DEVELOPMENT.md, Releasing); -AllowOldHistory overrides this for a test in a private repository."
+        }
+    }
+}
+
+# 1. Current head. A new empty repository has none (it is filled in step 2).
+$fresh = $false
 $headSha = $null
 try {
     $ref = Invoke-GH GET "/git/ref/heads/$Branch"
@@ -84,55 +200,95 @@ try {
     $status = 0
     try { $status = [int]$_.Exception.Response.StatusCode } catch {}
     if ($status -eq 409) {
-        Write-Host "Repository is empty; creating the initial commit via the contents API"
-        $readme = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("# browser-ios6`n"))
-        Invoke-GH PUT "/contents/README.md" @{ message = 'Initial commit'; content = $readme; branch = $Branch } | Out-Null
+        Write-Host "Repository is empty; the first commit will hold the whole tree"
+        $fresh = $true
     } elseif ($status -eq 404) {
         Write-Host "Branch '$Branch' does not exist; creating it from the default branch"
         $def = (Invoke-GH GET "").default_branch
         $dref = Invoke-GH GET "/git/ref/heads/$def"
         Invoke-GH POST "/git/refs" @{ ref = "refs/heads/$Branch"; sha = $dref.object.sha } | Out-Null
+        $ref = Invoke-GH GET "/git/ref/heads/$Branch"
+        $headSha = $ref.object.sha
     } else {
         throw
     }
-    $ref = Invoke-GH GET "/git/ref/heads/$Branch"
-    $headSha = $ref.object.sha
 }
-$commit = Invoke-GH GET "/git/commits/$headSha"
-$baseTree = $commit.tree.sha
 $remote = @{}
-$tree = Invoke-GH GET "/git/trees/$baseTree`?recursive=1"
-foreach ($e in $tree.tree) { if ($e.type -eq 'blob') { $remote[$e.path] = $e.sha } }
-Write-Host "Head $($headSha.Substring(0,7)), $($remote.Count) remote files"
-
-# 2. Local files
-$rootFull = (Resolve-Path $Root).Path
-$entries = New-Object System.Collections.ArrayList
-$seen = @{}
-$uploaded = 0
-Get-ChildItem -Path $rootFull -Recurse -File -Force | ForEach-Object {
-    $rel = $_.FullName.Substring($rootFull.Length).TrimStart('\', '/') -replace '\\', '/'
-    if (Test-Ignored $rel) { return }
-    $bytes = [IO.File]::ReadAllBytes($_.FullName)
-    $sha = Get-GitBlobSha $bytes
-    $seen[$rel] = $true
-    if ($remote.ContainsKey($rel) -and $remote[$rel] -eq $sha) { return }
-    $blob = Invoke-GH POST "/git/blobs" @{ content = [Convert]::ToBase64String($bytes); encoding = 'base64' }
-    if ($blob.sha -ne $sha) { Write-Warning "sha mismatch for $rel (local $sha, remote $($blob.sha))" }
-    [void]$entries.Add(@{ path = $rel; mode = '100644'; type = 'blob'; sha = $blob.sha })
-    $script:uploaded++
-    Write-Host "  + $rel"
+$baseTree = $null
+if (-not $fresh) {
+    $commit = Invoke-GH GET "/git/commits/$headSha"
+    $baseTree = $commit.tree.sha
+    $tree = Invoke-GH GET "/git/trees/$baseTree`?recursive=1"
+    if ($tree.truncated) { throw "The remote tree listing is truncated; cannot tell which files to delete" }
+    foreach ($e in $tree.tree) { if ($e.type -eq 'blob') { $remote[$e.path] = $e.sha } }
+    Write-Host "Head $($headSha.Substring(0,7)), $($remote.Count) remote files"
 }
+
+# 2. Local files: what changed. Before anything is uploaded, every changed file is searched for GitHub tokens (the
+# classic and fine-grained formats, and the configured token itself): a stray copy of the settings or a saved log
+# must not reach the repository, least of all in the first push, which publishes the whole tree.
+Add-LocalFiles $rootFull ''
+$TokenPattern = New-Object Text.RegularExpressions.Regex '(?:gh[pousr])_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}'
+$Latin1 = [Text.Encoding]::GetEncoding(28591)
+$changed = New-Object System.Collections.ArrayList
+$leaks = New-Object System.Collections.ArrayList
+$seen = @{}
+foreach ($f in $LocalFiles) {
+    $bytes = [IO.File]::ReadAllBytes($f.Full)
+    $sha = Get-GitBlobSha $bytes
+    $seen[$f.Rel] = $true
+    if ($remote.ContainsKey($f.Rel) -and $remote[$f.Rel] -eq $sha) { continue }
+    $text = $Latin1.GetString($bytes)
+    if ($TokenPattern.IsMatch($text) -or $text.Contains($Token)) { [void]$leaks.Add($f.Rel) }
+    [void]$changed.Add([pscustomobject]@{ Rel = $f.Rel; Full = $f.Full; Sha = $sha })
+}
+if ($leaks.Count -gt 0) {
+    throw ("Nothing pushed: these files hold what looks like a GitHub token. Remove it, or add the files to .gitignore:`n  " + ($leaks -join "`n  "))
+}
+if ($fresh) {
+    if ($changed.Count -eq 0) { throw "Nothing to push into the empty repository" }
+    # The Git data API refuses to work in an empty repository: a placeholder file through the contents API makes it
+    # usable, and the first real commit below has no parent, so the placeholder never becomes part of the history.
+    $placeholder = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("`n"))
+    Invoke-GH PUT "/contents/.first-push" @{ message = 'Placeholder for the first push'; content = $placeholder; branch = $Branch } | Out-Null
+}
+$entries = New-Object System.Collections.ArrayList
+foreach ($f in $changed) {
+    $bytes = [IO.File]::ReadAllBytes($f.Full)
+    $blob = Invoke-GH POST "/git/blobs" @{ content = [Convert]::ToBase64String($bytes); encoding = 'base64' }
+    if ($blob.sha -ne $f.Sha) { Write-Warning "sha mismatch for $($f.Rel) (local $($f.Sha), remote $($blob.sha))" }
+    [void]$entries.Add(@{ path = $f.Rel; mode = '100644'; type = 'blob'; sha = $blob.sha })
+    Write-Host "  + $($f.Rel)"
+}
+# (deleted here, or ignored now: a stale copy of an ignored directory goes as well)
 foreach ($p in $remote.Keys) {
-    if (-not $seen.ContainsKey($p) -and -not (Test-Ignored $p)) {
+    if (-not $seen.ContainsKey($p)) {
         [void]$entries.Add(@{ path = $p; mode = '100644'; type = 'blob'; sha = $null })
-        Write-Host "  - $p"
+        if (Test-Ignored $p $false) { Write-Host "  - $p (ignored)" } else { Write-Host "  - $p" }
     }
 }
-if ($entries.Count -eq 0) { Write-Host "Nothing to push."; exit 0 }
+if ($entries.Count -eq 0 -and $fresh) { throw "Nothing to push into the empty repository" }
+if ($entries.Count -eq 0) {
+    Write-Host "Nothing to push."
+    $tagSha = $headSha
+} else {
+    # 3. Tree, commit, ref
+    if ($fresh) {
+        $newTree = Invoke-GH POST "/git/trees" @{ tree = $entries.ToArray() }
+        $newCommit = Invoke-GH POST "/git/commits" @{ message = $Message; tree = $newTree.sha; parents = @() }
+        # (the placeholder commit is left behind, unreferenced)
+        Invoke-GH PATCH "/git/refs/heads/$Branch" @{ sha = $newCommit.sha; force = $true } | Out-Null
+    } else {
+        $newTree = Invoke-GH POST "/git/trees" @{ base_tree = $baseTree; tree = $entries.ToArray() }
+        $newCommit = Invoke-GH POST "/git/commits" @{ message = $Message; tree = $newTree.sha; parents = @($headSha) }
+        Invoke-GH PATCH "/git/refs/heads/$Branch" @{ sha = $newCommit.sha; force = $false } | Out-Null
+    }
+    Write-Host "Pushed $($entries.Count) changes as $($newCommit.sha.Substring(0,7)): https://github.com/$Repo/commit/$($newCommit.sha)"
+    $tagSha = $newCommit.sha
+}
 
-# 3. Tree, commit, ref
-$newTree = Invoke-GH POST "/git/trees" @{ base_tree = $baseTree; tree = $entries.ToArray() }
-$newCommit = Invoke-GH POST "/git/commits" @{ message = $Message; tree = $newTree.sha; parents = @($headSha) }
-Invoke-GH PATCH "/git/refs/heads/$Branch" @{ sha = $newCommit.sha; force = $false } | Out-Null
-Write-Host "Pushed $($entries.Count) changes as $($newCommit.sha.Substring(0,7)): https://github.com/$Repo/commit/$($newCommit.sha)"
+# 4. Tag (a lightweight one; an existing tag is never moved)
+if ($Tag) {
+    Invoke-GH POST "/git/refs" @{ ref = "refs/tags/$Tag"; sha = $tagSha } | Out-Null
+    Write-Host "Tagged $($tagSha.Substring(0,7)) as $($Tag): https://github.com/$Repo/releases/tag/$Tag"
+}

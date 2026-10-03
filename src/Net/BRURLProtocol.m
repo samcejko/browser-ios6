@@ -10,8 +10,12 @@
 #import "BRCommon.h"
 #import "BRSettings.h"
 #import "BRMemory.h"
+#include <Security/SecRandom.h>
 
 static const NSUInteger BRMaxRewriteBody = 4 * 1024 * 1024;
+// What the page's own channels to the app take (shims-extra.js: the text of an inserted script, of an inserted style):
+// as much as a script file or a big style, not what a hostile page could pile up; more is answered 413.
+static const NSUInteger BRMaxLowerBody = 8 * 1024 * 1024, BRMaxCSSRunBody = 2 * 1024 * 1024;
 // (scripts: a site's whole application can be one file, mapy.com's is 4.5 MB; the rewriter waits for memory first)
 static const NSUInteger BRMaxScriptRewriteBody = 8 * 1024 * 1024;
 static const NSUInteger BRMaxFontRewriteBody = 8 * 1024 * 1024, BRMaxImageRewriteBody = 6 * 1024 * 1024;
@@ -158,6 +162,7 @@ static void BRProgressRequestFinished(NSURLRequest *request)
 static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLResponse.userInfo
 static NSString * const BRCacheMaxAgeKey = @"BRMaxAge";
 static NSString * const BRCacheRewriteTagKey = @"BRRewriteTag";   // the rewriters that made a stored text body
+static NSString * const BRCacheCredentialedKey = @"BRCredentialed";   // fetched with the user's cookies or login
 
 // a stored document, stylesheet or script was rewritten by the rewriters of another version: not used (a fixed
 // transpiler would otherwise not reach a script cached for a year)
@@ -406,6 +411,10 @@ static NSTimeInterval BRMaxAgeForResponse(NSDictionary *headers, BOOL hasSetCook
     BOOL hasValidator = BRHeader(headers, @"ETag") != nil || BRHeader(headers, @"Last-Modified") != nil;
     if ([cc rangeOfString:@"no-store"].location != NSNotFound) return -1;
     if ([vary isEqualToString:@"*"]) return -1;
+    // (an answer that differs by the user's cookies or login: the cache is keyed by URL alone, so a kept one would go to
+    // the next user of the iPad, or to a request made without them)
+    NSString *varyNames = [vary lowercaseString] ?: @"";
+    if ([varyNames rangeOfString:@"cookie"].location != NSNotFound || [varyNames rangeOfString:@"authorization"].location != NSNotFound) return -1;
     if ([cc rangeOfString:@"no-cache"].location != NSNotFound || [pragma rangeOfString:@"no-cache"].location != NSNotFound) {
         return hasValidator ? 0 : -1;
     }
@@ -455,6 +464,75 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
     return d;
 }
 
+// A request's body, at most `limit` bytes of it: nil with *tooBig set when there is more
+static NSData *BRReadBodyUpTo(NSURLRequest *request, NSUInteger limit, BOOL *tooBig)
+{
+    *tooBig = NO;
+    NSData *body = request.HTTPBody;
+    if (body) {
+        if (body.length <= limit) return body;
+        *tooBig = YES;
+        return nil;
+    }
+    NSInputStream *stream = request.HTTPBodyStream;
+    if (!stream) return nil;
+    NSMutableData *d = [NSMutableData data];
+    [stream open];
+    uint8_t buf[16384];
+    for (;;) {
+        NSInteger n = [stream read:buf maxLength:sizeof(buf)];
+        if (n <= 0) break;
+        if (d.length + (NSUInteger)n > limit) { *tooBig = YES; d = nil; break; }
+        [d appendBytes:buf length:(NSUInteger)n];
+    }
+    [stream close];
+    return d;
+}
+
+// a URL string without its fragment: how pages are named (the manifest's doc= against the request's main document)
+static NSString *BRWithoutFragment(NSString *s)
+{
+    NSRange hash = [s rangeOfString:@"#"];
+    return hash.location == NSNotFound ? s : [s substringToIndex:hash.location];
+}
+
+// "scheme://host:port" of a web address (http, https), nil for another: two addresses of one origin give the same
+static NSString *BRWebOrigin(NSURL *url)
+{
+    NSString *scheme = [url.scheme lowercaseString];
+    if (!url.host.length || !([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return nil;
+    return BRAuthKeyForURL(url);
+}
+
+// n bytes of the system's secure generator as lowercase hex; nil when it fails (never a weaker source instead)
+static NSData *BRRandomHex(size_t n)
+{
+    uint8_t *bytes = malloc(n);
+    char *hex = malloc(n * 2);
+    if (!bytes || !hex || SecRandomCopyBytes(kSecRandomDefault, n, bytes) != 0) {
+        free(bytes);
+        free(hex);
+        return nil;
+    }
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        hex[2 * i] = digits[bytes[i] >> 4];
+        hex[2 * i + 1] = digits[bytes[i] & 15];
+    }
+    memset(bytes, 0, n);
+    free(bytes);
+    return [NSData dataWithBytesNoCopy:hex length:n * 2 freeWhenDone:YES];
+}
+
+// A stored response that sets cookies (kept by versions before Set-Cookie was taken out of the cache): not served, the
+// session cookies of then would come back with it
+static BOOL BRCachedSetsCookies(NSCachedURLResponse *c)
+{
+    if (![c.response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
+    NSDictionary *f = [(NSHTTPURLResponse *)c.response allHeaderFields];
+    return BRHeader(f, @"Set-Cookie") != nil || BRHeader(f, @"Set-Cookie2") != nil;
+}
+
 @interface BRURLProtocol ()
 @property (nonatomic, strong) NSThread *clientThread;
 @property (nonatomic, strong) NSArray *clientModes;
@@ -482,8 +560,9 @@ static NSData *BRReadBodyStream(NSInputStream *stream)
 @property (nonatomic, strong) NSDictionary *sentHeaders;
 @property (nonatomic, strong) NSData *sentBody;
 @property (nonatomic) BOOL thirdParty;          // cookies are neither sent nor stored
+@property (nonatomic) BOOL credentialedEntry;   // the cache keeps an answer made with credentials, not for this request
 @property (nonatomic) BOOL authAttempted;       // the user was asked once for this request
-// (for the list of requests in flight: browser:requests)
+// (for the list of requests in flight: surfari:requests?key=...)
 @property (nonatomic) NSTimeInterval startedAt;
 @property (nonatomic) unsigned long long receivedBytes;
 @end
@@ -660,6 +739,14 @@ static BOOL BRIsFontDataURL(NSURL *url)
         return;
     }
 
+    // 0'. The media proxy's own address (see BRMediaProxy): the system's player loads from it, WebKit never. A page,
+    // frame or script of a page there would run on the proxy's origin and read what it relays.
+    if ([BRMediaProxy isProxyURL:url]) {
+        BRLog(@"A load of the media proxy's own address was refused");
+        [self deliverEmptyStatus:403];
+        return;
+    }
+
     // 0a. Our own resources (polyfill bundle) live on a reserved host name that never resolves; the polyfill bundle
     // is also answered on the page's own host (/__br_polyfills-<crc>.js, see BRCSSRewriter), and so are the big inline
     // scripts the rewriter set aside (/__br_inline-<name>.js: same origin, so the page's error reports stay whole)
@@ -691,24 +778,40 @@ static BOOL BRIsFontDataURL(NSURL *url)
     // waited 13-15 s, nothing loaded for 12 s). The load goes on here with what it found.
     if (isGET && policy != NSURLRequestReloadIgnoringLocalCacheData && policy != NSURLRequestReloadIgnoringLocalAndRemoteCacheData) {
         NSTimeInterval lookup0 = [NSDate timeIntervalSinceReferenceDate];
+        // (a request made without the user's cookies: a third party's while those are blocked, or one WebKit sends without
+        // credentials - withCredentials = false, credentials: 'omit')
+        BOOL anonymous = self.thirdParty || !request.HTTPShouldHandleCookies;
         OSAtomicIncrement32(&g_lookupsWaiting);
         dispatch_async(BRCacheQueue(), ^{
             NSCachedURLResponse *cached = nil;
+            BOOL credentialed = NO;
             @autoreleasepool {
                 cached = BRPendingStoreFor(request) ?: [[NSURLCache sharedURLCache] cachedResponseForRequest:request];
-                if (cached && (BRCachedRewriteIsStale(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data] ||
+                if (cached && (BRCachedRewriteIsStale(cached) || BRCachedSetsCookies(cached) || ![BRCSSRewriter lazyPartsPresentIn:cached.data] ||
                                (BRCachedIsHTML(cached) && ![BRCSSRewriter inlineScriptsPresentIn:cached.data]))) {
                     // (rewritten by other versions of the rewriters, or a lowered chunk whose factories kept for later, or a
-                    // document whose inline scripts set aside, are gone from the transpiler's cache: loaded again)
+                    // document whose inline scripts set aside, are gone from the transpiler's cache: loaded again; and one
+                    // kept with its Set-Cookie by an older version goes from the disk)
                     BRForgetPendingStore(request);
                     [[NSURLCache sharedURLCache] removeCachedResponseForRequest:request];
                     cached = nil;
+                }
+                // An answer fetched with the user's cookies or login is the user's: a request made without them neither
+                // gets it nor replaces it. (The cache is keyed by URL alone: another site's request would get the user's
+                // personal answer - readable to it when the server allows any origin - and blocking third-party cookies
+                // would not keep a third party from the cookies' result.)
+                if (cached && anonymous && [cached.userInfo[BRCacheCredentialedKey] boolValue]) {
+                    cached = nil;
+                    credentialed = YES;
                 }
             }
             OSAtomicDecrement32(&g_lookupsWaiting);
             NSTimeInterval lookup = [NSDate timeIntervalSinceReferenceDate] - lookup0;
             if (lookup > 1.0) BRLog(@"Cache lookup took %.1f s (%@): %@", lookup, cached ? @"hit" : @"miss", url.absoluteString.length > 120 ? [url.absoluteString substringToIndex:120] : url.absoluteString);
-            [self performOnClientThread:^{ [self continueLoadingWithCached:cached lookedUp:YES]; }];
+            [self performOnClientThread:^{
+                if (credentialed) self.credentialedEntry = YES;
+                [self continueLoadingWithCached:cached lookedUp:YES];
+            }];
         });
         return;
     }
@@ -756,7 +859,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
         if (etag.length) headers[@"If-None-Match"] = etag;
         if (lastModified.length) headers[@"If-Modified-Since"] = lastModified;
     }
-    NSString *stored = BRStoredAuthorization(BRAuthKeyForURL(url));
+    NSString *stored = [self mayUseStoredCredentials] ? BRStoredAuthorization(BRAuthKeyForURL(url)) : nil;
     if (stored && !BRHeader(headers, @"Authorization")) headers[@"Authorization"] = stored;
     NSData *body = request.HTTPBody ?: BRReadBodyStream(request.HTTPBodyStream);
 
@@ -795,11 +898,25 @@ static BOOL BRIsFontDataURL(NSURL *url)
     [r start];
 }
 
+// Basic credentials (stored ones, or asked for) go only with a request of the host's own pages that carries
+// credentials: never with one made without them (WebKit clears HTTPShouldHandleCookies for withCredentials = false
+// and credentials: 'omit'), nor with another site's (a server that answers Access-Control-Allow-Origin: * would hand
+// that site the protected answer).
+- (BOOL)mayUseStoredCredentials
+{
+    NSURLRequest *request = self.request;
+    if (!request.HTTPShouldHandleCookies) return NO;
+    NSURL *page = request.mainDocumentURL;
+    if (!page || [request.URL isEqual:page]) return YES;
+    NSString *host = [request.URL.host lowercaseString];
+    return host.length && [host isEqualToString:[page.host lowercaseString]];
+}
+
 // A 401 with a Basic challenge: ask the user (once per request) and repeat the request with the answer.
 // Runs on the request's worker thread, which waits for the dialog. Returns YES when the request was restarted.
 - (BOOL)handleAuthenticationChallenge:(NSString *)challenge
 {
-    if (self.authAttempted || !g_authHandler || !g_authPromptLock) return NO;
+    if (self.authAttempted || !g_authHandler || !g_authPromptLock || ![self mayUseStoredCredentials]) return NO;
     self.authAttempted = YES;
     NSURL *url = self.request.URL;
     NSString *key = BRAuthKeyForURL(url);
@@ -1211,6 +1328,9 @@ static BOOL BRIsFontDataURL(NSURL *url)
         }];
         return;
     }
+    // cut off by a closed or reset connection: shown, never cached (every store below and in finishRewrite goes by
+    // cacheBody)
+    if (self.httpRequest.bodyTruncated) self.cacheBody = nil;
     if (self.rewriteBuffer) {
         [self finishRewrite];
         return;
@@ -1229,8 +1349,10 @@ static BOOL BRIsFontDataURL(NSURL *url)
     self.done = YES;
     NSHTTPURLResponse *stored = (NSHTTPURLResponse *)cached.response;
     NSData *data = cached.data;
-    // (WebKit gets a response of its own, see storeHeaders)
+    // (WebKit gets a response of its own, see storeHeaders; never with cookies to set)
     NSMutableDictionary *f = [stored.allHeaderFields mutableCopy] ?: [NSMutableDictionary dictionary];
+    BRSetHeaderField(f, @"Set-Cookie", nil);
+    BRSetHeaderField(f, @"Set-Cookie2", nil);
     NSString *cachedType = [BRHeader(f, @"Content-Type") lowercaseString] ?: @"";
     if ([cachedType hasPrefix:@"text/html"] && (!self.request.mainDocumentURL || [self.request.URL isEqual:self.request.mainDocumentURL]))
         BRNotePageDocument(self.request.URL, data, data.length);
@@ -1267,10 +1389,18 @@ static BOOL BRIsFontDataURL(NSURL *url)
 {
     if (!headers || !data || !self.request.URL) return;
     if ([BRSettings privateMode]) return;   // private browsing leaves nothing on disk
-    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:[headers copy]];
+    if (self.credentialedEntry) return;     // (made without the credentials the kept one was made with: see startLoading)
+    // (cookies are the jar's alone: kept here, a session's cookies stayed on disk after logout or "Clear cookies", and a
+    // response served from the cache would set them again)
+    NSMutableDictionary *kept = [headers mutableCopy];
+    BRSetHeaderField(kept, @"Set-Cookie", nil);
+    BRSetHeaderField(kept, @"Set-Cookie2", nil);
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:kept];
     if (!response) return;
+    BOOL credentialed = BRHeader(self.sentHeaders, @"Cookie") != nil || BRHeader(self.sentHeaders, @"Authorization") != nil;
     NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
-                            BRCacheRewriteTagKey: self.fontBody ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag() };
+                            BRCacheRewriteTagKey: self.fontBody ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag(),
+                            BRCacheCredentialedKey: @(credentialed) };
     // (the body is not changed after this: the request lets go of it)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     BRStoreLater(c, self.request);   // (written once no lookup waits, see BRStoreLater)
@@ -1331,20 +1461,46 @@ static BOOL BRIsFontDataURL(NSURL *url)
     NSData *body = nil;
     NSString *type = @"text/javascript; charset=utf-8";
     NSString *cacheControl = @"max-age=31536000";
+    NSInteger status = 200;   // (another one answers with an empty body)
     if (([path hasPrefix:@"/polyfills"] || [path hasPrefix:@"/__br_polyfills"]) && [path hasSuffix:@".js"]) {
         body = [BRCSSRewriter polyfillBundle];
     } else if ([path isEqualToString:@"/worker-polyfills.js"]) {
         body = [BRCSSRewriter workerPolyfills];
     } else if ([path isEqualToString:@"/manifest"]) {
-        // :has() / @container entries collected for the page named in ?doc= (see BRCSSRewriter)
+        // :has() / @container entries collected for the requesting page (see BRCSSRewriter: kept under the request's main
+        // document). For that page's own origin only, or any page could read which pages were open lately, their
+        // stylesheets and their variables:
+        // - ?doc= names the main document or another address of its origin: after history.pushState the page's address
+        //   changes, the main document's does not (WebKit's first party for cookies), and the entries are kept under it;
+        // - the Origin WebKit puts on the shim's request (cross-origin; no page can set it) is the main document's, so a
+        //   frame of another origin that names the top page (document.referrer) gets 403 too. (A frame of the page's own
+        //   origin gets the page's entries, its own stylesheets' among them.)
         NSString *query = self.request.URL.query ?: @"";
         NSString *doc = nil, *since = nil;
         for (NSString *pair in [query componentsSeparatedByString:@"&"]) {
             if ([pair hasPrefix:@"doc="]) doc = [[pair substringFromIndex:4] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
             else if ([pair hasPrefix:@"since="]) since = [[pair substringFromIndex:6] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
         }
-        body = [[BRCSSRewriter shared] manifestJSONForPageURLString:doc ?: self.request.mainDocumentURL.absoluteString since:since];
+        NSURL *mainURL = self.request.mainDocumentURL;
+        NSString *page = mainURL.absoluteString.length ? BRWithoutFragment(mainURL.absoluteString) : nil;
+        NSString *mainOrigin = BRWebOrigin(mainURL), *origin = BRHeader(self.request.allHTTPHeaderFields, @"Origin");
+        BOOL docOK = page && doc && ([BRWithoutFragment(doc) isEqualToString:page] ||
+                                    (mainOrigin && [BRWebOrigin([NSURL URLWithString:doc]) isEqualToString:mainOrigin]));
+        BOOL originOK = !origin.length || !mainOrigin || [BRWebOrigin([NSURL URLWithString:origin]) isEqualToString:mainOrigin];
+        if (!docOK || !originOK) status = 403;
+        else body = [[BRCSSRewriter shared] manifestJSONForPageURLString:page since:since];
         type = @"application/json; charset=utf-8";
+        cacheControl = @"no-store";
+    } else if ([path isEqualToString:@"/random"]) {
+        // crypto.getRandomValues of workers (worker-shims.js: a synchronous request, the bytes pooled there): n bytes of
+        // the system's secure generator as lowercase hex. A worker has no other source but Math.random.
+        NSInteger n = 0;
+        for (NSString *pair in [(self.request.URL.query ?: @"") componentsSeparatedByString:@"&"])
+            if ([pair hasPrefix:@"n="]) n = [[pair substringFromIndex:2] integerValue];
+        BOOL fits = n >= 1 && n <= 65536;
+        body = fits ? BRRandomHex((size_t)n) : nil;
+        if (!body) status = fits ? 500 : 400;
+        type = @"text/plain";
         cacheControl = @"no-store";
     } else if ([path isEqualToString:@"/state"]) {
         // what the page shim cannot see itself: whether the page is drawn with accelerated compositing (without it iOS 6
@@ -1450,17 +1606,22 @@ static BOOL BRIsFontDataURL(NSURL *url)
         // it by the text; an empty body when it needs nothing, an error when it could not be lowered (the page tries itself).
         // Answered here, blocking: the page asks synchronously, and a synchronous request runs on the WebThread, whose
         // loop would otherwise time the request out after some 10 s (Discord's 5.5 MB lazy factory: NETWORK_ERR 101)
-        NSData *src = self.request.HTTPBody ?: BRReadBodyStream(self.request.HTTPBodyStream);
-        BOOL failed = NO;
-        body = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
-        if (!body && !failed) body = [NSData data];
+        BOOL tooBig = NO, failed = NO;
+        NSData *src = BRReadBodyUpTo(self.request, BRMaxLowerBody, &tooBig);
+        if (tooBig) status = 413;
+        else {
+            body = src.length ? [[BRCSSRewriter shared] loweredPageScript:src failed:&failed] : nil;
+            if (!body && !failed) body = [NSData data];
+        }
         type = @"text/plain; charset=utf-8";
         cacheControl = @"no-store";
     } else if ([path isEqualToString:@"/cssrun"]) {
         // a style a page's script inserted, rewritten by the app's rewriter (blocking, as /lower); an error status while
         // the rewriter is busy: the page does it itself
-        NSData *src = self.request.HTTPBody ?: BRReadBodyStream(self.request.HTTPBodyStream);
-        body = [[BRCSSRewriter shared] runtimeStyleResult:src];
+        BOOL tooBig = NO;
+        NSData *src = BRReadBodyUpTo(self.request, BRMaxCSSRunBody, &tooBig);
+        if (tooBig) status = 413;
+        else body = [[BRCSSRewriter shared] runtimeStyleResult:src];
         type = @"application/json; charset=utf-8";
         cacheControl = @"no-store";
     } else if ([path hasPrefix:@"/lazy/"]) {
@@ -1506,13 +1667,19 @@ static BOOL BRIsFontDataURL(NSURL *url)
             return;
         }
     }
-    [self deliverInternalBody:body type:type cacheControl:cacheControl];
+    [self deliverInternalBody:body type:type cacheControl:cacheControl status:status];
 }
 
-// an internal resource's answer (any thread): the body, or a failure when there is none
-- (void)deliverInternalBody:(NSData *)body type:(NSString *)type cacheControl:(NSString *)cacheControl
+// an internal resource's answer (any thread): the body, or a failure when there is none. A status other than 200 is a
+// refusal the page shim reads (an empty body): readable from the pages' own origins, as the answers are.
+- (void)deliverInternalBody:(NSData *)body type:(NSString *)type cacheControl:(NSString *)cacheControl status:(NSInteger)status
 {
     self.done = YES;
+    if (status != 200) {
+        body = [NSData data];
+        type = @"text/plain";
+        cacheControl = @"no-store";
+    }
     if (!body) {
         [self failWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist
                                             userInfo:@{ NSURLErrorFailingURLStringErrorKey: self.request.URL.absoluteString ?: @"" }]];
@@ -1520,11 +1687,23 @@ static BOOL BRIsFontDataURL(NSURL *url)
     }
     NSDictionary *fields = @{ @"Content-Type": type, @"Content-Length": [NSString stringWithFormat:@"%lu", (unsigned long)body.length],
                               @"Cache-Control": cacheControl, @"Access-Control-Allow-Origin": @"*" };
-    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:fields];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:fields];
     BOOL noStore = [cacheControl isEqualToString:@"no-store"];
     [self performOnClientThread:^{
         [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:noStore ? NSURLCacheStorageNotAllowed : NSURLCacheStorageAllowedInMemoryOnly];
         [self.client URLProtocol:self didLoadData:body];
+        [self.client URLProtocolDidFinishLoading:self];
+    }];
+}
+
+// A load that is refused outright: the status, no body, nothing for other origins or to be taken for another type
+- (void)deliverEmptyStatus:(NSInteger)status
+{
+    self.done = YES;
+    NSDictionary *fields = @{ @"Content-Type": @"text/plain", @"Content-Length": @"0", @"Cache-Control": @"no-store", @"X-Content-Type-Options": @"nosniff" };
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:fields];
+    [self performOnClientThread:^{
+        [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
         [self.client URLProtocolDidFinishLoading:self];
     }];
 }

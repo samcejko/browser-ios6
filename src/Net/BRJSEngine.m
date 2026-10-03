@@ -170,7 +170,7 @@ static JSVal BRAvailableMBCallback(JSCtx ctx, JSObj function, JSObj thisObject, 
 
 - (void)threadMain
 {
-    // (the name as the system knows it too, so the sampler finds the thread: browser:profile?thread=js)
+    // (the name as the system knows it too, so the sampler finds the thread: surfari:profile?key=...&thread=js)
     const char *threadName = _thread.name.UTF8String;
     if (threadName) pthread_setname_np(threadName);
     for (;;) {

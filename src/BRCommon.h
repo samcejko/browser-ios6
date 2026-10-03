@@ -7,7 +7,17 @@
 
 #define L(key) NSLocalizedString((key), nil)
 #define BRIsPad() (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
-#define BRLog(fmt, ...) NSLog((@"[Browser] " fmt), ##__VA_ARGS__)
+
+// Developer mode. The debug key is the trimmed content of Library/surfari-debug-key in the app's home (put there over
+// SSH): nil when the file is absent or holds fewer than 16 characters. Read again on every call (it is needed rarely).
+// FOUNDATION_EXPORT: C linkage for the Objective-C++ files that use BRLog too.
+FOUNDATION_EXPORT NSString *BRDebugKey(void);
+// YES when that file exists or the BRDebugLog default is set; decided once per run.
+FOUNDATION_EXPORT BOOL BRDebugEnabled(void);
+
+// The system log only on a developer's device: on iOS 6 any app can read it, and the lines carry addresses and titles
+// of the pages visited. The arguments are not even evaluated otherwise.
+#define BRLog(fmt, ...) do { if (BRDebugEnabled()) NSLog((@"[Surfari] " fmt), ##__VA_ARGS__); } while (0)
 
 extern NSString * const BRErrorDomain;
 

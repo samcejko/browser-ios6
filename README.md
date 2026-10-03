@@ -1,188 +1,111 @@
-# Browser for iOS 6
+# Surfari
 
-Universal (iPhone + iPad) web browser for **jailbroken iOS 6.x** devices (armv7, e.g. iPad 2).
+**A modern-web browser for jailbroken iOS 6.**
 
-The rendering engine is the system WebKit (UIWebView). Everything the 2012 engine cannot do is done by
-the app around it:
+iOS 6's Safari can no longer open most of today's websites: it cannot make the secure connections they require, and
+its 2012 engine does not understand their CSS and JavaScript. Surfari keeps the iOS 6 engine for drawing pages and
+does everything around it that the old system cannot:
 
-- **Networking**: every http/https request the page makes is routed through an `NSURLProtocol` into the
-  app's own TLS 1.2 stack (mbedTLS) with a current CA bundle, so sites with Let's Encrypt certificates,
-  modern cipher suites or SNI work without any relay server. gzip/deflate, cookies, redirects and an
-  HTTP cache are handled by the app.
-- **JavaScript speed**: the binary is signed with the `dynamic-codesigning` entitlement, which enables
-  the Nitro JIT inside UIWebView on jailbroken devices.
-- **WebGL**: the iOS 6 engine ships WebGL switched off for apps; the browser turns it on through the
-  web view's WebKit preferences (WebGL 1.0 on the iPad 2's SGX543).
-- **Ad and tracker blocking** by host name (Peter Lowe's list fetched at build time plus a bundled
-  base list), which also keeps memory use down on 512 MB devices.
-- **CSS rewriting** (`Resources/cssfix.js`, run in JavaScriptCore inside the app): custom properties
-  (including `@property` initial values), CSS nesting flattened into plain rules (`&`, relative
-  selectors, nested `@media`/`@supports` hoisted), flexbox (2009 syntax), vendor prefixes, gradients
-  (conic gradients become linear ones with the same stops), modern colours (`oklch()`, `color-mix()`,
-  relative colour syntax `rgb(from …)`, `contrast-color()`, `light-dark()`), `image()` and
-  `cross-fade()`, two-value `display`, `line-clamp`, `:is()`/`:where()`, `@supports`, `@layer`,
-  logical properties, css-text-4 `white-space`/`text-wrap` keywords, `lh`/`cap`/`ic` units, alignment
-  qualifiers (`safe`, `first baseline`) and more, so that 2012 WebKit renders modern stylesheets.
-  Pseudo-classes the engine lacks (`:focus-within`, `:placeholder-shown`, `:user-invalid`/`:user-valid`,
-  `:blank`, `:target-within`, `:playing`/`:paused`/`:muted`, `:local-link`, `:modal`, `:fullscreen`,
-  `:popover-open`) become classes that a shim keeps up to date on the elements. `:has()` selectors and
-  `@container` queries become classes too: the rewriter leaves their definitions in a manifest comment
-  at the end of the stylesheet, the app collects the manifests of every stylesheet served for a page
-  (`https://ios6-browser.invalid/manifest?doc=…`), and the shim evaluates them on the live DOM
-  (relative selectors inside each candidate, container sizes from the elements marked by
-  `container-type`). The same marker channel drives shims for `scroll-snap-type`/`scroll-snap-align`
-  (carousels snap after the scroll settles), `scroll-behavior: smooth` (anchor links and
-  `scrollTo({behavior: "smooth"})` glide), `text-wrap: balance` (headings get the narrowest width
-  that keeps their line count) and scroll-driven animations (`animation-timeline: scroll()`/`view()`
-  with `animation-range`: the animation is paused and seeked by the scroll position). `clip-path`
-  basic shapes (circle, ellipse, inset, polygon, path) render through `-webkit-mask-image` SVG data
-  URLs, and the css-borders-4 `border-<side>-radius` shorthands expand into the corner longhands.
-- **Deferred values**: declarations whose value depends on the element are recorded in the page manifest
-  with the rule's selectors, their specificity and the media queries around them, and a shim computes
-  them per element and sets them inline. This covers **CSS anchor positioning** (`anchor-name`,
-  `anchor()`, `anchor-size()`, `position-anchor` including a popover's implicit anchor, `position-area`,
-  `position-try-fallbacks` with flips and `@position-try` rules, `position-try-order`,
-  `position-visibility`, `anchor-scope`, `anchor-center`), typed `attr()`, `calc-size()` of intrinsic
-  sizes, `sibling-index()`/`sibling-count()`, `container-progress()`, `toggle()`, `field-sizing:
-  content`, the SVG geometry properties and `mix()`/`calc-mix()`/`color-mix()`/`cross-fade()` driven by
-  a scroll or view timeline. `if()` is resolved by the rewriter (`supports()`/`style()` statically,
-  `media()` branches as `@media` rules), as are `first-valid()`, `ident()`, `inherit()`,
-  `random-item()`, `media-progress()` and request modifiers inside `url()`. `tools/dv-test.html` checks
-  the whole chain in a desktop browser with its native implementations stripped.
-- **WOFF2 and WOFF fonts** are converted to TrueType on the device (google/woff2 + brotli, zlib) and
-  **WebP images** are decoded to PNG (libwebp). Variable fonts become static instances, and fonts with
-  very large OpenType layout tables lose them: the old CoreText spent a minute shaping Inter on MDN's
-  home page, which now loads in nine seconds.
-- **Layout rescue**: `display: grid` becomes floated equal-width columns (12-column systems stack
-  instead), column flex containers become blocks (deeply nested 2009 flexbox layout never finished on
-  some pages), wrapping flex rows become inline-blocks with `justify-content` mapped to
-  `text-align`, flex `gap` becomes margins between the items, a lone `margin-left: auto` on a flex
-  item becomes 0 (the 2009 model hands that margin all the free space, which left Google's result
-  text 0 px wide), `position: sticky` is prefixed, `text-rendering: optimizeLegibility` and
-  `font-feature-settings` are dropped, `clamp()`/`min()`/`max()` are evaluated when their units
-  are px, vw, vh, rem or em, `aspect-ratio` travels through a `counter-reset` marker that a shim
-  turns into a height for media elements and empty boxes, and `fit-content`/`max-content`/
-  `min-content` widths become shrink-to-fit tables. The start page links a bundled **CSS3 test** page
-  (`https://ios6-browser.invalid/csstest.html`, served through the rewriter) that measures what the
-  engine really renders after the rewrite; css3test.com itself no longer runs on ES5 engines. A second
-  page, **Browserscore** (`https://ios6-browser.invalid/browserscore.html`), runs the feature
-  definitions of browserscore.dev (the css3test successor; `browserscore/features`, MIT, flattened at
-  build time by `tools/browserscore-convert.mjs`) with an ES5 runner that reports three states per
-  test: accepted natively, accepted after the CSS rewriter, missing. `tools/browserscore-dev.html`
-  runs the same thing in a desktop browser against a checkout served as `/repo/`, and
-  `tools/browserscore-estimate.html` takes a result JSON from the device and estimates what the current
-  rewriter would add to it, grouping what is still missing.
-- **JavaScript polyfills** (trimmed core-js, fetch, IntersectionObserver, ResizeObserver, many small
-  shims) are injected into every page.
-- **Modern JavaScript on the old engine**: `Resources/jsfix.js` is the app's own ES2015–ES2022 to ES5
-  transpiler (Babel and TypeScript ran at about 0.1 KB/s on an iPad 2 and were dropped). It parses with
-  acorn and prints ES5 straight from the tree, lowering while it prints and copying subtrees without newer
-  syntax verbatim: let/const with renames and a function per loop iteration where closures capture the
-  loop variables, arrows (this/arguments aliases), classes (fields, private members, static blocks,
-  `super`, subclasses of built-ins and custom elements), destructuring, default/rest/spread, template
-  literals and tagged templates, for-of, optional chaining, `??`, logical assignment, `**`, numeric
-  separators, regular expression flags s/u and named groups, block functions of strict code, and
-  generators and async functions as state machines on a small regenerator-compatible runtime. Scripts
-  the engine already parses pass through untouched (checked with `new Function`), the rest is lowered on
-  a second JavaScriptCore thread (about 50–100 KB/s on the iPad 2; Bootstrap 5 in 1.3 s) and kept in
-  `Caches/transpiled` by content; inline scripts of documents are lowered by the HTML rewriter. ES
-  modules work too: `<script type="module">` (when the page has no `nomodule` fallback) goes to a loader
-  in the page shim that fetches the graph with an internal marker the network layer strips, gets each
-  module lowered to a registration with live export getters, and links and runs it (import maps, cycles,
-  `export *`, dynamic `import()`, `import.meta`). `tools/jsfix-test.html` (84 cases, also run in CI by
-  `tools/jsfix-ci.js`), `tools/jsfix-bundles.html` (Bootstrap, Vue, Alpine, htmx, Swiper, Chart.js, d3,
-  three.js, mathjs, KaTeX, mermaid...) and `tools/module-test.html` check it in a desktop browser.
-- **Robust connections** on home networks: IPv4 addresses are tried first, the system resolver gets
-  a few seconds before the name is asked directly from public DNS servers, answers are cached, every
-  address has a short connect budget and the TLS handshake has its own timeout. Main documents never
-  queue behind subresource connections.
-- **Browser UI** in the iOS 6 look (light and dark theme, drawn artwork): address bar with reload/stop,
-  back/forward chevrons, book icon for bookmarks and history, Safari-like tab strip under the address
-  bar on iPad (tab list with snapshots on iPhone), settings with a "page version" choice that changes
-  the User-Agent (iOS 6, desktop Safari 6, modern iPad).
-- **Web platform shims** (`Resources/shims.js`, `shims-extra.js`, ES5 only): pointer events, page
-  visibility, fullscreen, streams, shadow DOM emulated in the light DOM, custom elements (v0 and v1),
-  `<dialog>`, `<picture>`/srcset, `<progress>`/`<meter>`, WebRTC/speech/payment/credential stubs that
-  fail cleanly, SHA-1/SHA-256 for `crypto.subtle.digest`, canvas helpers, a lazily loaded
-  WebSQL-backed IndexedDB, `window.open` and `target="_blank"` into new tabs, `navigator.share`,
-  a working subset of the CSS Typed OM (`computedStyleMap()`, `attributeStyleMap`, `CSS.px()` and the
-  other unit functions, numeric math, transform and colour values), `document.startViewTransition`
-  (the callback runs at once), `ontransitionend`/`onanimationend` handler attributes wired to the
-  prefixed events, the CSSOM rule classes newer specs expect, the Popover API, and an `Intl`
-  implementation for Czech, Slovak, English, German and Polish (numbers, currencies, dates, plural
-  rules, relative times, lists, collation) that `toLocaleDateString()` and friends use as well.
-  html5test.com went from 290 to 458 of 555 points with these (the remaining points are ES2015
-  syntax, codecs and other things an old engine cannot fake).
-- **Everyday browser features**: address suggestions from history and bookmarks, find on page,
-  downloads with an "open in" menu, loading progress in the address field, padlock with connection
-  details, search engine choice, text size, start page with most visited sites and bookmarks, favicons
-  in the tab strip, long press on links (new tab, copy, share, save image, open in Safari), long press
-  on reload (desktop/mobile version remembered per site, reload without cache), "Add bookmark" in the share sheet,
-  private browsing (no history or cache, cookies restored afterwards), search suggestions from
-  DuckDuckGo while typing, a reader view that extracts the article of a page into a clean layout,
-  long press on a tab (close others, duplicate, reopen a closed tab), pull to refresh, swipe in
-  from the screen edge for back/forward, long press on the arrows for the history behind them,
-  "Search" and "Share" in the text selection menu, `javascript:` bookmarklets in the address bar,
-  international domain names (punycode), HTTP Basic authentication dialogs, printing (AirPrint, also
-  from a page's own `window.print()`) and "Save as PDF" from the share sheet, "Find on page",
-  "View source" and "Translate page" (Google Translate's website proxy, which serves pages already
-  translated) in the share sheet, a reader button in the address field when a page looks like an
-  article, popup blocking (`window.open` only after a tap), `navigator.clipboard.writeText` and
-  `execCommand('copy')` into the system pasteboard, "Open in background" for links, recently closed
-  tabs on a long press of the plus button, a chosen home page, bookmark editing (rename, address,
-  reorder), a search box over bookmarks and history, a custom search engine (address with `%s`),
-  "Download link" in the link menu, "Open" in the selection menu when the selected text is an
-  address, "Paste and Go" in the address field, search suggestions from the chosen engine, and
-  keyword searches typed into the address field (`g dotaz` Google, `b` Bing, `s` Seznam, `d`
-  DuckDuckGo, `w` / `we` Czech / English Wikipedia), a page screenshot into Photos, "Open in
-  Safari" in the share sheet and on the error page, an offer to open Cloudflare-style "verifying
-  your browser" pages in Safari, a bundled help page (Settings > Help and gestures, also on the
-  start page) and "Reset settings".
-- **Privacy settings**: third-party cookies blocked (like Safari), Do Not Track / Global Privacy
-  Control headers, cookie banners of the common consent services hidden by injected CSS, an image
-  switch for slow connections, per-site "allow ads on this site", and a forced dark stylesheet for
-  pages (the engine skips CSS filters on areas as large as a page, so inverting was not an option).
-- Google search refuses the Safari 6 identity ("browser no longer supported"), so google.* hosts are
-  fetched as a current iPad unless the user chooses otherwise.
-- Planned: tab strip on iPhone.
+- **Its own TLS 1.2 stack** (Mbed TLS) with current root certificates: sites with modern certificates and ciphers
+  open directly, without a proxy or relay server.
+- **Modern CSS rewritten** for the old engine: custom properties, flexbox and grid, nesting, modern colours,
+  `:has()`, container queries, anchor positioning and much more.
+- **Modern JavaScript translated** to the old dialect by its own transpiler (ES2022, ES modules), plus polyfills for
+  newer web APIs (fetch, IntersectionObserver, custom elements, IndexedDB, Intl, Web Crypto and others).
+- **WOFF2 fonts and WebP images** converted on the device.
+- **Ad and tracker blocking** with built-in lists, and hiding of cookie banners.
+- **Reader view**, find on page, translate, print and save as PDF, downloads, view source.
+- **Saved passwords** (in the device's keychain, for secure sites only), **private browsing**, dark theme and dark
+  pages.
+- Tabs, bookmarks, history, a choice of search engines with suggestions, swipe gestures, and an English and Czech
+  interface.
 
-## Building (GitHub Actions)
+Surfari is an independent project and is not affiliated with Apple. iOS, iPad and Safari are trademarks of Apple Inc.
 
-No Mac needed. Pushing to `main` runs `.github/workflows/build.yml` on Ubuntu with Theos, the
-iOS 9.3 SDK (deployment target 6.0) and mbedTLS. Artifacts: `Browser-<version>.ipa`,
-`Browser-<version>-nojit.ipa` (without the JIT entitlement, for troubleshooting) and a `.deb`.
+## Requirements
 
-Local helpers (Windows PowerShell, no git required; settings in `tools/local.json`):
+- A **jailbroken** device with **iOS 6.x** (armv7).
+- Tested on an **iPad 2 with iOS 6.1.2**. Other iOS 6 devices may work, but they are untested, and the memory
+  handling is tuned for devices with 512 MB of RAM. The app runs on iPhone too; the tab strip is iPad-only.
+- iOS 7 and later are not supported.
 
-```powershell
-.\tools\gh-push.ps1 -Message "change"                 # push via REST API
-.\tools\gh-build.ps1 -Download -Install                 # wait, fetch, install over SSH
-. .\tools\ipad.ps1; Get-IPadCrashLogs; Get-IPadSyslog   # debugging
-```
+## Install
 
-## Installing on the device
+Download the files from the [Releases](https://github.com/samcejko/surfari/releases) page on a computer (iOS 6
+cannot open github.com), check them against `SHA256SUMS` if you like, and copy one of them to the device (SSH/SCP,
+iFunBox, 3uTools or Filza). There are two kinds of package; **pick one and stay with it**:
 
-1. Cydia: **AppSync Unified** (repo `https://cydia.akemi.ai/`) and **IPA Installer Console** (BigBoss),
-   plus OpenSSH for the helper scripts.
-2. Copy the `.ipa` to the device and run `ipainstaller -f Browser.ipa`, or use iFunBox / 3uTools.
-   The `.deb` works too (`dpkg -i`, then `uicache`) and installs into `/Applications`.
+| File | How to install |
+|---|---|
+| `Surfari-<version>.deb` | Open it in Filza or iFile and install it, or over SSH: `dpkg -i Surfari-<version>.deb`. The package refreshes the home screen itself; if the icon does not appear, run `su mobile -c uicache` (or reboot). Remove it with `dpkg -r com.samcejko.browser`. |
+| `Surfari-<version>.ipa` | Needs **AppSync Unified** (Cydia repo `https://cydia.akemi.ai/`). Install it with Filza, or over SSH with IPA Installer Console: `ipainstaller Surfari-<version>.ipa`. |
+| `Surfari-<version>-nojit.ipa` | The same app without the JavaScript JIT. JavaScript runs about half as fast, but the JIT compiler, where many engine exploits start, is switched off. Use it if the normal IPA does not start, or if you prefer the smaller attack surface. |
 
-## Project layout
+The .deb installs Surfari as a system app in `/Applications` and keeps its data in `/var/mobile`; an IPA keeps its
+data in its own app container. Both use the same app identity, so **do not install both**: only one of them would
+show on the home screen, and bookmarks, history and settings would not carry over between them. The .deb refuses to
+install while an IPA copy is on the device. To switch, remove the installed one first. To update, install the new
+version the same way over the old one: your data stays.
 
-- `src/Net` - mbedTLS socket with resolver fallback, HTTP/1.1 client and connection pool,
-  `NSURLProtocol` bridge with cache, cookies, ad blocking and body rewriting, CSS rewriter host,
-  JavaScriptCore engine wrapper, WOFF2 and WebP converters
-- `src/UI` - browser view controller, tab strip, theme (drawn artwork), settings, bookmarks/history,
-  tab list
-- `src/Model` - bookmarks and history store
-- `Resources` - Info.plist, entitlements, start page, `cssfix.js`, `shims.js`, localizations
-- `vendor` - mbedTLS config and platform glue (mbedTLS, woff2, brotli and libwebp are fetched at
-  build time)
-- `tools` - asset generator, PowerShell helpers, local test pages for the CSS rewriter
+Surfari cannot update itself and does not check for updates: watch the Releases page.
 
-Debugging over SSH: `uiopen browser:https://example.com` opens a page, `uiopen browser:snapshot`
-writes the current screen to the app's `tmp/screen.png`, and `/var/log/syslog` carries the app's log
-lines (`[Browser]`: main documents, DNS fallbacks, connect timeouts, load times, memory). More
-commands: `browser:eval?js=`, `browser:evalfile?path=`, `browser:dump`, `browser:set?key=&value=&type=`,
-`browser:reader`, `browser:pdf`, `browser:source`, `browser:translate`, `browser:history`,
-`browser:goback?n=`, `browser:type?text=`, `browser:auth?user=&password=`, `browser:pasteboard`.
+## Security notice
+
+**The page engine of iOS 6 (WebKit and JavaScriptCore) has not received security updates for years**, and many of
+its bugs are publicly known. Surfari's own TLS stack keeps your connections secure and up to date, but Surfari cannot
+fix the engine: a malicious page could take over the app, and on a jailbroken device possibly more.
+
+- If that worries you, do not use Surfari for banking or with passwords you also use elsewhere, and prefer sites you
+  trust.
+- Keep **Settings › Advanced › Verify certificates** on. It is there for troubleshooting only.
+- The `-nojit` IPA gives an exploit less to work with, at the cost of speed.
+- **Private browsing** keeps no history, writes nothing to the page cache and keeps its cookies apart (they are deleted
+  when you turn it off). Only the cookies are kept apart: pages cached before are still used, the engine's own site
+  storage (local storage, databases, offline caches) is shared with normal browsing, and downloads go to the app's
+  Documents folder, which iTunes file sharing shows.
+- Saved passwords stay in this device's keychain (not in backups) and are offered only on verified https pages.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Privacy
+
+Surfari has no account, no analytics and no crash reporting. Pages come straight from the sites you visit. Besides
+them, Surfari contacts:
+
+- **Your search engine's suggestion service** while you type in the address bar (Google, Bing, or DuckDuckGo, which
+  also serves Seznam and custom engines) - never for an address and never in private browsing. You can turn
+  suggestions off in Settings › Privacy.
+- **Google Public DNS (8.8.8.8) and Cloudflare (1.1.1.1)**, unencrypted, when your network's DNS server is slow or
+  gives no answer.
+- **Google Translate**, with the page's address, when you choose Translate Page.
+
+Google's sites get the identity of a modern iPad by default (they refuse iOS 6's). The ad block lists are part of the
+app; nothing is downloaded to update them. The small helper servers inside the app (for media and WebSockets) listen
+only on the device itself.
+
+## What does not work
+
+- Protected video (DRM): Netflix, Disney+, Spotify and similar services.
+- Sites that check the browser before they let you in (for example Cloudflare's "verifying your browser" page);
+  Surfari offers to open them in Safari.
+- Features the old engine cannot be taught: WebAssembly, video calls (WebRTC), offline web apps (service workers),
+  push notifications.
+- Very large web apps can load slowly or run out of memory.
+
+## Opening links in Surfari
+
+Other apps (and `uiopen` over SSH) can open a page in Surfari with the `surfari:` scheme followed by the address:
+`surfari:https://example.com/page`. A bare host name gets `https://` (`surfari:example.com`), and
+`surfari://open?url=<percent-encoded address>` works too. Only http and https pages open this way.
+
+## Building and contributing
+
+Surfari is built by GitHub Actions (Theos, iOS 9.3 SDK, deployment target 6.0); no Mac is needed. How it works, how
+to build it, and the developer tools and commands are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Changes are
+listed in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+Surfari is free software under the [MIT License](LICENSE). It includes third-party components under their own
+licences (MIT, BSD, Apache-2.0 and others; the OISD block list, a separate data file, is GPL-3.0): see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), also shown in the app under Settings › About › Licenses.

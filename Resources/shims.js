@@ -2061,12 +2061,27 @@
         G.TextDecoder = TextDecoder;
     })(window);
 
-    // crypto
+    // crypto: random values come from the engine's own getRandomValues (a cryptographic generator) and from nothing
+    // else. Math.random gives its next outputs away after a few observed ones, so where the engine has no generator
+    // getRandomValues and randomUUID stay missing and code that makes keys, nonces or session ids fails instead of
+    // quietly getting guessable ones. randomUUID: 122 random bits from that generator, version 4 as the standard has it.
     if (!window.crypto) window.crypto = {};
-    if (!window.crypto.getRandomValues) window.crypto.getRandomValues = function (arr) { for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; };
-    if (!window.crypto.randomUUID) window.crypto.randomUUID = function () {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); });
-    };
+    if (!window.crypto.randomUUID && typeof window.crypto.getRandomValues === 'function') (function (c) {
+        var fill = c.getRandomValues;
+        var uuid = function () {
+            var b = new Uint8Array(16), s = '', i;
+            fill.call(c, b);
+            b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+            for (i = 0; i < 16; i++) { s += (b[i] + 256).toString(16).slice(1); if (i === 3 || i === 5 || i === 7 || i === 9) s += '-'; }
+            return s;
+        };
+        // (on the Crypto prototype first, as subtle in shims-extra.js: an expando on the engine's Crypto wrapper vanishes
+        // when the old engine garbage-collects the wrapper and makes a new one - device logs showed randomUUID gone so;
+        // on the object itself only when that did not take, as for a plain crypto object)
+        var proto = Object.getPrototypeOf(c);
+        if (proto && proto !== Object.prototype) try { proto.randomUUID = uuid; } catch (e) {}
+        if (c.randomUUID !== uuid) try { c.randomUUID = uuid; } catch (e2) {}
+    })(window.crypto);
 
     // navigator
     if (!navigator.sendBeacon) navigator.sendBeacon = function (url, data) { try { var x = new XMLHttpRequest(); x.open('POST', url, true); x.send(data); } catch (e) {} return true; };

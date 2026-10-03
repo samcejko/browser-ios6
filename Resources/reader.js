@@ -84,7 +84,7 @@
     }
 
     var clone = best.cloneNode(true);
-    var junk = clone.querySelectorAll('script,style,iframe,object,embed,form,input,button,select,textarea,nav,aside,footer,noscript,svg,video,audio,canvas,[hidden],[aria-hidden="true"]');
+    var junk = clone.querySelectorAll('script,style,iframe,frame,frameset,object,embed,applet,base,link,meta,template,form,input,button,select,textarea,nav,aside,footer,noscript,svg,video,audio,canvas,[hidden],[aria-hidden="true"]');
     for (i = junk.length - 1; i >= 0; i--) if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
     var blocks = clone.querySelectorAll('div,section,ul,ol,table,figure,p,span,a');
     for (i = blocks.length - 1; i >= 0; i--) {
@@ -96,6 +96,15 @@
         if ((t === 'DIV' || t === 'SECTION') && textLength(b) === 0 && !b.getElementsByTagName('img').length) { b.parentNode.removeChild(b); continue; }
         if (t !== 'P' && t !== 'A' && t !== 'SPAN' && linkDensity(b) > 0.5 && textLength(b) < 300) { b.parentNode.removeChild(b); continue; }
     }
+    // links and pictures keep absolute http(s) addresses only (pictures data:image too): no javascript: or data:
+    // documents, and nothing that the reader page's own address would resolve differently
+    var resolver = doc.createElement('a');
+    var safeURL = function (v, image) {
+        v = String(v).replace(/^\s+|\s+$/g, '');
+        if (image && /^data:image\//i.test(v)) return v;
+        resolver.href = v;
+        return /^https?:\/\//i.test(resolver.href) ? resolver.href : '';
+    };
     // strip attributes that carry site styling or behaviour (a static copy: removals must not skip elements)
     var nodes = Array.prototype.slice.call(clone.getElementsByTagName('*'));
     for (i = 0; i < nodes.length; i++) {
@@ -119,7 +128,14 @@
             if (real) { n.setAttribute('src', real); src = real; placeholder = false; }
             if (placeholder) { if (n.parentNode) n.parentNode.removeChild(n); continue; }
         }
-        for (var a = attrs.length - 1; a >= 0; a--) if (!keep[attrs[a].name]) n.removeAttribute(attrs[a].name);
+        for (var a = attrs.length - 1; a >= 0; a--) {
+            var an = attrs[a].name;
+            if (!keep[an]) { n.removeAttribute(an); continue; }
+            if (an === 'href' || an === 'src') {
+                var safe = safeURL(attrs[a].value, n.tagName === 'IMG' && an === 'src');
+                if (safe) n.setAttribute(an, safe); else n.removeAttribute(an);
+            }
+        }
     }
     var titleEl = doc.querySelector('h1') || doc.querySelector('meta[property="og:title"]');
     var title = titleEl ? (titleEl.content || titleEl.textContent || '') : doc.title;
