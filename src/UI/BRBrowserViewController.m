@@ -90,6 +90,8 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, strong) NSURL *httpFallbackURL;          // http:// variant of a typed host, tried when https is refused
 @property (nonatomic, strong) NSURL *pendingExternalURL;       // another app's address waiting for "Open in another app?"
 @property (nonatomic) NSTimeInterval externalDeclinedAt;       // when the user last said no to that question
+@property (nonatomic, strong) NSURL *pendingTikieURL;          // a TikTok address waiting for "Open in Tikie?"
+@property (nonatomic, strong) NSURL *tikieDeclinedURL;         // the last one the user chose to open here instead
 @property (nonatomic) NSTimeInterval lastUserTap;              // the user's last tap on the page (see recentUserTap)
 @property (nonatomic, strong) NSMutableSet *tapUses;           // kinds of the page's requests granted for that tap (see takeUserTapFor:)
 @property (nonatomic, copy) NSString *loginToken;              // the main frame's key for the saved-login messages (see giveLoginTokenToMainFrame)
@@ -338,6 +340,22 @@ static BOOL BRIsWebURL(NSURL *url)
 {
     NSString *scheme = [url.scheme lowercaseString];
     return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+}
+
+static BOOL BRIsTikTokHost(NSURL *url)
+{
+    NSString *host = [url.host lowercaseString] ?: @"";
+    return [host isEqualToString:@"tiktok.com"] || [host hasSuffix:@".tiktok.com"];
+}
+
+// What Tikie (the TikTok viewer of this series: TikTok's own site does not run on iOS 6) can show: a video or photo
+// post, a profile or a live stream, a short link
+static BOOL BRIsTikieURL(NSURL *url)
+{
+    if (!BRIsWebURL(url) || !BRIsTikTokHost(url)) return NO;
+    NSString *host = [url.host lowercaseString], *path = url.path ?: @"";
+    if ([host hasPrefix:@"vm."] || [host hasPrefix:@"vt."]) return path.length > 1;
+    return [path hasPrefix:@"/@"] || [path hasPrefix:@"/t/"] || [path rangeOfString:@"/video/"].location != NSNotFound;
 }
 
 // The same scheme, host and port (the scheme's default port written or not)
@@ -1510,6 +1528,7 @@ static void BRWebThreadLock(void)
         url = [BRSettings searchURLForQuery:t];
         self.httpFallbackURL = nil;
     }
+    if (BRIsTikieURL(url) && [self askToOpenInTikie:url]) return;
     [self loadURL:url];
 }
 
@@ -2511,6 +2530,20 @@ static void BRWebThreadLock(void)
         else self.externalDeclinedAt = [NSDate timeIntervalSinceReferenceDate];
         return;
     }
+    if (alertView.tag == 541) {
+        // "Open in Tikie?" - Tikie takes the link as it is (tikie:open?url=...); "here" (also iOS's answer when it
+        // takes the question away) loads the page
+        NSURL *tiktok = self.pendingTikieURL;
+        self.pendingTikieURL = nil;
+        if (!tiktok) return;
+        if (buttonIndex != alertView.cancelButtonIndex) {
+            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:[@"tikie:open?url=" stringByAppendingString:BRQueryEscape(tiktok.absoluteString)]]];
+        } else {
+            self.tikieDeclinedURL = tiktok;
+            [self loadURL:tiktok];
+        }
+        return;
+    }
     if (alertView.tag == 520) {
         NSDictionary *login = self.pendingLogin;
         self.pendingLogin = nil;   // (the password is not held a moment longer than the answer)
@@ -3035,6 +3068,33 @@ static void BRWebThreadLock(void)
     [alert show];
 }
 
+// A TikTok post, profile or live stream the page leads to on a tap (a link, or the redirects right after it) while
+// Tikie is installed: shown there if the user likes - TikTok's site does not run on this system. "Here" loads the page
+// as usual, and what it leads to on TikTok's site is not asked about again. Going back and reloading never ask.
+- (BOOL)offerTikieForURL:(NSURL *)url request:(NSURLRequest *)request navigationType:(UIWebViewNavigationType)type
+{
+    if (![url isEqual:request.mainDocumentURL] || !BRIsTikieURL(url)) return NO;
+    if (type == UIWebViewNavigationTypeBackForward || type == UIWebViewNavigationTypeReload || type == UIWebViewNavigationTypeFormResubmitted) return NO;
+    if (!(type == UIWebViewNavigationTypeLinkClicked || [self recentUserTap])) return NO;
+    if (self.tikieDeclinedURL && ([url isEqual:self.tikieDeclinedURL] || BRIsTikTokHost(self.currentURL))) return NO;
+    return [self askToOpenInTikie:url];
+}
+
+// The question itself (also for a TikTok address typed into the address field); NO when Tikie is not installed
+- (BOOL)askToOpenInTikie:(NSURL *)url
+{
+    if (![[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"tikie:open"]]) return NO;
+    if (self.pendingTikieURL) return YES;   // (one question at a time)
+    self.pendingTikieURL = url;
+    NSString *shown = url.absoluteString ?: @"";
+    if (shown.length > 200) shown = [[shown substringToIndex:[shown rangeOfComposedCharacterSequenceAtIndex:197].location] stringByAppendingString:@"..."];
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:L(@"Open in Tikie?") message:shown delegate:self
+                                          cancelButtonTitle:L(@"Open here") otherButtonTitles:L(@"Open in Tikie"), nil];
+    alert.tag = 541;
+    [alert show];
+    return YES;
+}
+
 - (BOOL)webView:(UIWebView *)webView shouldStartLoadWithRequest:(NSURLRequest *)request navigationType:(UIWebViewNavigationType)navigationType
 {
     NSURL *url = request.URL;
@@ -3164,6 +3224,7 @@ static void BRWebThreadLock(void)
     BOOL handled = [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"file"] ||
                    [scheme isEqualToString:@"about"] || [scheme isEqualToString:@"data"] || [scheme isEqualToString:@"applewebdata"];
     if (handled) {
+        if ([self offerTikieForURL:url request:request navigationType:navigationType]) return NO;
         BOOL mainFrame = [url isEqual:request.mainDocumentURL] || navigationType != UIWebViewNavigationTypeOther;
         if (mainFrame && ![scheme isEqualToString:@"about"] && ![scheme isEqualToString:@"applewebdata"]) {
             [self compositingForNavigationTo:url];
