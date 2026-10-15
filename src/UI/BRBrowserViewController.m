@@ -6,6 +6,7 @@
 #import <Security/Security.h>
 #import "BRWebView.h"
 #import "BRSettingsViewController.h"
+#import "BRCookieLoginViewController.h"
 #import "BRLibraryViewController.h"
 #import "BRTabsViewController.h"
 #import "BRTabBar.h"
@@ -1380,6 +1381,7 @@ static void BRWebThreadLock(void)
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:host delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
     [sheet addButtonWithTitle:L(@"Reload without cache")];
     [sheet addButtonWithTitle:[BRSettings userAgentModeForHost:host] == 0 ? L(@"Request desktop version") : L(@"Request mobile version")];
+    if (host.length) [sheet addButtonWithTitle:L(@"Log in with cookies…")];
     if (host.length && [BRSettings adBlockEnabled]) {
         [sheet addButtonWithTitle:[BRSettings adBlockDisabledForHost:host] ? L(@"Block ads on this site") : L(@"Allow ads on this site")];
     }
@@ -1388,6 +1390,19 @@ static void BRWebThreadLock(void)
     CGRect rect = [self.view convertRect:self.reloadButton.bounds fromView:self.reloadButton];
     if (BRIsPad()) [sheet showFromRect:rect inView:self.view animated:YES];
     else [sheet showInView:self.view];
+}
+
+// "Log in with cookies": log in to the site in another browser, paste its cookies here, and we store them in the jar
+// so the logged-in version loads - the only way past a login CAPTCHA (Cloudflare Turnstile and the like) this engine
+// cannot run. The page is reloaded once they are stored.
+- (void)promptCookieLoginForHost:(NSString *)host
+{
+    if (!host.length) return;
+    NSURL *url = self.webView.request.URL ?: self.currentURL;
+    BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"https"];
+    BRCookieLoginViewController *vc = [[BRCookieLoginViewController alloc] initWithHost:host secure:secure];
+    vc.onStored = ^(NSUInteger count) { [self reloadIgnoringCache]; };
+    [self presentModal:vc];
 }
 
 - (void)reloadIgnoringCache
@@ -3000,6 +3015,8 @@ static void BRWebThreadLock(void)
         NSString *pick = [sheet buttonTitleAtIndex:index];
         if ([pick isEqualToString:L(@"Reload without cache")]) {
             [self reloadIgnoringCache];
+        } else if ([pick isEqualToString:L(@"Log in with cookies…")]) {
+            [self promptCookieLoginForHost:(self.webView.request.URL ?: self.currentURL).host];
         } else if ([pick isEqualToString:L(@"Allow ads on this site")] || [pick isEqualToString:L(@"Block ads on this site")]) {
             NSString *host = (self.webView.request.URL ?: self.currentURL).host;
             [BRSettings setAdBlockDisabled:[pick isEqualToString:L(@"Allow ads on this site")] forHost:host];
