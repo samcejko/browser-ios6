@@ -4,7 +4,8 @@
  * The CI build renames the stock include/mbedtls/mbedtls_config.h to
  * mbedtls_config_default.h and installs this file in its place, so we start
  * from the upstream defaults and only trim what we do not need:
- *   - TLS 1.2 client only (no TLS 1.3, no DTLS, no server side)
+ *   - TLS 1.2 and 1.3 client only (no DTLS, no server side, no TLS 1.3 early data or external-PSK-only key exchange;
+ *     the hello itself is configured in src/Net/BRTLSHello.h)
  *   - no certificate writing, no self tests
  *   - entropy also from SecRandomCopyBytes (mbedtls_hardware_poll in mbedtls_glue.c)
  *   - mbedtls_ms_time() provided by us, because clock_gettime() does not exist on iOS < 10
@@ -15,11 +16,9 @@
 #include "mbedtls/mbedtls_config_default.h"
 
 /* --- protocol trimming ------------------------------------------------- */
-#undef MBEDTLS_SSL_PROTO_TLS1_3
-#undef MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE
+/* TLS 1.3 stays on, with the middlebox compatibility mode browsers use, (EC)DHE and resumption with (EC)DHE. Pure-PSK
+ * key exchange needs an external PSK, which a browser never has; early data is not used. */
 #undef MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_ENABLED
-#undef MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED
-#undef MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 #undef MBEDTLS_SSL_EARLY_DATA
 
 #undef MBEDTLS_SSL_PROTO_DTLS

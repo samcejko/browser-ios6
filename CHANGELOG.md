@@ -3,6 +3,20 @@
 The changes of each Surfari release. Versions follow [Semantic Versioning](https://semver.org/); the newest is at
 the top. (The section of a version becomes the notes of its GitHub Release.)
 
+## [1.2.0] - unreleased
+
+### Changed
+
+- Secure connections speak **TLS 1.3** as well as TLS 1.2, with a hello like a browser's: Chrome's cipher suites
+  (ChaCha20-Poly1305 first, the faster one on the iPad's processor), key groups (X25519 first) and signature
+  algorithms, and ALPN `http/1.1`, instead of Mbed TLS's own TLS 1.2 hello with some 100 suites that no browser sends.
+  Sites behind bot protection that reset the connection on that hello ("connection was reset by peer") can answer
+  now. (A site that asks for a CAPTCHA still needs Log in with cookies.)
+- A server that refuses the new hello gets the old one once more; one that refused it with an alert gets the old one
+  for half an hour. A certificate error is never tried again this way, and nothing goes below TLS 1.2.
+- TLS 1.2 sessions are resumed with the hello they were made with; TLS 1.3 ones are not resumed (Mbed TLS would
+  resume them with a hello no browser sends, and a TLS 1.3 handshake takes one round trip anyway).
+
 ## [1.1.1] - 2026-10-15
 
 ### Fixed

@@ -560,8 +560,8 @@ static void BRWebSocketCloseForTLS(int fd, NSDictionary *client)
     if (![up connectToHost:host port:port verify:verify connectTimeoutMs:20000 readTimeoutMs:20000 error:&error]) {
         BRLog(@"WebSocket proxy: %@ failed: %@", host, error.localizedDescription);
         BOOL certificate = [error.domain isEqualToString:BRErrorDomain] && error.code == BRErrorCertificate;
-        // (the descriptor stays set until close once the TCP connection was made: the TLS handshake failed or timed out)
-        if (certificate || (guarded && up.fileDescriptor >= 0)) BRWebSocketCloseForTLS(fd, client);
+        // (a TCP connection was made: the TLS handshake failed or timed out)
+        if (certificate || (guarded && up.reachedServer)) BRWebSocketCloseForTLS(fd, client);
         else BRSendString(fd, BRBareResponse(502));
         [up close];
         return;
@@ -645,11 +645,13 @@ static void BRWebSocketCloseForTLS(int fd, NSDictionary *client)
     BRLog(@"WebSocket proxy: %@ open (%@)", host, secure ? (up.tlsVersion ?: @"TLS") : @"plain");
     // (a record that started arriving is complete within this; between frames the sockets wait in poll)
     [up setReadTimeoutMs:15000];
+    up.returnsWhenIdle = YES;   // (a TLS 1.3 ticket wakes poll but holds nothing to relay)
     // (a pool per round: a socket stays open for hours, and what a round autoreleases must not pile up till then)
     while (ok) {
         @autoreleasepool {
             if ([up hasBufferedData]) {
                 NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
+                if (n == BR_TLS_READ_NOTHING) continue;
                 if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) ok = NO;
                 continue;
             }
@@ -663,7 +665,7 @@ static void BRWebSocketCloseForTLS(int fd, NSDictionary *client)
             }
             if (p[1].revents & (POLLIN | POLLHUP | POLLERR)) {
                 NSInteger n = [up readIntoBuffer:buf maxLength:sizeof(buf) error:NULL];
-                if (n <= 0 || !BRSendAll(fd, buf, (size_t)n)) ok = NO;
+                if (n != BR_TLS_READ_NOTHING && (n <= 0 || !BRSendAll(fd, buf, (size_t)n))) ok = NO;
             }
         }
     }

@@ -1,8 +1,13 @@
 #import <Foundation/Foundation.h>
 
-// Blocking TLS 1.2 client socket on top of mbedTLS. One instance per connection, used from a
+// Blocking TLS 1.3 / 1.2 client socket on top of mbedTLS, with a browser-like ClientHello (BRTLSHello.h) and a second
+// try with the earlier TLS 1.2 hello for servers that refuse it. One instance per connection, used from a
 // single worker thread; -cancel may be called from any thread to abort a blocking read.
-// Verified handshakes are remembered per host so later connections can resume the session.
+// Verified TLS 1.2 handshakes are remembered per host so later connections can resume the session.
+
+// (readIntoBuffer: with returnsWhenIdle set: a record without data came, and nothing else waits)
+#define BR_TLS_READ_NOTHING (-2)
+
 @interface BRTLSSocket : NSObject
 
 + (void)warmUp;                 // parses the CA bundle on a background queue
@@ -29,7 +34,7 @@
 - (BOOL)connectToHost:(NSString *)host port:(int)port verify:(BOOL)verify
      connectTimeoutMs:(int)connectMs readTimeoutMs:(int)readMs error:(NSError **)error;
 - (BOOL)writeData:(NSData *)data error:(NSError **)error;
-// Returns > 0 bytes read, 0 on EOF, -1 on error (error set).
+// Returns > 0 bytes read, 0 on EOF, -1 on error (error set); BR_TLS_READ_NOTHING only with returnsWhenIdle.
 - (NSInteger)readIntoBuffer:(void *)buffer maxLength:(NSUInteger)maxLength error:(NSError **)error;
 - (void)cancel;
 - (void)close;
@@ -40,10 +45,15 @@
 - (void)setReadTimeoutMs:(uint32_t)ms;       // applies to subsequent reads
 
 // For a relay that waits on several sockets at once (poll): the TCP descriptor, and whether bytes the TLS layer
-// already took from it wait to be read (poll does not see those). The descriptor is -1 until the TCP connection exists
-// and stays set after a failed TLS handshake until close: a relay tells by it where a connect failed.
+// already took from it wait to be read (poll does not see those). The descriptor is -1 until the TCP connection exists.
 @property (nonatomic, readonly) int fileDescriptor;
+// After a failed connect: whether a TCP connection to the server got made (so the TLS handshake failed, also when a
+// second try with another hello could not connect again): a relay tells by it where a connect failed
+@property (nonatomic, readonly) BOOL reachedServer;
 - (BOOL)hasBufferedData;
+// For such a relay: a read woken by a record that holds no data (a TLS 1.3 server's ticket) returns BR_TLS_READ_NOTHING
+// instead of waiting for the next one, when nothing else is there
+@property (nonatomic) BOOL returnsWhenIdle;
 
 @property (nonatomic, readonly) NSString *cipherSuite;
 @property (nonatomic, readonly) NSString *tlsVersion;

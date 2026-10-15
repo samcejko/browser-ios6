@@ -1,0 +1,42 @@
+name: TLS probe (temporary, tls13 branch)
+
+# Builds tools/tls-probe with Mbed TLS 3.6.7 and Surfari's configuration and runs it against real servers: the modern
+# hello of src/Net/BRTLSHello.h next to the legacy one. Lives on the tls13 branch only.
+on:
+  push:
+    branches: [tls13]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mbed TLS 3.6.7 with Surfari's configuration
+        run: |
+          set -e
+          curl -sSfL "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2" -o /tmp/mbedtls.tar.bz2
+          echo "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6  /tmp/mbedtls.tar.bz2" | sha256sum -c -
+          mkdir -p /tmp/mbedtls
+          tar -xjf /tmp/mbedtls.tar.bz2 -C /tmp/mbedtls --strip-components=1
+          mv /tmp/mbedtls/include/mbedtls/mbedtls_config.h /tmp/mbedtls/include/mbedtls/mbedtls_config_default.h
+          cp vendor/mbedtls_config_ios6.h /tmp/mbedtls/include/mbedtls/mbedtls_config.h
+
+      - name: Build the probe
+        run: |
+          set -e
+          gcc -O1 -std=gnu99 -Wall -I/tmp/mbedtls/include -I/tmp/mbedtls/library -Isrc/Net \
+            tools/tls-probe/probe.c tools/tls-probe/glue_linux.c /tmp/mbedtls/library/*.c -lpthread -o /tmp/tls-probe 2>&1 \
+            | grep -v '^/tmp/mbedtls/library' || true
+          test -x /tmp/tls-probe
+
+      - name: Probe
+        run: |
+          set -o pipefail
+          /tmp/tls-probe /etc/ssl/certs/ca-certificates.crt | tee /tmp/probe.md
+          cat /tmp/probe.md >> "$GITHUB_STEP_SUMMARY"

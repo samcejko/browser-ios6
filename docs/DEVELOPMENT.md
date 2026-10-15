@@ -9,9 +9,11 @@ The rendering engine is the system WebKit (UIWebView) of iOS 6. Everything the 2
 app around it:
 
 - **Networking**: every http/https request the page makes is routed through an `NSURLProtocol` into the
-  app's own TLS 1.2 stack (Mbed TLS) with a current CA bundle, so sites with Let's Encrypt certificates,
-  modern cipher suites or SNI work without any relay server. gzip/deflate/brotli, cookies, redirects and an
-  HTTP cache are handled by the app.
+  app's own TLS 1.3/1.2 stack (Mbed TLS) with a current CA bundle, so sites with Let's Encrypt certificates,
+  modern cipher suites or SNI work without any relay server. Its ClientHello follows a browser's
+  (`src/Net/BRTLSHello.h`), with Mbed TLS's own TLS 1.2 hello as a second try for servers that refuse it;
+  `tools/tls-probe` builds the same hello on Linux to check it against a list of sites. gzip/deflate/brotli,
+  cookies, redirects and an HTTP cache are handled by the app.
 - **JavaScript speed**: the binary is signed with the `dynamic-codesigning` entitlement, which enables
   the Nitro JIT inside UIWebView on jailbroken devices (the `-nojit` IPA is signed without it).
 - **WebGL**: the iOS 6 engine ships WebGL switched off for apps; Surfari turns it on through the

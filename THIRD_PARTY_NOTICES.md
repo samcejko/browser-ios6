@@ -14,7 +14,7 @@ there, this file and `Resources/licenses.html` change with it.
 
 | Component | Version | Licence | Source |
 |---|---|---|---|
-| Mbed TLS (TLS 1.2, X.509, cryptography) | 3.6.7 | Apache-2.0 (dual-licensed Apache-2.0 OR GPL-2.0-or-later; used under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
+| Mbed TLS (TLS 1.3 and 1.2, X.509, cryptography) | 3.6.7 | Apache-2.0 (dual-licensed Apache-2.0 OR GPL-2.0-or-later; used under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
 | Brotli (decoder only) | 1.1.0 | MIT | https://github.com/google/brotli |
 | WOFF2 (decoder only) | 1.0.2 | MIT | https://github.com/google/woff2 |
 | libwebp (decoder only) | 1.3.2 | BSD-3-Clause, with Google's Additional IP Rights Grant (patents) | https://github.com/webmproject/libwebp |

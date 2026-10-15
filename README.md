@@ -6,8 +6,8 @@ iOS 6's Safari can no longer open most of today's websites: it cannot make the s
 its 2012 engine does not understand their CSS and JavaScript. Surfari keeps the iOS 6 engine for drawing pages and
 does everything around it that the old system cannot:
 
-- **Its own TLS 1.2 stack** (Mbed TLS) with current root certificates: sites with modern certificates and ciphers
-  open directly, without a proxy or relay server.
+- **Its own TLS 1.3 and 1.2 stack** (Mbed TLS) with current root certificates and a browser-like hello: sites with
+  modern certificates and ciphers open directly, without a proxy or relay server.
 - **Modern CSS rewritten** for the old engine: custom properties, flexbox and grid, nesting, modern colours,
   `:has()`, container queries, anchor positioning and much more.
 - **Modern JavaScript translated** to the old dialect by its own transpiler (ES2022, ES modules), plus polyfills for

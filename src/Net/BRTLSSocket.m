@@ -13,6 +13,7 @@
 #if defined(MBEDTLS_PSA_CRYPTO_C)
 #include "psa/crypto.h"
 #endif
+#include "BRTLSHello.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -43,11 +44,14 @@ static dispatch_once_t g_caOnce;
 #define BR_SESSION_CACHE_SIZE 32
 #define BR_SESSION_MAX_AGE (6 * 3600)
 
+// (TLS 1.2 sessions only, each for the hello it was made with: a remembered session decides the version the next hello
+// offers, so a modern hello loading the legacy one's session would offer TLS 1.2 alone, and the other way round)
 typedef struct {
     char key[280];
     mbedtls_ssl_session session;
     time_t savedAt;
     int used;
+    int legacy;
 } BRSessionEntry;
 
 static BRSessionEntry g_sessions[BR_SESSION_CACHE_SIZE];
@@ -58,14 +62,14 @@ static void BRSessionKey(NSString *host, int port, char *out, size_t outLen)
     snprintf(out, outLen, "%s:%d", [[host lowercaseString] UTF8String] ?: "", port);
 }
 
-// Installs a remembered session into the context (before the handshake). Returns YES when one was found.
-static BOOL BRSessionLoad(const char *key, mbedtls_ssl_context *ssl)
+// Installs a remembered session of this hello into the context (before the handshake). Returns YES when one was found.
+static BOOL BRSessionLoad(const char *key, int legacy, mbedtls_ssl_context *ssl)
 {
     BOOL ok = NO;
     pthread_mutex_lock(&g_sessionLock);
     for (int i = 0; i < BR_SESSION_CACHE_SIZE; i++) {
         BRSessionEntry *e = &g_sessions[i];
-        if (!e->used || strcmp(e->key, key) != 0) continue;
+        if (!e->used || e->legacy != legacy || strcmp(e->key, key) != 0) continue;
         if (time(NULL) - e->savedAt > BR_SESSION_MAX_AGE) {
             mbedtls_ssl_session_free(&e->session);
             e->used = 0;
@@ -78,7 +82,7 @@ static BOOL BRSessionLoad(const char *key, mbedtls_ssl_context *ssl)
     return ok;
 }
 
-static void BRSessionStore(const char *key, mbedtls_ssl_context *ssl)
+static void BRSessionStore(const char *key, int legacy, mbedtls_ssl_context *ssl)
 {
     mbedtls_ssl_session s;
     mbedtls_ssl_session_init(&s);
@@ -89,7 +93,7 @@ static void BRSessionStore(const char *key, mbedtls_ssl_context *ssl)
     pthread_mutex_lock(&g_sessionLock);
     int slot = -1;
     for (int i = 0; i < BR_SESSION_CACHE_SIZE; i++) {
-        if (g_sessions[i].used && strcmp(g_sessions[i].key, key) == 0) { slot = i; break; }
+        if (g_sessions[i].used && g_sessions[i].legacy == legacy && strcmp(g_sessions[i].key, key) == 0) { slot = i; break; }
     }
     if (slot < 0) {
         for (int i = 0; i < BR_SESSION_CACHE_SIZE; i++) {
@@ -108,6 +112,7 @@ static void BRSessionStore(const char *key, mbedtls_ssl_context *ssl)
     strlcpy(e->key, key, sizeof(e->key));
     e->savedAt = time(NULL);
     e->used = 1;
+    e->legacy = legacy;
     pthread_mutex_unlock(&g_sessionLock);
 }
 
@@ -140,6 +145,54 @@ static int BRSessionForgetAll(void)
     return n;
 }
 
+#pragma mark - Servers that need the legacy hello
+
+// Servers (host:port, the session key) that refused the modern hello with an alert and then took the legacy one (see
+// BRTLSHello.h): for half an hour their connections start with the legacy hello. Only the server's own refusal and a
+// legacy handshake that succeeded put a server here - a reset or an answer Mbed TLS could not read may be the network,
+// and is only tried again once - and a server that refuses the legacy hello later goes, so a refusal that had another
+// cause does not stick. The oldest goes when the list is full.
+#define BR_LEGACY_HOSTS_MAX 64
+#define BR_LEGACY_HOST_SECONDS (30 * 60)
+static NSMutableDictionary *g_legacyHosts;   // key -> when
+static pthread_mutex_t g_legacyLock = PTHREAD_MUTEX_INITIALIZER;
+
+static BOOL BRHostWantsLegacyHello(const char *key)
+{
+    NSString *k = [NSString stringWithUTF8String:key] ?: @"";
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    pthread_mutex_lock(&g_legacyLock);
+    NSNumber *at = g_legacyHosts[k];
+    BOOL wants = at && now >= [at doubleValue] && now - [at doubleValue] < BR_LEGACY_HOST_SECONDS;   // (a clock set back ends it)
+    if (at && !wants) [g_legacyHosts removeObjectForKey:k];
+    pthread_mutex_unlock(&g_legacyLock);
+    return wants;
+}
+
+static void BRNoteLegacyHello(const char *key)
+{
+    NSString *k = [NSString stringWithUTF8String:key] ?: @"";
+    pthread_mutex_lock(&g_legacyLock);
+    if (!g_legacyHosts) g_legacyHosts = [NSMutableDictionary dictionary];
+    if (!g_legacyHosts[k] && g_legacyHosts.count >= BR_LEGACY_HOSTS_MAX) {
+        NSString *oldest = nil;
+        for (NSString *other in g_legacyHosts) {
+            if (!oldest || [g_legacyHosts[other] doubleValue] < [g_legacyHosts[oldest] doubleValue]) oldest = other;
+        }
+        if (oldest) [g_legacyHosts removeObjectForKey:oldest];
+    }
+    g_legacyHosts[k] = @([NSDate timeIntervalSinceReferenceDate]);
+    pthread_mutex_unlock(&g_legacyLock);
+}
+
+static void BRForgetLegacyHello(const char *key)
+{
+    NSString *k = [NSString stringWithUTF8String:key] ?: @"";
+    pthread_mutex_lock(&g_legacyLock);
+    [g_legacyHosts removeObjectForKey:k];
+    pthread_mutex_unlock(&g_legacyLock);
+}
+
 #pragma mark - Helpers
 
 static NSString *BRMbedError(int ret)
@@ -168,12 +221,18 @@ static void BRSetCertificateError(NSError **error, uint32_t flags)
     BRSetError(error, BRErrorCertificate, message);
 }
 
+// (the modern hello's TLS 1.3 key share needs PSA: without it every connection takes the legacy hello)
+static BOOL g_psaFailed = NO;
+
 static void BRLoadCABundle(void)
 {
     mbedtls_x509_crt_init(&g_cacert);
 #if defined(MBEDTLS_PSA_CRYPTO_C)
     psa_status_t st = psa_crypto_init();
-    if (st != PSA_SUCCESS) BRLog(@"psa_crypto_init failed: %d", (int)st);
+    if (st != PSA_SUCCESS) {
+        BRLog(@"psa_crypto_init failed: %d", (int)st);
+        g_psaFailed = YES;
+    }
 #endif
     NSString *path = [[NSBundle mainBundle] pathForResource:@"cacert" ofType:@"pem"];
     if (!path) {
@@ -738,6 +797,13 @@ static int BRConnectTCP(NSString *host, int port, int timeoutMs, volatile BOOL *
     volatile BOOL _cancelled;
     uint32_t _readTimeoutMs;
     char _sessionKey[280];
+    int _alert;   // the alert a server refused the last handshake with (0 for none)
+    BOOL _reachedServer;   // a TCP connection of some try got made (see reachedServer)
+}
+
+- (BOOL)reachedServer
+{
+    return _reachedServer;
 }
 
 + (void)ensureCALoaded
@@ -839,16 +905,92 @@ static volatile int32_t g_socketSerial;
         BRSetError(error, BRErrorTLS, [NSString stringWithFormat:@"RNG seed failed: %@", BRMbedError(ret)]);
         return NO;
     }
-    if ((ret = mbedtls_ssl_config_defaults(&_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
-        BRSetError(error, BRErrorTLS, [NSString stringWithFormat:@"TLS config failed: %@", BRMbedError(ret)]);
+    if (verify && !g_caLoaded) {
+        BRSetError(error, BRErrorCertificate, L(@"The certificate bundle is missing, cannot verify the server."));
         return NO;
     }
-    mbedtls_ssl_conf_min_tls_version(&_conf, MBEDTLS_SSL_VERSION_TLS1_2);
-    if (verify) {
-        if (!g_caLoaded) {
-            BRSetError(error, BRErrorCertificate, L(@"The certificate bundle is missing, cannot verify the server."));
-            return NO;
+    BRSessionKey(host, port, _sessionKey, sizeof(_sessionKey));
+
+    // The modern hello first (BRTLSHello.h); a server that refuses it gets the legacy one, once
+    BOOL legacy = BRHostWantsLegacyHello(_sessionKey) || g_psaFailed;
+    BOOL resumed = NO, again = NO;
+    ret = [self handshakeWithHost:host port:port verify:verify legacy:legacy resumed:&resumed connectMs:connectMs readMs:readMs error:error];
+    if (ret != 0 && resumed && !_cancelled && BRLegacyHelloMayHelp(ret, _alert)) {
+        // (a refused resumption: the session is forgotten, and the same hello goes again without it before the other one)
+        BRLog(@"TLS %@: resuming failed (%@), a full handshake", host, BRMbedError(ret));
+        [self discardHandshake];
+        again = YES;
+        ret = [self handshakeWithHost:host port:port verify:verify legacy:legacy resumed:&resumed connectMs:connectMs readMs:readMs error:error];
+    }
+    if (ret != 0 && legacy && !g_psaFailed && !_cancelled && BRLegacyHelloMayHelp(ret, _alert)) {
+        if (ret == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE) {
+            // a server that took the legacy hello refuses it now: no longer remembered, and the modern one gets its turn
+            BRLog(@"TLS %@: the legacy hello was refused (%@), trying the modern one", host, BRMbedError(ret));
+            BRForgetLegacyHello(_sessionKey);
+            [self discardHandshake];
+            legacy = NO;
+            ret = [self handshakeWithHost:host port:port verify:verify legacy:NO resumed:&resumed connectMs:connectMs readMs:readMs error:error];
+        } else if (!again) {
+            // (a reset, or an answer that could not be read: maybe the network's - the same hello once more)
+            BRLog(@"TLS %@: the legacy hello failed (%@), once more", host, BRMbedError(ret));
+            [self discardHandshake];
+            ret = [self handshakeWithHost:host port:port verify:verify legacy:YES resumed:&resumed connectMs:connectMs readMs:readMs error:error];
         }
+    } else if (ret != 0 && !legacy && !_cancelled && BRLegacyHelloMayHelp(ret, _alert)) {
+        BOOL refused = ret == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE;   // (the server's own answer, not the network's)
+        BRLog(@"TLS %@: the modern hello was refused (%@), trying the legacy one", host, BRMbedError(ret));
+        [self discardHandshake];
+        NSError *legacyError = nil;
+        if ([self handshakeWithHost:host port:port verify:verify legacy:YES resumed:&resumed connectMs:connectMs readMs:readMs error:&legacyError] == 0) {
+            if (refused) BRNoteLegacyHello(_sessionKey);
+            legacy = YES;
+            ret = 0;
+        } else {
+            BRLog(@"TLS %@: the legacy hello failed too: %@", host, legacyError.localizedDescription);
+            // (the first refusal is reported, unless the legacy handshake got as far as refusing the certificate, or
+            // was cancelled)
+            if (error && legacyError && [legacyError.domain isEqualToString:BRErrorDomain] &&
+                (legacyError.code == BRErrorCertificate || legacyError.code == BRErrorCancelled)) {
+                *error = legacyError;
+            }
+        }
+    }
+    if (ret != 0) return NO;
+    if (error) *error = nil;   // (a first try's refusal is no error of the connection that got through)
+    // A resumed session carries the check of the handshake that made it, and the abbreviated handshake shows no
+    // certificate: one made without a check must not pass for a checked one. (Sessions are kept from checked handshakes
+    // only, and forgotten when the setting changes: this is the last guard.)
+    if (verify && mbedtls_ssl_get_verify_result(&_ssl) != 0) {
+        BRSessionForget(_sessionKey);
+        BRSetCertificateError(error, mbedtls_ssl_get_verify_result(&_ssl));
+        return NO;
+    }
+    _connected = YES;
+    _verified = verify;
+    mbedtls_ssl_conf_read_timeout(&_conf, (uint32_t)readMs);
+    // A TLS 1.2 session can be resumed from now on, with the same hello (TLS 1.3 ones are not: see BRTLSHello.h)
+    if (verify && mbedtls_ssl_get_version_number(&_ssl) == MBEDTLS_SSL_VERSION_TLS1_2) BRSessionStore(_sessionKey, legacy, &_ssl);
+    return YES;
+}
+
+// (handshakeWithHost: when the failure is not the server's answer: setup, the TCP connect, a cancel)
+#define BR_TLS_FAILED_EARLY 1
+
+// One handshake on the fresh configuration: the modern hello, or the legacy one. 0 when it is done; otherwise *error is
+// set, _alert holds the alert a refusing server sent, and the result is the Mbed TLS error code (or BR_TLS_FAILED_EARLY).
+// *resumed: whether it offered a remembered session.
+- (int)handshakeWithHost:(NSString *)host port:(int)port verify:(BOOL)verify legacy:(BOOL)legacy resumed:(BOOL *)resumed
+               connectMs:(int)connectMs readMs:(int)readMs error:(NSError **)error
+{
+    int ret;
+    _alert = 0;
+    *resumed = NO;
+    if ((ret = mbedtls_ssl_config_defaults(&_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
+        BRSetError(error, BRErrorTLS, [NSString stringWithFormat:@"TLS config failed: %@", BRMbedError(ret)]);
+        return BR_TLS_FAILED_EARLY;
+    }
+    BRConfigureHello(&_conf, legacy);
+    if (verify) {
         mbedtls_ssl_conf_authmode(&_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
         mbedtls_ssl_conf_ca_chain(&_conf, &g_cacert, NULL);
     } else {
@@ -864,63 +1006,78 @@ static volatile int32_t g_socketSerial;
 
     if ((ret = mbedtls_ssl_setup(&_ssl, &_conf)) != 0) {
         BRSetError(error, BRErrorTLS, [NSString stringWithFormat:@"TLS setup failed: %@", BRMbedError(ret)]);
-        return NO;
+        return BR_TLS_FAILED_EARLY;
     }
-    if ((ret = mbedtls_ssl_set_hostname(&_ssl, [host UTF8String])) != 0) {
+    // (in lower case, as the session cache's key: the name is also what a resumption is checked against)
+    if ((ret = mbedtls_ssl_set_hostname(&_ssl, [[host lowercaseString] UTF8String])) != 0) {
         BRSetError(error, BRErrorTLS, [NSString stringWithFormat:@"TLS hostname failed: %@", BRMbedError(ret)]);
-        return NO;
+        return BR_TLS_FAILED_EARLY;
     }
-    BRSessionKey(host, port, _sessionKey, sizeof(_sessionKey));
-    BOOL resuming = BRSessionLoad(_sessionKey, &_ssl);
+    // (a remembered session makes this a TLS 1.2 hello, and only one of this hello's own is taken. A failed resumption
+    // forgets the session below, so the next try starts without it.)
+    BOOL resuming = BRSessionLoad(_sessionKey, legacy ? 1 : 0, &_ssl);
+    *resumed = resuming;
 
     int fd = BRConnectTCP(host, port, connectMs, &_cancelled, error);
-    if (fd < 0) return NO;
+    if (fd < 0) return BR_TLS_FAILED_EARLY;
     @synchronized (self) {
         _net.fd = fd;
     }
+    _reachedServer = YES;
     if (_cancelled) {
         BRSetError(error, BRErrorCancelled, L(@"Cancelled"));
-        return NO;
+        return BR_TLS_FAILED_EARLY;
     }
     mbedtls_ssl_set_bio(&_ssl, &_net, mbedtls_net_send, NULL, mbedtls_net_recv_timeout);
 
     while ((ret = mbedtls_ssl_handshake(&_ssl)) != 0) {
         if (_cancelled) {
             BRSetError(error, BRErrorCancelled, L(@"Cancelled"));
-            return NO;
+            return BR_TLS_FAILED_EARLY;
         }
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
         if (resuming) BRSessionForget(_sessionKey);
         if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
             BRSetCertificateError(error, mbedtls_ssl_get_verify_result(&_ssl));
-            return NO;
+            return ret;
         }
         if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
             BRSetError(error, BRErrorTimeout, L(@"TLS handshake timed out."));
-            return NO;
+            return ret;
         }
         NSString *what = BRMbedError(ret);
         if (ret == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE && _ssl.in_msg) {
             // which alert the server sent (40 handshake_failure, 47 illegal_parameter, 70 protocol_version,
             // 71 insufficient_security, 80 internal_error, 112 unrecognized_name ...)
-            what = [what stringByAppendingFormat:@" (alert %d)", (int)_ssl.in_msg[1]];
+            _alert = (int)_ssl.in_msg[1];
+            what = [what stringByAppendingFormat:@" (alert %d)", _alert];
         }
         BRSetError(error, BRErrorTLS, [NSString stringWithFormat:L(@"TLS handshake failed: %@"), what]);
-        return NO;
+        return ret;
     }
-    // A resumed session carries the check of the handshake that made it, and the abbreviated handshake shows no
-    // certificate: one made without a check must not pass for a checked one. (Sessions are kept from checked handshakes
-    // only, and forgotten when the setting changes: this is the last guard.)
-    if (verify && mbedtls_ssl_get_verify_result(&_ssl) != 0) {
-        BRSessionForget(_sessionKey);
-        BRSetCertificateError(error, mbedtls_ssl_get_verify_result(&_ssl));
-        return NO;
+    return 0;
+}
+
+// Back to fresh contexts without a connection, for a second handshake
+- (void)discardHandshake
+{
+    @synchronized (self) {
+        mbedtls_net_free(&_net);   // (closes the descriptor; -1 again)
     }
-    _connected = YES;
-    _verified = verify;
-    mbedtls_ssl_conf_read_timeout(&_conf, (uint32_t)readMs);
-    if (verify) BRSessionStore(_sessionKey, &_ssl);
-    return YES;
+    mbedtls_ssl_free(&_ssl);
+    mbedtls_ssl_init(&_ssl);
+    mbedtls_ssl_config_free(&_conf);
+    mbedtls_ssl_config_init(&_conf);
+}
+
+// After a read that held no data (a TLS 1.3 ticket, an empty record): whether the reader may get nothing back
+// (returnsWhenIdle) because nothing more is there now - neither in Mbed TLS's buffers nor on the socket
+- (BOOL)nothingMoreToRead
+{
+    if (!self.returnsWhenIdle) return NO;
+    if (mbedtls_ssl_get_bytes_avail(&_ssl) > 0 || mbedtls_ssl_check_pending(&_ssl)) return NO;
+    struct pollfd p = { self.fileDescriptor, POLLIN, 0 };
+    return p.fd >= 0 && poll(&p, 1, 0) == 0;
 }
 
 - (NSString *)cipherSuite
@@ -954,6 +1111,9 @@ static volatile int32_t g_socketSerial;
             continue;
         }
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)
+        if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue;   // (not kept: see BRTLSHello.h)
+#endif
         BRSetError(error, BRErrorConnectionLost, [NSString stringWithFormat:L(@"Sending the request failed: %@"), BRMbedError(ret)]);
         return NO;
     }
@@ -971,7 +1131,14 @@ static volatile int32_t g_socketSerial;
                              : mbedtls_ssl_read(&_ssl, (unsigned char *)buffer, maxLength);
         if (ret > 0) return ret;
         if (ret == 0 || ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+        BOOL noData = ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)
+        if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) noData = YES;   // (not kept: see BRTLSHello.h)
+#endif
+        if (noData) {
+            if (!self.plain && [self nothingMoreToRead]) return BR_TLS_READ_NOTHING;
+            continue;
+        }
         if (ret == MBEDTLS_ERR_NET_CONN_RESET) return 0;   // abrupt close without close_notify
         if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
             BRSetError(error, BRErrorTimeout, L(@"The server stopped responding (timeout)."));
