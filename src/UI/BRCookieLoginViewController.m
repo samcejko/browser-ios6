@@ -501,9 +501,11 @@ static BOOL BRIsHeaderValueLine(NSArray *segments)
 }
 
 // A line that is only a header's name, as Chrome copies headers (the name on one line, the value on the next): a token,
-// maybe with HTTP/2's leading ':' and a ':' after it. One ending in ':', "cookie", "set-cookie" and the known names always
-// are; once a paste has such a line (anyName), any token alone on a line is.
-static BOOL BRIsHeaderNameLine(NSString *line, BOOL anyName)
+// maybe with HTTP/2's leading ':' and a ':' after it (*colon). BRHeaderNamesKnown: one ending in ':', "cookie",
+// "set-cookie" and the known names are. Once a paste has such a line, BRHeaderNamesAny: any token alone on a line is; or
+// BRHeaderNamesColon, when the paste writes its names with ':': only those are (values like "GET" or "bytes" are none).
+typedef enum { BRHeaderNamesKnown, BRHeaderNamesAny, BRHeaderNamesColon } BRHeaderNames;
+static BOOL BRIsHeaderNameLine(NSString *line, BRHeaderNames which, BOOL *colon)
 {
     static NSCharacterSet *notToken;
     static dispatch_once_t once;
@@ -512,11 +514,14 @@ static BOOL BRIsHeaderNameLine(NSString *line, BOOL anyName)
                      @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"] invertedSet];
     });
     NSString *name = [line hasPrefix:@":"] ? [line substringFromIndex:1] : line;
-    BOOL colon = [name hasSuffix:@":"];
-    if (colon) name = [name substringToIndex:name.length - 1];
+    BOOL endsInColon = [name hasSuffix:@":"];
+    if (endsInColon) name = [name substringToIndex:name.length - 1];
+    if (colon) *colon = endsInColon;
     if (!name.length || [name rangeOfCharacterFromSet:notToken].location != NSNotFound) return NO;
+    if (which == BRHeaderNamesColon) return endsInColon;
     NSString *lower = [name lowercaseString];
-    return colon || anyName || [lower isEqualToString:@"cookie"] || [lower isEqualToString:@"set-cookie"] || BRIsHeaderName(lower);
+    return endsInColon || which == BRHeaderNamesAny || [lower isEqualToString:@"cookie"] || [lower isEqualToString:@"set-cookie"] ||
+           BRIsHeaderName(lower);
 }
 
 // A row of a cookie table, a cookies.txt or a JSON export goes to this page only if the page would get it: its domain is
@@ -534,9 +539,10 @@ static BOOL BRRowDomainBelongs(NSString *rowDomain, BOOL hostOnly, NSString *hos
     return !hostOnly && [h hasSuffix:[@"." stringByAppendingString:d]] && [d rangeOfString:@"."].location != NSNotFound && !BRLooksLikePublicSuffix(d);
 }
 
-// Two hosts of one site: the same, one under the other (public-api.wordpress.com and wordpress.com, neocities.org and
-// www.neocities.org), or under a common domain of theirs that is no shared suffix (gql.reddit.com and old.reddit.com, but
-// not alice.github.io and bob.github.io). An IP address only as itself.
+// Two hosts of one site: the same, one under the other where that is no shared suffix (api.example.com and example.com;
+// of a shared one only its www: neocities.org and www.neocities.org, not alice.neocities.org), or under a common domain
+// of theirs that is no shared suffix (gql.reddit.com and old.reddit.com, but not alice.github.io and bob.github.io). An IP
+// address only as itself.
 static BOOL BRHostsShareSite(NSString *a, NSString *b)
 {
     NSCharacterSet *dot = [NSCharacterSet characterSetWithCharactersInString:@"."];
@@ -549,7 +555,8 @@ static BOOL BRHostsShareSite(NSString *a, NSString *b)
     if ([[la lastObject] rangeOfCharacterFromSet:nonDigits].location == NSNotFound) return NO;   // (IPv4)
     if ([a rangeOfString:@":"].location != NSNotFound || [b rangeOfString:@":"].location != NSNotFound) return NO;   // (IPv6)
     NSString *shorter = la.count < lb.count ? a : b, *longer = la.count < lb.count ? b : a;
-    if ([shorter rangeOfString:@"."].location != NSNotFound && [longer hasSuffix:[@"." stringByAppendingString:shorter]]) return YES;
+    if ([shorter rangeOfString:@"."].location != NSNotFound && [longer hasSuffix:[@"." stringByAppendingString:shorter]] &&
+        (!BRMayBeSharedSuffix(shorter) || [longer isEqualToString:[@"www." stringByAppendingString:shorter]])) return YES;
     NSUInteger common = 0;
     while (common < la.count && common < lb.count && [la[la.count - 1 - common] isEqualToString:lb[lb.count - 1 - common]]) common++;
     if (common < 2) return NO;
@@ -832,11 +839,13 @@ static NSString *BRWithoutQuotes(NSString *s)
     } else if (([trimmed hasPrefix:@"["] || [trimmed hasPrefix:@"{"]) && BRAddPastedJSON(trimmed, self.host, &otherSites, order, byName)) {
         lines = @"";
     }
-    // What the rows and lines are: a table of headers (a Cookie or Set-Cookie row, or a row of a known header, and no
-    // Name/Value heading of a cookie table), or Chrome's copy of headers as name and value lines (see BRIsHeaderNameLine)
+    // What the rows and lines are: a table of headers (a Cookie or Set-Cookie row, or a row of a known header with a
+    // header's value - spaces, commas, ';' - and no Name/Value heading of a cookie table: a cookie may be named dnt), or
+    // Chrome's copy of headers as name and value lines (see BRIsHeaderNameLine)
     NSCharacterSet *colonSet = [NSCharacterSet characterSetWithCharactersInString:@":"];
+    NSCharacterSet *listChars = [NSCharacterSet characterSetWithCharactersInString:@" ,;"];
     NSArray *lineList = [lines componentsSeparatedByString:@"\n"];
-    BOOL headerTable = NO, cookieTable = NO, twoLineHeaders = NO;
+    BOOL headerTable = NO, cookieTable = NO, twoLineHeaders = NO, colonNames = NO;
     for (NSString *rawLine in lineList) {
         NSString *line = [rawLine stringByTrimmingCharactersInSet:ws];
         if (!line.length) continue;
@@ -845,12 +854,18 @@ static NSString *BRWithoutQuotes(NSString *s)
             NSString *head = [[[fields[0] stringByTrimmingCharactersInSet:ws] lowercaseString] stringByTrimmingCharactersInSet:colonSet];
             NSString *second = [[fields[1] stringByTrimmingCharactersInSet:ws] lowercaseString];
             if ([head isEqualToString:@"name"] && [second isEqualToString:@"value"]) cookieTable = YES;
-            else if ([head isEqualToString:@"cookie"] || [head isEqualToString:@"set-cookie"] || BRIsHeaderName(head)) headerTable = YES;
-        } else if (BRIsHeaderNameLine(BRWithoutQuotes(line), NO)) {
-            twoLineHeaders = YES;
+            else if ([head isEqualToString:@"cookie"] || [head isEqualToString:@"set-cookie"] ||
+                     (BRIsHeaderName(head) && [second rangeOfCharacterFromSet:listChars].location != NSNotFound)) headerTable = YES;
+        } else {
+            BOOL colon = NO;
+            if (BRIsHeaderNameLine(BRWithoutQuotes(line), BRHeaderNamesKnown, &colon)) {
+                twoLineHeaders = YES;
+                if (colon) colonNames = YES;
+            }
         }
     }
     if (cookieTable) headerTable = NO;
+    BRHeaderNames names = !twoLineHeaders ? BRHeaderNamesKnown : colonNames ? BRHeaderNamesColon : BRHeaderNamesAny;
     NSString *valueOf = nil;   // the header whose value the next line is (a name alone on its line)
     for (NSString *rawLine in lineList) {
         NSString *line = [rawLine stringByTrimmingCharactersInSet:ws];
@@ -903,13 +918,15 @@ static NSString *BRWithoutQuotes(NSString *s)
         if ([line hasPrefix:@"#"]) continue;   // (a cookies.txt's comments)
         line = BRWithoutQuotes(line);
         NSString *lower = [line lowercaseString];
-        // Chrome's copy of the headers: "cookie" on one line, its value on the next; another header's value is skipped
+        // Chrome's copy of the headers: "cookie" on one line, its value on the next; another header's value is skipped.
+        // (A Cookie line is never a value: the header before it had none, "authorization:" left empty.)
+        if (header && ([lower hasPrefix:@"cookie:"] || [lower hasPrefix:@"set-cookie:"])) header = nil;
         if (header) {
             if ([header isEqualToString:@"cookie"]) BRAddPastedPairs(line, NO, order, byName);
             else if ([header isEqualToString:@"set-cookie"]) BRAddPastedSetCookie([line componentsSeparatedByString:@";"], order, byName);
             continue;
         }
-        if (BRIsHeaderNameLine(line, twoLineHeaders)) {
+        if (BRIsHeaderNameLine(line, names, NULL)) {
             valueOf = [lower stringByTrimmingCharactersInSet:colonSet];
             continue;
         }

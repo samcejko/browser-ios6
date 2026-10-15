@@ -576,16 +576,27 @@ static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
     if ([host hasSuffix:@"."]) host = [host substringToIndex:host.length - 1];   // (the import's domain has no root dot)
     NSNumber *sentAt = c.userInfo[BRCacheSentAtKey] ?: c.userInfo[BRCacheStoredAtKey];
     if (!host.length || !sentAt) return NO;
-    // (times from a clock set back since then count as now: else nothing of the cache would be served until it caught up)
+    // (a clock set back: times later than now become now, once, and an answer sent "later" than now is not trusted)
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if ([sentAt doubleValue] > now) return YES;
     @synchronized (BRCookieImportsLock()) {
         if (g_cacheEmptiedAt > now) g_cacheEmptiedAt = now;
         if ([sentAt doubleValue] < g_cacheEmptiedAt) return YES;
         BRLoadCookieImports();
+        BOOL clamped = NO;
+        for (NSMutableDictionary *imports in @[g_cookieImports, g_privateCookieImports]) {
+            for (NSString *domain in [imports allKeys]) {
+                if ([imports[domain] doubleValue] > now) {
+                    imports[domain] = @(now);
+                    if (imports == g_cookieImports) clamped = YES;
+                }
+            }
+        }
+        if (clamped) [[NSUserDefaults standardUserDefaults] setObject:[g_cookieImports copy] forKey:BRCookieImportsKey];
         for (NSDictionary *imports in @[g_cookieImports, g_privateCookieImports]) {
             for (NSString *domain in imports) {
                 if (![host isEqualToString:domain] && ![host hasSuffix:[@"." stringByAppendingString:domain]]) continue;
-                if ([sentAt doubleValue] < MIN([imports[domain] doubleValue], now)) return YES;
+                if ([sentAt doubleValue] < [imports[domain] doubleValue]) return YES;
             }
         }
     }
