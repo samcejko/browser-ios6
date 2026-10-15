@@ -576,13 +576,16 @@ static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
     if ([host hasSuffix:@"."]) host = [host substringToIndex:host.length - 1];   // (the import's domain has no root dot)
     NSNumber *sentAt = c.userInfo[BRCacheSentAtKey] ?: c.userInfo[BRCacheStoredAtKey];
     if (!host.length || !sentAt) return NO;
+    // (times from a clock set back since then count as now: else nothing of the cache would be served until it caught up)
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     @synchronized (BRCookieImportsLock()) {
+        if (g_cacheEmptiedAt > now) g_cacheEmptiedAt = now;
         if ([sentAt doubleValue] < g_cacheEmptiedAt) return YES;
         BRLoadCookieImports();
         for (NSDictionary *imports in @[g_cookieImports, g_privateCookieImports]) {
             for (NSString *domain in imports) {
                 if (![host isEqualToString:domain] && ![host hasSuffix:[@"." stringByAppendingString:domain]]) continue;
-                if ([sentAt doubleValue] < [imports[domain] doubleValue]) return YES;
+                if ([sentAt doubleValue] < MIN([imports[domain] doubleValue], now)) return YES;
             }
         }
     }

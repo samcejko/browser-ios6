@@ -48,7 +48,10 @@ static BOOL BRLooksLikePublicSuffix(NSString *name)
                    @"ae.org", @"br.com", @"cn.com", @"co.com", @"de.com", @"eu.com", @"gb.com", @"gb.net", @"gr.com",
                    @"hu.com", @"hu.net", @"in.net", @"it.com", @"jp.net", @"jpn.com", @"kr.com", @"mex.com", @"qc.com",
                    @"ru.com", @"sa.com", @"se.net", @"uk.com", @"uk.net", @"us.com", @"us.org", @"uy.com", @"za.com",
-                   @"za.net", @"za.org", nil];
+                   @"za.net", @"za.org", @"ar.com", @"eu.org",
+                   // (dynamic DNS: a name under them for anyone)
+                   @"duckdns.org", @"ddns.net", @"dynu.net", @"freeddns.org", @"hopto.org", @"zapto.org", @"sytes.net",
+                   @"no-ip.org", @"no-ip.biz", @"dyndns.org", @"afraid.org", nil];
         secondLevel = [NSSet setWithObjects:@"co", @"com", @"net", @"org", @"gov", @"edu", @"ac", @"ne", @"or", @"go",
                        @"gob", @"mil", @"nic", @"ltd", @"plc", @"sch", @"nhs", @"police", nil];
     });
@@ -76,13 +79,15 @@ static BOOL BRMayBeSharedSuffix(NSString *name)
 // www.example.com and example.com share them, the way a site's own login cookies usually are (".furaffinity.net" covers
 // www. and d.furaffinity.net). Never wider: the last two labels would be the public suffix itself for example.co.uk or
 // user.github.io, and the session would go to every site under it. A public-suffix host (neocities.org, whose
-// subdomains are other people's pages), an IP address, a one-label host or one written with the root's trailing dot
-// keeps the cookies to itself.
+// subdomains are other people's pages), an IP address or a one-label host keeps the cookies to itself. (A host written
+// with the root's trailing dot counts as the same host without it, as everywhere here: if the jar does not give its
+// page the cookies, the import is put back and the dialog says so.)
 static NSString *BRCookieDomainForHost(NSString *host)
 {
     host = [[host lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([host hasSuffix:@"."]) host = [host substringToIndex:host.length - 1];
     if (!host.length) return nil;
-    if ([host hasSuffix:@"."] || [host rangeOfString:@":"].location != NSNotFound) return host;   // (trailing dot, IPv6)
+    if ([host rangeOfString:@":"].location != NSNotFound) return host;   // (IPv6)
     NSArray *labels = [host componentsSeparatedByString:@"."];
     if (labels.count < 2) return host;
     NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
@@ -481,9 +486,9 @@ static BOOL BRIsHeaderLine(NSString *line)
     return [label rangeOfCharacterFromSet:notLabel].location == NSNotFound;
 }
 
-// The value of another header on a line of its own ("en-US,en;q=0.9", "text/html,*/*;q=0.8", Sec-CH-UA's
-// "\"Chromium\";v=\"118\""): its first part has no '=' and is a list, a type or a quoted name, or a "q=" weight follows.
-// (A list of cookies starts with name=value; only a nameless cookie would not.)
+// The value of another header on a line of its own ("en-US,en;q=0.9", "1; mode=block", "cdn-cache; desc=HIT"): its
+// first part has no '='. (A list of cookies starts with name=value; only a nameless cookie would not, and that one is
+// rare enough to go with them.)
 static BOOL BRIsHeaderValueLine(NSArray *segments)
 {
     NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
@@ -492,13 +497,26 @@ static BOOL BRIsHeaderValueLine(NSArray *segments)
         first = [seg stringByTrimmingCharactersInSet:ws];
         if (first.length) break;
     }
-    if (!first.length || [first rangeOfString:@"="].location != NSNotFound) return NO;
-    if ([first rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@",/*\""]].location != NSNotFound) return YES;
-    for (NSString *seg in segments) {
-        NSString *s = [[seg stringByTrimmingCharactersInSet:ws] lowercaseString];
-        if ([s hasPrefix:@"q="] || [s hasPrefix:@"v="]) return YES;
-    }
-    return NO;
+    return first.length && [first rangeOfString:@"="].location == NSNotFound;
+}
+
+// A line that is only a header's name, as Chrome copies headers (the name on one line, the value on the next): a token,
+// maybe with HTTP/2's leading ':' and a ':' after it. One ending in ':', "cookie", "set-cookie" and the known names always
+// are; once a paste has such a line (anyName), any token alone on a line is.
+static BOOL BRIsHeaderNameLine(NSString *line, BOOL anyName)
+{
+    static NSCharacterSet *notToken;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        notToken = [[NSCharacterSet characterSetWithCharactersInString:
+                     @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"] invertedSet];
+    });
+    NSString *name = [line hasPrefix:@":"] ? [line substringFromIndex:1] : line;
+    BOOL colon = [name hasSuffix:@":"];
+    if (colon) name = [name substringToIndex:name.length - 1];
+    if (!name.length || [name rangeOfCharacterFromSet:notToken].location != NSNotFound) return NO;
+    NSString *lower = [name lowercaseString];
+    return colon || anyName || [lower isEqualToString:@"cookie"] || [lower isEqualToString:@"set-cookie"] || BRIsHeaderName(lower);
 }
 
 // A row of a cookie table, a cookies.txt or a JSON export goes to this page only if the page would get it: its domain is
@@ -516,8 +534,9 @@ static BOOL BRRowDomainBelongs(NSString *rowDomain, BOOL hostOnly, NSString *hos
     return !hostOnly && [h hasSuffix:[@"." stringByAppendingString:d]] && [d rangeOfString:@"."].location != NSNotFound && !BRLooksLikePublicSuffix(d);
 }
 
-// Two hosts of one site: the same, or under a common domain of theirs that is no shared suffix (gql.reddit.com and
-// old.reddit.com, but not alice.github.io and bob.github.io). An IP address only as itself.
+// Two hosts of one site: the same, one under the other (public-api.wordpress.com and wordpress.com, neocities.org and
+// www.neocities.org), or under a common domain of theirs that is no shared suffix (gql.reddit.com and old.reddit.com, but
+// not alice.github.io and bob.github.io). An IP address only as itself.
 static BOOL BRHostsShareSite(NSString *a, NSString *b)
 {
     NSCharacterSet *dot = [NSCharacterSet characterSetWithCharactersInString:@"."];
@@ -529,6 +548,8 @@ static BOOL BRHostsShareSite(NSString *a, NSString *b)
     NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
     if ([[la lastObject] rangeOfCharacterFromSet:nonDigits].location == NSNotFound) return NO;   // (IPv4)
     if ([a rangeOfString:@":"].location != NSNotFound || [b rangeOfString:@":"].location != NSNotFound) return NO;   // (IPv6)
+    NSString *shorter = la.count < lb.count ? a : b, *longer = la.count < lb.count ? b : a;
+    if ([shorter rangeOfString:@"."].location != NSNotFound && [longer hasSuffix:[@"." stringByAppendingString:shorter]]) return YES;
     NSUInteger common = 0;
     while (common < la.count && common < lb.count && [la[la.count - 1 - common] isEqualToString:lb[lb.count - 1 - common]]) common++;
     if (common < 2) return NO;
@@ -548,10 +569,11 @@ static NSString *BRUnescapeCmd(NSString *s)
     return out;
 }
 
-// A character code into a string (two UTF-16 units above U+FFFF)
+// A character code into a string (two UTF-16 units above U+FFFF; a surrogate written as 😀 goes in unit by
+// unit and makes its pair with the next)
 static void BRAppendCode(NSMutableString *s, uint32_t code)
 {
-    if (code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) return;
+    if (code > 0x10FFFF) return;
     if (code > 0xFFFF) {
         code -= 0x10000;
         [s appendFormat:@"%C%C", (unichar)(0xD800 + (code >> 10)), (unichar)(0xDC00 + (code & 0x3FF))];
@@ -650,32 +672,44 @@ static NSArray *BRShellWords(NSString *command)
     return words;
 }
 
-// The host of an address as curl gets it ("https://www.example.com:8443/path?x"), nil if it is none
+// The host of an address as curl gets it ("https://www.example.com:8443/path?x", "example.com/x", "http://[::1]/"),
+// nil if it has none
 static NSString *BRHostOfAddress(NSString *address)
 {
     NSRange scheme = [address rangeOfString:@"://"];
-    if (scheme.location == NSNotFound) return nil;
-    NSString *rest = [address substringFromIndex:scheme.location + 3];
+    NSString *rest = scheme.location == NSNotFound ? address : [address substringFromIndex:scheme.location + 3];
     NSRange end = [rest rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/?#"]];
     if (end.location != NSNotFound) rest = [rest substringToIndex:end.location];
     NSRange at = [rest rangeOfString:@"@" options:NSBackwardsSearch];
     if (at.location != NSNotFound) rest = [rest substringFromIndex:at.location + 1];
-    if ([rest hasPrefix:@"["]) return nil;   // (an IPv6 address: no site to compare)
-    NSRange port = [rest rangeOfString:@":"];
-    if (port.location != NSNotFound) rest = [rest substringToIndex:port.location];
+    if ([rest hasPrefix:@"["]) {   // (an IPv6 address)
+        NSRange close = [rest rangeOfString:@"]"];
+        rest = close.location == NSNotFound ? @"" : [rest substringWithRange:NSMakeRange(1, close.location - 1)];
+    } else {
+        NSRange port = [rest rangeOfString:@":"];
+        if (port.location != NSNotFound) rest = [rest substringToIndex:port.location];
+    }
     return rest.length ? [rest lowercaseString] : nil;
 }
 
-// The cookies of one curl command (its words after "curl"), if its address is of this page's site: else they are
-// another site's, counted in otherSites
-static void BRAddPastedCurlCommand(NSArray *words, NSString *host, NSUInteger *otherSites, NSMutableArray *order, NSMutableDictionary *byName)
+// One curl command (its words after "curl"): the values of its -b/--cookie and -H 'cookie: ...' (under "values"), and
+// the host of its address (under "host", NSNull when it has none, @"" when it has one without a host to tell)
+static NSDictionary *BRCurlCommandCookies(NSArray *words)
 {
+    // (options followed by a value that is no address: a referer, a proxy, data, a method...)
+    NSSet *withValue = [NSSet setWithObjects:@"-e", @"--referer", @"-x", @"--proxy", @"-A", @"--user-agent", @"-d", @"--data",
+                        @"--data-raw", @"--data-binary", @"--data-urlencode", @"--data-ascii", @"-F", @"--form", @"-o",
+                        @"--output", @"-u", @"--user", @"-X", @"--request", @"-T", @"--upload-file", @"-w", @"--write-out",
+                        @"--resolve", @"--connect-to", @"-K", @"--config", @"-c", @"--cookie-jar", @"-m", @"--max-time",
+                        @"--connect-timeout", @"-r", @"--range", @"-E", @"--cert", @"--cacert", @"--key", @"--interface", nil];
     NSString *target = nil;
     NSMutableArray *values = [NSMutableArray array];
     for (NSUInteger i = 0; i < words.count; i++) {
         NSString *option = words[i];
         NSString *arg = i + 1 < words.count ? words[i + 1] : nil;
-        if ([option isEqualToString:@"-H"] || [option isEqualToString:@"--header"]) {
+        if ([withValue containsObject:option]) {
+            i++;
+        } else if ([option isEqualToString:@"-H"] || [option isEqualToString:@"--header"]) {
             if ([[arg lowercaseString] hasPrefix:@"cookie:"]) [values addObject:[arg substringFromIndex:7]];
             i++;
         } else if ([option isEqualToString:@"-b"] || [option isEqualToString:@"--cookie"]) {
@@ -684,36 +718,50 @@ static void BRAddPastedCurlCommand(NSArray *words, NSString *host, NSUInteger *o
         } else if ([option isEqualToString:@"--url"]) {
             if (!target) target = arg;
             i++;
-        } else if (!target && ([[option lowercaseString] hasPrefix:@"http://"] || [[option lowercaseString] hasPrefix:@"https://"])) {
+        } else if (!target && ((i == 0 && ![option hasPrefix:@"-"]) ||   // (the address first, as browsers copy it)
+                               [[option lowercaseString] hasPrefix:@"http://"] || [[option lowercaseString] hasPrefix:@"https://"])) {
             target = option;
         }
     }
-    if (!values.count) return;
-    NSString *targetHost = target ? BRHostOfAddress(target) : nil;
-    if (targetHost && !BRHostsShareSite(targetHost, host)) {
-        (*otherSites) += values.count;
-        return;
-    }
-    for (NSString *pairs in values) BRAddPastedPairs(pairs, NO, order, byName);
+    id host = target ? (BRHostOfAddress(target) ?: @"") : [NSNull null];
+    return @{ @"values": values, @"host": host };
 }
 
 // "Copy as cURL" (bash or cmd, on one line or many; DevTools' "Copy all as cURL" gives one command per request, joined
-// by ; or &): the cookies of their -b/--cookie and -H 'cookie: ...' for this page's site. Their other headers (Accept's
-// "q=0.9") and their data are not cookies.
+// by ; or &): the cookies of their -b/--cookie and -H 'cookie: ...' if their address is of this page's site (else they
+// are another site's, counted in otherSites; so is an address whose host cannot be told). Those sent to the page's own
+// host (or without an address) come last, so that they win over its sibling hosts' (api.example.com...). Their other
+// headers (Accept's "q=0.9") and their data are not cookies.
 static void BRAddPastedCurl(NSString *text, NSString *host, NSUInteger *otherSites, NSMutableArray *order, NSMutableDictionary *byName)
 {
-    NSArray *words = BRShellWords(text);
+    NSMutableArray *commands = [NSMutableArray array];
     NSMutableArray *command = nil;
-    for (NSString *w in words) {
+    for (NSString *w in BRShellWords(text)) {
         NSString *lower = [w lowercaseString];
         if ([lower isEqualToString:@"curl"] || [lower isEqualToString:@"curl.exe"]) {
-            if (command) BRAddPastedCurlCommand(command, host, otherSites, order, byName);
             command = [NSMutableArray array];
+            [commands addObject:command];
         } else if (![w isEqualToString:@";"] && ![w isEqualToString:@"&"] && ![w isEqualToString:@"&&"]) {
             [command addObject:w];
         }
     }
-    if (command) BRAddPastedCurlCommand(command, host, otherSites, order, byName);
+    NSString *pageHost = [[host lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"."]];
+    NSMutableArray *siblings = [NSMutableArray array], *own = [NSMutableArray array];
+    for (NSArray *words in commands) {
+        NSDictionary *c = BRCurlCommandCookies(words);
+        NSArray *values = c[@"values"];
+        if (!values.count) continue;
+        id target = c[@"host"];
+        if (target == [NSNull null] || [target isEqualToString:pageHost]) {
+            [own addObjectsFromArray:values];
+        } else if ([target length] && BRHostsShareSite(target, host)) {
+            [siblings addObjectsFromArray:values];
+        } else {
+            (*otherSites) += values.count;
+        }
+    }
+    for (NSString *pairs in siblings) BRAddPastedPairs(pairs, NO, order, byName);
+    for (NSString *pairs in own) BRAddPastedPairs(pairs, NO, order, byName);
 }
 
 // A JSON export (Cookie-Editor, EditThisCookie: a list of {name, value, domain, hostOnly, httpOnly...}; Playwright's
@@ -784,8 +832,27 @@ static NSString *BRWithoutQuotes(NSString *s)
     } else if (([trimmed hasPrefix:@"["] || [trimmed hasPrefix:@"{"]) && BRAddPastedJSON(trimmed, self.host, &otherSites, order, byName)) {
         lines = @"";
     }
+    // What the rows and lines are: a table of headers (a Cookie or Set-Cookie row, or a row of a known header, and no
+    // Name/Value heading of a cookie table), or Chrome's copy of headers as name and value lines (see BRIsHeaderNameLine)
+    NSCharacterSet *colonSet = [NSCharacterSet characterSetWithCharactersInString:@":"];
+    NSArray *lineList = [lines componentsSeparatedByString:@"\n"];
+    BOOL headerTable = NO, cookieTable = NO, twoLineHeaders = NO;
+    for (NSString *rawLine in lineList) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:ws];
+        if (!line.length) continue;
+        if ([line rangeOfString:@"\t"].location != NSNotFound) {
+            NSArray *fields = [line componentsSeparatedByString:@"\t"];
+            NSString *head = [[[fields[0] stringByTrimmingCharactersInSet:ws] lowercaseString] stringByTrimmingCharactersInSet:colonSet];
+            NSString *second = [[fields[1] stringByTrimmingCharactersInSet:ws] lowercaseString];
+            if ([head isEqualToString:@"name"] && [second isEqualToString:@"value"]) cookieTable = YES;
+            else if ([head isEqualToString:@"cookie"] || [head isEqualToString:@"set-cookie"] || BRIsHeaderName(head)) headerTable = YES;
+        } else if (BRIsHeaderNameLine(BRWithoutQuotes(line), NO)) {
+            twoLineHeaders = YES;
+        }
+    }
+    if (cookieTable) headerTable = NO;
     NSString *valueOf = nil;   // the header whose value the next line is (a name alone on its line)
-    for (NSString *rawLine in [lines componentsSeparatedByString:@"\n"]) {
+    for (NSString *rawLine in lineList) {
         NSString *line = [rawLine stringByTrimmingCharactersInSet:ws];
         if (!line.length) continue;
         NSString *header = valueOf;
@@ -802,7 +869,7 @@ static NSString *BRWithoutQuotes(NSString *s)
                 BRAddPastedSetCookie([fields[1] componentsSeparatedByString:@";"], order, byName);
                 continue;
             }
-            if (fields.count == 2 && BRIsHeaderName(head)) continue;
+            if (fields.count == 2 && headerTable) continue;   // (a header table's other rows)
             // a Netscape cookies.txt: domain, include subdomains, path, secure, expiry (may be empty), name, value (an
             // empty one may have lost its tab); "#HttpOnly_" before an HttpOnly cookie's domain, other "#" lines comments
             if ([line hasPrefix:@"#"] && ![line hasPrefix:@"#HttpOnly_"]) continue;
@@ -842,10 +909,8 @@ static NSString *BRWithoutQuotes(NSString *s)
             else if ([header isEqualToString:@"set-cookie"]) BRAddPastedSetCookie([line componentsSeparatedByString:@";"], order, byName);
             continue;
         }
-        NSString *bare = [lower stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@":"]];
-        if ([bare isEqualToString:@"cookie"] || [bare isEqualToString:@"set-cookie"] ||
-            ([line rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"=; "]].location == NSNotFound && BRIsHeaderName(line))) {
-            valueOf = bare;
+        if (BRIsHeaderNameLine(line, twoLineHeaders)) {
+            valueOf = [lower stringByTrimmingCharactersInSet:colonSet];
             continue;
         }
         if ([lower hasPrefix:@"cookie:"]) {

@@ -22,9 +22,9 @@ the top. (The section of a version becomes the notes of its GitHub Release.)
 - More of what people paste is understood: document.cookie copied in quotes, a Set-Cookie line (its HttpOnly is kept,
   its other attributes are not cookies; one that deletes a cookie is left out), a block of request headers or a table
   of them, "Copy as cURL" (bash or cmd, also several commands at once), a JSON export (Cookie-Editor, EditThisCookie),
-  rows of a browser's cookie table or of a cookies.txt file. Of a file, table or cURL commands with many sites only
-  the cookies the page would get are taken (another site's session no longer goes to this one); if none are left, the
-  dialog says so. Within one Cookie header or document.cookie line the first of two cookies of a name counts, as on
+  rows of a browser's cookie table or of a cookies.txt file. Of a file or table with many sites only the cookies the
+  page would get are taken, of cURL commands only those sent to the page's site, the page's own host winning (another
+  site's session no longer goes to this one); if none are left, the dialog says so. Within one Cookie header or document.cookie line the first of two cookies of a name counts, as on
   the server.
 - A site's own subdomains keep their cookies when the login is for a host that keeps them to itself (neocities.org,
   an IP address), and a login moves up to a parent domain only where that is no shared suffix (uk.com, blogspot.*,
