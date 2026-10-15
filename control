@@ -1,6 +1,6 @@
 Package: com.samcejko.browser
 Name: Surfari
-Version: 1.1.0
+Version: 1.1.1
 Architecture: iphoneos-arm
 Description: A modern-web browser for jailbroken iOS 6
  Surfari opens today's websites on iOS 6 devices. It brings its own TLS 1.2
@@ -13,5 +13,5 @@ Maintainer: samcejko
 Author: samcejko
 Homepage: https://github.com/samcejko/surfari
 Section: Networking
-Depends: firmware (>= 6.0)
+Depends: firmware (>= 6.0), firmware (<< 7.0)
 Icon: file:///Applications/Surfari.app/Icon.png

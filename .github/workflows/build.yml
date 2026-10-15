@@ -26,8 +26,9 @@ env:
   SDK_RELEASE: master-146e41f
   # (GitHub publishes no checksum for these two files: while one is empty, a build prints the SHA-256 it got as a
   # warning, to be pinned here, and a release build refuses to start - see the Version step)
-  TOOLCHAIN_SHA256: ""
-  SDK_SHA256: ""
+  # (pinned 2026-10-15; both assets are unchanged since 2023-09-06 and 2023-11-23)
+  TOOLCHAIN_SHA256: a72a7a577e2fbe2838b6b5e9c72034fa7d114af96f0e1d4b016f18730ce4056e
+  SDK_SHA256: 39df195271aadab894e740ae957005b9af8090593399dffc9aa6204008de3cc1
   THEOS_CACHE_KEY: theos-linux-v2
   MBEDTLS_VERSION: "3.6.7"
   MBEDTLS_SHA256: a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6

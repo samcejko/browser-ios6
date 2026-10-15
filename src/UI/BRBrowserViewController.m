@@ -54,6 +54,7 @@ static const CGFloat BRControlHeight = 30;
 @property (nonatomic, copy) void (^authCompletion)(NSString *user, NSString *password);   // login dialog in progress
 @property (nonatomic, strong) UIAlertView *authAlert;
 @property (nonatomic, strong) NSURL *challengeURL;                    // page behind the "open in Safari" offer
+@property (nonatomic, strong) NSURL *cookieLoginURL;                  // the page the reload menu offered "Log in with cookies…" for
 @property (nonatomic, strong) UIView *findBar;
 @property (nonatomic, strong) UIImageView *findBarBackground;
 @property (nonatomic, strong) UITextField *findField;
@@ -1378,10 +1379,15 @@ static void BRWebThreadLock(void)
 {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
     NSString *host = (self.webView.request.URL ?: self.currentURL).host;
+    // The page shown (committed), chosen now: the imported cookies are for its site, their Secure flag follows its
+    // scheme, and it is the page loaded again with them - whatever loads meanwhile.
+    NSURL *page = self.webView.request.URL;
+    NSString *scheme = [page.scheme lowercaseString];
+    self.cookieLoginURL = (page.host.length && ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"])) ? page : nil;
     UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:host delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
     [sheet addButtonWithTitle:L(@"Reload without cache")];
     [sheet addButtonWithTitle:[BRSettings userAgentModeForHost:host] == 0 ? L(@"Request desktop version") : L(@"Request mobile version")];
-    if (host.length) [sheet addButtonWithTitle:L(@"Log in with cookies…")];
+    if (self.cookieLoginURL) [sheet addButtonWithTitle:L(@"Log in with cookies…")];
     if (host.length && [BRSettings adBlockEnabled]) {
         [sheet addButtonWithTitle:[BRSettings adBlockDisabledForHost:host] ? L(@"Block ads on this site") : L(@"Allow ads on this site")];
     }
@@ -1394,14 +1400,14 @@ static void BRWebThreadLock(void)
 
 // "Log in with cookies": log in to the site in another browser, paste its cookies here, and we store them in the jar
 // so the logged-in version loads - the only way past a login CAPTCHA (Cloudflare Turnstile and the like) this engine
-// cannot run. The page is reloaded once they are stored.
-- (void)promptCookieLoginForHost:(NSString *)host
+// cannot run. Once they are stored, that same page is loaded again past the cache.
+- (void)promptCookieLoginForURL:(NSURL *)page
 {
-    if (!host.length) return;
-    NSURL *url = self.webView.request.URL ?: self.currentURL;
-    BOOL secure = [[url.scheme lowercaseString] isEqualToString:@"https"];
-    BRCookieLoginViewController *vc = [[BRCookieLoginViewController alloc] initWithHost:host secure:secure];
-    vc.onStored = ^(NSUInteger count) { [self reloadIgnoringCache]; };
+    if (!page.host.length) return;
+    BRCookieLoginViewController *vc = [[BRCookieLoginViewController alloc] initWithPageURL:page];
+    vc.onStored = ^(NSUInteger count) {
+        [self.webView loadRequest:[NSURLRequest requestWithURL:page cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:60]];
+    };
     [self presentModal:vc];
 }
 
@@ -3016,7 +3022,7 @@ static void BRWebThreadLock(void)
         if ([pick isEqualToString:L(@"Reload without cache")]) {
             [self reloadIgnoringCache];
         } else if ([pick isEqualToString:L(@"Log in with cookies…")]) {
-            [self promptCookieLoginForHost:(self.webView.request.URL ?: self.currentURL).host];
+            [self promptCookieLoginForURL:self.cookieLoginURL];
         } else if ([pick isEqualToString:L(@"Allow ads on this site")] || [pick isEqualToString:L(@"Block ads on this site")]) {
             NSString *host = (self.webView.request.URL ?: self.currentURL).host;
             [BRSettings setAdBlockDisabled:[pick isEqualToString:L(@"Allow ads on this site")] forHost:host];

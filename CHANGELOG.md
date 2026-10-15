@@ -3,6 +3,30 @@
 The changes of each Surfari release. Versions follow [Semantic Versioning](https://semver.org/); the newest is at
 the top. (The section of a version becomes the notes of its GitHub Release.)
 
+## [1.1.1] - 2026-10-15
+
+### Fixed
+
+- Log in with cookies keeps the cookies for the page's own host and its subdomains (a leading "www." dropped), no
+  longer for the last two labels of its name: for a site under co.uk, com.au, github.io and the like that is a public
+  suffix, and the cookies would have gone to every site under it.
+- Cookies of the same name that the site had set before (the logged-out session) are replaced, instead of going out
+  next to the imported ones, where many servers read only the first.
+- The clipboard is no longer read when the dialog opens: the Paste button above the keyboard puts it in. (A page can
+  write to the clipboard after a tap.)
+- The cookies are for the page the menu was opened on, with that page's Secure flag, and that page is the one loaded
+  again; pages of the site that the cache kept from before the login are no longer shown with the cookies.
+- Imported cookies are out of reach of the pages' scripts (HttpOnly), except the CSRF tokens a site's own script reads.
+- A pasted Set-Cookie line or block of request headers no longer stores the attributes or the other headers as cookies;
+  the dialog tells when the cookies could not be stored.
+- On an iPhone the text box stays above the keyboard; in private browsing the dialog says that the login lasts until
+  private browsing is turned off. The help page describes the feature.
+
+### Changed
+
+- The package itself asks for iOS 6.x (`firmware (<< 7.0)`), as the Cydia repository already did, so the GitHub
+  release and the repository hand out the same file.
+
 ## [1.1.0] - 2026-10-15
 
 ### Added

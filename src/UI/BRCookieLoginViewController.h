@@ -5,10 +5,11 @@
 // Cloudflare Turnstile and the like need a JavaScript engine newer than this one. Presented modally from the browser.
 @interface BRCookieLoginViewController : UIViewController
 
-// host: the site the cookies are for (e.g. "www.furaffinity.net"); secure: the page was loaded over https.
-- (instancetype)initWithHost:(NSString *)host secure:(BOOL)secure;
+// page: the page the cookies are for (http or https). Its host decides where they are stored (that host and its
+// subdomains, a leading "www." dropped), its scheme whether they are Secure.
+- (instancetype)initWithPageURL:(NSURL *)page;
 
-// Called after the cookies were stored (with how many); the browser reloads the page so the logged-in version shows.
+// Called after the cookies were stored (with how many); the browser loads the page again, past the cache.
 @property (nonatomic, copy) void (^onStored)(NSUInteger count);
 
 @end

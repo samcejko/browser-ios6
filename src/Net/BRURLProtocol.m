@@ -533,6 +533,31 @@ static BOOL BRCachedSetsCookies(NSCachedURLResponse *c)
     return BRHeader(f, @"Set-Cookie") != nil || BRHeader(f, @"Set-Cookie2") != nil;
 }
 
+// Domains the user imported cookies for (+noteCookiesImportedForDomain:) -> when, for the run of the app
+static NSMutableDictionary *g_cookieImports;
+static id BRCookieImportsLock(void)
+{
+    static id lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [[NSObject alloc] init]; });
+    return lock;
+}
+
+// A stored answer of a site the user imported cookies for since: the logged-out page, not for a request with them
+static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
+{
+    NSString *host = [url.host lowercaseString];
+    NSNumber *storedAt = c.userInfo[BRCacheStoredAtKey];
+    if (!host.length || !storedAt) return NO;
+    @synchronized (BRCookieImportsLock()) {
+        for (NSString *domain in g_cookieImports) {
+            if (![host isEqualToString:domain] && ![host hasSuffix:[@"." stringByAppendingString:domain]]) continue;
+            if ([storedAt doubleValue] < [g_cookieImports[domain] doubleValue]) return YES;
+        }
+    }
+    return NO;
+}
+
 @interface BRURLProtocol ()
 @property (nonatomic, strong) NSThread *clientThread;
 @property (nonatomic, strong) NSArray *clientModes;
@@ -622,6 +647,16 @@ static NSHashTable *g_activeProtocols;
 + (NSURL *)lastMainDocumentURL { @synchronized (self) { return g_lastMainURL; } }
 + (NSString *)lastMainDocumentTLSInfo { @synchronized (self) { return g_lastMainTLS; } }
 + (NSString *)lastMainDocumentContentType { @synchronized (self) { return g_lastMainContentType; } }
+
++ (void)noteCookiesImportedForDomain:(NSString *)domain
+{
+    NSString *d = [[domain lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"."]];
+    if (!d.length) return;
+    @synchronized (BRCookieImportsLock()) {
+        if (!g_cookieImports) g_cookieImports = [NSMutableDictionary dictionary];
+        g_cookieImports[d] = @([NSDate timeIntervalSinceReferenceDate]);
+    }
+}
 
 // A script the page could not parse (a SyntaxError from its own URL, see shims-extra.js): its cached copy goes, once per
 // URL and session, so that the next visit loads it and lowers it again. (IKEA's recommendation chunks were in the cache
@@ -803,6 +838,11 @@ static BOOL BRIsFontDataURL(NSURL *url)
                 if (cached && anonymous && [cached.userInfo[BRCacheCredentialedKey] boolValue]) {
                     cached = nil;
                     credentialed = YES;
+                }
+                // ...and the other way round after the user imported cookies for the site: what was kept without them
+                // is the logged-out page (the fresh answer, made with them, takes its place)
+                if (cached && !anonymous && ![cached.userInfo[BRCacheCredentialedKey] boolValue] && BRCachedBeforeCookieImport(cached, url)) {
+                    cached = nil;
                 }
             }
             OSAtomicDecrement32(&g_lookupsWaiting);

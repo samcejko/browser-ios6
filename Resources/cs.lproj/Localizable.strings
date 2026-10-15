@@ -195,3 +195,6 @@
 "Log in with cookies" = "Přihlásit přes cookies";
 "If a site's login needs a CAPTCHA this engine can't show, log in to it in another browser, then paste that site's cookies below. Surfari keeps you signed in to %@.\n\nExample:  a=VALUE; b=VALUE" = "Pokud přihlášení na webu vyžaduje CAPTCHA, kterou tento engine neumí zobrazit, přihlaste se na něj v jiném prohlížeči a sem vložte cookies toho webu. Surfari vás na %@ udrží přihlášené.\n\nPříklad:  a=HODNOTA; b=HODNOTA";
 "No cookies were found. Paste them as name=value, separated by semicolons." = "Žádné cookies se nenašly. Vložte je ve tvaru název=hodnota oddělené středníkem.";
+"Paste" = "Vložit";
+"Private browsing is on: this login lasts until you turn it off." = "Je zapnuté anonymní prohlížení: přihlášení vydrží, dokud ho nevypnete.";
+"The cookies could not be stored." = "Cookies se nepodařilo uložit.";
