@@ -3,6 +3,15 @@
 The changes of each Surfari release. Versions follow [Semantic Versioning](https://semver.org/); the newest is at
 the top. (The section of a version becomes the notes of its GitHub Release.)
 
+## [1.1.0] - 2026-10-15
+
+### Added
+
+- **Log in with cookies**: on sites whose login needs a CAPTCHA the iOS 6 engine cannot run (Cloudflare Turnstile and
+  the like), log in to the site in another browser and paste its cookies into Surfari — long press the reload button,
+  then "Log in with cookies". Surfari stores them for the site, so the logged-in page loads without ever showing the
+  CAPTCHA. The box pre-fills from the clipboard, and the cookies are kept for the site and its subdomains.
+
 ## [1.0.0] - 2026-10-03
 
 The first public release. Test builds before it were called "Browser"; Surfari keeps their app identity
