@@ -537,10 +537,12 @@ static BOOL BRCachedSetsCookies(NSCachedURLResponse *c)
 // Domains the user imported cookies for (+noteCookiesImportedForDomain:) -> when. Kept in the user defaults, so that the
 // cache's logged-out pages stay out after a relaunch, for as long as such an answer could still be fresh (a server may
 // give it a year; the imported cookies last one); one made in private browsing only for the run of the app (no site of
-// private browsing goes to the disk). Emptying the cache forgets them (+forgetCookieImports): nothing from before is left.
+// private browsing goes to the disk). Emptying the cache forgets them (+forgetCookieImports): nothing from before is left
+// but the answers to requests still under way then, which g_cacheEmptiedAt keeps out in their place.
 static NSString * const BRCookieImportsKey = @"BRCookieImports";
 #define BR_COOKIE_IMPORT_KEPT (400 * 24 * 3600.0)
 static NSMutableDictionary *g_cookieImports, *g_privateCookieImports;
+static NSTimeInterval g_cacheEmptiedAt;   // (for the run of the app: no request lasts longer)
 static id BRCookieImportsLock(void)
 {
     static id lock;
@@ -567,7 +569,7 @@ static void BRLoadCookieImports(void)
 
 // A stored answer to a request that went out before the user imported cookies for its site: the logged-out page, not for
 // a request that carries them. (When the request was sent, not when the answer was stored: one under way during the
-// import was made without the cookies too.)
+// import was made without the cookies too.) Also one sent before the cache was emptied, whose import may be forgotten.
 static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
 {
     NSString *host = [url.host lowercaseString];
@@ -575,6 +577,7 @@ static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
     NSNumber *sentAt = c.userInfo[BRCacheSentAtKey] ?: c.userInfo[BRCacheStoredAtKey];
     if (!host.length || !sentAt) return NO;
     @synchronized (BRCookieImportsLock()) {
+        if ([sentAt doubleValue] < g_cacheEmptiedAt) return YES;
         BRLoadCookieImports();
         for (NSDictionary *imports in @[g_cookieImports, g_privateCookieImports]) {
             for (NSString *domain in imports) {
@@ -697,6 +700,7 @@ static NSHashTable *g_activeProtocols;
 {
     @synchronized (BRCookieImportsLock()) {
         BRLoadCookieImports();
+        g_cacheEmptiedAt = [NSDate timeIntervalSinceReferenceDate];
         [g_cookieImports removeAllObjects];
         [g_privateCookieImports removeAllObjects];
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:BRCookieImportsKey];
