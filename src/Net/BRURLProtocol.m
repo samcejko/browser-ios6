@@ -163,6 +163,7 @@ static NSString * const BRCacheStoredAtKey = @"BRStoredAt";     // NSCachedURLRe
 static NSString * const BRCacheMaxAgeKey = @"BRMaxAge";
 static NSString * const BRCacheRewriteTagKey = @"BRRewriteTag";   // the rewriters that made a stored text body
 static NSString * const BRCacheCredentialedKey = @"BRCredentialed";   // fetched with the user's cookies or login
+static NSString * const BRCacheSentAtKey = @"BRSentAt";           // when the request went out, with the jar's cookies of then
 
 // a stored document, stylesheet or script was rewritten by the rewriters of another version: not used (a fixed
 // transpiler would otherwise not reach a script cached for a year)
@@ -533,8 +534,12 @@ static BOOL BRCachedSetsCookies(NSCachedURLResponse *c)
     return BRHeader(f, @"Set-Cookie") != nil || BRHeader(f, @"Set-Cookie2") != nil;
 }
 
-// Domains the user imported cookies for (+noteCookiesImportedForDomain:) -> when, for the run of the app
-static NSMutableDictionary *g_cookieImports;
+// Domains the user imported cookies for (+noteCookiesImportedForDomain:) -> when. Kept in the user defaults, so that the
+// cache's logged-out pages stay out after a relaunch, for as long as such an answer could still be fresh; one made in
+// private browsing only for the run of the app (no site of private browsing goes to the disk).
+static NSString * const BRCookieImportsKey = @"BRCookieImports";
+#define BR_COOKIE_IMPORT_KEPT (30 * 24 * 3600.0)
+static NSMutableDictionary *g_cookieImports, *g_privateCookieImports;
 static id BRCookieImportsLock(void)
 {
     static id lock;
@@ -543,16 +548,37 @@ static id BRCookieImportsLock(void)
     return lock;
 }
 
-// A stored answer of a site the user imported cookies for since: the logged-out page, not for a request with them
+// (called with BRCookieImportsLock held)
+static void BRLoadCookieImports(void)
+{
+    if (g_cookieImports) return;
+    g_cookieImports = [NSMutableDictionary dictionary];
+    g_privateCookieImports = [NSMutableDictionary dictionary];
+    NSDictionary *saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:BRCookieImportsKey];
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    for (NSString *domain in saved) {
+        NSNumber *at = saved[domain];
+        if ([domain isKindOfClass:[NSString class]] && [at isKindOfClass:[NSNumber class]] && now - [at doubleValue] < BR_COOKIE_IMPORT_KEPT) {
+            g_cookieImports[domain] = at;
+        }
+    }
+}
+
+// A stored answer to a request that went out before the user imported cookies for its site: the logged-out page, not for
+// a request that carries them. (When the request was sent, not when the answer was stored: one under way during the
+// import was made without the cookies too.)
 static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
 {
     NSString *host = [url.host lowercaseString];
-    NSNumber *storedAt = c.userInfo[BRCacheStoredAtKey];
-    if (!host.length || !storedAt) return NO;
+    NSNumber *sentAt = c.userInfo[BRCacheSentAtKey] ?: c.userInfo[BRCacheStoredAtKey];
+    if (!host.length || !sentAt) return NO;
     @synchronized (BRCookieImportsLock()) {
-        for (NSString *domain in g_cookieImports) {
-            if (![host isEqualToString:domain] && ![host hasSuffix:[@"." stringByAppendingString:domain]]) continue;
-            if ([storedAt doubleValue] < [g_cookieImports[domain] doubleValue]) return YES;
+        BRLoadCookieImports();
+        for (NSDictionary *imports in @[g_cookieImports, g_privateCookieImports]) {
+            for (NSString *domain in imports) {
+                if (![host isEqualToString:domain] && ![host hasSuffix:[@"." stringByAppendingString:domain]]) continue;
+                if ([sentAt doubleValue] < [imports[domain] doubleValue]) return YES;
+            }
         }
     }
     return NO;
@@ -584,6 +610,7 @@ static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
 @property (nonatomic, copy) NSString *sentMethod;
 @property (nonatomic, strong) NSDictionary *sentHeaders;
 @property (nonatomic, strong) NSData *sentBody;
+@property (nonatomic) NSTimeInterval sentAt;     // when they went (see BRCachedBeforeCookieImport)
 @property (nonatomic) BOOL thirdParty;          // cookies are neither sent nor stored
 @property (nonatomic) BOOL credentialedEntry;   // the cache keeps an answer made with credentials, not for this request
 @property (nonatomic) BOOL authAttempted;       // the user was asked once for this request
@@ -652,9 +679,15 @@ static NSHashTable *g_activeProtocols;
 {
     NSString *d = [[domain lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"."]];
     if (!d.length) return;
+    NSNumber *now = @([NSDate timeIntervalSinceReferenceDate]);
     @synchronized (BRCookieImportsLock()) {
-        if (!g_cookieImports) g_cookieImports = [NSMutableDictionary dictionary];
-        g_cookieImports[d] = @([NSDate timeIntervalSinceReferenceDate]);
+        BRLoadCookieImports();
+        if ([BRSettings privateMode]) {
+            g_privateCookieImports[d] = now;
+        } else {
+            g_cookieImports[d] = now;
+            [[NSUserDefaults standardUserDefaults] setObject:[g_cookieImports copy] forKey:BRCookieImportsKey];
+        }
     }
 }
 
@@ -839,9 +872,10 @@ static BOOL BRIsFontDataURL(NSURL *url)
                     cached = nil;
                     credentialed = YES;
                 }
-                // ...and the other way round after the user imported cookies for the site: what was kept without them
-                // is the logged-out page (the fresh answer, made with them, takes its place)
-                if (cached && !anonymous && ![cached.userInfo[BRCacheCredentialedKey] boolValue] && BRCachedBeforeCookieImport(cached, url)) {
+                // ...and after the user imported cookies for the site, what was fetched before - without them, if with
+                // the site's logged-out cookies - is the logged-out page: a request that carries them does not get it,
+                // and the fresh answer takes its place
+                if (cached && !anonymous && BRCachedBeforeCookieImport(cached, url)) {
                     cached = nil;
                 }
             }
@@ -922,6 +956,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
     self.sentMethod = method;
     self.sentHeaders = headers;
     self.sentBody = body;
+    self.sentAt = [NSDate timeIntervalSinceReferenceDate];
     BRHTTPRequest *r = [[BRHTTPRequest alloc] initWithMethod:method URL:url];
     r.headers = headers;
     r.body = body;
@@ -1438,9 +1473,10 @@ static BOOL BRIsFontDataURL(NSURL *url)
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:kept];
     if (!response) return;
     BOOL credentialed = BRHeader(self.sentHeaders, @"Cookie") != nil || BRHeader(self.sentHeaders, @"Authorization") != nil;
-    NSDictionary *info = @{ BRCacheStoredAtKey: @([NSDate timeIntervalSinceReferenceDate]), BRCacheMaxAgeKey: @(maxAge),
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSDictionary *info = @{ BRCacheStoredAtKey: @(now), BRCacheMaxAgeKey: @(maxAge),
                             BRCacheRewriteTagKey: self.fontBody ? BRFontCacheTag : rewritten ? [BRCSSRewriter rewriteTag] : BRRawCacheTag(),
-                            BRCacheCredentialedKey: @(credentialed) };
+                            BRCacheCredentialedKey: @(credentialed), BRCacheSentAtKey: @(self.sentAt > 0 ? self.sentAt : now) };
     // (the body is not changed after this: the request lets go of it)
     NSCachedURLResponse *c = [[NSCachedURLResponse alloc] initWithResponse:response data:data userInfo:info storagePolicy:NSURLCacheStorageAllowed];
     BRStoreLater(c, self.request);   // (written once no lookup waits, see BRStoreLater)

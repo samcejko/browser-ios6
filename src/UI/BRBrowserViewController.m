@@ -1405,8 +1405,12 @@ static void BRWebThreadLock(void)
 {
     if (!page.host.length) return;
     BRCookieLoginViewController *vc = [[BRCookieLoginViewController alloc] initWithPageURL:page];
+    // (without its #fragment: within the same document a fragment only scrolls, and the page would not load again)
+    NSString *spec = page.absoluteString;
+    NSRange hash = [spec rangeOfString:@"#"];
+    NSURL *target = (hash.location != NSNotFound ? [NSURL URLWithString:[spec substringToIndex:hash.location]] : nil) ?: page;
     vc.onStored = ^(NSUInteger count) {
-        [self.webView loadRequest:[NSURLRequest requestWithURL:page cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:60]];
+        [self.webView loadRequest:[NSURLRequest requestWithURL:target cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:60]];
     };
     [self presentModal:vc];
 }

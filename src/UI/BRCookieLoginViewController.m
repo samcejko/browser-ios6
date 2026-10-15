@@ -29,17 +29,20 @@
     return self;
 }
 
-// A two-label name that is a public suffix rather than a site: a country's second level (co.uk, com.au, ne.jp...) or a
-// hosting service whose subdomains belong to different people (github.io...). Only asked for www.<that name>.
+// A name that is a public suffix rather than one site: a country's second level (co.uk, com.au, ne.jp...) or a hosting
+// service whose subdomains belong to different people (github.io, neocities.org...). Cookies are never given to it.
 static BOOL BRLooksLikePublicSuffix(NSString *name)
 {
     static NSSet *hosting, *secondLevel;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        hosting = [NSSet setWithObjects:@"github.io", @"gitlab.io", @"herokuapp.com", @"netlify.app", @"vercel.app",
-                   @"pages.dev", @"workers.dev", @"web.app", @"firebaseapp.com", @"appspot.com", @"blogspot.com",
-                   @"wordpress.com", @"tumblr.com", @"azurewebsites.net", @"cloudfront.net", @"onrender.com", @"glitch.me",
-                   @"fly.dev", @"neocities.org", @"surge.sh", nil];
+        hosting = [NSSet setWithObjects:@"github.io", @"gitlab.io", @"bitbucket.io", @"herokuapp.com", @"netlify.app",
+                   @"vercel.app", @"pages.dev", @"workers.dev", @"web.app", @"firebaseapp.com", @"appspot.com",
+                   @"blogspot.com", @"wordpress.com", @"tumblr.com", @"azurewebsites.net", @"cloudfront.net",
+                   @"onrender.com", @"railway.app", @"deno.dev", @"fly.dev", @"glitch.me", @"neocities.org", @"surge.sh",
+                   @"myshopify.com", @"itch.io", @"wixsite.com", @"weebly.com", @"square.site", @"webflow.io", @"carrd.co",
+                   @"gitbook.io", @"notion.site", @"readthedocs.io", @"pythonanywhere.com", @"repl.co", @"replit.app",
+                   @"ngrok.io", @"ngrok.app", @"ngrok-free.app", nil];
         secondLevel = [NSSet setWithObjects:@"co", @"com", @"net", @"org", @"gov", @"edu", @"ac", @"ne", @"or", @"go",
                        @"gob", @"mil", @"nic", @"ltd", @"plc", @"sch", @"nhs", @"police", nil];
     });
@@ -48,26 +51,23 @@ static BOOL BRLooksLikePublicSuffix(NSString *name)
     return labels.count == 2 && [labels[1] length] == 2 && [secondLevel containsObject:labels[0]];
 }
 
-// Where the imported cookies are stored: the page's host and its subdomains (".host"), a leading "www." dropped so that
+// Where the imported cookies go by default: the page's host and its subdomains (".host"), a leading "www." dropped so that
 // www.example.com and example.com share them, the way a site's own login cookies usually are (".furaffinity.net" covers
 // www. and d.furaffinity.net). Never wider: the last two labels would be the public suffix itself for example.co.uk or
-// user.github.io, and the session would go to every site under it. An IP address or a one-label host keeps the
-// cookies to itself.
+// user.github.io, and the session would go to every site under it. A public-suffix host (neocities.org, whose
+// subdomains are other people's pages), an IP address, a one-label host or one written with the root's trailing dot
+// keeps the cookies to itself.
 static NSString *BRCookieDomainForHost(NSString *host)
 {
     host = [[host lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([host hasSuffix:@"."]) host = [host substringToIndex:host.length - 1];
     if (!host.length) return nil;
-    if ([host rangeOfString:@":"].location != NSNotFound) return host;   // IPv6
+    if ([host hasSuffix:@"."] || [host rangeOfString:@":"].location != NSNotFound) return host;   // (trailing dot, IPv6)
     NSArray *labels = [host componentsSeparatedByString:@"."];
     if (labels.count < 2) return host;
     NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
     if ([[labels lastObject] rangeOfCharacterFromSet:nonDigits].location == NSNotFound) return host;   // IPv4
-    NSString *site = host;
-    if (labels.count >= 3 && [labels[0] isEqualToString:@"www"]) {
-        NSString *rest = [host substringFromIndex:4];
-        if (!(labels.count == 3 && BRLooksLikePublicSuffix(rest))) site = rest;
-    }
+    NSString *site = (labels.count >= 3 && [labels[0] isEqualToString:@"www"]) ? [host substringFromIndex:4] : host;
+    if (BRLooksLikePublicSuffix(site)) return [site isEqualToString:host] ? host : [@"." stringByAppendingString:host];
     return [@"." stringByAppendingString:site];
 }
 
@@ -81,6 +81,11 @@ static BOOL BRIsCookieName(NSString *name)
                      @"!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"] invertedSet];
     });
     return name.length && [name rangeOfCharacterFromSet:notToken].location == NSNotFound;
+}
+
+static BOOL BRIsDigits(NSString *s)
+{
+    return s.length && [s rangeOfCharacterFromSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound;
 }
 
 - (void)viewDidLoad
@@ -156,9 +161,11 @@ static BOOL BRIsCookieName(NSString *name)
     CGSize labelSize = [self.instructionLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
     self.instructionLabel.frame = CGRectMake(margin, margin, width, ceilf(labelSize.height));
     CGFloat top = CGRectGetMaxY(self.instructionLabel.frame) + 12;
-    // the text box gets what is left above the keyboard, and never less than a few lines (the label scrolls away then)
+    // The text box gets what is left above the keyboard. Its minimum (a few lines) gives way while the keyboard is up, so
+    // that its top - and the caret - stays in view on a phone in landscape; the explanation scrolls away then.
     CGFloat visible = bounds.size.height - self.keyboardHeight;
-    CGFloat height = MAX(100, visible - top - margin);
+    CGFloat minHeight = self.keyboardHeight > 0 ? MIN(100, MAX(40, visible - 2 * margin)) : 100;
+    CGFloat height = MAX(minHeight, visible - top - margin);
     self.textView.frame = CGRectMake(margin, top, width, height);
     self.scrollView.contentSize = CGSizeMake(bounds.size.width, top + height + margin);
     UIEdgeInsets insets = UIEdgeInsetsMake(0, 0, self.keyboardHeight, 0);
@@ -177,8 +184,9 @@ static BOOL BRIsCookieName(NSString *name)
     [self.view setNeedsLayout];
     [UIView animateWithDuration:duration > 0 ? duration : 0.25 animations:^{
         [self.view layoutIfNeeded];
-        // the whole text box above the keyboard, the explanation scrolled up as far as that needs
+        // the text box above the keyboard, the explanation scrolled up as far as that needs - never past the box's top
         CGFloat need = CGRectGetMaxY(self.textView.frame) + 16 - (height - self.keyboardHeight);
+        need = MIN(need, CGRectGetMinY(self.textView.frame) - 8);
         self.scrollView.contentOffset = CGPointMake(0, MAX(0, need));
     }];
 }
@@ -197,38 +205,87 @@ static BOOL BRIsCookieName(NSString *name)
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+- (NSHTTPCookie *)cookieNamed:(NSString *)name value:(NSString *)value domain:(NSString *)domain httpOnly:(BOOL)httpOnly
+{
+    NSMutableDictionary *props = [NSMutableDictionary dictionary];
+    props[NSHTTPCookieName] = name;
+    props[NSHTTPCookieValue] = value;
+    props[NSHTTPCookieDomain] = domain;
+    props[NSHTTPCookiePath] = @"/";
+    props[NSHTTPCookieExpires] = [NSDate dateWithTimeIntervalSinceNow:365 * 24 * 60 * 60];
+    if (self.secure) props[NSHTTPCookieSecure] = @"TRUE";
+    // (only when the pasted Set-Cookie line said so: a site's own scripts read some of their login cookies - X's ct0,
+    // Twitch's auth-token - and a flag the user did not give would break the site)
+    if (httpOnly) props[@"HttpOnly"] = @"TRUE";
+    return [NSHTTPCookie cookieWithProperties:props];
+}
+
 - (void)logIn
 {
-    NSArray *cookies = [self cookiesFromText:self.textView.text];
-    if (cookies.count == 0) {
+    NSArray *pasted = [self pastedCookiesFromText:self.textView.text];
+    if (pasted.count == 0) {
         [[[UIAlertView alloc] initWithTitle:nil message:L(@"No cookies were found. Paste them as name=value, separated by semicolons.") delegate:nil cancelButtonTitle:L(@"OK") otherButtonTitles:nil] show];
         return;
     }
-    NSString *domain = BRCookieDomainForHost(self.host);
+    NSString *defaultDomain = BRCookieDomainForHost(self.host);
     NSCharacterSet *dot = [NSCharacterSet characterSetWithCharactersInString:@"."];
-    NSString *site = [domain stringByTrimmingCharactersInSet:dot];
     NSMutableSet *names = [NSMutableSet set];
-    for (NSHTTPCookie *cookie in cookies) [names addObject:cookie.name];
+    for (NSDictionary *p in pasted) [names addObject:p[@"name"]];
+    NSMutableDictionary *domainFor = [NSMutableDictionary dictionary];
     NSHTTPCookieStorage *jar = [NSHTTPCookieStorage sharedHTTPCookieStorage];
     BOOL stored = NO;
     @synchronized (BRCookieLock()) {
-        // The site's own cookies of these names (the logged-out session it gave, usually for the exact host) would go out
-        // next to the imported ones, and many servers read only the first value: they go. Those the page gets, and
-        // those within the imported cookies' domain, whatever their path.
-        for (NSHTTPCookie *old in [[jar cookies] copy]) {
-            if (![names containsObject:old.name]) continue;
+        NSArray *existing = [[jar cookies] copy];
+        // 1. Each name's domain: the default one, or a parent domain the site itself keeps that name for (reddit_session on
+        //    .reddit.com while the page is old.reddit.com): the login is the site's, not the subdomain's.
+        for (NSString *name in names) domainFor[name] = defaultDomain;
+        for (NSHTTPCookie *old in existing) {
+            NSString *current = domainFor[old.name];
+            if (!current || ![old.domain hasPrefix:@"."]) continue;   // (a host-only cookie of another host is not the page's)
             NSString *d = [[old.domain lowercaseString] stringByTrimmingCharactersInSet:dot];
+            NSString *root = [current stringByTrimmingCharactersInSet:dot];
+            BOOL parent = [root hasSuffix:[@"." stringByAppendingString:d]];
             BOOL pageGetsIt = [self.host isEqualToString:d] || [self.host hasSuffix:[@"." stringByAppendingString:d]];
-            BOOL withinImport = [d isEqualToString:site] || [d hasSuffix:[@"." stringByAppendingString:site]];
-            if (pageGetsIt || withinImport) [jar deleteCookie:old];
+            if (parent && pageGetsIt && [d rangeOfString:@"."].location != NSNotFound && !BRLooksLikePublicSuffix(d)) {
+                domainFor[old.name] = [@"." stringByAppendingString:d];
+            }
         }
-        for (NSHTTPCookie *cookie in cookies) [jar setCookie:cookie];
-        // (what the jar now gives the page: a refused cookie would leave the user logged out without a word)
+        // 2. The cookies of these names that the page gets, or within the domain the import gives them, go: the site's
+        //    logged-out session would go out next to the imported one, and many servers read only the first value. Kept
+        //    aside, to be put back if the import does not take.
+        NSMutableArray *removed = [NSMutableArray array];
+        for (NSHTTPCookie *old in existing) {
+            NSString *domain = domainFor[old.name];
+            if (!domain) continue;
+            NSString *d = [[old.domain lowercaseString] stringByTrimmingCharactersInSet:dot];
+            NSString *root = [domain stringByTrimmingCharactersInSet:dot];
+            BOOL hostOnly = ![old.domain hasPrefix:@"."];
+            BOOL pageGetsIt = [self.host isEqualToString:d] || (!hostOnly && [self.host hasSuffix:[@"." stringByAppendingString:d]]);
+            BOOL within = [d isEqualToString:root] || [d hasSuffix:[@"." stringByAppendingString:root]];
+            if (pageGetsIt || within) {
+                [jar deleteCookie:old];
+                [removed addObject:old];
+            }
+        }
+        // 3. The imported ones
+        NSMutableArray *added = [NSMutableArray array];
+        for (NSDictionary *p in pasted) {
+            NSHTTPCookie *cookie = [self cookieNamed:p[@"name"] value:p[@"value"] domain:domainFor[p[@"name"]] httpOnly:[p[@"httpOnly"] boolValue]];
+            if (!cookie) continue;
+            [jar setCookie:cookie];
+            [added addObject:cookie];
+        }
+        // 4. What the jar now gives the page. A refused cookie would leave the user logged out without a word, and with
+        //    the site's own cookies gone: then everything goes back as it was.
         for (NSHTTPCookie *cookie in [jar cookiesForURL:self.pageURL]) {
             if ([names containsObject:cookie.name]) {
                 stored = YES;
                 break;
             }
+        }
+        if (!stored) {
+            for (NSHTTPCookie *cookie in added) [jar deleteCookie:cookie];
+            for (NSHTTPCookie *cookie in removed) [jar setCookie:cookie];
         }
     }
     if (!stored) {
@@ -236,70 +293,111 @@ static BOOL BRIsCookieName(NSString *name)
         return;
     }
     // pages of the site kept in the cache before are the logged-out ones
-    [BRURLProtocol noteCookiesImportedForDomain:site];
-    BRLog(@"Stored %lu login cookie(s) for %@", (unsigned long)cookies.count, domain);
-    NSUInteger count = cookies.count;
+    for (NSString *domain in [NSSet setWithArray:[domainFor allValues]]) [BRURLProtocol noteCookiesImportedForDomain:domain];
+    BRLog(@"Stored %lu login cookie(s) for %@", (unsigned long)pasted.count, self.host);
+    NSUInteger count = pasted.count;
     void (^callback)(NSUInteger) = self.onStored;
     [self dismissViewControllerAnimated:YES completion:^{ if (callback) callback(count); }];
 }
 
-// Parses what the user pasted into cookies for this site: "a=1; b=2", a Cookie: header (also within a block of
-// request headers, whose other lines are skipped), a Set-Cookie: line (its attributes are not cookies), or one
-// name=value per line. Values may contain '=', so only the first one in each pair splits name from value.
-- (NSArray *)cookiesFromText:(NSString *)text
+// What the user pasted, as cookies (name, value, httpOnly), the last of a name winning: "a=1; b=2"; document.cookie as a
+// console prints it, in quotes; a Cookie: header, also within a block of request headers, whose other lines are skipped;
+// a Set-Cookie: line, or its value alone, whose attributes are not cookies; one name=value per line; rows of a cookie
+// table (tab-separated, name and value first) or of a Netscape cookies.txt. Values may contain '=': only the first one
+// in each pair splits name from value.
+// One pasted cookie into the result (the last of a name wins, in the order the names first came)
+static void BRAddPasted(NSString *name, NSString *value, BOOL httpOnly, NSMutableArray *order, NSMutableDictionary *byName)
 {
-    NSString *domain = BRCookieDomainForHost(self.host);
-    if (!domain.length || !text.length) return @[];
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    name = [name stringByTrimmingCharactersInSet:ws];
+    value = [value stringByTrimmingCharactersInSet:ws];
+    if (!BRIsCookieName(name)) return;
+    // (a cookie value has no spaces or control characters: "x=5 is the answer" or an Expires date is not one)
+    if ([value rangeOfCharacterFromSet:ws].location != NSNotFound ||
+        [value rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location != NSNotFound) return;
+    if (!byName[name]) [order addObject:name];
+    byName[name] = @{ @"name": name, @"value": value, @"httpOnly": @(httpOnly) };
+}
+
+// One "name=value" segment
+static void BRAddPastedPair(NSString *pair, BOOL httpOnly, NSMutableArray *order, NSMutableDictionary *byName)
+{
+    pair = [pair stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSRange eq = [pair rangeOfString:@"="];
+    if (eq.location == NSNotFound || eq.location == 0) return;
+    BRAddPasted([pair substringToIndex:eq.location], [pair substringFromIndex:eq.location + 1], httpOnly, order, byName);
+}
+
+// A Set-Cookie value split at ';': the cookie, then its attributes (of which only HttpOnly matters here)
+static void BRAddPastedSetCookie(NSArray *segments, NSMutableArray *order, NSMutableDictionary *byName)
+{
+    BOOL httpOnly = NO;
+    for (NSUInteger i = 1; i < segments.count; i++) {
+        NSString *attr = [[segments[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+        if ([attr isEqualToString:@"httponly"]) httpOnly = YES;
+    }
+    if (segments.count) BRAddPastedPair(segments[0], httpOnly, order, byName);
+}
+
+- (NSArray *)pastedCookiesFromText:(NSString *)text
+{
+    if (!text.length) return @[];
     NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
     NSSet *attributes = [NSSet setWithObjects:@"path", @"domain", @"expires", @"max-age", @"samesite", @"secure", @"httponly",
-                         @"priority", @"partitioned", @"version", @"comment", nil];
-    NSMutableArray *pairs = [NSMutableArray array];
+                         @"priority", @"partitioned", nil];
+    NSMutableArray *order = [NSMutableArray array];
+    NSMutableDictionary *byName = [NSMutableDictionary dictionary];
+
     NSString *lines = [text stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
     for (NSString *rawLine in [lines componentsSeparatedByString:@"\n"]) {
         NSString *line = [rawLine stringByTrimmingCharactersInSet:ws];
+        if (line.length >= 2) {
+            unichar first = [line characterAtIndex:0], last = [line characterAtIndex:line.length - 1];
+            if ((first == '"' || first == '\'') && first == last) line = [[line substringWithRange:NSMakeRange(1, line.length - 2)] stringByTrimmingCharactersInSet:ws];
+        }
         if (!line.length) continue;
         NSString *lower = [line lowercaseString];
         if ([lower hasPrefix:@"cookie:"]) {
-            [pairs addObjectsFromArray:[[line substringFromIndex:7] componentsSeparatedByString:@";"]];
-        } else if ([lower hasPrefix:@"set-cookie:"]) {
-            [pairs addObject:[[[line substringFromIndex:11] componentsSeparatedByString:@";"] firstObject] ?: @""];
+            for (NSString *pair in [[line substringFromIndex:7] componentsSeparatedByString:@";"]) BRAddPastedPair(pair, NO, order, byName);
+            continue;
+        }
+        if ([lower hasPrefix:@"set-cookie:"]) {
+            BRAddPastedSetCookie([[line substringFromIndex:11] componentsSeparatedByString:@";"], order, byName);
+            continue;
+        }
+        if ([line rangeOfString:@"\t"].location != NSNotFound) {
+            // a table row: Netscape cookies.txt (domain, flag, path, secure, expiry, name, value; "#HttpOnly_" before an
+            // HttpOnly cookie's domain, other "#" lines comments), or a browser's cookie table (name, value, ...)
+            if ([line hasPrefix:@"#"] && ![line hasPrefix:@"#HttpOnly_"]) continue;
+            NSArray *fields = [line componentsSeparatedByString:@"\t"];
+            if (fields.count >= 7 && BRIsDigits([fields[4] stringByTrimmingCharactersInSet:ws])) {
+                BRAddPasted(fields[5], fields[6], [line hasPrefix:@"#HttpOnly_"], order, byName);
+            } else if (fields.count >= 2 && [fields[0] rangeOfString:@"="].location == NSNotFound) {
+                BRAddPasted(fields[0], fields[1], NO, order, byName);
+            }
+            continue;
+        }
+        // another header of a pasted request ("Accept-Language: en;q=0.9"): its ':' comes before any '='
+        NSRange colon = [line rangeOfString:@":"], eq = [line rangeOfString:@"="];
+        if (colon.location != NSNotFound && (eq.location == NSNotFound || colon.location < eq.location) &&
+            BRIsCookieName([line substringToIndex:colon.location])) continue;
+        NSArray *segments = [line componentsSeparatedByString:@";"];
+        // a Set-Cookie value without its header name ("s=abc; Path=/; HttpOnly"): its attributes give it away
+        BOOL setCookieValue = NO;
+        for (NSUInteger i = 1; i < segments.count && !setCookieValue; i++) {
+            NSString *seg = [[segments[i] stringByTrimmingCharactersInSet:ws] lowercaseString];
+            NSRange e = [seg rangeOfString:@"="];
+            NSString *attr = e.location == NSNotFound ? seg : [seg substringToIndex:e.location];
+            setCookieValue = [attributes containsObject:[attr stringByTrimmingCharactersInSet:ws]];
+        }
+        if (setCookieValue) {
+            BRAddPastedSetCookie(segments, order, byName);
         } else {
-            // another header of a pasted request ("Accept-Language: en;q=0.9"): its ':' comes before any '='
-            NSRange colon = [line rangeOfString:@":"], eq = [line rangeOfString:@"="];
-            if (colon.location != NSNotFound && (eq.location == NSNotFound || colon.location < eq.location) &&
-                BRIsCookieName([line substringToIndex:colon.location])) continue;
-            [pairs addObjectsFromArray:[line componentsSeparatedByString:@";"]];
+            for (NSString *pair in segments) BRAddPastedPair(pair, NO, order, byName);
         }
     }
-
     NSMutableArray *cookies = [NSMutableArray array];
-    NSDate *expires = [NSDate dateWithTimeIntervalSinceNow:365 * 24 * 60 * 60];
-    for (NSString *rawPart in pairs) {
-        NSString *part = [rawPart stringByTrimmingCharactersInSet:ws];
-        NSRange eq = [part rangeOfString:@"="];
-        if (part.length == 0 || eq.location == NSNotFound || eq.location == 0) continue;
-        NSString *name = [[part substringToIndex:eq.location] stringByTrimmingCharactersInSet:ws];
-        NSString *value = [[part substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:ws];
-        if (!BRIsCookieName(name) || [attributes containsObject:[name lowercaseString]]) continue;
-        // (a cookie value has no spaces or control characters: "x=5 is the answer" or an Expires date is not one)
-        if ([value rangeOfCharacterFromSet:ws].location != NSNotFound ||
-            [value rangeOfCharacterFromSet:[NSCharacterSet controlCharacterSet]].location != NSNotFound) continue;
-        NSMutableDictionary *props = [NSMutableDictionary dictionary];
-        props[NSHTTPCookieName] = name;
-        props[NSHTTPCookieValue] = value;
-        props[NSHTTPCookieDomain] = domain;
-        props[NSHTTPCookiePath] = @"/";
-        props[NSHTTPCookieExpires] = expires;
-        if (self.secure) props[NSHTTPCookieSecure] = @"TRUE";
-        // Out of reach of the pages' scripts (document.cookie) on an engine that gets no security fixes: login cookies
-        // usually are HttpOnly in the browser they come from. Not the CSRF tokens a site's own script reads.
-        NSString *lowerName = [name lowercaseString];
-        if ([lowerName rangeOfString:@"csrf"].location == NSNotFound && [lowerName rangeOfString:@"xsrf"].location == NSNotFound) {
-            props[@"HttpOnly"] = @"TRUE";
-        }
-        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:props];
-        if (cookie) [cookies addObject:cookie];
-    }
+    for (NSString *name in order) [cookies addObject:byName[name]];
     return cookies;
 }
 

@@ -9,18 +9,20 @@ the top. (The section of a version becomes the notes of its GitHub Release.)
 
 - Log in with cookies keeps the cookies for the page's own host and its subdomains (a leading "www." dropped), no
   longer for the last two labels of its name: for a site under co.uk, com.au, github.io and the like that is a public
-  suffix, and the cookies would have gone to every site under it.
+  suffix, and the cookies would have gone to every site under it. A service whose subdomains are other people's pages
+  (neocities.org, wordpress.com...) keeps them to its own host; on a subdomain such as old.reddit.com, a cookie that the
+  site keeps for its whole domain is replaced there.
 - Cookies of the same name that the site had set before (the logged-out session) are replaced, instead of going out
-  next to the imported ones, where many servers read only the first.
+  next to the imported ones, where many servers read only the first. If the jar does not take the import, the dialog
+  says so and everything is put back as it was.
 - The clipboard is no longer read when the dialog opens: the Paste button above the keyboard puts it in. (A page can
   write to the clipboard after a tap.)
 - The cookies are for the page the menu was opened on, with that page's Secure flag, and that page is the one loaded
-  again; pages of the site that the cache kept from before the login are no longer shown with the cookies.
-- Imported cookies are out of reach of the pages' scripts (HttpOnly), except the CSRF tokens a site's own script reads.
-- A pasted Set-Cookie line or block of request headers no longer stores the attributes or the other headers as cookies;
-  the dialog tells when the cookies could not be stored.
-- On an iPhone the text box stays above the keyboard; in private browsing the dialog says that the login lasts until
-  private browsing is turned off. The help page describes the feature.
+  again. Pages of the site that the cache kept from before the login, also after a relaunch, are no longer shown.
+- More of what people paste is understood: document.cookie copied in quotes, a Set-Cookie line (its HttpOnly is kept,
+  its other attributes are not cookies), a block of request headers, rows of a cookie table or of a cookies.txt file.
+- On an iPhone the text box and its caret stay above the keyboard; in private browsing the dialog says that the login
+  lasts until private browsing is turned off. The help page describes the feature.
 
 ### Changed
 
