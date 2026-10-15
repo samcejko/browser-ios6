@@ -31,6 +31,8 @@ typedef void (^BRAuthenticationHandler)(NSString *host, NSString *realm, void (^
 // The user imported cookies for this domain and its subdomains (Log in with cookies): answers the cache kept for it
 // without cookies before now are the logged-out pages, and requests that carry the cookies no longer get them.
 + (void)noteCookiesImportedForDomain:(NSString *)domain;
+// ...forgotten when the cache is emptied (BRURLCache): nothing it kept from before an import is left
++ (void)forgetCookieImports;
 // Responses to keep wait in memory until no cache lookup waits (see BRStoreLater): dropped when the cache is emptied
 // (BRURLCache), so that nothing of before comes back
 + (void)dropPendingCacheStores;

@@ -535,10 +535,11 @@ static BOOL BRCachedSetsCookies(NSCachedURLResponse *c)
 }
 
 // Domains the user imported cookies for (+noteCookiesImportedForDomain:) -> when. Kept in the user defaults, so that the
-// cache's logged-out pages stay out after a relaunch, for as long as such an answer could still be fresh; one made in
-// private browsing only for the run of the app (no site of private browsing goes to the disk).
+// cache's logged-out pages stay out after a relaunch, for as long as such an answer could still be fresh (a server may
+// give it a year; the imported cookies last one); one made in private browsing only for the run of the app (no site of
+// private browsing goes to the disk). Emptying the cache forgets them (+forgetCookieImports): nothing from before is left.
 static NSString * const BRCookieImportsKey = @"BRCookieImports";
-#define BR_COOKIE_IMPORT_KEPT (30 * 24 * 3600.0)
+#define BR_COOKIE_IMPORT_KEPT (400 * 24 * 3600.0)
 static NSMutableDictionary *g_cookieImports, *g_privateCookieImports;
 static id BRCookieImportsLock(void)
 {
@@ -570,6 +571,7 @@ static void BRLoadCookieImports(void)
 static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
 {
     NSString *host = [url.host lowercaseString];
+    if ([host hasSuffix:@"."]) host = [host substringToIndex:host.length - 1];   // (the import's domain has no root dot)
     NSNumber *sentAt = c.userInfo[BRCacheSentAtKey] ?: c.userInfo[BRCacheStoredAtKey];
     if (!host.length || !sentAt) return NO;
     @synchronized (BRCookieImportsLock()) {
@@ -610,7 +612,7 @@ static BOOL BRCachedBeforeCookieImport(NSCachedURLResponse *c, NSURL *url)
 @property (nonatomic, copy) NSString *sentMethod;
 @property (nonatomic, strong) NSDictionary *sentHeaders;
 @property (nonatomic, strong) NSData *sentBody;
-@property (nonatomic) NSTimeInterval sentAt;     // when they went (see BRCachedBeforeCookieImport)
+@property (nonatomic) NSTimeInterval sentAt;     // when their cookies were read from the jar (see BRCachedBeforeCookieImport)
 @property (nonatomic) BOOL thirdParty;          // cookies are neither sent nor stored
 @property (nonatomic) BOOL credentialedEntry;   // the cache keeps an answer made with credentials, not for this request
 @property (nonatomic) BOOL authAttempted;       // the user was asked once for this request
@@ -688,6 +690,16 @@ static NSHashTable *g_activeProtocols;
             g_cookieImports[d] = now;
             [[NSUserDefaults standardUserDefaults] setObject:[g_cookieImports copy] forKey:BRCookieImportsKey];
         }
+    }
+}
+
++ (void)forgetCookieImports
+{
+    @synchronized (BRCookieImportsLock()) {
+        BRLoadCookieImports();
+        [g_cookieImports removeAllObjects];
+        [g_privateCookieImports removeAllObjects];
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:BRCookieImportsKey];
     }
 }
 
@@ -920,6 +932,9 @@ static BOOL BRIsFontDataURL(NSURL *url)
         [headers removeObjectForKey:@"Cookie"];
     } else if (request.HTTPShouldHandleCookies && !BRHeader(headers, @"Cookie")) {
         NSArray *cookies = nil;
+        // (the time of the jar the request goes with: it may wait before it goes out, see BRMemory holdLoad:, and a 401's
+        // repeat sends these cookies again)
+        self.sentAt = [NSDate timeIntervalSinceReferenceDate];
         @synchronized (BRCookieLock()) { cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url]; }
         if (cookies.count) {
             NSString *cookieHeader = [NSHTTPCookie requestHeaderFieldsWithCookies:cookies][@"Cookie"];
@@ -956,7 +971,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
     self.sentMethod = method;
     self.sentHeaders = headers;
     self.sentBody = body;
-    self.sentAt = [NSDate timeIntervalSinceReferenceDate];
+    if (self.sentAt <= 0) self.sentAt = [NSDate timeIntervalSinceReferenceDate];
     BRHTTPRequest *r = [[BRHTTPRequest alloc] initWithMethod:method URL:url];
     r.headers = headers;
     r.body = body;
@@ -1093,6 +1108,9 @@ static BOOL BRIsFontDataURL(NSURL *url)
         if (maxAge < 0 && oldMaxAge) maxAge = [oldMaxAge doubleValue];
         self.fontBody = [self.staleCached.userInfo[BRCacheRewriteTagKey] isEqual:BRFontCacheTag];   // (a font stays one)
         NSHTTPURLResponse *staleResponse = (NSHTTPURLResponse *)self.staleCached.response;
+        // (the body is the one first fetched: it keeps that request's time, a logged-out page one from before an import)
+        NSNumber *bodySentAt = self.staleCached.userInfo[BRCacheSentAtKey] ?: self.staleCached.userInfo[BRCacheStoredAtKey];
+        if (bodySentAt && [bodySentAt doubleValue] < self.sentAt) self.sentAt = [bodySentAt doubleValue];
         [self storeHeaders:staleResponse.allHeaderFields status:staleResponse.statusCode data:self.staleCached.data maxAge:MAX(maxAge, 0)];
         [self serveCachedResponse:self.staleCached];
         return;
@@ -1839,6 +1857,7 @@ static BOOL BRIsFontDataURL(NSURL *url)
 - (void)removeAllCachedResponses
 {
     [BRURLProtocol dropPendingCacheStores];
+    [BRURLProtocol forgetCookieImports];
     [super removeAllCachedResponses];
 }
 

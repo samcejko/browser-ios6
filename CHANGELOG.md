@@ -20,7 +20,14 @@ the top. (The section of a version becomes the notes of its GitHub Release.)
 - The cookies are for the page the menu was opened on, with that page's Secure flag, and that page is the one loaded
   again. Pages of the site that the cache kept from before the login, also after a relaunch, are no longer shown.
 - More of what people paste is understood: document.cookie copied in quotes, a Set-Cookie line (its HttpOnly is kept,
-  its other attributes are not cookies), a block of request headers, rows of a cookie table or of a cookies.txt file.
+  its other attributes are not cookies; one that deletes a cookie is left out), a block of request headers or a table
+  of them, "Copy as cURL" (bash or cmd), a JSON export (Cookie-Editor, EditThisCookie), rows of a browser's cookie
+  table or of a cookies.txt file. Of a file or table with many sites only the cookies the page would get are taken
+  (another site's session no longer goes to this one); if none are left, the dialog says so.
+- A site's own subdomains keep their cookies when the login is for a host that keeps them to itself (neocities.org,
+  an IP address), and a login moves up to a parent domain only where that is no shared suffix (uk.com, blogspot.*,
+  cloud hosts) on which another page could have planted a cookie of the same name.
+- Emptying the cache (also with "Clear cookies") forgets the list of sites logged in with cookies.
 - On an iPhone the text box and its caret stay above the keyboard; in private browsing the dialog says that the login
   lasts until private browsing is turned off. The help page describes the feature.
 

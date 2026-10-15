@@ -198,3 +198,4 @@
 "Paste" = "Vložit";
 "Private browsing is on: this login lasts until you turn it off." = "Je zapnuté anonymní prohlížení: přihlášení vydrží, dokud ho nevypnete.";
 "The cookies could not be stored." = "Cookies se nepodařilo uložit.";
+"The pasted cookies are all for other sites, none for %@." = "Vložené cookies patří jen jiným webům, pro %@ tam žádné nejsou.";
