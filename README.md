@@ -15,6 +15,8 @@ does everything around it that the old system cannot:
 - **WOFF2 fonts and WebP images** converted on the device.
 - **Ad and tracker blocking** with built-in lists, and hiding of cookie banners.
 - **Reader view**, find on page, translate, print and save as PDF, downloads, view source.
+- **Playing in the background**: music and videos of a page (an internet radio, YouTube, a live stream) go on when
+  you leave the app or lock the screen, with the lock screen's buttons and the page's title.
 - **Saved passwords** (in the device's keychain, for secure sites only), **private browsing**, dark theme and dark
   pages.
 - Tabs, bookmarks, history, a choice of search engines with suggestions, swipe gestures, and an English and Czech
