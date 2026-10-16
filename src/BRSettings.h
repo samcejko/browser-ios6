@@ -74,6 +74,8 @@
 + (void)setHideCookieBanners:(BOOL)enabled;
 + (BOOL)pagesDark;                       // default NO: pages are shown inverted (dark) through a CSS filter
 + (void)setPagesDark:(BOOL)enabled;
++ (BOOL)backgroundAudio;                 // default YES: a page's music and videos play on when the app leaves the screen (BRMediaSession)
++ (void)setBackgroundAudio:(BOOL)enabled;
 
 + (NSURL *)searchURLForQuery:(NSString *)query;
 + (NSURL *)homeURL;                      // the chosen home page, or the bundled start page

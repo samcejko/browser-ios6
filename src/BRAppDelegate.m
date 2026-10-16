@@ -15,6 +15,7 @@
 #import "BRMemory.h"
 #import "BRPasswords.h"
 #import "BRLibrary.h"
+#import "BRMediaSession.h"
 #import "BRCommon.h"
 #include <dlfcn.h>
 
@@ -214,6 +215,8 @@ static NSString *BRAuthorizedCommand(NSString *target)
     self.window.backgroundColor = [[BRTheme shared] pageBackgroundColor];
     [self.window makeKeyAndVisible];
     [application setStatusBarStyle:[[BRTheme shared] statusBarStyle] animated:NO];
+    // (a page's music and videos in the background, the lock screen's buttons)
+    [[BRMediaSession shared] startWithBrowser:self.browserViewController];
     if (safeStart) {
         // the bundled start page, not a chosen home page: that may be the very page that crashes
         NSURL *start = [[NSBundle mainBundle] URLForResource:@"home" withExtension:@"html"];
@@ -534,6 +537,12 @@ static NSString *BRAuthorizedCommand(NSString *target)
     // (on screen again: if this run ends now, it is one run that ended on screen - the ones before it ended well)
     [[NSUserDefaults standardUserDefaults] setInteger:1 forKey:@"BRForegroundExits"];
     [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// The lock screen's and a headset's play/pause buttons (the delegate is the last responder in the chain)
+- (void)remoteControlReceivedWithEvent:(UIEvent *)event
+{
+    [[BRMediaSession shared] handleRemoteControlEvent:event];
 }
 
 - (void)applicationWillTerminate:(UIApplication *)application

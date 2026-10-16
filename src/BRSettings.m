@@ -723,6 +723,8 @@ static void BRSetBoolSetting(NSString *key, BOOL value)
 + (void)setHideCookieBanners:(BOOL)enabled { BRSetBoolSetting(@"BRHideCookieBanners", enabled); }
 + (BOOL)pagesDark { return BRBoolSetting(@"BRPagesDark", NO); }
 + (void)setPagesDark:(BOOL)enabled { BRSetBoolSetting(@"BRPagesDark", enabled); }
++ (BOOL)backgroundAudio { return BRBoolSetting(@"BRBackgroundAudio", YES); }
++ (void)setBackgroundAudio:(BOOL)enabled { BRSetBoolSetting(@"BRBackgroundAudio", enabled); }
 + (BOOL)searchSuggestions { return BRBoolSetting(@"BRSearchSuggestions", YES); }
 + (void)setSearchSuggestions:(BOOL)on { BRSetBoolSetting(@"BRSearchSuggestions", on); }
 

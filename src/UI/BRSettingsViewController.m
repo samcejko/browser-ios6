@@ -7,6 +7,7 @@
 #import "BRCSSRewriter.h"
 #import "BRURLProtocol.h"
 #import "BRPasswords.h"
+#import "BRMediaSession.h"
 #import "BRCommon.h"
 
 typedef NS_ENUM(NSInteger, BRSettingsSection) {
@@ -31,6 +32,7 @@ typedef NS_ENUM(NSInteger, BRFeatureRow) {
     BRFeatureRowTextSize,
     BRFeatureRowHomePage,
     BRFeatureRowLoadImages,
+    BRFeatureRowBackgroundAudio,
     BRFeatureRowCount
 };
 
@@ -140,7 +142,8 @@ static const NSInteger BRAlertVerifyTLSOff = 501;
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == BRSettingsSectionFeatures) {
-        return L(@"The page version tells servers which browser to serve. iPad with iOS 6 gets pages this engine understands best; the modern identity gets current pages that may not work.");
+        return [NSString stringWithFormat:@"%@\n\n%@", L(@"The page version tells servers which browser to serve. iPad with iOS 6 gets pages this engine understands best; the modern identity gets current pages that may not work."),
+                L(@"With Play in the background, music and videos of a page go on when you leave the app or lock the screen; the buttons of the lock screen pause and resume them.")];
     }
     if (section == BRSettingsSectionPrivacy) {
         return [NSString stringWithFormat:@"%@\n\n%@", L(@"Cookie banners of the common consent services are hidden; the page then behaves as if nothing was agreed to."),
@@ -218,6 +221,10 @@ static const NSInteger BRAlertVerifyTLSOff = 501;
             case BRFeatureRowLoadImages:
                 cell.textLabel.text = L(@"Load images");
                 cell.accessoryView = [self switchWithValue:[BRSettings loadImages] tag:tag];
+                break;
+            case BRFeatureRowBackgroundAudio:
+                cell.textLabel.text = L(@"Play in the background");
+                cell.accessoryView = [self switchWithValue:[BRSettings backgroundAudio] tag:tag];
                 break;
         }
     } else if (section == BRSettingsSectionPrivacy) {
@@ -327,6 +334,10 @@ static const NSInteger BRAlertVerifyTLSOff = 501;
     }
     if (section == BRSettingsSectionFeatures) {
         if (row == BRFeatureRowLoadImages) [BRSettings setLoadImages:sw.on];
+        else if (row == BRFeatureRowBackgroundAudio) {
+            [BRSettings setBackgroundAudio:sw.on];
+            [[BRMediaSession shared] applyPreference];
+        }
     } else if (section == BRSettingsSectionPrivacy) {
         switch (row) {
             case BRPrivacyRowPrivate:

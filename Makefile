@@ -33,7 +33,8 @@ Surfari_FILES := $(wildcard src/*.m) $(wildcard src/*/*.m) $(wildcard src/*/*.mm
                  $(wildcard vendor/mbedtls/library/*.c) \
                  $(WOFF2_FILES) $(BROTLI_FILES) $(WEBP_FILES)
 
-Surfari_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security ImageIO
+# (AVFoundation and MediaPlayer: the audio session and the lock screen's title for playing in the background)
+Surfari_FRAMEWORKS := UIKit Foundation CoreGraphics QuartzCore Security ImageIO AVFoundation MediaPlayer
 
 # Flags for every C-family file (also the vendored mbedTLS sources)
 Surfari_CFLAGS := -Isrc -Isrc/Net -Isrc/UI -Isrc/Model \

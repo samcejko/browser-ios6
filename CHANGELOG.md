@@ -3,6 +3,14 @@
 The changes of each Surfari release. Versions follow [Semantic Versioning](https://semver.org/); the newest is at
 the top. (The section of a version becomes the notes of its GitHub Release.)
 
+## [1.2.0] - 2026-10-16
+
+### Added
+
+- Play in the background (Settings > Pages, on by default): music and videos of a page go on when you leave the app
+  or lock the screen - an internet radio, a YouTube video, a live stream. The buttons of the lock screen and of a
+  headset pause and resume them, and the lock screen shows the page's title.
+
 ## [1.1.1] - 2026-10-15
 
 ### Fixed

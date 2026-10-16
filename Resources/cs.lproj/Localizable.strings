@@ -120,6 +120,8 @@
 "Hide cookie banners" = "Skrývat cookie lišty";
 "Cookie banners of the common consent services are hidden; the page then behaves as if nothing was agreed to." = "Cookie lišty běžných souhlasových služeb se skryjí; stránka se pak chová, jako by nebylo nic odsouhlaseno.";
 "Load images" = "Načítat obrázky";
+"Play in the background" = "Přehrávat na pozadí";
+"With Play in the background, music and videos of a page go on when you leave the app or lock the screen; the buttons of the lock screen pause and resume them." = "S Přehrávat na pozadí hraje hudba a videa stránky dál, když z aplikace odejdete nebo zamknete displej; tlačítka na zamčené obrazovce je pozastaví a zase spustí.";
 "Dark pages" = "Tmavé stránky";
 "Forget site passwords" = "Zapomenout hesla k webům";
 "Open in background" = "Otevřít na pozadí";
